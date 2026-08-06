@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+packages/
+*.tsbuildinfo
+*.tgz
+
+# go-core build outputs (mirrors go-core/.gitignore)
+go-core/bin/
+go-core/build/
+go-core/templates.enc
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Testing
+coverage/
+
+# IDE
+.vscode/
+.idea/
+
+# Local coding-agent instructions. Keep your own; they are not project policy.
+# Contribution rules that DO bind everyone live in CONTRIBUTING.md.
+CLAUDE.md
+AGENTS.md
+.claude/
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db

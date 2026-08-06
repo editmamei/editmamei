@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "editmamei": {
+      "command": "node",
+      "args": ["C:\\absolute\\path\\to\\Editmamei\\dist\\index.js"],
+      "env": {
+        "LOG_LEVEL": "1"
+      }
+    }
+  }
+}

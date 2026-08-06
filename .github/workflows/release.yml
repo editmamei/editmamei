@@ -1,0 +1,155 @@
+# Release — publish Editmamei CE to npm and attach the distribution artifacts
+# to this repository's GitHub Release.
+#
+# This workflow holds NO secrets, by design.
+#   - npm publishing uses OIDC trusted publishing: GitHub mints a short-lived
+#     identity token that npm verifies, so there is no long-lived token to leak.
+#     `--provenance` then records a signed, verifiable link from this published
+#     package back to the commit and workflow that built it — which is only
+#     possible because this repository is public.
+#   - The GitHub Release is created on THIS repository, so the automatically
+#     provided GITHUB_TOKEN is sufficient. No cross-repository credential is
+#     needed, and none should ever be added here: a public repository's
+#     workflows are modifiable by pull request, so a stored credential is a
+#     supply-chain surface.
+#
+# Anything that requires a key — signing and publishing the commercial module,
+# or writing to another repository — happens in the private release pipeline,
+# never here.
+#
+# Manual dispatch, so a human vets the commit and the version. Run with
+# dry_run=true to exercise the whole gate without publishing anything.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run the full gate without publishing'
+        required: true
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: write # create the Release and upload its assets
+  id-token: write # OIDC trusted publishing + provenance
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    # Same runner as CI, for the same reason: parts of the CLI resolve
+    # platform paths that have no Linux equivalent.
+    runs-on: windows-latest
+    steps:
+      - name: Guard — release only from main
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::releases run from main only (got ${{ github.ref }})"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go-core/go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      # OIDC trusted publishing needs npm >= 11.5.1; Node 20 bundles 10.x.
+      - name: Upgrade npm
+        run: npm install -g npm@11
+
+      - run: npm ci
+
+      # ---- gate: everything CONTRIBUTING asks contributors to run, plus the
+      # release-only checks. A failure here means nothing ships.
+      - name: format
+        run: npm run format:check
+      - name: lint
+        run: npm run lint
+      - name: typecheck
+        run: npm run typecheck
+      - name: test
+        run: npm test
+      - name: go build + test
+        working-directory: go-core
+        run: |
+          go build ./...
+          go test ./...
+      - name: audit production dependencies
+        run: npm run audit:ci
+
+      - name: Build CE bundle
+        run: npm run build:ce
+
+      - name: Build .mcpb bundle (one-click)
+        run: npm run build:mcpb
+
+      - name: Generate SBOM (CycloneDX, production deps)
+        run: npm sbom --sbom-format cyclonedx --omit=dev > sbom.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: editmamei-sbom-cyclonedx
+          path: sbom.cdx.json
+
+      - name: Pack (dry-run)
+        if: inputs.dry_run == 'true'
+        working-directory: packages/ce
+        run: npm pack --dry-run
+
+      - name: Publish to npm (OIDC trusted publishing, with provenance)
+        if: inputs.dry_run == 'false'
+        working-directory: packages/ce
+        # Idempotent: if this exact version is already on npm — a re-run to retry
+        # a later step — skip rather than erroring "cannot publish over existing
+        # version", which would abort before the Release step could re-run.
+        # `npm view <pkg>@<ver> version` exits non-zero (E404) when unpublished.
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "editmamei@$VERSION" version >/dev/null 2>&1; then
+            echo "editmamei@$VERSION already on npm — skipping publish (re-run path)."
+          else
+            npm publish --provenance --access public
+          fi
+
+      # Runs AFTER npm publish, so a version that failed to publish never
+      # appears on a Release.
+      - name: Publish distribution to this repository's Release
+        if: inputs.dry_run == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          # Version-pinned source paths, never globs: a stale or unexpected
+          # artifact left in packages/ can then never be swept onto a Release.
+          SRC_MCPB="packages/editmamei-$VERSION.mcpb"
+          SRC_TGZ="packages/ce/editmamei-$VERSION.tgz"
+          for f in "$SRC_MCPB" "$SRC_TGZ" "sbom.cdx.json"; do
+            [ -f "$f" ] || { echo "::error::missing release asset: $f"; exit 1; }
+          done
+          # Upload under STABLE, versionless names so the website's permanent
+          # download link and the in-product update message never 404.
+          mkdir -p dist-release
+          cp "$SRC_MCPB" dist-release/editmamei.mcpb
+          cp "$SRC_TGZ" dist-release/editmamei.tgz
+          cp sbom.cdx.json dist-release/sbom.cdx.json
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist-release/* --clobber
+          else
+            gh release create "$TAG" dist-release/* \
+              --title "$TAG" \
+              --notes "Editmamei $TAG distribution artifacts. See CHANGELOG.md for what changed."
+          fi

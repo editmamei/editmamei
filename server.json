@@ -1,0 +1,12 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.editmamei/editmamei",
+  "description": "Photoshop MCP server: natural-language AI photo editing with your own Photoshop. AI orchestration, not generation.",
+  "repository": {
+    "url": "https://github.com/editmamei/editmamei",
+    "source": "github"
+  },
+  "version": "0.2.0",
+  "mcpName": "io.github.editmamei/editmamei",
+  "packages": []
+}

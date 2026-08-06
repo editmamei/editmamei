@@ -1,0 +1,172 @@
+import { describe, it, expect } from 'vitest';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { EditmameiServer } from '@editmamei/core/server.ts';
+import { TOOL_TIERS, isToolAllowedInEdition, tierOf } from '@editmamei/core/tool-tiers.ts';
+import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
+
+// Every `new EditmameiServer()` below builds its own SessionLog with no `dir`
+// override — redirect it to a per-test temp dir so this file's constructions
+// never write real NDJSON into the user's ~/.editmamei/sessions/.
+useSessionLogSandbox();
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, '..', '..');
+// Pro tool sources aren't part of every checkout of this repo (Pro ships as
+// a separate module loaded at runtime). Without it, loadModules() never
+// registers the Pro-tier entries, so TOOL_TIERS' Pro entries would all read
+// as orphans — gate the orphan check behind Pro actually being loadable.
+const PRO_SOURCES_PRESENT = existsSync(join(REPO_ROOT, 'src', 'modules', 'pro', 'index.ts'));
+const proIt = PRO_SOURCES_PRESENT ? it : it.skip;
+
+/**
+ * Pins the contract between the live tool surface and the tier-classification
+ * table. The classification is the single source of truth for which tools
+ * end up in each build bundle — drift here would silently leak tools into
+ * the wrong edition.
+ */
+describe('TOOL_TIERS classification table', () => {
+  it('classifies every registered tool', async () => {
+    const server = new EditmameiServer() as unknown as {
+      toolRegistry: { list(): Array<{ name: string }> };
+      loadModules(): Promise<void>;
+    };
+    // Pro is a downloaded module loaded via dynamic import; pull it in so the
+    // assertion covers the FULL live surface (CE built-in + Pro), not just CE.
+    await server.loadModules();
+    const registered = server.toolRegistry.list().map((t) => t.name);
+    const missing = registered.filter((name) => !(name in TOOL_TIERS));
+    expect(missing, `Registered tools missing a tier-tiers entry: ${missing.join(', ')}`).toEqual(
+      []
+    );
+  });
+
+  proIt(
+    'has no orphan entries (every entry corresponds to a real tool factory output)',
+    async () => {
+      // Enumerate the full universe of tools (regardless of edition) by
+      // temporarily marking every entry community so the tier gate lets all
+      // of them through registration. Restore the table in finally so the
+      // other tests see the canonical classification.
+      const saved = { ...TOOL_TIERS };
+      try {
+        for (const name of Object.keys(TOOL_TIERS)) {
+          TOOL_TIERS[name] = 'community';
+        }
+        const server = new EditmameiServer() as unknown as {
+          toolRegistry: { list(): Array<{ name: string }> };
+          loadModules(): Promise<void>;
+        };
+        // Pro tools come from the downloaded module (dynamic import); load it so
+        // the orphan check sees the full registered surface.
+        await server.loadModules();
+        const registered = new Set(server.toolRegistry.list().map((t) => t.name));
+        const orphans = Object.keys(saved).filter((name) => !registered.has(name));
+        expect(orphans, `Orphan TOOL_TIERS entries: ${orphans.join(', ')}`).toEqual([]);
+      } finally {
+        for (const name of Object.keys(TOOL_TIERS)) delete TOOL_TIERS[name];
+        Object.assign(TOOL_TIERS, saved);
+      }
+    }
+  );
+
+  it('classifies every entry as a valid Tier value', () => {
+    for (const [name, tier] of Object.entries(TOOL_TIERS)) {
+      expect(['community', 'pro', 'none', 'dev'], `${name} has invalid tier ${tier}`).toContain(
+        tier
+      );
+    }
+  });
+
+  it('tierOf throws for unknown tool names', () => {
+    expect(() => tierOf('photoshop_definitely_not_a_real_tool')).toThrow(
+      /no entry in src\/core\/tool-tiers\.ts/
+    );
+  });
+
+  it('tierOf returns the matching tier for known tools', () => {
+    expect(tierOf('ps_ping')).toBe('community');
+  });
+});
+
+describe('isToolAllowedInEdition (the registration gate)', () => {
+  it('Pro builds accept every community + pro tool (skips dev + none)', () => {
+    for (const [name, tier] of Object.entries(TOOL_TIERS)) {
+      if (tier === 'none' || tier === 'dev') continue;
+      expect(isToolAllowedInEdition(name, 'pro')).toBe(true);
+    }
+  });
+
+  it('Community builds accept community-tier tools', () => {
+    expect(isToolAllowedInEdition('ps_ping', 'community')).toBe(true);
+  });
+
+  it('Community builds reject pro-tier tools', () => {
+    const original = TOOL_TIERS.ps_ping;
+    try {
+      TOOL_TIERS.ps_ping = 'pro';
+      expect(isToolAllowedInEdition('ps_ping', 'community')).toBe(false);
+      expect(isToolAllowedInEdition('ps_ping', 'pro')).toBe(true);
+      expect(isToolAllowedInEdition('ps_ping', 'dev')).toBe(true);
+    } finally {
+      TOOL_TIERS.ps_ping = original;
+    }
+  });
+
+  it("'none'-tier tools are excluded from EVERY edition (community + pro + dev)", () => {
+    // 'none' is the "keep in source, never expose" tier — known-broken
+    // tools, deprecation-window tools, etc. Excluded even from dev.
+    const original = TOOL_TIERS.ps_ping;
+    try {
+      TOOL_TIERS.ps_ping = 'none';
+      expect(isToolAllowedInEdition('ps_ping', 'community')).toBe(false);
+      expect(isToolAllowedInEdition('ps_ping', 'pro')).toBe(false);
+      expect(isToolAllowedInEdition('ps_ping', 'dev')).toBe(false);
+    } finally {
+      TOOL_TIERS.ps_ping = original;
+    }
+  });
+
+  it("'dev'-tier tools are visible ONLY in the dev edition; excluded from CE + Pro builds", () => {
+    // 'dev' is the default landing zone for new tools — visible in local
+    // dev runs (where EDITION='dev', the committed default) so the dev
+    // can verify them, but invisible in shipped CE/Pro bundles until
+    // promoted. This is the "untested tool can't accidentally ship"
+    // guarantee.
+    const original = TOOL_TIERS.ps_ping;
+    try {
+      TOOL_TIERS.ps_ping = 'dev';
+      expect(isToolAllowedInEdition('ps_ping', 'dev')).toBe(true);
+      expect(isToolAllowedInEdition('ps_ping', 'community')).toBe(false);
+      expect(isToolAllowedInEdition('ps_ping', 'pro')).toBe(false);
+    } finally {
+      TOOL_TIERS.ps_ping = original;
+    }
+  });
+
+  it("'dev' edition (local dev runs) sees community + pro + dev tools", () => {
+    // Verifies the contrapositive of the above: a 'dev' edition exposes
+    // the full surface so the developer can exercise every classified
+    // tool regardless of its eventual ship-tier.
+    const originals = { ...TOOL_TIERS };
+    try {
+      TOOL_TIERS.ps_ping = 'community';
+      expect(isToolAllowedInEdition('ps_ping', 'dev')).toBe(true);
+      TOOL_TIERS.ps_ping = 'pro';
+      expect(isToolAllowedInEdition('ps_ping', 'dev')).toBe(true);
+      TOOL_TIERS.ps_ping = 'dev';
+      expect(isToolAllowedInEdition('ps_ping', 'dev')).toBe(true);
+      TOOL_TIERS.ps_ping = 'none';
+      expect(isToolAllowedInEdition('ps_ping', 'dev')).toBe(false);
+    } finally {
+      Object.assign(TOOL_TIERS, originals);
+    }
+  });
+
+  it('unclassified tools pass through (caught later by the startup assertion)', () => {
+    expect(isToolAllowedInEdition('not_in_table', 'community')).toBe(true);
+    expect(isToolAllowedInEdition('not_in_table', 'pro')).toBe(true);
+    expect(isToolAllowedInEdition('not_in_table', 'dev')).toBe(true);
+  });
+});

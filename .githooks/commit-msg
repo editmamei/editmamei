@@ -1,0 +1,54 @@
+#!/bin/sh
+# commit-msg guard for the public Editmamei repository.
+#
+# Commits here are a permanent public record and this project never rewrites
+# published history, so an internal reference that slips through cannot be
+# cleaned up afterward. This hook catches only the mechanical cases. A message
+# can pass every check below and still be a poor public commit message; pull
+# request review is the real enforcement. See CONTRIBUTING.md.
+#
+# The patterns below are deliberately GENERIC. A blocklist of specific private
+# names would publish exactly what it exists to protect.
+#
+# Activate once per clone:  git config core.hooksPath .githooks
+# Bypass (then fix it):     git commit --no-verify
+
+msg_file="$1"
+[ -f "$msg_file" ] || exit 0
+
+# Drop git's own comment lines so the commit template and the verbose-diff
+# comment block can never trigger a match.
+body=$(grep -v '^#' "$msg_file")
+
+fail() {
+  echo "commit-msg: BLOCKED - $1" >&2
+  echo "commit-msg: this repository is public and its history is never rewritten." >&2
+  echo "commit-msg: see CONTRIBUTING.md, 'What belongs in the permanent message'." >&2
+  exit 1
+}
+
+if printf '%s' "$body" | grep -qiE '^co-authored-by:.*(claude|chatgpt|gpt-|copilot|gemini|codex)'; then
+  fail "AI co-author trailer. Public commits carry no assistant attribution."
+fi
+
+if printf '%s' "$body" | grep -qiE 'generated with[[:space:]]*\[?(claude|chatgpt|copilot)'; then
+  fail "AI generation footer. Public commits carry no assistant attribution."
+fi
+
+# Any editmamei repository slug other than the published ones.
+other_repo=$(printf '%s' "$body" | grep -oiE 'editmamei/[a-z0-9._-]+' |
+  grep -viE '^editmamei/(editmamei|editmamei-wiki|editmamei-web)$' | head -n 1)
+if [ -n "$other_repo" ]; then
+  fail "reference to a repository that is not published: $other_repo"
+fi
+
+# Docs in this repo are lowercase. An ALL-CAPS docs/ path is an internal one.
+if printf '%s' "$body" | grep -qE 'docs/[A-Z][A-Z0-9_]+\.md'; then
+  fail "reference to a document that is not published."
+fi
+
+if printf '%s' "$body" | grep -qiE '([a-z]:\\users\\|/Users/[a-z]|/home/[a-z])'; then
+  fail "absolute filesystem path from a contributor's machine."
+fi
+
+exit 0

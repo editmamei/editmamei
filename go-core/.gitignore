@@ -1,0 +1,5 @@
+# Generated encrypted template blob (rebuilt by `go run ./cmd/buildtemplates`).
+templates.enc
+# Build outputs.
+/bin/
+/build/

@@ -1,0 +1,45 @@
+# Normalize line endings across platforms.
+#
+# Without this file, Windows checkouts (including GitHub Actions
+# windows-latest runners) convert LF to CRLF via core.autocrlf=true,
+# which makes prettier fail on every file because prettier's default
+# `endOfLine: 'lf'` rejects CRLF. A CI run on Windows surfaced this —
+# every .ts file got flagged.
+#
+# Pinning LF on the text formats we own keeps the working tree
+# byte-identical across macOS / Linux / Windows contributors and
+# CI runners.
+
+* text=auto eol=lf
+
+# Sources and configs — explicit LF.
+*.ts text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.json text eol=lf
+*.jsonc text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+
+# Windows-only formats keep CRLF (don't break tooling that expects it).
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary — never touched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.psd binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.tgz binary
+*.zip binary
