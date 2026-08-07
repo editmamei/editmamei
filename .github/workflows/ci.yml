@@ -73,6 +73,19 @@ jobs:
     # breaks there. It does not gate merges. Promote it to a required check once
     # it has been green for a while; until then a red result here is a bug
     # report, not a blocked pull request.
+    #
+    # NOT on every push, because of what it costs. macOS runners bill at roughly
+    # six times the Windows rate and ten times Linux, and while this repository
+    # is private those minutes are billed: on 2026-08-07, fifteen macOS minutes
+    # were about 73% of the day's Actions spend — for a job that gates nothing
+    # and had been failing unnoticed for weeks, because nobody reads an
+    # informational red.
+    #
+    # `main` moves only at a release, so this now runs where the signal is worth
+    # paying for: immediately before a release, and on demand. Day-to-day pushes
+    # to `dev` are covered by the Windows job, which is the gating one.
+    # Reconsider once the repository is public and the minutes are free.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     name: test (macos, informational)
     runs-on: macos-latest
     continue-on-error: true

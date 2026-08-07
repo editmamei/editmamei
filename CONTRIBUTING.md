@@ -11,8 +11,9 @@ request directly. Anything that adds a tool, changes the tool surface, or alters
 depend on: open an issue first so we can agree on the shape before you spend an evening on it.
 Declining a thoughtful PR on direction is a waste of your time that we would rather prevent.
 
-You will need to sign the CLA. A bot checks it on your first pull request and blocks the merge
-until it is signed. The Contributor License Agreement is a license grant, not a copyright
+You will need to sign the [CLA](CLA.md). A bot checks it on your first pull request and blocks
+the merge until it is signed — you sign by posting one comment, once, and it covers everything
+you contribute afterwards. The Contributor License Agreement is a license grant, not a copyright
 assignment, so you keep ownership of your work. It exists because this project makes a binding
 promise that every released version converts to the MIT license two years after its release, and
 that promise can only cover code we hold the rights to.
