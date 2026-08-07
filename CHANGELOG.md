@@ -10,6 +10,27 @@ earlier versions are on the
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-08-07
+
+**The first release published from this repository, and the first released as
+fair source.** Editmamei itself is not new — it has been shipping to users since
+early 2026 — but its Community Edition source is public from this release
+onward, under the Functional Source License with an MIT future.
+
+`1.0.0` marks that change, not a rewrite. If you are already running Editmamei,
+this is an ordinary upgrade: the tool surface, the schemas, and the behaviour
+are the ones you already have.
+
+### Added
+
+- The Community Edition source, published: the MCP server, the tool surface, the
+  Go snippet engine that generates the ExtendScript Photoshop runs, and the
+  offline test suite that verifies what would be sent without opening Photoshop.
+- A Contributor License Agreement and the check that enforces it. It is a licence
+  grant, not an assignment — contributors keep the copyright in their work. It
+  exists so the promise that every release converts to MIT after two years can
+  cover the whole work.
+
 ### Fixed
 
 - **A leftover directory could stop a verified module from loading.** When an
