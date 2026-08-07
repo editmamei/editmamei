@@ -36,8 +36,21 @@ jobs:
   cla:
     # Only act on the signing phrase, or on pull requests. Without this every
     # comment on every issue would spin up a runner.
+    # `contains`, not `==`. Exact equality never matched a real signature: the
+    # web UI appends a newline to a comment body, so the string is 55 characters
+    # where the phrase is 53, and the job silently SKIPPED rather than failing —
+    # the contributor sees a red CLA check and no explanation.
+    #
+    # It passed testing because that test posted the comment through the API,
+    # which sends the phrase with nothing appended. Every human signs through the
+    # web UI. The check was green because it exercised a path nobody uses.
+    #
+    # The issue.pull_request guard keeps ordinary issue comments from starting a
+    # runner; only comments on pull requests can be signatures.
     if: >
-      (github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')
+      (github.event.issue.pull_request &&
+       contains(github.event.comment.body,
+                'I have read the CLA Document and I hereby sign the CLA'))
       || github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
