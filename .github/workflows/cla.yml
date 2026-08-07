@@ -47,7 +47,16 @@ jobs:
         with:
           path-to-document: 'https://github.com/editmamei/editmamei/blob/main/CLA.md'
           path-to-signatures: 'signatures/version1/cla.json'
-          branch: 'main'
+          # A branch of its own, holding nothing but the signature store.
+          #
+          # This pointed at `main`, which is the release pointer: every signature
+          # committed there, so `main` gained commits `dev` did not have and the
+          # next `dev` -> `main` promotion stopped being a fast-forward. It would
+          # also have put bot commits into a public history that was deliberately
+          # squashed clean. Neither is worth carrying to record a signature.
+          #
+          # Nothing builds from this branch and nothing merges it.
+          branch: 'cla-signatures'
           # The signing phrase is quoted verbatim in the `if:` above — change one
           # and the workflow silently stops responding to signatures.
           custom-notsigned-prcomment: >
