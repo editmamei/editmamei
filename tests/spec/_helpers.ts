@@ -30,7 +30,7 @@ import type {
  * `tests/api/snippet-client.test.ts`.
  */
 const here = dirname(fileURLToPath(import.meta.url));
-const hostBinaryPath = join(here, '..', '..', 'dist', 'bin', coreBinaryName());
+export const hostBinaryPath = join(here, '..', '..', 'dist', 'bin', coreBinaryName());
 
 /**
  * True when the built `editmamei-core` binary exists at `dist/bin/`.
@@ -39,6 +39,12 @@ const hostBinaryPath = join(here, '..', '..', 'dist', 'bin', coreBinaryName());
  * `tests/api/snippet-client.test.ts`. Spec test files gate their whole
  * `describe` block on this so `npm test` without a prior `npm run build`
  * skips cleanly instead of failing.
+ *
+ * That clean skip is what makes a buildless run LOOK green while every golden
+ * check below is absent, so it does not stand alone:
+ * `tests/spec/core-binary-guard.test.ts` fails the suite when this is false,
+ * unless `EDITMAMEI_ALLOW_MISSING_CORE=1` opts out deliberately. Keep new spec
+ * files gated on this flag — the guard, not each file, is what refuses.
  */
 export const goCoreBinaryAvailable = existsSync(hostBinaryPath);
 
