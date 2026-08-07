@@ -896,6 +896,30 @@ describe('loadVerifiedModule — regen output re-verifies on the NEXT load (T3)'
   });
 });
 
+/**
+ * Make every directory under `root` readable again, best-effort.
+ *
+ * A test that locks a directory to provoke an EACCES has to unlock it before
+ * cleanup, or `rmSync` cannot recurse in and the test fails on teardown with
+ * its assertions already green — which reads as a product bug and is not one.
+ */
+function restorePermissions(root: string): void {
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    try {
+      chmodSync(root, 0o755);
+      entries = readdirSync(root, { withFileTypes: true });
+    } catch {
+      return;
+    }
+  }
+  for (const e of entries) {
+    if (e.isDirectory()) restorePermissions(join(root, e.name));
+  }
+}
+
 describe('verifyFastPath — tree-enumeration failure (T9)', () => {
   it.skipIf(process.platform === 'win32')(
     'an unreadable subdirectory makes listFilesRecursive throw -> regen path (POSIX-only: Windows chmod does not restrict directory reads)',
@@ -905,14 +929,18 @@ describe('verifyFastPath — tree-enumeration failure (T9)', () => {
         const { pubB64, version } = installSignedV2(dir);
         const binDir = join(installedModuleDir('pro', version, { dir }), 'bin');
         chmodSync(binDir, 0o000); // unreadable — readdirSync(binDir) throws EACCES
-        try {
-          const loc = loadVerifiedModule('pro', { dir }, [pubB64]);
-          expect(loc).not.toBeNull();
-          expect(loc!.regenerated).toBe(true);
-        } finally {
-          chmodSync(binDir, 0o755); // restore so the outer rmSync cleanup can recurse into it
-        }
+        const loc = loadVerifiedModule('pro', { dir }, [pubB64]);
+        expect(loc).not.toBeNull();
+        expect(loc!.regenerated).toBe(true);
       } finally {
+        // Restore permissions across the WHOLE tree before removing it, not on
+        // the one path that was locked. Regeneration renames the superseded
+        // install to a `.tmp-regen-old-*` sibling, so by the time this runs the
+        // unreadable directory is somewhere else — chmod-ing the original path
+        // either misses (it no longer exists) or fixes the freshly regenerated
+        // tree, which was never locked. The still-000 copy then defeats rmSync,
+        // and the test fails during cleanup with its assertions already passed.
+        restorePermissions(dir);
         rmSync(dir, { recursive: true, force: true });
       }
     }
