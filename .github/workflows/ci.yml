@@ -72,24 +72,25 @@ jobs:
           go test ./...
 
   macos:
-    # INFORMATIONAL, not required. Editmamei supports macOS, but this suite has
-    # never had continuous macOS coverage, so this job exists to find out what
-    # breaks there. It does not gate merges. Promote it to a required check once
-    # it has been green for a while; until then a red result here is a bug
-    # report, not a blocked pull request.
+    # GATING, as of 2026-08-07. macOS is a supported platform and this is its only
+    # continuous coverage.
     #
-    # Runs on every push again as of 2026-08-07, because this repository is now
-    # public and its Actions minutes are free. It was briefly restricted while the
-    # repository was private and macOS billed at roughly six times the Windows
-    # rate — for one day that job was about 73% of the Actions spend.
+    # It was advisory for one reason: cost. While this repository was private,
+    # macOS billed at roughly six times the Windows rate — one day it was about
+    # 73% of the Actions spend — so it ran without blocking anything. Public
+    # minutes are free, so the reason is gone.
     #
-    # Worth having back on: macOS is a supported platform with no other continuous
-    # coverage, and the only reason this job ever found anything is that it ran
-    # somewhere a developer was not looking. It stays informational until it has
-    # been green for a while.
-    name: test (macos, informational)
+    # "Informational" was not harmless in the meantime. The job sat red for weeks
+    # and nobody looked, because nothing depended on it: it was failing on a real
+    # bug where a leftover directory could turn a successful module regeneration
+    # into a failed load, which only reproduces on POSIX. A check nobody has to
+    # care about is a check nobody reads.
+    #
+    # Green on six consecutive runs since that fix, which is what earns the
+    # promotion. If it starts flaking rather than finding real faults, fix the
+    # flake — do not quietly demote it back.
+    name: test (macos)
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
