@@ -66,3 +66,5 @@ There is no paid bug bounty at this time. We are glad to credit your work in the
 release notes.
 
 Thank you for helping keep Editmamei safe to use.
+
+<!-- CLA bot smoke test — branch deleted after the check runs. -->
