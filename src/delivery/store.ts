@@ -232,6 +232,31 @@ export function readInstalledModule(
   }
 }
 
+/**
+ * Delete a superseded directory, never failing the caller.
+ *
+ * For paths whose removal is housekeeping rather than correctness: the work
+ * that mattered has already succeeded and a leftover directory is untidy, not
+ * broken. `rmSync(..., { force: true })` is not enough on its own — `force`
+ * swallows a missing path but still throws on a permission error, and removing
+ * a tree has to recurse into every subdirectory, so one unreadable directory
+ * anywhere inside it takes down the whole call.
+ *
+ * Logs rather than staying silent: a leftover `.tmp-` directory that nobody can
+ * remove is worth knowing about eventually, just not worth failing over now.
+ */
+function removeQuietly(path: string): void {
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch (err) {
+    logger.warn(
+      `could not remove superseded directory ${path}: ${
+        err instanceof Error ? err.message : String(err)
+      } (harmless; the current tree is unaffected)`
+    );
+  }
+}
+
 function writeFileAtomic(path: string, data: string): void {
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -648,13 +673,27 @@ export function loadVerifiedModule(
     renameSync(dir, oldDir);
     try {
       renameSync(regenDir, dir);
-      rmSync(oldDir, { recursive: true, force: true });
+      // Best-effort, deliberately: by this line the new tree is already in
+      // place and the load has succeeded, so failing to delete the superseded
+      // one must not fail the load. `force: true` swallows ENOENT but NOT
+      // EACCES, and removing a tree recurses into every subdirectory — so an
+      // unreadable directory anywhere in the OLD install threw here, landed in
+      // the catch below, took the "sibling won" branch because `dir` does now
+      // exist, and re-ran the same failing removal uncaught. A successful
+      // regeneration reported itself as a failed verification, and entitled
+      // subscribers degraded to Community over a leftover directory.
+      //
+      // POSIX-only in practice (Windows permissions do not block a directory
+      // read the same way), which is why it went unseen: the test that covers
+      // it skips on Windows, and the macOS CI job that does run it is
+      // informational and had been failing unnoticed.
+      removeQuietly(oldDir);
     } catch (err) {
       rmSync(regenDir, { recursive: true, force: true });
       if (existsSync(dir)) {
         // A concurrent sibling's regen won the race and already swapped in an
         // identical tree (same verified artifact + content key) — adopt it.
-        rmSync(oldDir, { recursive: true, force: true });
+        removeQuietly(oldDir);
       } else {
         // Genuine failure and no sibling filled it back in — restore the previous
         // tree so `dir` never resolves to nothing.
