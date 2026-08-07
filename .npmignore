@@ -1,0 +1,9 @@
+# package.json#files already acts as an allowlist; this file is just a
+# defensive filter for accidental sensitive artifacts that might land
+# under one of the included paths.
+.taskmaster/
+app_data
+.mcpregistry_*
+*.log
+.env
+.env.*

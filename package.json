@@ -1,0 +1,85 @@
+{
+  "name": "editmamei",
+  "version": "0.24.1",
+  "private": true,
+  "description": "Photoshop MCP server: natural-language AI photo editing with your own Photoshop",
+  "main": "dist/index.js",
+  "type": "module",
+  "bin": {
+    "editmamei": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE.md",
+    "NOTICES.md"
+  ],
+  "scripts": {
+    "dev": "tsc --watch",
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true,maxRetries:5,retryDelay:100})\"",
+    "build": "tsc",
+    "postbuild": "tsx scripts/build-skill-zip.ts && tsx scripts/build-go-core-dev.ts && tsx scripts/copy-models.ts",
+    "build:ce": "tsx scripts/build-ce.ts",
+    "build:mcpb": "tsx scripts/build-mcpb.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "audit:ci": "npm audit --omit=dev --audit-level=high",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "photoshop",
+    "photoshop-mcp",
+    "adobe",
+    "automation",
+    "photoshop-automation",
+    "ai",
+    "ai-photo-editing",
+    "photoshop-assistant",
+    "model-context-protocol",
+    "image-editing",
+    "batch-editing",
+    "claude",
+    "editmamei"
+  ],
+  "author": "Editmamei (https://editmamei.com)",
+  "license": "FSL-1.1-MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/editmamei/editmamei.git"
+  },
+  "homepage": "https://editmamei.com",
+  "bugs": {
+    "url": "https://github.com/editmamei/editmamei-wiki/issues"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "adm-zip": "^0.6.0",
+    "jpeg-js": "^0.4.4",
+    "onnxruntime-web": "1.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "@vitest/coverage-v8": "^4.1.7",
+    "esbuild": "^0.28.0",
+    "eslint": "^9.18.0",
+    "globals": "^17.6.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.7"
+  }
+}

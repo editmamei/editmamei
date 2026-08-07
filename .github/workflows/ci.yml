@@ -1,0 +1,123 @@
+# Continuous integration for Editmamei CE.
+#
+# Runs on every push and pull request. This is the check that pull requests are
+# gated on, so it deliberately runs exactly what CONTRIBUTING asks contributors
+# to run locally: format, lint, typecheck, and the full test suite.
+#
+# Why Windows is the primary runner: Editmamei drives Adobe Photoshop, which
+# ships on Windows and macOS only. Parts of the CLI resolve platform-specific
+# application-support paths that have no Linux equivalent, so a Linux job would
+# fail on environment rather than on code. The suite itself never launches
+# Photoshop — it verifies the ExtendScript we generate — so it runs fine on a
+# clean runner.
+
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+  # Lets the macOS job below be run deliberately. Without this trigger its
+  # condition can never be true, which is how an earlier attempt at limiting it
+  # ended up with no opt-in path at all.
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch/PR; the full suite is ~30s and
+# there is no value in finishing a run whose commit is already replaced.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Go must be present before `npm ci`: the package's `prepare` script runs
+      # the build, which compiles the editmamei-core Go binary. The build warns
+      # rather than fails without Go, so installing it here is what makes the
+      # binary actually get built and exercised.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go-core/go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: format
+        run: npm run format:check
+
+      - name: lint
+        run: npm run lint
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: test
+        run: npm test
+
+      - name: go build + test
+        working-directory: go-core
+        run: |
+          go build ./...
+          go test ./...
+
+  macos:
+    # INFORMATIONAL, not required. Editmamei supports macOS, but this suite has
+    # never had continuous macOS coverage, so this job exists to find out what
+    # breaks there. It does not gate merges. Promote it to a required check once
+    # it has been green for a while; until then a red result here is a bug
+    # report, not a blocked pull request.
+    #
+    # ON DEMAND ONLY, because of what it costs. macOS runners bill at roughly six
+    # times the Windows rate and ten times Linux, and while this repository is
+    # private those minutes are billed: on 2026-08-07, fifteen macOS minutes were
+    # about 73% of the day's Actions spend — for a job that gates nothing and had
+    # been failing unnoticed for weeks, because nobody reads an informational red.
+    #
+    # A first attempt tied it to `main` on the theory that `main` moves only at a
+    # release. It does not: it also moves on any promotion or history rewrite, and
+    # it moved twice on the day this was written. Anything automatic is a standing
+    # bill. Run it when you actually want macOS signal — before a release, or when
+    # touching platform code — via the Run workflow button.
+    #
+    # Day-to-day coverage is the Windows job, which is the gating one anyway.
+    # Reconsider once this repository is public and the minutes are free.
+    if: github.event_name == 'workflow_dispatch'
+    name: test (macos, informational)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go-core/go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: test
+        run: npm test
+
+      - name: go build + test
+        working-directory: go-core
+        run: |
+          go build ./...
+          go test ./...
