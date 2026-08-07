@@ -155,6 +155,21 @@ export const CE_PRUNE_DIRS = ['modules/pro', 'templates'];
  * Counterpart test derivation: tests/integration/build-output.test.ts globs
  * `src/tools/*-pro.ts` (the source side of the same set).
  */
+/**
+ * Does this working tree carry commercial sources at all?
+ *
+ * Asked of `src/`, not of the compiled output, because it is answering "could
+ * there have been anything to prune" — a question about what was compiled, not
+ * about what the prune found. In this repository the answer is no; in the
+ * repository that builds the paid module it is yes.
+ */
+export function treeContainsProSources(): boolean {
+  const srcTools = join(REPO_ROOT, 'src', 'tools');
+  const hasProTool =
+    existsSync(srcTools) && readdirSync(srcTools).some((f) => f.endsWith('-pro.ts'));
+  return hasProTool || existsSync(join(REPO_ROOT, 'src', 'modules', 'pro'));
+}
+
 export function pruneProFromCE(edition: Edition): number {
   if (edition !== 'community') return 0;
   const distOut = join(packageDir(edition), 'dist');
@@ -162,14 +177,29 @@ export function pruneProFromCE(edition: Edition): number {
   const proTools = existsSync(toolsDir)
     ? readdirSync(toolsDir).filter((f) => f.endsWith('-pro.js'))
     : [];
-  // Fail LOUDLY when the derivation yields nothing (mirrors the web
-  // leak-guard's zero-file guard): a renamed tools/ dir or a glob typo must
-  // break the build, not silently no-op the prune and ship Pro source in CE.
+  // Zero matches means one of two opposite things, and telling them apart is
+  // the whole point.
+  //
+  // If the source tree HAS commercial files, zero is alarming: the glob must
+  // have broken — a renamed directory, a changed suffix — and proceeding would
+  // ship those files in the free tarball. That must fail loudly, which is what
+  // this guard was written for when both editions lived in one repository.
+  //
+  // If the source tree has NO commercial files, zero is simply correct. There is
+  // nothing to prune because there was never anything to prune. Since the split
+  // this is the normal case here, and the original guard turned it into a build
+  // failure — which is exactly how it failed the first release rehearsal.
+  //
+  // So ask the source tree rather than assuming.
   if (proTools.length === 0) {
-    throw new Error(
-      `pruneProFromCE: found zero *-pro.js files under ${toolsDir} — the prune ` +
-        `derivation is broken (renamed directory?); refusing to produce an unpruned CE bundle`
-    );
+    if (treeContainsProSources()) {
+      throw new Error(
+        `pruneProFromCE: found zero *-pro.js files under ${toolsDir}, but this tree DOES ` +
+          `contain commercial sources — the prune derivation is broken (renamed directory?); ` +
+          `refusing to produce an unpruned CE bundle`
+      );
+    }
+    return 0;
   }
   let removed = 0;
   for (const rel of [...CE_PRUNE_DIRS, ...proTools.map((f) => `tools/${f}`)]) {
