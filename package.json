@@ -1,6 +1,6 @@
 {
   "name": "editmamei",
-  "version": "0.24.1",
+  "version": "0.24.2",
   "private": true,
   "description": "Photoshop MCP server: natural-language AI photo editing with your own Photoshop",
   "main": "dist/index.js",
