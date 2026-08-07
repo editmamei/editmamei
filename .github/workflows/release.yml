@@ -95,6 +95,24 @@ jobs:
       - name: Build .mcpb bundle (one-click)
         run: npm run build:mcpb
 
+      # Uploaded on every run, including dry ones, so the bundle can be installed
+      # and exercised before anything publishes.
+      #
+      # macOS is the reason. It is a supported platform that the offline suite
+      # structurally cannot reach — the AppleScript wrapper has no automated
+      # coverage on any runner, and a malformed one fails every call there rather
+      # than degrading a single tool. The only way to test it is to install the
+      # artifact a user would install. Until this step existed, a dry run built
+      # that artifact and then discarded it, so the pre-release macOS check had to
+      # use a locally built bundle instead of the one the pipeline produces — which
+      # is evidence about a different build.
+      - name: Upload the .mcpb bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: editmamei-mcpb
+          path: packages/*.mcpb
+          if-no-files-found: error
+
       - name: Generate SBOM (CycloneDX, production deps)
         run: npm sbom --sbom-format cyclonedx --omit=dev > sbom.cdx.json
 
