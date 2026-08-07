@@ -12,4 +12,4 @@
  * the JSON into the build output. The hand-synced constant + asserting
  * test is simpler and gives a louder failure mode if anyone forgets.
  */
-export const VERSION = '0.24.1';
+export const VERSION = '0.24.2';
