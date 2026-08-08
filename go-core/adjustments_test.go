@@ -10,7 +10,8 @@ import (
 //
 // tests/spec/levels.test.ts and tests/spec/curves.test.ts assert the same
 // fixes, but they assert against ExtendScriptSnippets — the legacy TS twin,
-// which CLAUDE.md marks test-only. The RUNTIME is templates.enc, generated
+// which docs/engineering/am-descriptor-conventions.md marks test-only. The
+// RUNTIME is templates.enc, generated
 // from cmd/buildtemplates/fragments.go and emitted by addAdjustmentLayer
 // below. golden_test.go's case table carries no addAdjustmentLayer entry, so
 // the two sides are not pinned to each other either.
