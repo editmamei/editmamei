@@ -2,7 +2,9 @@
 #
 # Runs on every push and pull request. This is the check that pull requests are
 # gated on, so it deliberately runs exactly what CONTRIBUTING asks contributors
-# to run locally: format, lint, typecheck, and the full test suite.
+# to run locally: format, lint, typecheck, and the full test suite. It also
+# runs the dependency audit (windows job only, no reason to duplicate it) so a
+# vulnerable dependency is caught on a PR instead of first at release.
 #
 # Why Windows is the primary runner: Editmamei drives Adobe Photoshop, which
 # ships on Windows and macOS only. Parts of the CLI resolve platform-specific
@@ -65,6 +67,9 @@ jobs:
 
       - name: test
         run: npm test
+
+      - name: audit
+        run: npm run audit:ci
 
       - name: go build + test
         working-directory: go-core
