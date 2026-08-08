@@ -1,8 +1,11 @@
 /**
- * Pins src/version.ts against package.json so a release bump that updates
- * one without the other fails the test suite before the MCP server boots
- * with a stale identifier. The 2026-06-07 audit caught this drift in the
- * field — server reported '0.2.0' while package.json read '0.5.0'.
+ * Pins src/version.ts and server.json against package.json so a release bump
+ * that updates one without the others fails the test suite before the MCP
+ * server boots with a stale identifier. The 2026-06-07 audit caught the
+ * src/version.ts drift in the field — server reported '0.2.0' while
+ * package.json read '0.5.0'. A 2026-08-08 audit flagged server.json as the
+ * same risk, unpinned: it carries the version twice (top-level and the npm
+ * package entry) and nearly went stale at the 1.0.1 cut.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -22,5 +25,14 @@ describe('VERSION constant', () => {
     // Pre-v1.0 we use plain `0.X.Y` — anchor the regex to the current shape
     // rather than full SemVer so a typo (extra char, missing dot) fails.
     expect(VERSION).toMatch(/^\d+\.\d+\.\d+(-[\w.]+)?$/);
+  });
+});
+
+describe('server.json', () => {
+  it('both version fields match package.json version', () => {
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+    const server = JSON.parse(readFileSync(join(REPO_ROOT, 'server.json'), 'utf8'));
+    expect(server.version).toBe(pkg.version);
+    expect(server.packages[0].version).toBe(pkg.version);
   });
 });
