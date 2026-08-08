@@ -252,13 +252,24 @@ export function licenseFileName(edition: Edition): string {
 }
 
 /**
+ * The legal docs every published artifact must carry, edition-picked. The
+ * single source of truth for three consumers: the npm `files` allowlist, the
+ * package-dir copy step below, and the .mcpb staging in build-mcpb.ts —
+ * lists whose silent divergence is exactly how 1.0.0 shipped without a
+ * license file.
+ */
+export function requiredDistributionDocs(edition: Edition): string[] {
+  return [licenseFileName(edition), 'README.md', 'NOTICES.md'];
+}
+
+/**
  * The npm `files` allowlist for the CE/Pro package.json — everything the
  * published tarball/bundle ships. Split out from writePackageJson (a pure
  * function, no I/O) so the edition-conditional license entry is directly
  * unit-testable without needing a built packages/<edition>/ dir on disk.
  */
 export function packageFilesList(edition: Edition): string[] {
-  return ['dist', 'README.md', licenseFileName(edition), 'NOTICES.md'];
+  return ['dist', ...requiredDistributionDocs(edition)];
 }
 
 /**
@@ -305,7 +316,7 @@ export function writePackageJson(edition: Edition, version: string): void {
  */
 export function copyDistributionFiles(edition: Edition): void {
   const out = packageDir(edition);
-  for (const name of [licenseFileName(edition), 'README.md', 'NOTICES.md']) {
+  for (const name of requiredDistributionDocs(edition)) {
     const src = join(REPO_ROOT, name);
     if (!existsSync(src)) {
       throw new Error(`copyDistributionFiles: required root doc missing: ${src}`);

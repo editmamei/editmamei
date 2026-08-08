@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -69,14 +69,28 @@ describe('source hygiene', () => {
   });
 
   it('no source points at a document this repository does not contain', () => {
-    // `docs/` here would be a dead link for every reader. The one legitimate
-    // form is a full URL into a published repository.
+    // Post-split polarity: `docs/` is a real in-repo directory, so a docs/
+    // reference is the CORRECT way to cite a document — as long as the target
+    // actually exists on disk. The wiki repo is archived, so any
+    // editmamei-wiki pointer is dead by definition. (This guard used to be
+    // the exact inverse, from the era when docs lived only on the wiki.)
     const offenders: string[] = [];
     for (const rel of SOURCES) {
       for (const line of read(rel).split(/\r?\n/)) {
-        if (!/docs\//.test(line)) continue;
-        if (line.includes('editmamei-wiki')) continue;
-        offenders.push(`${rel}: ${line.trim().slice(0, 90)}`);
+        if (line.includes('editmamei-wiki')) {
+          offenders.push(`${rel}: dead wiki pointer (archived repo): ${line.trim().slice(0, 90)}`);
+          continue;
+        }
+        if (!/\bdocs\//.test(line)) continue;
+        // Full URLs into a published repository resolve for every reader.
+        if (/https?:\/\//.test(line)) continue;
+        const targets = (line.match(/\bdocs\/[A-Za-z0-9._/-]+/g) ?? []).map((t) =>
+          t.replace(/\.$/, '')
+        );
+        const dead = targets.filter((t) => !existsSync(join(REPO_ROOT, t)));
+        if (targets.length === 0 || dead.length > 0) {
+          offenders.push(`${rel}: ${line.trim().slice(0, 90)}`);
+        }
       }
     }
     expect(offenders).toEqual([]);

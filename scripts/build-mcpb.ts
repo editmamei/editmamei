@@ -33,7 +33,7 @@ import {
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import AdmZip from 'adm-zip';
-import { packageDir, REPO_ROOT, runBuild } from './lib/build-common.js';
+import { packageDir, REPO_ROOT, requiredDistributionDocs, runBuild } from './lib/build-common.js';
 
 /** MCP Bundle manifest spec version this generator targets. */
 const MANIFEST_VERSION = '0.3';
@@ -219,7 +219,7 @@ export function stageMcpb(
   // no npm `files` filter applying. copyDistributionFiles (build-common.ts) guarantees these
   // are present in srcCeDir by the time this runs, so a missing doc here fails loudly rather
   // than shipping a bundle silently missing its license.
-  for (const doc of ['LICENSE.md', 'NOTICES.md', 'README.md']) {
+  for (const doc of requiredDistributionDocs('community')) {
     const srcDoc = join(srcCeDir, doc);
     if (!existsSync(srcDoc)) {
       throw new Error(`stageMcpb: required legal doc missing from CE build: ${srcDoc}`);

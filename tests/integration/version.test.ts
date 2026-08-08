@@ -51,4 +51,14 @@ describe('package-lock.json', () => {
     expect(lock.version).toBe(pkg.version);
     expect(lock.packages[''].version).toBe(pkg.version);
   });
+
+  it('lockfile license matches package.json', () => {
+    // The lockfile once carried "SEE LICENSE IN LICENSE" — naming a file that
+    // does not exist in this repo (LICENSE, no extension, is the commercial
+    // edition's filename). The same filename confusion shipped 1.0.0 with no
+    // license text at all; pin the metadata so it cannot quietly diverge.
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+    const lock = JSON.parse(readFileSync(join(REPO_ROOT, 'package-lock.json'), 'utf8'));
+    expect(lock.packages[''].license).toBe(pkg.license);
+  });
 });

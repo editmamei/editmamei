@@ -22,9 +22,9 @@
  * filtered out of BOTH CE and Pro shipped bundles by the runtime gate
  * in `isToolAllowedInEdition`. Unlike Pro, dev tools are NOT moved into
  * dedicated `*-dev.ts` files — their implementations DO compile into CE
- * dist and are gated only at registration time. Per `DISTRIBUTION_PLAN`
- * §2.13 this is accepted risk; the obfuscation layered defense is
- * deferred. The implication: a determined CE user can trivially re-enable
+ * dist and are gated only at registration time. This is accepted risk;
+ * the obfuscation layered defense is deferred.
+ * The implication: a determined CE user can trivially re-enable
  * a dev tool by editing the runtime check, but a dev tool's identifier
  * strings appearing in CE dist are not an audit finding.
  * **This is where every new tool starts.** New tools default to `'dev'`

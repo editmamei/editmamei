@@ -9,7 +9,7 @@
  * mirrors the pattern in `src/cli/clients/json-config.ts`.
  *
  * Privacy note: `install_id` is an ANONYMOUS salted random id minted on first run — it
- * is NOT derived from any machine or user identifier (telemetry-and-settings.md §4.3/§5).
+ * is NOT derived from any machine or user identifier (see docs/privacy.md).
  */
 
 import { homedir } from 'node:os';

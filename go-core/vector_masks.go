@@ -6,7 +6,7 @@ import (
 	"editmamei-core/internal/vault"
 )
 
-// Vector-mask family (§2.4 of the roadmap; the path consumer that turns a real
+// Vector-mask family (the path consumer that turns a real
 // editable path into a layer's vector mask).
 //
 // Photoshop exposes NO DOM API for vector masks — they are AM-only, authored

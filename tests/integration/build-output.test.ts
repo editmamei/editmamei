@@ -126,8 +126,8 @@ describe.skipIf(!bundlesBuilt)('CE bundle composition', () => {
   // shared file (forces them to use the stub mechanism).
   //
   // Scope note: this check covers Pro-tier names. Dev-tier names are
-  // explicitly NOT enforced — per DISTRIBUTION_PLAN §2.13 the obfuscation
-  // layered defense is deferred, and dev tools are gated only at runtime
+  // explicitly NOT enforced — the obfuscation layered defense is
+  // deferred, and dev tools are gated only at runtime
   // by tool-tiers.ts. The Pro tier needs the build-time guarantee
   // because shipping Pro source for free defeats the licensing moat;
   // dev tools shipping in CE dist is accepted risk for now.
