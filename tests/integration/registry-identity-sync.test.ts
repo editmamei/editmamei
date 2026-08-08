@@ -32,6 +32,13 @@ describe('MCP registry identity sync', () => {
     expect(serverJson.mcpName).toBe(pkg.mcpName);
   });
 
+  it('server.json description fits the registry limit', () => {
+    // The registry rejects a publish with 422 "expected length <= 100" on
+    // body.description. Nothing local caught that before — it surfaced only at
+    // the publish step, after the npm release had already gone out.
+    expect(serverJson.description.length).toBeLessThanOrEqual(100);
+  });
+
   it('server.json points at the npm package this repo publishes', () => {
     const npmPackage = serverJson.packages?.find(
       (p: { registryType?: string }) => p.registryType === 'npm'
