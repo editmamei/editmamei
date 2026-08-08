@@ -10,6 +10,29 @@ earlier versions are on the
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-08-08
+
+### Fixed
+
+- **The npm package and the one-click bundle now include the license text.** The
+  1.0.0 artifacts shipped without a license file: the build staged a file named
+  `LICENSE` while this repository's file is `LICENSE.md`, and the copy step
+  skipped missing files silently. The staging now picks the right license file
+  per edition, fails the build if a required document is absent, and tests pin
+  the packaged contents so this cannot regress quietly.
+
+### Changed
+
+- **The user documentation moved into this repository.** Installation, getting
+  started, the FAQ, the privacy notes, the Pro feature list, and the roadmap now
+  live under [`docs/`](docs/), updated for the fair-source split. The old wiki
+  is archived and keeps the release notes for versions before 1.0.0.
+- Bug reports and feature requests now point at
+  [this repository's issue tracker](https://github.com/editmamei/editmamei/issues)
+  everywhere the product mentions it: `package.json`, the diagnostics bundle,
+  and the CLI help text.
+- The macOS test job now gates merges instead of reporting informationally.
+
 ## [1.0.0] — 2026-08-07
 
 **The first release published from this repository, and the first released as
