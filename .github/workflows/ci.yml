@@ -17,9 +17,10 @@ on:
   push:
     branches: [dev, main]
   pull_request:
-  # Lets the macOS job below be run deliberately. Without this trigger its
-  # condition can never be true, which is how an earlier attempt at limiting it
-  # ended up with no opt-in path at all.
+  # Kept so the suite can be re-run against a ref on demand — useful for
+  # confirming a runner-side failure rather than a code one. It is a
+  # convenience, not a load-bearing path: every job below runs on push and
+  # pull_request without it.
   workflow_dispatch:
 
 # Cancel superseded runs on the same branch/PR; the full suite is ~30s and
@@ -80,15 +81,20 @@ jobs:
     # 73% of the Actions spend — so it ran without blocking anything. Public
     # minutes are free, so the reason is gone.
     #
-    # "Informational" was not harmless in the meantime. The job sat red for weeks
-    # and nobody looked, because nothing depended on it: it was failing on a real
-    # bug where a leftover directory could turn a successful module regeneration
-    # into a failed load, which only reproduces on POSIX. A check nobody has to
-    # care about is a check nobody reads.
+    # "Informational" was worse than it sounds. `continue-on-error` reports a
+    # FAILED job as a SUCCESSFUL check, so this ran red while pull requests showed
+    # green — for weeks, on a real bug: a leftover directory could turn a
+    # successful module regeneration into a failed load, degrading an entitled
+    # subscriber to Community, and it only reproduces on POSIX.
     #
     # Green on six consecutive runs since that fix, which is what earns the
     # promotion. If it starts flaking rather than finding real faults, fix the
     # flake — do not quietly demote it back.
+    #
+    # Removing `continue-on-error` is only half of gating. The other half lives
+    # in the `dev` ruleset's required status checks, which must list
+    # "test (macos)" — this file cannot enforce that, so if the name here ever
+    # changes, update the ruleset in the same breath or gating silently lapses.
     name: test (macos)
     runs-on: macos-latest
     steps:
