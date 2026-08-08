@@ -171,3 +171,26 @@ export function applyToActiveLayerProp(op: string): JsonSchemaProperty {
     default: false,
   };
 }
+
+/**
+ * The Smart-Filter opt-in, declared once for every filter type.
+ *
+ * Photoshop needs no special descriptor to make a Smart Filter — applying an
+ * ordinary filter to a Smart Object simply produces one. The default stays false
+ * because flipping it would change what a shipped tool does to existing callers;
+ * the destructive path is a legitimate choice, not a bug, and it remains the
+ * default until that is deliberately revisited.
+ */
+export function asSmartFilterProp(): JsonSchemaProperty {
+  return {
+    type: 'boolean',
+    description:
+      'If true, apply the filter as a re-editable SMART FILTER riding the Smart Object ' +
+      'instead of baking it into pixels — nothing is rasterized, and the filter can later be ' +
+      'toggled, re-blended or removed instead of being permanent. Requires the target to be a ' +
+      'Smart Object (convert first with ps_convert_to_smart_object); errors rather than ' +
+      'converting silently. If false (default), the filter is baked and a smart-object layer ' +
+      'is rasterized first.',
+    default: false,
+  };
+}

@@ -106,6 +106,11 @@ var arityNeedsParams = []string{
 	"selectLuminanceRange",
 	"selectPolygon",
 	"setClippingPath",
+	// Refuses an empty param map by design: a setd carrying an empty
+	// blendOptions is a silent no-op in Photoshop, so the emitter requires at
+	// least one of opacity/blendMode. Actively arity-checked instead by
+	// smart_object_test.go, which builds it fully populated and asserts no `%!`.
+	"setSmartFilterBlend",
 	"setTextAlignment",
 	"transformLayerMatrix",
 	"warpLayer",

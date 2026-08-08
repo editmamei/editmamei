@@ -67,6 +67,38 @@ dispatches. A script-injected `executeAction` call (the path Editmamei itself us
 up in a ScriptListener log, so you cannot piggyback on an automated session to capture ground
 truth — it has to come from a deliberate, human-driven menu action.
 
+## A capture shows you the WRITE; the read path can differ
+
+A ScriptListener capture records the descriptor Photoshop *writes*. It tells you nothing about how
+to read the same state back, and the two are not always symmetric. The Smart Filter stack is the
+worked example: every write addresses one filter as a `filterFX` **index reference on the layer**,
+exactly as captured — but the same list is only readable **nested inside the layer's `smartObject`
+compound** (`layer → smartObject → filterFX[]`). Addressing the read the way the capture addresses
+the write returns nothing at all, which reads as "there are no filters" rather than as an error.
+
+Worse, the two paths disagree on origin: the write index is **1-based** while the read list is
+0-based. A one-off mapping error there does not fail — it silently operates on the neighbouring
+filter. When you build a read path for a captured write, probe the live structure (walk the keys of
+a real descriptor and print them) instead of inferring it from the capture, and pin the index
+mapping with a test that uses at least **two** distinguishable items, since a single-item fixture
+cannot tell 0-based from 1-based apart.
+
+## Enum values: prefer `stringIDToTypeID`, and prove it by round-trip
+
+Captures render enum values as four-character charIDs (`Scrn`, `Nrml`, `Drkn`), and copying that
+table out of a capture reproduces the most version-fragile part of the lore — the ids are cryptic,
+easy to typo, and several have no memorable relationship to the name they encode.
+
+In practice the same enum value is usually reachable by its readable stringID:
+`stringIDToTypeID('screen')` resolves to the same type as `charIDToTypeID('Scrn')`. That is worth
+preferring, because it makes the descriptor legible and it lets the read path use
+`typeIDToStringID` to report the same vocabulary it accepts.
+
+Treat it as an assumption to verify, not a rule to trust — confirm the whole set by round-trip
+before relying on it. Set each value, read it back, and assert you get the same name; a mode that
+silently resolves to something else shows up immediately. Doing that sweep for the 27 blend modes
+(27/27 exact) replaced a hand-copied charID table outright.
+
 ## The spec library — the durable record of ground truth
 
 [`src/spec/`](../../src/spec/) is where verified AM event ground truth lives long-term, so the

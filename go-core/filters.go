@@ -17,10 +17,22 @@ import (
 // when the fragment makes any cTID/sTID call — forgetting that is a failure
 // that only appears inside Photoshop, so the prologue owns it rather than
 // leaving each fragment to remember.
-func filterPrologue(opName string, applyToActiveLayer, trackRasterized, needsHelpers bool) string {
+//
+// asSmartFilter swaps the two blocks that decide what the filter lands ON.
+// Photoshop needs no different descriptor to produce a Smart Filter — applying
+// an ordinary filter event to a Smart Object simply makes one (m4a STEP-03) — so
+// the only thing standing between this path and a re-editable filter is the
+// rasterize block. With it set, nothing is rasterized and the kind guard demands
+// a Smart Object; without it, behavior is exactly as before.
+func filterPrologue(opName string, applyToActiveLayer, trackRasterized, needsHelpers, asSmartFilter bool) string {
 	rasterize := tpl[vault.FiltRast]
 	if trackRasterized {
 		rasterize = tpl[vault.FiltRastTrk]
+	}
+	kindGuard := tpl[vault.FiltKindNorm]
+	if asSmartFilter {
+		rasterize = tpl[vault.FiltRastSO]
+		kindGuard = tpl[vault.FiltKindSO]
 	}
 	helpers := ""
 	if needsHelpers {
@@ -32,14 +44,15 @@ func filterPrologue(opName string, applyToActiveLayer, trackRasterized, needsHel
 		helpers,
 		duplicateForOp(opName, applyToActiveLayer),
 		rasterize,
+		kindGuard,
 	)
 }
 
 // applyGaussianBlur — the one filter that reports whether it had to rasterize.
-func applyGaussianBlur(radius float64, applyToActiveLayer bool) string {
+func applyGaussianBlur(radius float64, applyToActiveLayer, asSmartFilter bool) string {
 	return fmt.Sprintf(
 		tpl[vault.GBlur],
-		filterPrologue("Gaussian Blur", applyToActiveLayer, true, false),
+		filterPrologue("Gaussian Blur", applyToActiveLayer, true, false, asSmartFilter),
 		jsNum(radius),
 		jsNum(radius),
 	)
@@ -47,11 +60,11 @@ func applyGaussianBlur(radius float64, applyToActiveLayer bool) string {
 
 // applyUnsharpMask — op name "Sharpen". amount/radius/threshold appear in the
 // call and again in the result.
-func applyUnsharpMask(amount, radius, threshold float64, applyToActiveLayer bool) string {
+func applyUnsharpMask(amount, radius, threshold float64, applyToActiveLayer, asSmartFilter bool) string {
 	a, r, t := jsNum(amount), jsNum(radius), jsNum(threshold)
 	return fmt.Sprintf(
 		tpl[vault.USharp],
-		filterPrologue("Sharpen", applyToActiveLayer, false, false),
+		filterPrologue("Sharpen", applyToActiveLayer, false, false, asSmartFilter),
 		a, r, t, // applyUnSharpMask(amount, radius, threshold)
 		a, r, t, // result amount/radius/threshold
 	)
@@ -66,11 +79,11 @@ var noiseDistributionSet = map[string]bool{"UNIFORM": true, "GAUSSIAN": true}
 // applyAddNoise — op name "Noise". distribution interpolates raw into
 // `NoiseDistribution.<dist>` AND jsLit-quoted into the result. The caller value
 // MUST be validated against noiseDistributionSet first (done in registry.build).
-func applyAddNoise(amount float64, distribution string, monochromatic, applyToActiveLayer bool) string {
+func applyAddNoise(amount float64, distribution string, monochromatic, applyToActiveLayer, asSmartFilter bool) string {
 	amt, mono := jsNum(amount), jsBool(monochromatic)
 	return fmt.Sprintf(
 		tpl[vault.ANoise],
-		filterPrologue("Noise", applyToActiveLayer, false, false),
+		filterPrologue("Noise", applyToActiveLayer, false, false, asSmartFilter),
 		distribution, // NoiseDistribution.<raw>
 		amt, mono,    // applyAddNoise(amount, distEnum, monochromatic)
 		amt, jsLit(distribution), mono, // result amount/distribution/monochromatic
@@ -78,11 +91,11 @@ func applyAddNoise(amount float64, distribution string, monochromatic, applyToAc
 }
 
 // applyMotionBlur — op name "Motion Blur". angle/radius in call and result.
-func applyMotionBlur(angle, radius float64, applyToActiveLayer bool) string {
+func applyMotionBlur(angle, radius float64, applyToActiveLayer, asSmartFilter bool) string {
 	ang, rad := jsNum(angle), jsNum(radius)
 	return fmt.Sprintf(
 		tpl[vault.MBlur],
-		filterPrologue("Motion Blur", applyToActiveLayer, false, false),
+		filterPrologue("Motion Blur", applyToActiveLayer, false, false, asSmartFilter),
 		ang, rad, // applyMotionBlur(angle, radius)
 		ang, rad, // result angle/radius
 	)
@@ -102,7 +115,7 @@ var lensIrisMap = map[string]string{
 
 // applyLensBlur — AM Bokh. The pre-audit emission was forum-lore fiction; this
 // matches the 2026-06-03 capture (charID Bk* family, BeS* enums).
-func applyLensBlur(radius float64, irisShape string, irisBladeCurvature, irisRotation, specularBrightness, specularThreshold, noiseAmount float64, noiseDistribution string, noiseMonochromatic bool, depthSource string, focalDistance float64, invertDepth, applyToActiveLayer bool) string {
+func applyLensBlur(radius float64, irisShape string, irisBladeCurvature, irisRotation, specularBrightness, specularThreshold, noiseAmount float64, noiseDistribution string, noiseMonochromatic bool, depthSource string, focalDistance float64, invertDepth, applyToActiveLayer, asSmartFilter bool) string {
 	irisCharID := lensIrisMap[irisShape]
 	noiseDistCharID := "BeNu"
 	if noiseDistribution == "gaussian" {
@@ -116,7 +129,7 @@ func applyLensBlur(radius float64, irisShape string, irisBladeCurvature, irisRot
 	mono, inv := jsBool(noiseMonochromatic), jsBool(invertDepth)
 	return fmt.Sprintf(
 		tpl[vault.LensBlur],
-		filterPrologue("Lens Blur", applyToActiveLayer, false, true),
+		filterPrologue("Lens Blur", applyToActiveLayer, false, true, asSmartFilter),
 		fd, inv, // BkDp / BkDs
 		irisCharID, rad, bld, rot, // iris group
 		sb, st, // specular group
@@ -128,7 +141,7 @@ func applyLensBlur(radius float64, irisShape string, irisBladeCurvature, irisRot
 }
 
 // applySmartSharpen — modern detail-aware sharpening (smartSharpen event).
-func applySmartSharpen(amount, radius, noiseReduction float64, removeMode string, motionAngle, shadowFade, shadowTonalWidth, shadowRadius, highlightFade, highlightTonalWidth, highlightRadius float64, applyToActiveLayer bool) string {
+func applySmartSharpen(amount, radius, noiseReduction float64, removeMode string, motionAngle, shadowFade, shadowTonalWidth, shadowRadius, highlightFade, highlightTonalWidth, highlightRadius float64, applyToActiveLayer, asSmartFilter bool) string {
 	blurCharID := "GsnB"
 	if removeMode == "lensBlur" {
 		blurCharID = "LnsB"
@@ -144,7 +157,7 @@ func applySmartSharpen(amount, radius, noiseReduction float64, removeMode string
 	hf, htw, hr := jsNum(highlightFade), jsNum(highlightTonalWidth), jsNum(highlightRadius)
 	return fmt.Sprintf(
 		tpl[vault.SmartShrp],
-		filterPrologue("Smart Sharpen", applyToActiveLayer, false, true),
+		filterPrologue("Smart Sharpen", applyToActiveLayer, false, true, asSmartFilter),
 		am, rd, nr, blurCharID, motionLine,
 		sf, stw, sr, // shadows tab
 		hf, htw, hr, // highlights tab
@@ -156,7 +169,7 @@ func applySmartSharpen(amount, radius, noiseReduction float64, removeMode string
 
 // applyReduceNoise — denoise event. Composite channel always present;
 // per-channel RGB entries appended when perChannel=true.
-func applyReduceNoise(strength, preserveDetails, colorNoise, sharpenDetails float64, removeJpegArtifact, perChannel bool, redStrength, redPreserveDetails, greenStrength, greenPreserveDetails, blueStrength, bluePreserveDetails float64, applyToActiveLayer bool) string {
+func applyReduceNoise(strength, preserveDetails, colorNoise, sharpenDetails float64, removeJpegArtifact, perChannel bool, redStrength, redPreserveDetails, greenStrength, greenPreserveDetails, blueStrength, bluePreserveDetails float64, applyToActiveLayer, asSmartFilter bool) string {
 	perChannelBlock := ""
 	if perChannel {
 		ch := func(label, name string, amt, edge float64) string {
@@ -180,7 +193,7 @@ func applyReduceNoise(strength, preserveDetails, colorNoise, sharpenDetails floa
 	rja := jsBool(removeJpegArtifact)
 	return fmt.Sprintf(
 		tpl[vault.RedNoise],
-		filterPrologue("Reduce Noise", applyToActiveLayer, false, true),
+		filterPrologue("Reduce Noise", applyToActiveLayer, false, true, asSmartFilter),
 		str, pd, // composite channel
 		perChannelBlock,
 		cn, sd, rja, // root keys
@@ -202,14 +215,14 @@ var radialQualityMap = map[string]string{
 }
 
 // applyRadialBlur — AM RdlB. No DOM method exists. center is normalized 0-1.
-func applyRadialBlur(amount float64, method, quality string, centerX, centerY float64, applyToActiveLayer bool) string {
+func applyRadialBlur(amount float64, method, quality string, centerX, centerY float64, applyToActiveLayer, asSmartFilter bool) string {
 	m := radialMethodMap[method]
 	q := radialQualityMap[quality]
 	amt := jsNum(amount)
 	cx, cy := jsNum(centerX), jsNum(centerY)
 	return fmt.Sprintf(
 		tpl[vault.RadialBlur],
-		filterPrologue("Radial Blur", applyToActiveLayer, false, true),
+		filterPrologue("Radial Blur", applyToActiveLayer, false, true, asSmartFilter),
 		amt, m, q, cx, cy,
 		// result
 		amt, jsLit(method), jsLit(quality), cx, cy,
@@ -222,7 +235,7 @@ func applyRadialBlur(amount float64, method, quality string, centerX, centerY fl
 // shared skeleton (same approach as applyReduceNoise's per-channel block).
 // crystallize/pointillize/facet/fragment ground truth confirmed via
 // ScriptListener capture (2026-06-29).
-func applyPixelate(mode string, maxRadius, angle1, angle2, angle3, angle4, cellSize float64, applyToActiveLayer bool) string {
+func applyPixelate(mode string, maxRadius, angle1, angle2, angle3, angle4, cellSize float64, applyToActiveLayer, asSmartFilter bool) string {
 	var block, resultFields string
 	switch mode {
 	case "mosaic":
@@ -266,7 +279,7 @@ func applyPixelate(mode string, maxRadius, angle1, angle2, angle3, angle4, cellS
 	}
 	return fmt.Sprintf(
 		tpl[vault.Pixelate],
-		filterPrologue("Pixelate", applyToActiveLayer, false, true),
+		filterPrologue("Pixelate", applyToActiveLayer, false, true, asSmartFilter),
 		block,
 		jsLit(mode),
 		resultFields,
@@ -282,7 +295,7 @@ var waveUndefMap = map[string]string{"repeat_edge": "RptE", "wrap_around": "WrpA
 // applyDistort — AM Twrl / Rple / Plr / Wave. Mode-specific descriptor block +
 // result-detail line are built here (same approach as applyPixelate). The
 // registry validates mode + enum values before calling.
-func applyDistort(mode string, p map[string]any, applyToActiveLayer bool) string {
+func applyDistort(mode string, p map[string]any, applyToActiveLayer, asSmartFilter bool) string {
 	var block, resultFields string
 	switch mode {
 	case "twirl":
@@ -360,7 +373,7 @@ func applyDistort(mode string, p map[string]any, applyToActiveLayer bool) string
 	}
 	return fmt.Sprintf(
 		tpl[vault.Distort],
-		filterPrologue("Distort", applyToActiveLayer, false, true),
+		filterPrologue("Distort", applyToActiveLayer, false, true, asSmartFilter),
 		block,
 		jsLit(mode),
 		resultFields,
@@ -374,12 +387,12 @@ var displaceUndefMap = map[string]string{"repeat_edge": "RptE", "wrap_around": "
 // applyDisplace — AM Dspl. The displacement-map file is carried in the
 // descriptor (putPath DspF), so it runs headless. The registry validates enums
 // + the required map path.
-func applyDisplace(hScale, vScale float64, displacementMap, undefinedAreas, mapPath string, applyToActiveLayer bool) string {
+func applyDisplace(hScale, vScale float64, displacementMap, undefinedAreas, mapPath string, applyToActiveLayer, asSmartFilter bool) string {
 	hs, vs := jsNum(hScale), jsNum(vScale)
 	mp := jsLit(mapPath)
 	return fmt.Sprintf(
 		tpl[vault.Displace],
-		filterPrologue("Displace", applyToActiveLayer, false, true),
+		filterPrologue("Displace", applyToActiveLayer, false, true, asSmartFilter),
 		hs, vs, displaceMapMap[displacementMap], displaceUndefMap[undefinedAreas], mp,
 		// result
 		hs, vs, jsLit(displacementMap), jsLit(undefinedAreas), mp,
@@ -387,13 +400,13 @@ func applyDisplace(hScale, vScale float64, displacementMap, undefinedAreas, mapP
 }
 
 // applyOilPaint — AM oilPaint (Stylize > Oil Paint). GPU-accelerated.
-func applyOilPaint(stylization, cleanliness, brushScale, bristleDetail, lightDirection, shine float64, lightingOn, applyToActiveLayer bool) string {
+func applyOilPaint(stylization, cleanliness, brushScale, bristleDetail, lightDirection, shine float64, lightingOn, applyToActiveLayer, asSmartFilter bool) string {
 	st, cl, bs := jsNum(stylization), jsNum(cleanliness), jsNum(brushScale)
 	bd, ld, sh := jsNum(bristleDetail), jsNum(lightDirection), jsNum(shine)
 	lo := jsBool(lightingOn)
 	return fmt.Sprintf(
 		tpl[vault.OilPaint],
-		filterPrologue("Oil Paint", applyToActiveLayer, false, true),
+		filterPrologue("Oil Paint", applyToActiveLayer, false, true, asSmartFilter),
 		lo, st, cl, bs, bd, ld, sh,
 		// result
 		st, cl, bs, bd, ld, sh, lo,
@@ -401,11 +414,11 @@ func applyOilPaint(stylization, cleanliness, brushScale, bristleDetail, lightDir
 }
 
 // applyHighPass — single-radius highPass event.
-func applyHighPass(radius float64, applyToActiveLayer bool) string {
+func applyHighPass(radius float64, applyToActiveLayer, asSmartFilter bool) string {
 	r := jsNum(radius)
 	return fmt.Sprintf(
 		tpl[vault.HighPass],
-		filterPrologue("High Pass", applyToActiveLayer, false, true),
+		filterPrologue("High Pass", applyToActiveLayer, false, true, asSmartFilter),
 		r, r,
 	)
 }
@@ -420,7 +433,7 @@ var traceEdgeMap = map[string]string{"lower": "Lwr ", "upper": "Upr "}
 // applyStylize — Filter > Stylize family. Mode-specific descriptor block built
 // here, interpolated into the shared vault.FilterMulti skeleton. tiles fill is
 // hardcoded to background (FlBc); its other fill options are deferred.
-func applyStylize(mode string, p map[string]any, applyToActiveLayer bool) string {
+func applyStylize(mode string, p map[string]any, applyToActiveLayer, asSmartFilter bool) string {
 	var block, resultFields string
 	switch mode {
 	case "emboss":
@@ -465,7 +478,7 @@ func applyStylize(mode string, p map[string]any, applyToActiveLayer bool) string
 	}
 	return fmt.Sprintf(
 		tpl[vault.FilterMulti],
-		filterPrologue("Stylize", applyToActiveLayer, false, true),
+		filterPrologue("Stylize", applyToActiveLayer, false, true, asSmartFilter),
 		block,
 		jsLit("Stylize"),
 		jsLit(mode),
@@ -476,7 +489,7 @@ func applyStylize(mode string, p map[string]any, applyToActiveLayer bool) string
 // applyRender — Filter > Render family. clouds/difference-
 // clouds are parameterless (use the current FG/BG colors); fibers takes
 // variance/strength/seed. Shares the FilterMulti skeleton.
-func applyRender(mode string, p map[string]any, applyToActiveLayer bool) string {
+func applyRender(mode string, p map[string]any, applyToActiveLayer, asSmartFilter bool) string {
 	var block, resultFields string
 	switch mode {
 	case "clouds":
@@ -498,7 +511,7 @@ func applyRender(mode string, p map[string]any, applyToActiveLayer bool) string 
 	}
 	return fmt.Sprintf(
 		tpl[vault.FilterMulti],
-		filterPrologue("Render", applyToActiveLayer, false, true),
+		filterPrologue("Render", applyToActiveLayer, false, true, asSmartFilter),
 		block,
 		jsLit("Render"),
 		jsLit(mode),
@@ -510,7 +523,7 @@ func applyRender(mode string, p map[string]any, applyToActiveLayer bool) string 
 // Rds + preserveShape (roundness=Rndn charID / squareness=stringID — both
 // captured); offset = Hrzn/Vrtc + fill hardcoded to wrap (Wrp), its other fill
 // modes deferred. Shares the FilterMulti skeleton.
-func applyOther(mode string, p map[string]any, applyToActiveLayer bool) string {
+func applyOther(mode string, p map[string]any, applyToActiveLayer, asSmartFilter bool) string {
 	var block, resultFields string
 	switch mode {
 	case "maximum", "minimum":
@@ -541,7 +554,7 @@ func applyOther(mode string, p map[string]any, applyToActiveLayer bool) string {
 	}
 	return fmt.Sprintf(
 		tpl[vault.FilterMulti],
-		filterPrologue("Other", applyToActiveLayer, false, true),
+		filterPrologue("Other", applyToActiveLayer, false, true, asSmartFilter),
 		block,
 		jsLit("Other"),
 		jsLit(mode),
@@ -552,7 +565,7 @@ func applyOther(mode string, p map[string]any, applyToActiveLayer bool) string {
 // applyDenoise — Filter > Noise reduction family. median uses
 // Rds as unitDouble #Pxl; dust_and_scratches uses Rds as putInteger + Thsh;
 // despeckle is parameterless. Shares the FilterMulti skeleton.
-func applyDenoise(mode string, p map[string]any, applyToActiveLayer bool) string {
+func applyDenoise(mode string, p map[string]any, applyToActiveLayer, asSmartFilter bool) string {
 	var block, resultFields string
 	switch mode {
 	case "median":
@@ -575,7 +588,7 @@ func applyDenoise(mode string, p map[string]any, applyToActiveLayer bool) string
 	}
 	return fmt.Sprintf(
 		tpl[vault.FilterMulti],
-		filterPrologue("Noise Reduction", applyToActiveLayer, false, true),
+		filterPrologue("Noise Reduction", applyToActiveLayer, false, true, asSmartFilter),
 		block,
 		jsLit("Denoise"),
 		jsLit(mode),
@@ -586,7 +599,7 @@ func applyDenoise(mode string, p map[string]any, applyToActiveLayer bool) string
 // applyBlurAdv — the lesser Blur-menu filters. surfaceBlur/
 // boxblur are stringID events; average is charID Avrg (parameterless). smart_blur
 // + shape_blur deferred (mode/quality enums + custom-shape ref). FilterMulti.
-func applyBlurAdv(mode string, p map[string]any, applyToActiveLayer bool) string {
+func applyBlurAdv(mode string, p map[string]any, applyToActiveLayer, asSmartFilter bool) string {
 	var block, resultFields string
 	switch mode {
 	case "surface_blur":
@@ -609,7 +622,7 @@ func applyBlurAdv(mode string, p map[string]any, applyToActiveLayer bool) string
 	}
 	return fmt.Sprintf(
 		tpl[vault.FilterMulti],
-		filterPrologue("Blur", applyToActiveLayer, false, true),
+		filterPrologue("Blur", applyToActiveLayer, false, true, asSmartFilter),
 		block,
 		jsLit("Blur"),
 		jsLit(mode),

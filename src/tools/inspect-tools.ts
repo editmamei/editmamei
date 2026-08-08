@@ -7,6 +7,7 @@ import { getMetadata, getMetadataSchema } from './metadata-tools.js';
 import { getHistory } from './history-tools.js';
 import { getLayerTree } from './layer-tools.js';
 import { getSelectionInfoHandler } from './selection-tools.js';
+import { getSmartObjectInfoHandler } from './smart-object-tools.js';
 
 /**
  * ps_inspect — consolidates the four read-only state readers
@@ -27,7 +28,13 @@ import { getSelectionInfoHandler } from './selection-tools.js';
  * anti-steering (§4).
  */
 
-const INSPECT_WHATS = ['metadata', 'layer_tree', 'history', 'selection_info'] as const;
+const INSPECT_WHATS = [
+  'metadata',
+  'layer_tree',
+  'history',
+  'selection_info',
+  'smart_object',
+] as const;
 
 const INSPECT_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
@@ -40,7 +47,8 @@ const INSPECT_INPUT_SCHEMA: JsonSchemaObject = {
         'metadata: document/IPTC/camera-EXIF/GPS/ACR develop settings + active context (optionally subset with `sections`; sections=["context"] is the cheap orientation probe). ' +
         'layer_tree: the full recursive layer tree (name/kind/visibility/opacity/blend/clipping/bounds) — use whenever you need what is inside a group. ' +
         'history: all history states + the current cursor, for deciding how far to undo. ' +
-        'selection_info: current selection bounds/coverage/edge-complexity without modifying anything.',
+        'selection_info: current selection bounds/coverage/edge-complexity without modifying anything. ' +
+        'smart_object: whether the ACTIVE layer is a Smart Object and, if so, whether its source is embedded or linked to a file on disk, plus how many Smart Filters it carries.',
     },
     // metadata-only param; ignored for the other targets.
     ...getMetadataSchema.properties,
@@ -57,7 +65,7 @@ export function createInspectTools(
       tool: {
         name: 'ps_inspect',
         description:
-          'Read-only document inspection — choose with `what` (metadata / layer_tree / history / selection_info). This is the assess/orientation surface: call it at the start of a workflow and whenever you need fresh state. For metadata, pass `sections` to subset (e.g. ["context"] for a cheap probe). For an IMAGE-based check use ps_get_preview; for NUMERIC verification use ps_get_histogram / ps_compare_regions / ps_get_layer_bounds_diff (these stay separate, named tools on purpose). Read-only and idempotent.',
+          'Read-only document inspection — choose with `what` (metadata / layer_tree / history / selection_info / smart_object). This is the assess/orientation surface: call it at the start of a workflow and whenever you need fresh state. For metadata, pass `sections` to subset (e.g. ["context"] for a cheap probe). For an IMAGE-based check use ps_get_preview; for NUMERIC verification use ps_get_histogram / ps_compare_regions / ps_get_layer_bounds_diff (these stay separate, named tools on purpose). Read-only and idempotent.',
         inputSchema: INSPECT_INPUT_SCHEMA,
         outputSchema: {
           type: 'object',
@@ -84,6 +92,16 @@ export function createInspectTools(
             states: { type: 'array' },
             // selection_info
             selection_info: { type: 'object' },
+            // smart_object
+            is_smart_object: { type: 'boolean' },
+            linked: { type: 'boolean' },
+            file_reference: { type: 'string' },
+            document_id: { type: 'string' },
+            placed: { type: 'string' },
+            smart_filter_count: { type: 'number' },
+            layer_name: { type: 'string' },
+            layer_kind: { type: 'string' },
+            bounds: { type: 'array' },
           },
         },
         annotations: {
@@ -117,6 +135,8 @@ async function inspect(
       return getHistory(connection, snippetClient);
     case 'selection_info':
       return getSelectionInfoHandler(connection, snippetClient);
+    case 'smart_object':
+      return getSmartObjectInfoHandler(connection, snippetClient);
     default:
       return {
         content: [

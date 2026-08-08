@@ -102,6 +102,12 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // layer-properties-tools — set_* → ps_set_layer; merge_visible/stamp/flatten → ps_merge
   ps_convert_to_smart_object: 'community',
   ps_rasterize_layer: 'community',
+
+  // smart-object-tools — the Smart Filter stack on a Smart Object (m4a
+  // STEP-03/04/05/07). New tool: starts at 'dev' per the dev-default gate and
+  // stays there until the user accepts it.
+  ps_smart_filter: 'dev',
+
   ps_set_layer: 'community',
   ps_duplicate_layer: 'community',
   ps_copy_to_new_layer: 'community',

@@ -27,26 +27,29 @@ var Key = []byte{
 // the key literals themselves — which DO appear in `strings` as ordinary Go
 // string constants — don't tip any descriptor/helper names.
 const (
-	MinCtx      = "h0"  // getMinimalContextInfo helper body
-	DupCopy     = "d1"  // duplicateForOp — auto-duplicate branch (has one %s slot)
-	DupActive   = "d2"  // duplicateForOp — apply-to-active branch
-	FiltPro     = "fp0" // shared filter prologue (guard + duplicate + layer + kind check)
-	FiltRast    = "fp1" // filter prologue's rasterize block
-	FiltRastTrk = "fp2" // filter prologue's rasterize block, recording whether it fired
-	GBlur       = "f1"  // applyGaussianBlur skeleton
-	USharp      = "f2"  // applyUnsharpMask skeleton
-	ANoise      = "f3"  // applyAddNoise skeleton
-	MBlur       = "f4"  // applyMotionBlur skeleton
-	LensBlur    = "f5"  // applyLensBlur (AM Bokh)
-	SmartShrp   = "f6"  // applySmartSharpen
-	RedNoise    = "f7"  // applyReduceNoise
-	HighPass    = "f8"  // applyHighPass
-	RadialBlur  = "f9"  // applyRadialBlur (AM RdlB; spin/zoom + quality + center)
-	Pixelate    = "f10" // applyPixelate (AM ClrH color-halftone / Msc mosaic)
-	Distort     = "f11" // applyDistort (AM Twrl / Rple / Plr / Wave)
-	OilPaint    = "f12" // applyOilPaint (AM oilPaint)
-	Displace    = "f13" // applyDisplace (AM Dspl + map-file putPath)
-	FilterMulti = "f14" // shared multi-mode filter skeleton (stylize/render/other/denoise/blur); label + block built by the emitter
+	MinCtx       = "h0"  // getMinimalContextInfo helper body
+	DupCopy      = "d1"  // duplicateForOp — auto-duplicate branch (has one %s slot)
+	DupActive    = "d2"  // duplicateForOp — apply-to-active branch
+	FiltPro      = "fp0" // shared filter prologue (guard + duplicate + layer + kind check)
+	FiltRast     = "fp1" // filter prologue's rasterize block
+	FiltRastTrk  = "fp2" // filter prologue's rasterize block, recording whether it fired
+	FiltRastSO   = "fp3" // filter prologue's rasterize block, riding a Smart Object instead
+	FiltKindNorm = "fp4" // filter prologue's kind guard — requires a pixel layer
+	FiltKindSO   = "fp5" // filter prologue's kind guard — requires a Smart Object
+	GBlur        = "f1"  // applyGaussianBlur skeleton
+	USharp       = "f2"  // applyUnsharpMask skeleton
+	ANoise       = "f3"  // applyAddNoise skeleton
+	MBlur        = "f4"  // applyMotionBlur skeleton
+	LensBlur     = "f5"  // applyLensBlur (AM Bokh)
+	SmartShrp    = "f6"  // applySmartSharpen
+	RedNoise     = "f7"  // applyReduceNoise
+	HighPass     = "f8"  // applyHighPass
+	RadialBlur   = "f9"  // applyRadialBlur (AM RdlB; spin/zoom + quality + center)
+	Pixelate     = "f10" // applyPixelate (AM ClrH color-halftone / Msc mosaic)
+	Distort      = "f11" // applyDistort (AM Twrl / Rple / Plr / Wave)
+	OilPaint     = "f12" // applyOilPaint (AM oilPaint)
+	Displace     = "f13" // applyDisplace (AM Dspl + map-file putPath)
+	FilterMulti  = "f14" // shared multi-mode filter skeleton (stylize/render/other/denoise/blur); label + block built by the emitter
 
 	// layer-properties — trivial single-assignment setters
 	SetOpacity = "p1" // setLayerOpacity
@@ -191,6 +194,17 @@ const (
 	SONewViaCopy   = "l12" // newSmartObjectViaCopy (placedLayerMakeCopy; independent SO copy)
 	CreateShape    = "l13" // createShape (Mk contentLayer; vector shape layer — rectangle/ellipse/line)
 	AddGradFill    = "l14" // addGradientFillLayer (Mk contentLayer; gradientLayer w/ custom stops)
+
+	// smart filters — the Smart-Object filter stack (m4a STEP-03/04/05/07).
+	// Every write addresses one filter as a filterFX INDEX reference on the
+	// target layer; the read walks the layer's smartObject compound instead
+	// (the asymmetry is Photoshop's, not ours — see fragments_smartobject.go).
+	SFGuard = "sf0" // shared smart-filter helpers (read/validate/reference/blend-mode table)
+	SFList  = "sf1" // listSmartFilters (read: layer -> smartObject -> filterFX[])
+	SFVis   = "sf2" // setSmartFilterVisibility (Hd /Shw  on a filterFX index ref)
+	SFBlend = "sf3" // setSmartFilterBlend (setd filterFX.blendOptions)
+	SFDel   = "sf4" // removeSmartFilter (Dlt  on a filterFX index ref)
+	SOInfo  = "sf5" // getSmartObjectInfo (embedded/linked, source size, filter count)
 
 	// gradients — shared stop-line building blocks (interpolated per stop into
 	// the l14 / al9 stop-block slots; both call the makeColorStop/makeOpacityStop

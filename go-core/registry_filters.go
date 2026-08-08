@@ -12,6 +12,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 		return applyGaussianBlur(
 			numParam(params, "radius", 0),
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	case "applyUnsharpMask":
 		return applyUnsharpMask(
@@ -19,6 +20,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 			numParam(params, "radius", 0),
 			numParam(params, "threshold", 0),
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	case "applyAddNoise":
 		dist := strParam(params, "distribution", "GAUSSIAN")
@@ -30,12 +32,14 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 			dist,
 			boolParam(params, "monochromatic", false),
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	case "applyMotionBlur":
 		return applyMotionBlur(
 			numParam(params, "angle", 0),
 			numParam(params, "radius", 0),
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	case "applyLensBlur":
 		shape := strParam(params, "irisShape", "")
@@ -56,6 +60,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 			numParam(params, "focalDistance", 0),
 			boolParam(params, "invertDepth", false),
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	case "applySmartSharpen":
 		return applySmartSharpen(
@@ -71,6 +76,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 			numParam(params, "highlightTonalWidth", 50),
 			numParam(params, "highlightRadius", 30),
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	case "applyReduceNoise":
 		return applyReduceNoise(
@@ -87,11 +93,13 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 			numParam(params, "blueStrength", 5),
 			numParam(params, "bluePreserveDetails", 50),
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	case "applyHighPass":
 		return applyHighPass(
 			numParam(params, "radius", 10),
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	case "applyDisplace":
 		dm := strParam(params, "displacementMap", "stretch_to_fit")
@@ -111,6 +119,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 			numParam(params, "verticalScale", 10),
 			dm, ua, mp,
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	case "applyOilPaint":
 		return applyOilPaint(
@@ -122,6 +131,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 			numParam(params, "shine", 1.3),
 			boolParam(params, "lightingOn", true),
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	case "applyDistort":
 		mode := strParam(params, "mode", "")
@@ -146,7 +156,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 		default:
 			return "", true, fmt.Errorf("applyDistort: unknown mode %q", mode)
 		}
-		return applyDistort(mode, params, boolParam(params, "applyToActiveLayer", false)), true, nil
+		return applyDistort(mode, params, boolParam(params, "applyToActiveLayer", false), boolParam(params, "asSmartFilter", false)), true, nil
 	case "applyPixelate":
 		mode := strParam(params, "mode", "color_halftone")
 		switch mode {
@@ -163,6 +173,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 			numParam(params, "angle4", 45),
 			numParam(params, "cellSize", 10),
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	case "applyStylize":
 		mode := strParam(params, "mode", "")
@@ -182,7 +193,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 		default:
 			return "", true, fmt.Errorf("applyStylize: unknown mode %q", mode)
 		}
-		return applyStylize(mode, params, boolParam(params, "applyToActiveLayer", false)), true, nil
+		return applyStylize(mode, params, boolParam(params, "applyToActiveLayer", false), boolParam(params, "asSmartFilter", false)), true, nil
 	case "applyRender":
 		mode := strParam(params, "mode", "")
 		switch mode {
@@ -190,7 +201,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 		default:
 			return "", true, fmt.Errorf("applyRender: unknown mode %q", mode)
 		}
-		return applyRender(mode, params, boolParam(params, "applyToActiveLayer", false)), true, nil
+		return applyRender(mode, params, boolParam(params, "applyToActiveLayer", false), boolParam(params, "asSmartFilter", false)), true, nil
 	case "applyOther":
 		mode := strParam(params, "mode", "")
 		switch mode {
@@ -203,7 +214,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 		default:
 			return "", true, fmt.Errorf("applyOther: unknown mode %q", mode)
 		}
-		return applyOther(mode, params, boolParam(params, "applyToActiveLayer", false)), true, nil
+		return applyOther(mode, params, boolParam(params, "applyToActiveLayer", false), boolParam(params, "asSmartFilter", false)), true, nil
 	case "applyDenoise":
 		mode := strParam(params, "mode", "")
 		switch mode {
@@ -211,7 +222,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 		default:
 			return "", true, fmt.Errorf("applyDenoise: unknown mode %q", mode)
 		}
-		return applyDenoise(mode, params, boolParam(params, "applyToActiveLayer", false)), true, nil
+		return applyDenoise(mode, params, boolParam(params, "applyToActiveLayer", false), boolParam(params, "asSmartFilter", false)), true, nil
 	case "applyBlurAdv":
 		mode := strParam(params, "mode", "")
 		switch mode {
@@ -219,7 +230,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 		default:
 			return "", true, fmt.Errorf("applyBlurAdv: unknown mode %q", mode)
 		}
-		return applyBlurAdv(mode, params, boolParam(params, "applyToActiveLayer", false)), true, nil
+		return applyBlurAdv(mode, params, boolParam(params, "applyToActiveLayer", false), boolParam(params, "asSmartFilter", false)), true, nil
 	case "applyRadialBlur":
 		method := strParam(params, "method", "spin")
 		if _, ok := radialMethodMap[method]; !ok {
@@ -236,6 +247,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 			numParam(params, "centerX", 0.5),
 			numParam(params, "centerY", 0.5),
 			boolParam(params, "applyToActiveLayer", false),
+			boolParam(params, "asSmartFilter", false),
 		), true, nil
 	}
 	return "", false, nil

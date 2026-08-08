@@ -6,7 +6,12 @@ import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { type DetectionClient } from '../detection/detection-client.js';
 import { OnnxLandmarkDetectionClient } from '../detection/landmark-detection-client.js';
 import { resolveGatedPlacement, PLACEMENT_SCHEMA } from '../perception/grounding-locate.js';
-import { toolErrorResult, runSnippetTool, applyToActiveLayerProp } from '../utils/tool-helpers.js';
+import {
+  toolErrorResult,
+  runSnippetTool,
+  applyToActiveLayerProp,
+  asSmartFilterProp,
+} from '../utils/tool-helpers.js';
 
 // Every filter tool auto-duplicates the active
 // layer before applying the destructive op. The original layer is
@@ -25,6 +30,7 @@ const gaussianBlurSchema: JsonSchemaObject = {
       maximum: 250,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['radius'],
 };
@@ -52,6 +58,7 @@ const sharpenSchema: JsonSchemaObject = {
       default: 0,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['amount', 'radius'],
 };
@@ -77,6 +84,7 @@ const noiseSchema: JsonSchemaObject = {
       default: false,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['amount'],
 };
@@ -97,6 +105,7 @@ const motionBlurSchema: JsonSchemaObject = {
       maximum: 999,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['angle', 'radius'],
 };
@@ -194,6 +203,7 @@ const lensBlurSchema: JsonSchemaObject = {
       default: false,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
 };
 
@@ -285,6 +295,7 @@ const smartSharpenSchema: JsonSchemaObject = {
       default: 30,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
 };
 
@@ -381,6 +392,7 @@ const reduceNoiseSchema: JsonSchemaObject = {
       default: 50,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
 };
 
@@ -396,6 +408,7 @@ const highPassSchema: JsonSchemaObject = {
       default: 10,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['radius'],
 };
@@ -443,6 +456,7 @@ const radialBlurSchema: JsonSchemaObject = {
         'Grounded alternative to center_x/center_y: NAME the blur center (a `placement` resolving to a POINT — an object centroid, an extremum, a grid intersection). The resolved document-pixel point is normalized to the 0-1 center for you and WINS over center_x/center_y. The blur runs ONLY if the objective gate PASSES.',
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
 };
 
@@ -499,6 +513,7 @@ const pixelateSchema: JsonSchemaObject = {
       default: 10,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -615,6 +630,7 @@ const distortSchema: JsonSchemaObject = {
       default: 12345,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -691,6 +707,7 @@ const stylizeSchema: JsonSchemaObject = {
       default: 10,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -726,6 +743,7 @@ const renderSchema: JsonSchemaObject = {
       default: 12345,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -763,6 +781,7 @@ const otherSchema: JsonSchemaObject = {
       default: 0,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -793,6 +812,7 @@ const denoiseSchema: JsonSchemaObject = {
       default: 10,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -823,6 +843,7 @@ const blurAdvSchema: JsonSchemaObject = {
       default: 20,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -878,6 +899,7 @@ const oilPaintSchema: JsonSchemaObject = {
       default: true,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
 };
 
@@ -917,6 +939,7 @@ const displaceSchema: JsonSchemaObject = {
       default: 'repeat_edge',
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['map_path'],
 };
@@ -1015,6 +1038,7 @@ const FILTER_INPUT_SCHEMA: JsonSchemaObject = {
       description: 'Angle in degrees. Used by motion_blur (−360–360) and distort/twirl (−999–999).',
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['type'],
 };
@@ -1032,7 +1056,7 @@ export function createFilterTools(
       tool: {
         name: 'ps_apply_filter',
         description:
-          'Apply a Photoshop filter to a DUPLICATE of the active layer by default (auto-duplicate-first — the original is preserved, undo by deleting the copy). Pass `apply_to_active_layer: true` to bake into the original. Auto-rasterizes text/smart-object layers. Choose the filter with `type`; each type takes its own parameters (see the `type` field). Covers blur (gaussian_blur/motion_blur/lens_blur/radial_blur), sharpen (`sharpen`=Unsharp Mask, `smart_sharpen`), noise (`noise`=Add Noise, `reduce_noise`), high_pass, pixelate, distort, displace, and oil_paint.',
+          'Apply a Photoshop filter to a DUPLICATE of the active layer by default (auto-duplicate-first — the original is preserved, undo by deleting the copy). Pass `apply_to_active_layer: true` to bake into the original. Auto-rasterizes text/smart-object layers — or pass `as_smart_filter: true` on a Smart Object to apply the filter as a re-editable SMART FILTER instead (nothing is rasterized, and the filter stays adjustable afterwards). Choose the filter with `type`; each type takes its own parameters (see the `type` field). Covers blur (gaussian_blur/motion_blur/lens_blur/radial_blur), sharpen (`sharpen`=Unsharp Mask, `smart_sharpen`), noise (`noise`=Add Noise, `reduce_noise`), high_pass, pixelate, distort, displace, and oil_paint.',
         inputSchema: FILTER_INPUT_SCHEMA,
         outputSchema: FILTER_OUTPUT_SCHEMA,
         annotations: {
@@ -1121,6 +1145,7 @@ async function applyGaussianBlur(
     params: (args) => ({
       radius: args.radius as number,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1149,6 +1174,7 @@ async function applySharpen(
       radius: args.radius as number,
       threshold: args.threshold as number,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1177,6 +1203,7 @@ async function applyNoise(
       distribution: args.distribution as string,
       monochromatic: args.monochromatic as boolean,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1207,6 +1234,7 @@ async function applyMotionBlur(
       angle: args.angle as number,
       radius: args.radius as number,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1244,6 +1272,7 @@ async function applyLensBlur(
       focalDistance: (args.focal_distance as number) ?? 0,
       invertDepth: (args.invert_depth as boolean) ?? false,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1283,6 +1312,7 @@ async function applySmartSharpen(
       highlightTonalWidth: (args.highlight_tonal_width as number) ?? 50,
       highlightRadius: (args.highlight_radius as number) ?? 30,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1323,6 +1353,7 @@ async function applyReduceNoise(
       blueStrength: (args.blue_strength as number) ?? 5,
       bluePreserveDetails: (args.blue_preserve_details as number) ?? 50,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1352,6 +1383,7 @@ async function applyHighPass(
     params: (args) => ({
       radius: args.radius as number,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1391,6 +1423,7 @@ async function applyRadialBlur(
       grounded = { x: Math.round(loc.geom.point.x), y: Math.round(loc.geom.point.y) };
     }
     const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+    const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
     const script = await snippetClient.build('applyRadialBlur', {
       amount,
@@ -1399,6 +1432,7 @@ async function applyRadialBlur(
       centerX,
       centerY,
       applyToActiveLayer,
+      asSmartFilter,
     });
     const result = await runScript(connection, script);
 
@@ -1446,8 +1480,9 @@ async function applyPixelate(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'mosaic' || mode === 'crystallize' || mode === 'pointillize') {
         params.cellSize = (args.cell_size as number) ?? 10;
       } else if (mode === 'color_halftone') {
@@ -1485,8 +1520,9 @@ async function applyDistort(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'twirl') {
         params.angle = (args.angle as number) ?? 90;
       } else if (mode === 'pinch') {
@@ -1540,8 +1576,9 @@ async function applyStylize(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'emboss') {
         params.angle = (args.angle as number) ?? 135;
         params.height = (args.height as number) ?? 3;
@@ -1584,8 +1621,9 @@ async function applyRender(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'fibers') {
         params.variance = (args.variance as number) ?? 16;
         params.strength = (args.fiber_strength as number) ?? 4;
@@ -1619,8 +1657,9 @@ async function applyOther(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'maximum' || mode === 'minimum') {
         params.radius = (args.radius as number) ?? 3;
         params.preserve = (args.preserve as string) ?? 'roundness';
@@ -1655,8 +1694,9 @@ async function applyDenoise(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'median') {
         params.radius = (args.radius as number) ?? 4;
       } else if (mode === 'dust_and_scratches') {
@@ -1691,8 +1731,9 @@ async function applyBlurAdv(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'surface_blur') {
         params.radius = (args.radius as number) ?? 15;
         params.threshold = (args.threshold as number) ?? 20;
@@ -1733,6 +1774,7 @@ async function applyOilPaint(
       shine: (args.shine as number) ?? 1.3,
       lightingOn: (args.lighting_on as boolean) ?? true,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1763,6 +1805,7 @@ async function applyDisplace(
       displacementMap: (args.displacement_map as string) ?? 'stretch_to_fit',
       undefinedAreas: (args.undefined_areas as string) ?? 'repeat_edge',
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };

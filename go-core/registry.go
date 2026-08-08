@@ -15,6 +15,7 @@ func build(name string, params map[string]any) (string, error) {
 		buildFilters, buildAdjustments, buildLayerProperties, buildText, buildSelections,
 		buildDocuments, buildGroups, buildLayers, buildShapes, buildHistory, buildMetadata,
 		buildMasks, buildLayerTransform, buildBrushes, buildGuides, buildRetouch, buildPaths,
+		buildSmartObject,
 	} {
 		if out, ok, err := fn(name, params); ok {
 			return out, err

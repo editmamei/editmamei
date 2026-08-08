@@ -218,6 +218,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_duplicate_layer: 'layers',
   ps_copy_to_new_layer: 'layers',
   ps_convert_to_smart_object: 'layers',
+  ps_smart_filter: 'layers',
   ps_rasterize_layer: 'layers',
   ps_set_layer: 'layers',
   ps_merge: 'layers',
