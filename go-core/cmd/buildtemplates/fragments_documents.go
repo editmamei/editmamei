@@ -558,7 +558,7 @@ func init() {
 		// are wrong (only Grys/LbCl matched), whereas changeMode is reliable for all
 		// modes. The grayscale "Discard color information?" prompt is suppressed by
 		// the wrapper's displayDialogs=NO. Slots: 1=getContextInfo, 2=ChangeMode enum
-		// (RGB/GRAYSCALE/CMYK/LAB), 3=mode(jsLit). Capture: STEP-35 confirmed the op.
+		// (RGB/GRAYSCALE/CMYK/LAB), 3=mode(jsLit). A capture confirmed the op.
 		// convertImageModeBitmap — Image > Mode > Bitmap (Halftone Screen) via AM CnvM
 		// (the DOM HalftoneScreenShape enum doesn't exist in ExtendScript). Flattens +
 		// converts to grayscale first (both required for bitmap). Slots: 1=getContextInfo,

@@ -144,7 +144,7 @@ var warpRotateMap = map[string]string{"horizontal": "Hrzn", "vertical": "Vrtc"}
 
 // warpLayer — AM Trnf → nested warp obj (preset envelope warp). bounds computed
 // in-JSX from the live layer.bounds; uOrder=4/vOrder=2 constants emitted
-// verbatim. Auto-promotes the background. Ground truth: m2 STEP-10..16.
+// verbatim. Auto-promotes the background. Ground truth: ScriptListener capture.
 func warpLayer(style string, bend, hDistort, vDistort float64, orientation string) string {
 	return fmt.Sprintf(
 		tpl[vault.WarpPreset],
@@ -190,7 +190,7 @@ func meshPointsLiteral(pts []pointXY) string {
 // only injects the scalar shape params (or, for the raw path, the verbatim mesh
 // literal). ncx/ncy are CELL counts → the quilt carries (3*ncx+1)*(3*ncy+1)
 // control points. rawPointsJS is "" for the high-level path. Ground truth:
-// m2-transform-warp-measure STEP-17..20. Slots match vault.WarpMesh.
+// Ground truth: ScriptListener capture. Slots match vault.WarpMesh.
 func warpMesh(pinEdge string, ncx, ncy int, lift, bendAt, sharpness, taper float64, rawPointsJS string) string {
 	raw := "null"
 	if rawPointsJS != "" {

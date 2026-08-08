@@ -35,7 +35,7 @@
  * the mask channel manually. The snippet\'s bracketing is correct
  * defensive programming for an LLM-driven invocation.
  *
- * Group D audit verdict (2026-06-04): **OK**. The empty-descriptor
+ * Spec-vs-snippet verdict: **OK**. The empty-descriptor
  * variance is documented and semantically equivalent; pre/post
  * channel-target dance is the right safety net.
  */

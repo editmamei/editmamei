@@ -550,7 +550,7 @@ func init() {
     };
   `,
 
-		// AddLayerStyle2 — the m4b layer-style additions (inner_shadow/inner_glow/
+		// AddLayerStyle2 — the later layer-style additions (inner_shadow/inner_glow/
 		// color_overlay) on a SEPARATE fragment so the migration golden for the
 		// original drop_shadow/stroke/outer_glow stays frozen. Self-contained.
 		// Slots: 1=helperFunctions, 2=getContextInfo, then per branch

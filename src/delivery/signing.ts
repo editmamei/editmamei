@@ -1,5 +1,5 @@
 /**
- * Ed25519 authenticity verification for downloaded Pro module artifacts (audit H1, 2026-06-18).
+ * Ed25519 authenticity verification for downloaded Pro module artifacts.
  *
  * The host fetches an encrypted module, decrypts it with a content key the SAME
  * delivery Worker hands out, then `import()`s the handlers and spawns the bundled

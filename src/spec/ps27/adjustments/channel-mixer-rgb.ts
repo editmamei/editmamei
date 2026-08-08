@@ -21,7 +21,7 @@
  * volunteers all three (with identity defaults R=100, G=100, B=100);
  * setds only carry the touched ones.
  *
- * **MEDIUM-severity drift** (Group A audit STEP 12): Snippet emits
+ * **MEDIUM-severity drift**: Snippet emits
  * `Cnst` as putInteger; ground truth uses `putUnitDouble(Cnst, #Prc,
  * value)`. PS may silently miscoerce the integer. The fix is a
  * three-site change in the snippet (channel_mixer RGB Mk + setd + the

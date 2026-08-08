@@ -7,7 +7,7 @@ import (
 )
 
 // retouch family — content-aware fill / patch / content-aware move. Community-
-// tier as of the 2026-06-16 tier rollout (previously Pro, in retouch_pro.go).
+// tier (previously Pro, in retouch_pro.go).
 // Ported verbatim from src/api/extendscript/filters.ts. All three prepend the shared
 // getMinimalContextInfo + helperFunctions (cTID/sTID) and the duplicateForOp
 // auto-duplicate fragment, then emit their AM descriptor.

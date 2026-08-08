@@ -70,7 +70,7 @@ export function unzipBundle(container: Uint8Array): BundleFile[] {
   let total = 0;
   for (const e of entries) {
     // Reject traversal/absolute entry names at the boundary where names first
-    // enter trusted code (audit M11), so a name can never escape even a caller
+    // enter trusted code, so a name can never escape even a caller
     // that writes the returned files itself without going through installBundle's
     // safeResolve. adm-zip pre-sanitizes most `../` on read; this fail-closes the
     // rest (absolute / drive-letter / surviving `..`).
@@ -150,7 +150,7 @@ export function safeResolve(root: string, name: string): string {
 }
 
 /**
- * Pure name-only traversal check used at the unzip boundary (audit M11): an
+ * Pure name-only traversal check used at the unzip boundary: an
  * absolute path (POSIX `/`, Windows drive `C:\`, or UNC) or any `..` segment is
  * unsafe. `installBundle`'s `safeResolve` is the resolve-against-root backstop;
  * this is the cheaper, container-agnostic first gate. Exported for unit tests.

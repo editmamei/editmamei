@@ -1,6 +1,5 @@
 /**
- * Invert adjustment layer — **HIGH-severity spec** for the audit's
- * second fix-now item.
+ * Invert adjustment layer — **HIGH-severity spec**.
  *
  * Ground truth: PS 27.7.0 Windows, captured 2026-06-03.
  * Capture log: JS-21-Invert.log
@@ -16,7 +15,7 @@
  * adjustment layer pattern). Adjs with no parameters use `putClass`
  * instead of `putObject` with an empty descriptor.
  *
- * **Group A audit (STEP 21) HIGH-severity drift**: snippet currently
+ * **HIGH-severity drift**: snippet currently
  * goes through the general `putObject(Type, Invr, typeDesc{
  * presetKindDefault})` path at line 3023. PS 27 tolerates this — the
  * extra `presetKindDefault` is a no-op on a type-only adjustment — but

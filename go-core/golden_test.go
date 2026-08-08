@@ -226,7 +226,7 @@ func TestGaussianBlurGolden(t *testing.T) {
 		{`magicWand(100,150,32,true,true,false,"replace")`, magicWand(100, 150, 32, true, true, false, "replace")},
 		{`magicWand(50,60,16,false,true,true,"subtract")`, magicWand(50, 60, 16, false, true, true, "subtract")},
 		{`getSelectionPreview("C:/overlay.jpg","C:/mask.jpg",800)`, getSelectionPreview("C:/overlay.jpg", "C:/mask.jpg", 800)},
-		// Sensei selections - RE-TIERED pro->community in v0.22 (moved from golden_pro_test.go).
+		// Sensei selections - community tier (moved from golden_pro_test.go).
 		{`selectSubject(true,"replace")`, selectSubject(true, "replace")},
 		{`selectSubject(false,"add")`, selectSubject(false, "add")},
 		{`selectSky(true,"replace")`, selectSky(true, "replace")},
@@ -315,7 +315,7 @@ func TestGaussianBlurGolden(t *testing.T) {
 		// history-state preview
 		{`renderHistoryStatePreview(0,"C:/out.jpg",1500,8)`, renderHistoryStatePreview(0, 1500, 8, "C:/out.jpg")},
 		{`renderHistoryStatePreview(2,"C:/prev.jpg",800,6)`, renderHistoryStatePreview(2, 800, 6, "C:/prev.jpg")},
-		// layer-transform (community as of the 2026-06-16 tier rollout)
+		// layer-transform (community tier)
 		{`fitLayerToDocument(false)`, fitLayerToDocument(false)},
 		{`fitLayerToDocument(true)`, fitLayerToDocument(true)},
 		{`scaleLayer(150,false)`, scaleLayer(150, false)},
@@ -324,7 +324,7 @@ func TestGaussianBlurGolden(t *testing.T) {
 		{`moveLayer(10,20,"delta")`, moveLayer(10, 20, "delta", 0, 0, 0, 0)},
 		{`moveLayer(0,0,"absolute",100,50)`, moveLayer(0, 0, "absolute", 100, 50, 0, 0)},
 		{`moveLayer(0,0,"center",0,0,200,150)`, moveLayer(0, 0, "center", 0, 0, 200, 150)},
-		// retouch (community as of the 2026-06-16 tier rollout)
+		// retouch (community tier)
 		{`applyContentAwareFill(true,false,false,false,100,"normal",false)`,
 			applyContentAwareFill(true, false, false, false, 100, "normal", false)},
 		{`applyContentAwareFill(false,true,true,true,80,"multiply",true)`,

@@ -28,7 +28,7 @@
  * standalone `Aply` event, at which point the snippet would silently
  * no-op.
  *
- * Group D audit verdict (2026-06-04): **MED**. Snippet uses legacy-
+ * Spec-vs-snippet verdict: **MED**. Snippet uses legacy-
  * but-functional event ID; capture uses the modern unified `Dlt +
  * Aply` form. Both events documented below; recommend migrating the
  * snippet to the captured form (which would unify apply-and-delete
@@ -60,7 +60,7 @@ export const applyMaskSpec: AmEventSpec = {
   ],
   versionNotes: [
     'Two AM-event forms accepted by PS 27.x: (a) top-level `Aply` event with `null=ref<Chnl/Chnl/Msk >` — the legacy / documented scripting form; (b) top-level `Dlt ` event with `null=ref<Chnl/Ordn/Trgt>` + `Aply=true` boolean — the modern UI-emitted form. The snippet uses (a); the capture shows (b).',
-    'Recommend (per Group D audit fix note) migrating the snippet to the captured `Dlt + Aply=true` form. Defer until a live verification session confirms the change still works; add a `.not.toContain("executeAction(cTID(\'Aply\')")` regression guard to lock the migration.',
+    'Recommend migrating the snippet to the captured `Dlt + Aply=true` form. Defer until a live verification session confirms the change still works; add a `.not.toContain("executeAction(cTID(\'Aply\')")` regression guard to lock the migration.',
   ],
   events: [
     {

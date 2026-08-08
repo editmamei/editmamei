@@ -1,5 +1,5 @@
 /**
- * Shared tool-handler helpers (audit finding 9, 2026-07-30).
+ * Shared tool-handler helpers.
  *
  * Before this module, three contracts were hand-copied across `src/tools/`:
  *

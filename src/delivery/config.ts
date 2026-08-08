@@ -28,7 +28,7 @@ export function resolveDeliveryConfig(
 }
 
 /**
- * Refuse a plaintext delivery origin (audit M2). The license key rides in the
+ * Refuse a plaintext delivery origin. The license key rides in the
  * `x-editmamei-license-key` request header and the content-key endpoint returns
  * the AES module key in the response body — neither may cross an `http://` origin.
  * `https` is required for any non-loopback host; `http://localhost` (and the

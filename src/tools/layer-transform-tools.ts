@@ -3,7 +3,7 @@
  *
  * Four positioning + transform tools: fit_layer_to_document, scale_layer,
  * move_layer, rotate_layer. All four are classified 'community' in
- * src/core/tool-tiers.ts as of the 2026-06-16 tier rollout (previously 'pro',
+ * src/core/tool-tiers.ts (previously 'pro',
  * in layer-transform-tools-pro.ts). Straightening / repositioning a layer is
  * a foundational photo-correction primitive, so it ships in CE; the file
  * therefore lives outside the *-pro.ts stub set and registers via the shared

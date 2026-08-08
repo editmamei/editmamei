@@ -2,7 +2,7 @@ package main
 
 import "testing"
 
-// Enum-rejection guards (audit M8/M9 + the QA follow-up). The Go core is the
+// Enum-rejection guards. The Go core is the
 // trust boundary: any slot that interpolates a caller string RAW into a JS
 // identifier (BlendMode.<x>, Justification.<x>, NoiseDistribution.<x>, the
 // NewDocumentMode.<x> expression) must be allow-listed HERE, not merely by the

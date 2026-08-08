@@ -104,7 +104,7 @@ const hostIntegration = existsSync(hostBinary) ? describe : describe.skip;
 hostIntegration('GoSnippetClient ⇄ dev CE host binary (community-only)', () => {
   it('refuses a Pro snippet — the CE host binary carries no Pro IP', async () => {
     // listActions is Pro (registry_pro.go, //go:build pro). selectSubject used to be
-    // the probe here but re-tiered to community in v0.22 — the host binary now BUILDS
+    // the probe here but is community tier — the host binary now BUILDS
     // it (see the community selectSubject test below).
     const client = new GoSnippetClient({ binaryPath: hostBinary });
     await expect(client.build('listActions', {})).rejects.toThrow(/unknown snippet/);
@@ -117,7 +117,7 @@ hostIntegration('GoSnippetClient ⇄ dev CE host binary (community-only)', () =>
   });
 
   it('builds selectSubject JSX — the re-tiered Sensei snippet + its community helpers resolve', async () => {
-    // selectSubject / selectSky re-tiered pro→community in v0.22: their emitters +
+    // selectSubject / selectSky are community tier: their emitters +
     // fragments moved to the community go-core binary, so the CE host binary now emits
     // them with the selection-type + selection-info helper slots filled.
     const client = new GoSnippetClient({ binaryPath: hostBinary });
@@ -134,7 +134,7 @@ hostIntegration('GoSnippetClient ⇄ dev CE host binary (community-only)', () =>
 const proBinIntegration = existsSync(proBinary) ? describe : describe.skip;
 proBinIntegration('GoSnippetClient ⇄ dev Pro-only binary', () => {
   it('does NOT carry selectSubject — Sensei re-tiered to community (host binary emits it now)', async () => {
-    // v0.22 re-tier: selectSubject's fragment left the pro-only blob (it's community
+    // selectSubject's fragment left the pro-only blob (it's community
     // now). Even though `-tags pro` compiles the community dispatch, tpl[SelSubject] is
     // absent from the pro-only blob, so this binary can't emit the autoCutout body —
     // the composite client routes selectSubject to the host binary instead.

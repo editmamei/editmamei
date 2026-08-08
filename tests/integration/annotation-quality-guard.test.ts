@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { ANNOTATED_PREVIEW_JPEG_QUALITY } from '@editmamei/utils/jpeg-quality.ts';
 
 /**
- * Perf-audit M5/M6 — the four annotated-preview `encode()` call sites
+ * The four annotated-preview `encode()` call sites
  * (ps_detect, ps_read_scene, ps_detect_landmarks, ps_resolve_placement) used to
  * each hand-pick their own jpeg-js quality literal (88/88/90/90). This is a
  * SOURCE-level guard (not a behavioral one — jpeg-js quality isn't recoverable

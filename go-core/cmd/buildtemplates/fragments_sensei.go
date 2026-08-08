@@ -2,8 +2,8 @@ package main
 
 import "editmamei-core/internal/vault"
 
-// Sensei selection fragments (selectSubject / selectSky), RE-TIERED
-// pro→community 2026-07-07 (v0.22 CE/Pro re-tier). Moved VERBATIM from
+// Sensei selection fragments (selectSubject / selectSky), community tier.
+// Moved VERBATIM from
 // fragments_pro.go so the community generator's templates.enc carries them and
 // the CE binary emits them. No build tag — compiled into every edition; added
 // via init() (mirrors fragments_pro.go's merge) after the fragments map var

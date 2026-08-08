@@ -19,7 +19,7 @@
  * regen in `loadVerifiedModule`) stages into a private per-process `.tmp-*` dir
  * first and swaps it into place with `renameSync`, never writing straight into a
  * dir a sibling process or a reader might be observing — see the staging comments
- * on `installModule` and `loadVerifiedModule` (DL-3 / ML-2, 2026-07-27 review).
+ * on `installModule` and `loadVerifiedModule`.
  */
 
 import { join, dirname } from 'node:path';
@@ -59,7 +59,7 @@ const TMP_PREFIX = '.tmp-';
 /** A staging dir older than this is a crashed-mid-install leftover — safe to reap. */
 const TMP_STALE_MS = 5 * 60 * 1000;
 
-/** The single paid SKU today (licensing.md: one Pro tier). */
+/** The single paid SKU today (one Pro tier). */
 export const PRO_SKU = 'pro';
 
 /** The handler-bundle entry inside an installed module dir (matches build:pro-module). */
@@ -71,7 +71,7 @@ const MODULE_MANIFEST = 'manifest.json';
 /**
  * The retained encrypted artifact inside an installed version dir. Kept so the
  * boot path can re-verify (sha256 + Ed25519) and regenerate the decrypted tree
- * from a trusted source on every load (audit H1).
+ * from a trusted source on every load.
  */
 const MODULE_ARTIFACT = 'artifact.enc';
 
@@ -88,7 +88,7 @@ export interface InstalledModule {
   /**
    * Base64 AES-256 content key. RETAINED (not wiped after install) because the
    * BOOT path re-decrypts the retained, signature-verified artifact to regenerate
-   * the trusted tree on every load (loadVerifiedModule — audit H1/M1). It buys an
+   * the trusted tree on every load (loadVerifiedModule). It buys an
    * attacker nothing on its own: the decrypted code already sits beside it on disk,
    * and the key is useless without the pinned-Ed25519-verified artifact.
    */
@@ -96,7 +96,7 @@ export interface InstalledModule {
   /**
    * Detached base64 Ed25519 signature over (sku, version, sha256) — persisted so
    * the boot path can re-verify the artifact against the pinned key, not just at
-   * install time (audit H1). A pointer without it is treated as malformed.
+   * install time. A pointer without it is treated as malformed.
    */
   sig: string;
   /**
@@ -147,7 +147,7 @@ export function moduleBinDir(sku: string, version: string, opts: LicenseStoreOpt
   return join(installedModuleDir(sku, version, opts), 'bin');
 }
 
-/** Absolute path of an installed version's retained encrypted artifact (audit H1). */
+/** Absolute path of an installed version's retained encrypted artifact. */
 export function moduleArtifactPath(
   sku: string,
   version: string,
@@ -302,7 +302,7 @@ export function installModule(
   try {
     installBundle(blob, rec.content_key, tmpDir);
     // Retain the encrypted, signature-bound artifact beside the unpacked tree so
-    // every boot can re-verify it + regenerate the tree (audit H1). 0600 owner-only.
+    // every boot can re-verify it + regenerate the tree. 0600 owner-only.
     writeFileSync(join(tmpDir, MODULE_ARTIFACT), Buffer.from(blob), { mode: 0o600 });
   } catch (err) {
     rmSync(tmpDir, { recursive: true, force: true });
@@ -451,7 +451,7 @@ export interface VerifiedModuleLocation {
  * verified `sha256Hex(blob) === rec.sha256` moments earlier, from the exact same
  * file; re-hashing it again here would just re-read identical bytes.
  *
- * Concurrency (mirrors the DL-3 note on the regen path below): this function
+ * Concurrency (mirrors the note on the regen path below): this function
  * only READS `dir`. Claude Desktop + Claude Code can boot together, so a
  * concurrent sibling's regen can be mid-rename-swap while this runs — a torn
  * read of a dir being swapped out from under us looks exactly like a genuine
@@ -564,7 +564,7 @@ function listFilesRecursive(dir: string): string[] {
 }
 
 /**
- * Boot-time integrity gate (audit H1). Provisioning verifies the artifact's
+ * Boot-time integrity gate. Provisioning verifies the artifact's
  * Ed25519 signature ONCE, at install. But the host re-imports the decrypted
  * `pro-handlers.mjs` and spawns the unpacked go-core binary on EVERY boot from a
  * dir that another local process / malware running as the user could overwrite
@@ -643,7 +643,7 @@ export function loadVerifiedModule(
     // handlers + spawned binary are exactly the signed bytes, closing the
     // install→boot TOCTOU. GCM-authenticated; a tampered artifact throws here.
     //
-    // DL-3: Claude Desktop + Claude Code share `~/.editmamei` and can boot together,
+    // Claude Desktop + Claude Code share `~/.editmamei` and can boot together,
     // so two processes can regenerate the SAME live `dir` at once. Writing straight
     // into `dir` (what `installBundle` would do if pointed at it directly) lets one
     // process's in-progress unpack be imported mid-write by the other — a torn

@@ -1,5 +1,5 @@
 /**
- * ps_shape — vector shape layers (m4a Tier-3, dev-tier).
+ * ps_shape — vector shape layers.
  *
  * Pins the TS→snippet (name, params) forwarding contract. The AM shape descriptors
  * (Rctn/Elps/Ln) are verified live against real Photoshop; these tests cover the

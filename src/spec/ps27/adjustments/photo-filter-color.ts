@@ -18,7 +18,7 @@
  * **Critical color-object shape choice:** PS 2026 emits the picker
  * value as an `HSBC` color object (Hue/Saturation/Brightness), NOT as
  * `RGBC`. The current snippet uses `RGBColor`/`RGBC` with Rd/Grn/Bl
- * doubles. Group A audit (STEP 10) classified this LOW — both color
+ * doubles. Verdict: LOW — both color
  * classes are accepted by PS on the photoFilter `Clr ` slot, and the
  * inner key sets differ in semantics not in correctness.
  *

@@ -32,7 +32,7 @@ function bytesRes(status: number, bytes: Uint8Array): DeliveryResponse {
 }
 
 /**
- * A DeliveryResponse whose body is a real streamed ReadableStream (DL-2 tests).
+ * A DeliveryResponse whose body is a real streamed ReadableStream.
  * `arrayBuffer()` throws — fetchArtifact must never fall back to it when a
  * `body` is present, so a stray call is a test failure, not a silent buffer.
  */
@@ -121,7 +121,7 @@ describe('DeliveryClient', () => {
     expect(Array.from(out)).toEqual([1, 2, 3, 250, 251]);
   });
 
-  describe('artifact byte cap (DL-2 — enforced during the fetch, not after)', () => {
+  describe('artifact byte cap (enforced during the fetch, not after)', () => {
     it('downloads a streamed under-cap body chunk-by-chunk and reassembles it', async () => {
       const bytes = new Uint8Array([9, 8, 7, 6, 5, 4]);
       const client = new DeliveryClient({

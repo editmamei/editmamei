@@ -429,7 +429,7 @@ func init() {
     };
   `,
 
-		// Shared multi-mode filter skeleton (m4b, 2026-06-29). Used by applyStylize/
+		// Shared multi-mode filter skeleton. Used by applyStylize/
 		// applyRender/applyOther/applyDenoise/applyBlurAdv. Same shape as the Distort
 		// skeleton but the filter label is a slot so one fragment serves every family.
 		// Slots: 1=getMinimalContextInfo, 2=helperFunctions, 3=duplicateForOp,

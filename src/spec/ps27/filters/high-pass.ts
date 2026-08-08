@@ -13,8 +13,8 @@
  * same `HghP` charID via the well-known camelCase-stringID-of-old-
  * charID-mnemonic correspondence. Equivalent in practice.
  *
- * **OK severity — capture confirms the snippet works.** This is the win
- * the Group B audit hoped for: a forum-lore stringID that DOES correctly
+ * **OK severity — capture confirms the snippet works.** This is the good
+ * case: a forum-lore stringID that DOES correctly
  * resolve to the canonical charID.
  */
 

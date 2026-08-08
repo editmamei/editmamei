@@ -2,7 +2,7 @@
  * Camera Raw Filter (Filter > Camera Raw Filter) as a re-editable Smart Filter.
  *
  * Ground truth: PS 27.x Windows, Camera Raw 18.2.2, captured 2026-06-29
- * across a 10-step capture session (STEP-01..10).
+ * across a 10-step capture session.
  *
  * This spec pins the ACR `Fltr` descriptor (91 distinct charID keys were
  * captured; this models the high/med-confidence, user-meaningful subset the
@@ -12,12 +12,12 @@
  * TWO invocation shapes, both captured:
  *   event[0] APPLY    — executeAction(stringID("Adobe Camera Raw Filter"), desc, NO)
  *                       where `desc` carries the handshake + ACR keys DIRECTLY.
- *                       (STEP-01 L402-422.) Applied to the active Smart Object.
+ *                       Applied to the active Smart Object.
  *   event[1] RE-EDIT  — executeAction(charID("setd"), desc, NO) where
  *                       desc.null = reference -> filterFX index 1 on target Lyr,
  *                       desc.filterFX = object(class filterFX){ Fltr = object(
  *                       class "Adobe Camera Raw Filter"){ ...ACR keys... } }.
- *                       (STEP-02..10.) The descriptor carries the FULL prior
+ *                       The descriptor carries the FULL prior
  *                       state — the tool's re-edit mode reads current `Fltr`,
  *                       mutates only the requested keys, and re-emits the whole
  *                       object so every other slider survives.
@@ -127,7 +127,7 @@ const basicFields: AmField[] = [
   bi('Clarity 2012', 'Cl12', '-12', 'Clarity (local contrast).'),
   bi('Dehaze', 'Dhze', '11', 'Dehaze.'),
   bi('Vibrance', 'Vibr', '9', 'Vibrance (saturation of muted colors).'),
-  // NOTE: global Saturation key intentionally omitted — never captured. See spike doc.
+  // NOTE: global Saturation key intentionally omitted — never captured.
 ];
 
 // ── Parametric tone curve (point curve is a putList; not captured) ──────────
@@ -279,7 +279,7 @@ export const cameraRawFilterSpec: AmEventSpec = {
       index: 1,
       event: stringID('Adobe Camera Raw Filter'),
       comment:
-        'APPLY: the ACR handshake + slider keys are carried DIRECTLY in the executeAction descriptor and applied to the active Smart Object as a Smart Filter (STEP-01).',
+        'APPLY: the ACR handshake + slider keys are carried DIRECTLY in the executeAction descriptor and applied to the active Smart Object as a Smart Filter.',
       descriptor: {
         classID: charID('null'),
         fields: acrFields,
@@ -289,7 +289,7 @@ export const cameraRawFilterSpec: AmEventSpec = {
       index: 2,
       event: charID('setd'),
       comment:
-        'RE-EDIT: set the existing ACR Smart Filter via filterFX index 1. The `Fltr` sub-object (class "Adobe Camera Raw Filter") carries the full re-emitted state (STEP-02..10).',
+        'RE-EDIT: set the existing ACR Smart Filter via filterFX index 1. The `Fltr` sub-object (class "Adobe Camera Raw Filter") carries the full re-emitted state.',
       descriptor: {
         classID: charID('null'),
         fields: [

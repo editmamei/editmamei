@@ -90,8 +90,8 @@ func init() {
     };
   `,
 
-		// layer-transform family (move/rotate/scale/fit). Community-tier as of the
-		// 2026-06-16 tier rollout (previously Pro, in fragments_pro.go). Slot orders
+		// layer-transform family (move/rotate/scale/fit). Community tier
+		// (previously Pro, in fragments_pro.go). Slot orders
 		// documented at each emitter in go-core/layer_transform.go.
 		vault.LtFit: `
     %s
@@ -249,7 +249,7 @@ func init() {
 
 		// transformLayerMatrix — AM Trnf on the active layer (Lyr/Ordn/Trgt). Skew
 		// (mode=skew, conditional Skew Pnt obj) and free-numeric (mode=free) differ
-		// only by that sub-object. Auto-promotes the background. STEP-01 / STEP-04.
+		// only by that sub-object. Auto-promotes the background.
 		// Slots: 1=Ofst Hrzn, 2=Ofst Vrtc, 3=Wdth #Prc, 4=Hght #Prc, 5=skew block,
 		// 6=Angl #Ang, 7=mode(jsLit), 8=scaleX, 9=scaleY, 10=rotate, 11=skewH, 12=skewV.
 		vault.LtMatrix: `
@@ -300,7 +300,7 @@ func init() {
 		// warpLayer — AM Trnf carrying a nested warp obj (preset envelope warp).
 		// bounds is COMPUTED from the live layer.bounds (the warp envelope rect);
 		// uOrder=4/vOrder=2 are constants emitted verbatim. Auto-promotes the
-		// background. STEP-10..16. Slots: 1=warpStyle, 2=warpValue(bend),
+		// background. Slots: 1=warpStyle, 2=warpValue(bend),
 		// 3=warpPerspective(hDistort), 4=warpPerspectiveOther(vDistort),
 		// 5=warpRotate orientation charID, 6=style(jsLit), 7=bend, 8=hDistort,
 		// 9=vDistort, 10=orientation(jsLit).
@@ -368,7 +368,7 @@ func init() {
 		// custom mesh can PIN one edge (hold its control column/row at the home grid)
 		// while deforming the rest — so the warp is welded to that edge by
 		// construction (verified by reading back layer.bounds). Ground truth:
-		// STEP-17..20 of m2-transform-warp-measure (quilt structure: deformNumCols =
+		// Ground truth: ScriptListener capture (quilt structure: deformNumCols =
 		// 3*cells+1, evenly-spaced home grid, slices at cell boundaries, meshPoints
 		// row-major). Two drive modes, both feeding ONE control grid into the same
 		// quilt descriptor: high-level (compute the grid from pin_edge + lift +

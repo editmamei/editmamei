@@ -5,7 +5,7 @@ import "editmamei-core/internal/vault"
 func init() {
 	addFragments(map[string]string{
 		// retouch family — content-aware fill / patch / content-aware move.
-		// Community-tier as of the 2026-06-16 tier rollout (previously Pro, in
+		// Community-tier (previously Pro, in
 		// fragments_pro.go). Slot orders documented at each emitter in
 		// go-core/retouch.go.
 		vault.RtCAF: `

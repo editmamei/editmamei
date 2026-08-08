@@ -246,7 +246,7 @@ describe('redactHomedirIn', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// computeResultBytes (audit finding 11 — result_bytes without a full
+// computeResultBytes (result_bytes without a full
 // stringify of embedded base64/text payloads)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1031,7 +1031,7 @@ describe('SessionLog', () => {
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Held file handle (audit finding 11)
+  // Held file handle
   // ──────────────────────────────────────────────────────────────────────────
 
   it('reuses one open() call across multiple appends instead of one per line', async () => {
@@ -1182,7 +1182,7 @@ describe('SessionLog', () => {
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Retry-detection key (audit finding 11 — capped, not raw, args)
+  // Retry-detection key (capped, not raw, args)
   // ──────────────────────────────────────────────────────────────────────────
 
   it('known: retry_signal is keyed on sanitized (capped) args, so two different ps_execute_script calls whose code shares the same first 32 chars AND overall length read as a retry', async () => {

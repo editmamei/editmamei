@@ -1,5 +1,5 @@
 /**
- * ps_apply_image + ps_calculations — channel-compose tools (m4a Tier-2).
+ * ps_apply_image + ps_calculations — channel-compose tools.
  *
  * These unit tests pin the TS→snippet (name, params) forwarding contract. The
  * AM Apply Image / Calculations descriptors and the Clcn blend charIDs are

@@ -19,7 +19,7 @@
  *     gradientsInterpolationMethod = Lnr enum
  *   }
  *
- * Group A audit (STEP 16) classified OK — `Rvrs`/`Dthr` are the
+ * Verdict: OK — `Rvrs`/`Dthr` are the
  * canonical keys and match the snippet. Interpolation method choice
  * is not currently exposed by the snippet schema.
  *

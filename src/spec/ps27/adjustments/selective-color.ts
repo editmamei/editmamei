@@ -17,7 +17,7 @@
  *     ]
  *   }
  *
- * Group A audit (STEP 14) classified MEDIUM: the snippet emits a
+ * Verdict: MEDIUM — the snippet emits a
  * top-level `Mthd → correctionMethod` enum (relative/absolute) on the
  * typeDesc, but the captured ground truth has NO Mthd anywhere. PS may
  * default to Relative when Mthd is absent; the snippet\'s emission likely

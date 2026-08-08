@@ -68,7 +68,7 @@ export const CANNED_MESH: DetectionResult = {
 /** Returns the canned detections gated by the requested modalities, echoing opts. */
 export class FakeDetectionClient implements DetectionClient {
   public lastOpts?: DetectOptions;
-  /** The `decoded` image detectActiveDoc threaded into this call (perf-audit H4) —
+  /** The `decoded` image detectActiveDoc threaded into this call —
    *  a test can assert on this to prove the caller decoded once and passed it down,
    *  rather than this fake having to decode anything itself. */
   public lastDecoded?: DecodedImage;

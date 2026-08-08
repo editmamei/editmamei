@@ -409,7 +409,7 @@ describe('CE tool surface leak guard', () => {
   // factories (selection-tools-pro, preview-tools-pro, action-tools-pro,
   // template-tools-pro) are excluded — their content is stripped at build
   // time for the CE bundle and never reaches CE users. As of the 2026-06-16
-  // tier rollout the layer-transform + retouch surfaces are community-tier
+  // The layer-transform + retouch surfaces are community-tier
   // (included below) and the whole template surface is Pro (excluded).
   const ceCandidates = [
     ...createDocumentTools(conn, sc),

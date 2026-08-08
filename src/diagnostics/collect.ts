@@ -7,7 +7,7 @@
  * `ps_report_problem` tool and `editmamei report` CLI write it to the
  * user's Downloads folder so they can attach it to a bug report.
  *
- * Privacy contract (telemetry-and-settings.md §2 — same hard line as telemetry):
+ * Privacy contract (see docs/privacy.md, "Diagnostic reports" — same hard line as telemetry):
  *   - NO image/document content, NO tool arguments, NO full filesystem paths.
  *   - Every free-text line runs through `sanitizeMessage` (paths→basenames,
  *     home-dir redaction). Desktop-log lines additionally have JSON-RPC argument

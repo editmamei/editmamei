@@ -1,5 +1,5 @@
 /**
- * WO-1 — the boot-path staleness refresh.
+ * The boot-path staleness refresh.
  *
  * Temporal behavior gets temporal tests: every boundary of the
  * refresh window and the grace window (1 day / 7 days since 2026-07-22; was
@@ -379,7 +379,7 @@ describe('refreshIfStale', () => {
     expect(urls.some((u) => u.includes('/activate'))).toBe(false);
   });
 
-  // WO-7 clock-skew guard: a last_validated_at implausibly far in the FUTURE
+  // Clock-skew guard: a last_validated_at implausibly far in the FUTURE
   // (the clock was set ahead at write time, then corrected) would otherwise read
   // as a negative — perpetually "fresh" — age and never re-validate. It must
   // force a refresh, via the BACKGROUND path (still entitled → no boot latency).

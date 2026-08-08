@@ -64,7 +64,7 @@ func convertToSmartObject() string {
 // newSmartObjectViaCopy — "New Smart Object via Copy" (placedLayerMakeCopy): makes
 // a new smart object that is an independent copy of the active SO, unlinked from the
 // original's shared source. Requires the active layer already be a smart object.
-// Ground truth: m4a STEP-02.
+// Ground truth: ScriptListener capture.
 func newSmartObjectViaCopy() string {
 	return fmt.Sprintf(tpl[vault.SONewViaCopy], getContextInfo())
 }

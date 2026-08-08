@@ -9,9 +9,9 @@ import { OnnxLandmarkDetectionClient } from '../detection/landmark-detection-cli
 import { resolveExpectedPlacement, PLACEMENT_SCHEMA } from '../perception/grounding-locate.js';
 
 /**
- * ps_shape (m4a Tier-3) — create a real vector SHAPE layer (rectangle / ellipse /
- * line), geometry baked in ABSOLUTE document pixels. Ground truth: m4a STEP-29
- * (rectangle/rounded = Rctn), STEP-31 (ellipse = Elps), STEP-33 (line = Ln).
+ * ps_shape — create a real vector SHAPE layer (rectangle / ellipse /
+ * line), geometry baked in ABSOLUTE document pixels. Ground truth: ScriptListener
+ * captures (rectangle/rounded = Rctn, ellipse = Elps, line = Ln).
  *
  * TWO ways to aim it:
  *  - raw document-pixel coordinates (only as good as the model's ability to choose

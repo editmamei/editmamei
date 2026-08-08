@@ -158,7 +158,7 @@ describe('OnnxLandmarkDetectionClient', () => {
     expect(r.objects?.[0].label).toBe('dog');
   });
 
-  it('reuses a caller-supplied decoded image instead of decoding again (perf-audit H4)', async () => {
+  it('reuses a caller-supplied decoded image instead of decoding again', async () => {
     // detectActiveDoc decodes the export ONCE and threads it through client.detect().
     // When that decoded image is supplied, this client must NOT call its own
     // decodeJpeg — composing detectFaces + detectObjects + the landmark mesh must

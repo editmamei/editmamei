@@ -49,7 +49,7 @@ export const REFRESH_AFTER_MS = 24 * 60 * 60 * 1000;
 export const EXPIRED_REFRESH_TIMEOUT_MS = 5_000;
 
 /**
- * Clock-skew tolerance (WO-7). A `last_validated_at` more than this far in the
+ * Clock-skew tolerance. A `last_validated_at` more than this far in the
  * FUTURE means the machine clock was wrong when the record was written (set
  * ahead, then corrected) — the resulting negative age would otherwise read as
  * "fresh" indefinitely, so the record would never re-validate and a server-side
@@ -83,13 +83,13 @@ export function evaluateEntitlement(rec: LicenseRecord | null, now: number): Ent
   if (!Number.isFinite(last) || now - last > GRACE_MS) {
     return { entitled: false, reason: 'grace-expired' };
   }
-  // Backward-clock guard (DL-1): a persisted monotonic high-water-mark means
+  // Backward-clock guard: a persisted monotonic high-water-mark means
   // rolling the clock back can't manufacture a fresh-looking record. Without
   // this, `now - last` above is computed against whatever the (possibly
   // rolled-back) clock now reports, so setting the clock BEFORE
   // `last_validated_at` would read as a negative — and so perpetually
   // "fresh" — age, granting Pro offline forever. Symmetric to the FUTURE-skew
-  // tolerance in `refreshIfStale` (WO-7): same constant, opposite direction.
+  // tolerance in `refreshIfStale`: same constant, opposite direction.
   // A legacy record with no `high_water_mark` yet (written before this field
   // existed) has no trustworthy floor to compare against — deliberately NOT
   // falling back to `last_validated_at` here (see `nextHighWaterMark`'s
@@ -101,7 +101,7 @@ export function evaluateEntitlement(rec: LicenseRecord | null, now: number): Ent
       return { entitled: false, reason: 'grace-expired' };
     }
   }
-  // Known limitation (DL-1 review, deferred): a FORWARD clock skew that coincides
+  // Known limitation (deferred): a FORWARD clock skew that coincides
   // with a license write bakes a future value into the monotonic high-water-mark
   // (`nextHighWaterMark` never regresses), which then denies a LEGITIMATE user for
   // ~(skew − tolerance) after they correct their clock. This can't be clamped away:
@@ -172,7 +172,7 @@ export async function activate(key: string, ops: LicenseOps = {}): Promise<Licen
     device_hash: deviceHash,
     display_key: v.display_key,
     last_validated_at: new Date(nowMs).toISOString(),
-    // DL-1: seed the monotonic high-water-mark from whatever this device
+    // Seed the monotonic high-water-mark from whatever this device
     // already recorded (if any) plus now.
     high_water_mark: nextHighWaterMark(existing, nowMs),
   };
@@ -188,7 +188,7 @@ export interface RefreshIfStaleOptions extends LicenseOps {
 }
 
 /**
- * Boot-path staleness refresh (WO-1). Before this,
+ * Boot-path staleness refresh. Before this,
  * `last_validated_at` was written only by `activate()` and the CLI status
  * command — the server boot path never re-validated, so an online Pro
  * customer degraded to CE 30 days after activation and stayed there. The
@@ -232,7 +232,7 @@ export async function refreshIfStale(ops: RefreshIfStaleOptions = {}): Promise<v
 
   const last = Date.parse(rec.last_validated_at);
   const age = Number.isFinite(last) ? now - last : Infinity;
-  // Clock-skew guard (WO-7): a timestamp implausibly far in the FUTURE would
+  // Clock-skew guard: a timestamp implausibly far in the FUTURE would
   // read as a negative — and so perpetually "fresh" — age, leaving the record
   // never re-validated behind a wrong clock. Force a refresh instead. The record
   // is still entitled in this case (evaluateEntitlement can't grace-expire a
@@ -298,7 +298,7 @@ export async function refresh(ops: LicenseOps = {}): Promise<LicenseRecord | nul
     expires_at: v.expires_at,
     display_key: v.display_key,
     last_validated_at: new Date(nowMs).toISOString(),
-    // DL-1: never let the high-water-mark move backward, even if this
+    // Never let the high-water-mark move backward, even if this
     // refresh's clock reading is behind what was already recorded.
     high_water_mark: nextHighWaterMark(rec, nowMs),
   };

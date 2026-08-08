@@ -103,7 +103,7 @@ func init() {
 		// Mirrors selectColorRange's channel-stash selection-type pattern; the
 		// preset-specific descriptor block (slot 4) is built by the emitter. Slots:
 		// 1=selectionTypeHelpers, 2=getSelectionInfo, 3=selType(jsLit), 4=descriptor
-		// block, 5=preset(jsLit, result). Ground truth: m1-selection STEP-35.
+		// block, 5=preset(jsLit, result). Ground truth: ScriptListener capture.
 		vault.SelClrPre: `
     %s
     %s
@@ -502,8 +502,9 @@ func init() {
 		// duplicateChannel (s20) — DOM duplicate of a named alpha channel within the same
 		// document. Skips component channels (RGB/CMYK/Lab) when matching the source name.
 		// Optional new name; PS auto-names ("<src> copy") when omitted. Ground truth:
-		// m4a STEP-12 (Dplc Chnl). DOM channel.duplicate() is the documented, reliable
-		// path (preferred over AM ref-building per the convert_image_mode lesson). Slots:
+		// a ScriptListener capture (Dplc Chnl). DOM channel.duplicate() is the
+		// documented, reliable path (preferred over AM ref-building per the
+		// convert_image_mode lesson). Slots:
 		// 1=getMinimalContextInfo, 2=channelName(jsLit), 3=newName(jsLit or 'null'),
 		// 4=hasNewName(bool).
 		vault.ChanDup: `
@@ -546,7 +547,7 @@ func init() {
 
 		// deleteChannel (s21) — DOM remove of a named channel. Alpha-only guard: refuses
 		// to delete component (RGB/CMYK/Lab) channels, which would change the image mode /
-		// corrupt the document. Ground truth: m4a STEP-13 (Dlt Chnl). Slots:
+		// corrupt the document. Ground truth: ScriptListener capture (Dlt Chnl). Slots:
 		// 1=getMinimalContextInfo, 2=channelName(jsLit).
 		vault.ChanDel: `
     %s
@@ -586,7 +587,7 @@ func init() {
 		// applyImage (ci1) — AM AppI: composite a source (layer + channel) onto the
 		// ACTIVE layer via a calculation blend mode. Destructive pixel bake, so the
 		// emitter prepends duplicateForOp (auto-duplicate-first) — the op lands on a
-		// copy by default. Ground truth: m4a STEP-09 (AppI → With:Clcl{ T:ref(Chnl,Lyr),
+		// copy by default. Ground truth: ScriptListener capture (AppI → With:Clcl{ T:ref(Chnl,Lyr),
 		// Clcl:Clcn enum }). __amSrcRef builds the channel+layer reference: channel by
 		// enum charID (RGB/Rd/Grn/Bl) or by name (alpha); layer merged (Mrgd) or by name.
 		// Slots: 1=getContextInfo, 2=duplicateForOp fragment, 3=chanCharID(jsLit),
@@ -647,7 +648,7 @@ func init() {
   `,
 
 		// calculations (ci2) — AM Mk Chnl Using Clcl: blend TWO sources (each layer +
-		// channel) into a NEW alpha channel. Ground truth: m4a STEP-10 (Mk{ Nw:class Chnl,
+		// channel) into a NEW alpha channel. Ground truth: ScriptListener capture (Mk{ Nw:class Chnl,
 		// Usng:Clcl{ T:ref(src1), Clcl:Clcn enum, Src2:ref(src2) }}). Reuses the same
 		// __amSrcRef builder as applyImage. Slots: 1=getContextInfo, 2=s1ChanCharID(jsLit),
 		// 3=s1AlphaName(jsLit|null), 4=s1LayerName(jsLit|null), 5=s2ChanCharID(jsLit),

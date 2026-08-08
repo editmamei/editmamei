@@ -28,7 +28,7 @@
  * - `replaceLayer` is for re-place-into-existing-slot scenarios. Out
  *   of scope for the current "place a new image" tool contract.
  *
- * Group D audit verdict (2026-06-04): **MED**. Missing Wdth/Hght
+ * Spec-vs-snippet verdict: **MED**. Missing Wdth/Hght
  * causes UX divergence (native size vs auto-fit) but is not silently
  * broken. Fix prescribed: add optional `scale_percent` schema arg
  * (default: omit → PS uses 100% / native size). Optionally compute

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { __installProcessHandlersForTests } from '@editmamei/index.ts';
 
 /**
- * BLOCK-4 in the launch-readiness review: the MCP server is a long-lived
+ * The MCP server is a long-lived
  * stdio subprocess of the AI client. Any stray unhandled rejection or
  * uncaught exception killed the process abruptly with no diagnostic.
  *
@@ -15,7 +15,7 @@ import { __installProcessHandlersForTests } from '@editmamei/index.ts';
  * diagnostic was emitted; we do NOT actually crash the test runner.
  */
 
-describe('process-level safety nets (BLOCK-4)', () => {
+describe('process-level safety nets', () => {
   let stderrSpy: ReturnType<typeof vi.spyOn>;
   let exitSpy: ReturnType<typeof vi.spyOn>;
   const installed: Array<{ event: string; listener: (...args: unknown[]) => void }> = [];

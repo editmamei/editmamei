@@ -21,7 +21,7 @@
  *
  * Staleness-driven RE-validation deliberately does NOT live here: the
  * matching-cached-key early path below skips Polar entirely (seat safety),
- * and index.ts calls `refreshIfStale()` (license/entitlement.ts, WO-1) right
+ * and index.ts calls `refreshIfStale()` (license/entitlement.ts) right
  * after this function on every boot — env key or not — so both install
  * channels share one refresh chokepoint instead of duplicating the policy.
  */
