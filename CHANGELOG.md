@@ -10,6 +10,19 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-08-08
+
+### Fixed
+
+- **Editmamei can now be listed in the official MCP registry.** The published
+  package was missing the `mcpName` field, which the registry reads to confirm
+  that an npm package and a registry entry belong to the same project.
+  - The build assembles the published `package.json` from an explicit list of
+    fields. `mcpName` was not on that list, so it was dropped from every
+    release up to 1.0.2 even though the repository declared it.
+  - Published npm versions cannot be changed, so the field appears for the
+    first time in this release.
+
 ## [1.0.2] — 2026-08-08
 
 ### Fixed
