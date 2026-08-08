@@ -227,6 +227,60 @@ describe('skills/ leak guard', () => {
 });
 
 /**
+ * docs/ (getting-started.md, faq.md, installation.md, privacy.md,
+ * pro-features.md, roadmap.md, and the docs/engineering/ subtree) ships
+ * in the npm tarball and is read directly by users and by anyone
+ * auditing the public repo on GitHub. Same invariant as the README: no
+ * 'dev' / 'none'-tier tool name may appear in any docs markdown file.
+ */
+describe('docs/ leak guard', () => {
+  const docsDir = join(REPO_ROOT, 'docs');
+  const docFiles = listFilesRecursive(docsDir).filter((p) => /\.md$/i.test(p));
+
+  it('finds at least one docs file (so the test is actually scanning something)', () => {
+    expect(
+      docFiles.length,
+      'No markdown files found under docs/. Either docs/ was deleted or the leak guard would silently pass on an empty scan.'
+    ).toBeGreaterThan(0);
+  });
+
+  it("no 'dev'-tier tool name appears in any docs file", () => {
+    const devTools = Object.entries(TOOL_TIERS)
+      .filter(([, tier]) => tier === 'dev')
+      .map(([name]) => name);
+    const leaks: string[] = [];
+    for (const file of docFiles) {
+      const content = readFileSync(file, 'utf8');
+      for (const name of devTools) {
+        if (containsToolName(content, name)) leaks.push(`${file}: ${name}`);
+      }
+    }
+    expect(
+      leaks,
+      `'dev'-tier tool names found in docs/: ${leaks.join('; ')}. ` +
+        `docs/ ships in the npm tarball and is read directly by users — ` +
+        `mentioning a 'dev'-tier tool documents something the user can't ` +
+        `actually invoke. Either promote the tool to 'community' / 'pro' ` +
+        `(after live verification) or strip the mention until promotion.`
+    ).toEqual([]);
+  });
+
+  it("no 'none'-tier tool name appears in any docs file", () => {
+    const noneTools = Object.entries(TOOL_TIERS)
+      .filter(([, tier]) => tier === 'none')
+      .map(([name]) => name);
+    const leaks: string[] = [];
+    for (const file of docFiles) {
+      const content = readFileSync(file, 'utf8');
+      for (const name of noneTools) {
+        if (containsToolName(content, name)) leaks.push(`${file}: ${name}`);
+      }
+    }
+    expect(leaks, `'none'-tier tool names found in docs/: ${leaks.join('; ')}.`).toEqual([]);
+  });
+});
+
+/**
  * The ps_overview tool's markdown body ships in dist/ as part of
  * both CE and Pro bundles (the tool is 'community' tier). It is
  * returned verbatim to the LLM when called. Same invariant as the
