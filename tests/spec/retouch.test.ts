@@ -90,7 +90,7 @@ describe.skipIf(!goCoreBinaryAvailable)('spec: retouch/content-aware-fill', () =
   });
 
   it('does NOT use the deprecated `cafTM` event ID from forum lore', () => {
-    // Roadmap §3.4 mentioned "cafTM" — PS 27.x emits standard Fl, not cafTM.
+    // Older planning notes mentioned "cafTM" — PS 27.x emits standard Fl, not cafTM.
     // Regression guard if a future refactor reaches for the forum-lore key.
     expect(jsx).not.toContain("cTID('cafT')");
     expect(jsx).not.toContain("sTID('cafTM')");

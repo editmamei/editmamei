@@ -34,10 +34,10 @@ export interface PhotoshopConnectionOptions {
   /** Injected clock (tests). Defaults to Date.now. */
   now?: () => number;
   /**
-   * Injected host (tests). Defaults to resolving the real one, which is also
-   * what makes construction throw where Photoshop cannot exist — supplying a
-   * host deliberately bypasses that, so platform-independent behaviour can be
-   * exercised anywhere.
+   * Injected host (tests). Defaults to resolving the real one — which
+   * succeeds on every OS, handing back inert ports where Photoshop cannot
+   * exist. Supplying a host lets a test exercise platform-specific behaviour
+   * anywhere.
    */
   host?: HostPlatform;
 }
@@ -76,9 +76,8 @@ export class PhotoshopConnection {
   constructor(opts: PhotoshopConnectionOptions = {}) {
     this.logger = new Logger('PhotoshopConnection');
     this.now = opts.now ?? Date.now;
-    // Resolving throws on a platform Photoshop does not exist for. Session
-    // builds this lazily so CLI subcommands needing no Photoshop stay usable
-    // there.
+    // Resolution succeeds anywhere; on a platform Photoshop does not exist
+    // for, the ports it hands back refuse every call with the reason.
     this.host = opts.host ?? resolveHostPlatform();
   }
 

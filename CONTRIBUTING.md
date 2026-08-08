@@ -94,6 +94,14 @@ Useful before your first non-trivial change:
 All logging goes to stderr, via `src/utils/logger.ts`. stdout is the MCP JSON-RPC channel, so a
 stray `console.log` corrupts the protocol.
 
+### Engineering notes
+
+The hard-won conventions and landmines behind the code — the ExtendScript wrapper contract, the
+ActionManager descriptor gotchas, and the tool-design rules (consolidation, auto-duplicate-first,
+context return, the MCP surface contract) — live under [`docs/engineering/`](docs/engineering/).
+Read the relevant one before touching `src/api/**`, `go-core/**`, or `src/tools/**`; the source
+comments in those areas point back to specific sections.
+
 ## Code conventions
 
 - TypeScript is strict ESM. Relative imports carry a `.js` extension even though the sources are
@@ -103,8 +111,9 @@ stray `console.log` corrupts the protocol.
 - Match the surrounding code. Comment density, naming, and idiom should look like the file you
   are editing rather than like a different project.
 
-If you use a coding agent, point it at this file. The repository intentionally ships no
-agent-specific instruction file, so that the rules everyone follows live in one place.
+If you use a coding agent, point it at this file and at [`docs/engineering/`](docs/engineering/).
+The repository intentionally ships no agent-specific instruction file — the rules everyone
+follows live in this file and in `docs/engineering/`, not in a file only an agent reads.
 
 ## Reporting bugs
 

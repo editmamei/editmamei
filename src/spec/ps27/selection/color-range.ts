@@ -24,9 +24,9 @@
  * internally is the open verification question. If it does NOT, the
  * snippet either selects nothing or selects something wildly wrong
  * (the classic silent-no-op failure mode the audit was created to
- * catch — see CLAUDE.md "Forum-lore event IDs / descriptors are
- * unverified" and the Lens Blur / Shadows-Highlights / Reduce-Noise
- * pattern). The absence of `colorModel` may also push PS into a
+ * catch — see docs/engineering/am-descriptor-conventions.md "Forum-lore
+ * event IDs — verify before shipping" and the Lens Blur / Shadows-Highlights
+ * / Reduce-Noise pattern). The absence of `colorModel` may also push PS into a
  * non-default color-matching algorithm even if `RGBC` is accepted.
  *
  * **Fix prescribed by audit:**

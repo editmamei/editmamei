@@ -12,15 +12,16 @@
  *   1. `Mk AdjL` with the type-default descriptor — creates the layer
  *   2. `setd Lyr/Trgt → T:HStr` with the values — applies the values
  *
- * The canonical "create with values" pattern (see CLAUDE.md "Create
- * with values, not create-then-modify") embeds the values in event 1's
- * descriptor instead of emitting event 2. Both forms are accepted by
- * PS; Editmamei uses the embedded form for atomicity.
+ * The canonical "create with values" pattern (see
+ * docs/engineering/am-descriptor-conventions.md "Create-with-values vs.
+ * create-then-modify") embeds the values in event 1's descriptor instead
+ * of emitting event 2. Both forms are accepted by PS; Editmamei uses the
+ * embedded form for atomicity.
  *
  * **Critical gotcha (the famous Hst2/Hsrt bug):** the master entry in
  * the `Adjs` list uses charID `Hst2`. Older docs say `Hsrt`. PS 24+
- * silently ignores `Hsrt`. See CLAUDE.md "ActionManager descriptor
- * pitfalls" → "Hst2 vs Hsrt for master Hue/Saturation entries."
+ * silently ignores `Hsrt`. See docs/engineering/am-descriptor-conventions.md
+ * "The Hst2 / Hsrt gotcha".
  */
 
 import type { AmEventSpec } from '../../types.js';

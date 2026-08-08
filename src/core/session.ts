@@ -20,11 +20,13 @@ export class Session {
   /**
    * Built on first use rather than in the constructor.
    *
-   * Constructing a connection resolves the host platform, which throws where
-   * Photoshop cannot exist. Doing that eagerly meant CLI subcommands that never
-   * touch Photoshop — installing, reporting status — failed before the command
-   * router could even dispatch them. Deferring keeps the CLI usable anywhere;
-   * the throw still arrives the moment something genuinely needs Photoshop.
+   * Constructing a connection resolves the host platform. Where Photoshop
+   * cannot exist that resolution now succeeds with inert ports (it used to
+   * throw, which is why this field went lazy: eager construction failed CLI
+   * subcommands — installing, reporting status — before the command router
+   * could dispatch them). Laziness stays anyway: a connection nobody asks for
+   * is work nobody needs, and the refusal on unsupported platforms lands on
+   * the call that genuinely tries to drive Photoshop either way.
    */
   private connection: PhotoshopConnection | null = null;
 

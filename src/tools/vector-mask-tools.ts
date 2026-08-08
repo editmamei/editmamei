@@ -6,7 +6,7 @@ import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolErrorResult } from '../utils/tool-helpers.js';
 
 /**
- * ps_vector_mask — vector-mask ops (§2.4 of the roadmap; the path
+ * ps_vector_mask — vector-mask ops (the path
  * consumer that turns a real editable path into a layer's vector mask). One
  * op-discriminated tool: add / delete / link / unlink.
  *

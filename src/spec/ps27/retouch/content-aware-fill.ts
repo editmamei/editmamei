@@ -45,7 +45,7 @@ export const contentAwareFillSpec: AmEventSpec = {
     'Blend mode key is `Md  ` (4 chars, trailing TWO spaces — charID) with value enum class `BlnM` and value `Nrml` (Normal). Standard PS blend mode pattern.',
   ],
   versionNotes: [
-    'Documented as "AM `cafTM` is documented" in roadmap §3.4 — that was an older event ID. PS 27.x emits standard `Fl  ` with `Usng` enum, NOT a dedicated `cafTM` event. The roadmap entry was based on forum lore; this capture corrects it.',
+    'Older planning notes claimed a dedicated AM `cafTM` event. PS 27.x emits standard `Fl  ` with `Usng` enum, NOT a dedicated `cafTM` event. That claim was forum lore; this capture corrects it.',
     "Captured 2026-06-08. New tool lands at 'dev' tier; promote to community/pro after live verification via MCP invocation.",
   ],
   events: [

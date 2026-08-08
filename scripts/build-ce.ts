@@ -14,13 +14,11 @@
  * doesn't strictly need a local tarball for the publish flow (npm runs
  * pack server-side at publish time), but having one in place is useful
  * for local-install testing (e.g. `npm install -g packages/ce/*.tgz` to
- * exercise the same artifact users will pull from the registry, or the
- * `pack:icloud` flow which copies both edition tarballs to a sync target
- * for Mac testing).
+ * exercise the same artifact users will pull from the registry).
  *
- * Per DISTRIBUTION_PLAN.md §2.13, minification + property mangling will
- * land as a layered defense in a follow-up — this script intentionally
- * produces a vanilla tsc output for now so the gate is easy to verify.
+ * Minification + property mangling may land as a layered defense in a
+ * follow-up — this script intentionally produces a vanilla tsc output for
+ * now so the gate is easy to verify.
  */
 
 import { runBuild, packPackage, appendTarballToChecksums } from './lib/build-common.js';

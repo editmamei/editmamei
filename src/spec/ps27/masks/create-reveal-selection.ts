@@ -48,7 +48,7 @@ export const createRevealSelectionMaskSpec: AmEventSpec = {
     'The selection geometry is NOT passed in this descriptor — PS reads the current selection state (the `fsel` channel) at event-dispatch time. This is why the snippet does NOT need to capture selection bounds before invoking.',
   ],
   versionNotes: [
-    'Selection probing uses the ActionReference `fsel` pattern (not `doc.selection.bounds`) per CLAUDE.md "ExtendScript wrapper contract" — PS 2024+ throws an uncatchable error 1302 from `doc.selection.bounds` when no selection exists.',
+    'Selection probing uses the ActionReference `fsel` pattern (not `doc.selection.bounds`) per docs/engineering/extendscript-contract.md "Known runtime quirk: selection state" — PS 2024+ throws an uncatchable error 1302 from `doc.selection.bounds` when no selection exists.',
     'v0.5.8 (2026-06-08): switched to stringID/`new`-putClass shape matching the macOS capture. See create-reveal-all.ts for the full fix narrative.',
   ],
   events: [

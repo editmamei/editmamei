@@ -1,5 +1,5 @@
 /**
- * ps_vector_mask — vector-mask ops (§2.4; the path consumer that turns a
+ * ps_vector_mask — vector-mask ops (the path consumer that turns a
  * real editable path into a layer's vector mask).
  *
  * These unit tests pin the TS→snippet (name, params) forwarding contract.
