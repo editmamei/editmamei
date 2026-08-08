@@ -52,9 +52,18 @@ describe('resolveHostPlatform', () => {
     expect(resolveHostPlatform().adapter.useInstall).toBeUndefined();
   });
 
-  it('refuses a platform Photoshop does not exist for, naming it', () => {
+  it('resolves an inert host where Photoshop does not exist, refusing per call', async () => {
+    // Resolution succeeds on any OS — that is what lets the server boot,
+    // complete the MCP handshake, and list tools inside a Linux sandbox (the
+    // exact shape of a directory scanner's run). The refusal moves to the
+    // calls that genuinely try to drive Photoshop, and it names the OS.
     vi.mocked(platform).mockReturnValue('linux');
-    expect(() => resolveHostPlatform()).toThrow(/linux/);
-    expect(() => resolveHostPlatform()).toThrow(/Windows and macOS/);
+    const host = resolveHostPlatform();
+
+    expect(host.os).toBe('linux');
+    await expect(host.adapter.run('$.__mcp__ = 1;')).rejects.toThrow(/Windows and macOS/);
+    await expect(host.adapter.isRunning()).rejects.toThrow(/"linux"/);
+    await expect(host.adapter.launch('/nowhere')).rejects.toThrow(/no Linux build/);
+    await expect(host.detector.detect()).rejects.toThrow(/nothing here to drive/);
   });
 });

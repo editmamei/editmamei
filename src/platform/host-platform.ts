@@ -33,21 +33,57 @@ export interface InstallDetector {
 
 /** The host, resolved. */
 export interface HostPlatform {
-  readonly os: SupportedPlatform;
+  /**
+   * The Node platform string — the real OS name, even where Photoshop cannot
+   * exist. Narrowed to `SupportedPlatform` only on the two real branches.
+   */
+  readonly os: string;
   /** Runs scripts and manages the Photoshop process. */
   readonly adapter: PlatformAdapter;
   /** Finds the install to run them against. */
   readonly detector: InstallDetector;
 }
 
+/** The one sentence every refused call on an unsupported OS carries. */
+function noPhotoshopHere(os: string): string {
+  return (
+    `Editmamei runs on Windows and macOS; this process is on "${os}". ` +
+    'Adobe ships no Linux build of Photoshop, so there is nothing here to drive.'
+  );
+}
+
 /**
- * Resolve the host platform, or throw if Photoshop cannot exist here.
+ * A host where Photoshop cannot exist. Resolution still succeeds — the server
+ * boots, completes the MCP handshake, and lists its tools — but every attempt
+ * to actually drive Photoshop refuses with the reason. MCP directory scanners
+ * run exactly this path in Linux sandboxes: the listing needs the handshake
+ * and the tool inventory, never a real edit. (This used to throw at
+ * construction instead, which killed the process before the handshake and
+ * before the boot telemetry that makes such runs visible.)
+ */
+function unsupportedHost(os: string): HostPlatform {
+  const refuse = (): never => {
+    throw new Error(noPhotoshopHere(os));
+  };
+  return {
+    os,
+    adapter: {
+      run: async () => refuse(),
+      isRunning: async () => refuse(),
+      launch: async () => refuse(),
+    },
+    detector: { detect: async () => refuse() },
+  };
+}
+
+/**
+ * Resolve the host platform — eagerly, exactly once, on every OS.
  *
- * Throwing is the intended behaviour on an unsupported OS, and it is why
- * `Session` builds its connection lazily: CLI subcommands that never touch
- * Photoshop (`editmamei install`, `editmamei status`) must stay usable
- * anywhere, so the throw has to land when something actually tries to drive
- * Photoshop rather than at process start.
+ * The two real branches hand back the platform's runner and detector. Every
+ * other OS resolves to `unsupportedHost` rather than throwing: CLI subcommands
+ * that never touch Photoshop (`editmamei install`, `editmamei status`) and the
+ * MCP handshake itself must work anywhere, so the refusal lands on the call
+ * that genuinely needs Photoshop, with the OS named in the message.
  */
 export function resolveHostPlatform(): HostPlatform {
   const os = platform();
@@ -60,8 +96,5 @@ export function resolveHostPlatform(): HostPlatform {
     return { os, adapter: new MacOSScriptRunner(), detector: new MacOSDetector() };
   }
 
-  throw new Error(
-    `Editmamei runs on Windows and macOS; this process is on "${os}". ` +
-      'Adobe ships no Linux build of Photoshop, so there is nothing here to drive.'
-  );
+  return unsupportedHost(os);
 }
