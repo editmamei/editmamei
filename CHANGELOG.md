@@ -10,6 +10,26 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-08-08
+
+### Fixed
+
+- **Editmamei now starts on a machine where Photoshop cannot be installed.** It
+  completes the handshake and answers a tool listing, then fails each tool call
+  with a message naming the reason, instead of failing at startup.
+  - The Photoshop connection is built on first use rather than at boot, so an
+    unreachable Photoshop is reported per call rather than preventing the server
+    from running at all.
+  - This is what lets an MCP directory enumerate the tool surface in a Linux
+    sandbox, where Photoshop does not exist.
+
+### Changed
+
+- **The engineering notes cited in the source comments are published.** The
+  ActionManager descriptor conventions, the ExtendScript wrapper contract, and
+  the tool design rules now live under
+  [`docs/engineering/`](docs/engineering/), so those references resolve.
+
 ## [1.0.1] — 2026-08-08
 
 ### Fixed
