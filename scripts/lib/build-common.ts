@@ -2,7 +2,7 @@
  * Shared helpers for build-ce.ts and build-pro.ts.
  *
  * The build scripts are intentionally small: they patch `src/edition.ts`,
- * invoke tsc, copy a small set of artifacts (package.json, LICENSE,
+ * invoke tsc, copy a small set of artifacts (package.json, LICENSE.md,
  * README.md, NOTICES.md), then write SHA256 checksums. Minification,
  * property mangling, and obfuscation are deferred to a follow-up.
  *
@@ -250,7 +250,7 @@ export function writePackageJson(edition: Edition, version: string): void {
     main: 'dist/index.js',
     type: 'module',
     bin: src.bin,
-    files: ['dist', 'README.md', 'LICENSE', 'NOTICES.md'],
+    files: ['dist', 'README.md', 'LICENSE.md', 'NOTICES.md'],
     scripts: { start: src.scripts.start },
     keywords: src.keywords,
     author: src.author,
@@ -268,14 +268,21 @@ export function writePackageJson(edition: Edition, version: string): void {
   );
 }
 
-/** Copies LICENSE, README.md, NOTICES.md from repo root to the package dir. */
+/**
+ * Copies LICENSE.md, README.md, NOTICES.md from repo root to the package dir.
+ * These are the legal docs the npm tarball and .mcpb bundle ship to end
+ * users — a silently-skipped copy here means a published package with no
+ * license file, so a missing root doc fails the build instead of being
+ * dropped quietly.
+ */
 export function copyDistributionFiles(edition: Edition): void {
   const out = packageDir(edition);
-  for (const name of ['LICENSE', 'README.md', 'NOTICES.md']) {
+  for (const name of ['LICENSE.md', 'README.md', 'NOTICES.md']) {
     const src = join(REPO_ROOT, name);
-    if (existsSync(src)) {
-      writeFileSync(join(out, name), readFileSync(src));
+    if (!existsSync(src)) {
+      throw new Error(`copyDistributionFiles: required root doc missing: ${src}`);
     }
+    writeFileSync(join(out, name), readFileSync(src));
   }
 }
 

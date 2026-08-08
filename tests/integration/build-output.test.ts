@@ -22,7 +22,8 @@ import { readdir } from 'node:fs/promises';
 import { toolsInTier } from '@editmamei/core/tool-tiers.ts';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
-const CE_DIST = join(REPO_ROOT, 'packages', 'ce', 'dist');
+const CE_PKG_DIR = join(REPO_ROOT, 'packages', 'ce');
+const CE_DIST = join(CE_PKG_DIR, 'dist');
 const PRO_DIST = join(REPO_ROOT, 'packages', 'pro', 'dist');
 // Source of truth: derived from tool-tiers.ts. Pre-2026-06-10 this was a
 // hand-maintained list of 6 names — and only covered the tools that
@@ -226,6 +227,32 @@ describe.skipIf(!bundlesBuilt)('CE bundle composition', () => {
     // CE prunes modules/pro + the derived tools/*-pro.js set, so it carries
     // strictly fewer .js files than the (un-pruned) Pro bundle.
     expect(ceJs.length).toBeLessThan(proJs.length);
+  });
+});
+
+// -----------------------------------------------------------------------
+// The published npm tarball and .mcpb bundle previously shipped with NO
+// license file: copyDistributionFiles (scripts/lib/build-common.ts) copied
+// from a root file literally named `LICENSE`, but the repo's file is
+// `LICENSE.md` — existsSync silently skipped the mismatch and the build
+// "succeeded" with a package missing its license. copyDistributionFiles now
+// throws on a missing root doc instead of skipping it; these assertions
+// pin the resulting artifact so the gap can't reopen silently.
+// -----------------------------------------------------------------------
+describe.skipIf(!bundlesBuilt)('CE package legal docs', () => {
+  it('LICENSE.md is copied into the CE package directory', () => {
+    expect(
+      existsSync(join(CE_PKG_DIR, 'LICENSE.md')),
+      'packages/ce/LICENSE.md is missing — the published npm tarball and .mcpb bundle would ship with no license file'
+    ).toBe(true);
+  });
+
+  it('the CE package.json files array lists LICENSE.md', () => {
+    const pkg = JSON.parse(readFileSync(join(CE_PKG_DIR, 'package.json'), 'utf8'));
+    expect(
+      pkg.files,
+      'packages/ce/package.json files[] must include LICENSE.md so npm actually ships it'
+    ).toContain('LICENSE.md');
   });
 });
 
