@@ -234,6 +234,34 @@ export function copyTree(srcDir: string, dstDir: string): number {
 }
 
 /**
+ * The two license files at play, and which edition ships which:
+ *
+ *  - `LICENSE.md` — the Fair Source License (FSL) text that governs this CE
+ *    tree's source. Ships in the free npm tarball / .mcpb bundle.
+ *  - `LICENSE` (no extension) — the commercial Pro EULA. Lives only in the
+ *    private editmamei-pro repo root; this CE tree never contains it.
+ *
+ * This file is CE-owned but hydrates verbatim into editmamei-pro, where
+ * `build:pro` runs against a root that carries BOTH files (its own `LICENSE`
+ * plus, post-hydration, this repo's `LICENSE.md`). Picking the wrong one ships
+ * the FSL text on the paid artifact and drops the EULA — or the reverse. Do
+ * NOT collapse this to a single constant; the edition branch is the fix.
+ */
+export function licenseFileName(edition: Edition): string {
+  return edition === 'pro' ? 'LICENSE' : 'LICENSE.md';
+}
+
+/**
+ * The npm `files` allowlist for the CE/Pro package.json — everything the
+ * published tarball/bundle ships. Split out from writePackageJson (a pure
+ * function, no I/O) so the edition-conditional license entry is directly
+ * unit-testable without needing a built packages/<edition>/ dir on disk.
+ */
+export function packageFilesList(edition: Edition): string[] {
+  return ['dist', 'README.md', licenseFileName(edition), 'NOTICES.md'];
+}
+
+/**
  * Writes a CE/Pro-flavored package.json to <packageDir>. The published
  * package.json carries the public-facing metadata only — devDependencies,
  * dev scripts, and internal-only fields are stripped.
@@ -250,7 +278,7 @@ export function writePackageJson(edition: Edition, version: string): void {
     main: 'dist/index.js',
     type: 'module',
     bin: src.bin,
-    files: ['dist', 'README.md', 'LICENSE.md', 'NOTICES.md'],
+    files: packageFilesList(edition),
     scripts: { start: src.scripts.start },
     keywords: src.keywords,
     author: src.author,
@@ -269,15 +297,15 @@ export function writePackageJson(edition: Edition, version: string): void {
 }
 
 /**
- * Copies LICENSE.md, README.md, NOTICES.md from repo root to the package dir.
- * These are the legal docs the npm tarball and .mcpb bundle ship to end
- * users — a silently-skipped copy here means a published package with no
- * license file, so a missing root doc fails the build instead of being
- * dropped quietly.
+ * Copies the license (edition-picked — see licenseFileName), README.md, and
+ * NOTICES.md from repo root to the package dir. These are the legal docs the
+ * npm tarball and .mcpb bundle ship to end users — a silently-skipped copy
+ * here means a published package with no license file, so a missing root doc
+ * fails the build instead of being dropped quietly.
  */
 export function copyDistributionFiles(edition: Edition): void {
   const out = packageDir(edition);
-  for (const name of ['LICENSE.md', 'README.md', 'NOTICES.md']) {
+  for (const name of [licenseFileName(edition), 'README.md', 'NOTICES.md']) {
     const src = join(REPO_ROOT, name);
     if (!existsSync(src)) {
       throw new Error(`copyDistributionFiles: required root doc missing: ${src}`);

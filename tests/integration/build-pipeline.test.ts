@@ -252,6 +252,11 @@ describe('mcpb bundle packaging', () => {
       expect(existsSync(join(staging, 'dist', 'index.js'))).toBe(true);
       // go-core binaries ride along so the bundle is self-contained.
       expect(existsSync(join(staging, 'dist', 'bin', 'editmamei-core-win-x64.exe'))).toBe(true);
+      // The legal docs must land next to the bundle too — deleting the copy
+      // loop in stageMcpb would still pass every other assertion here.
+      expect(existsSync(join(staging, 'LICENSE.md'))).toBe(true);
+      expect(existsSync(join(staging, 'NOTICES.md'))).toBe(true);
+      expect(existsSync(join(staging, 'README.md'))).toBe(true);
       const manifest = JSON.parse(readFileSync(join(staging, 'manifest.json'), 'utf8'));
       expect(manifest.version).toBe('9.9.9');
       expect(manifest.server.entry_point).toBe('dist/index.js');
