@@ -26,7 +26,11 @@ describe('pro-features drift guard', () => {
   it('every ps_* identifier in pro-features.md is a shipped community/pro tool', () => {
     const offenders: string[] = [];
     const source = readFileSync(DOC, 'utf8');
-    for (const name of source.match(PS_NAME) ?? []) {
+    const names = source.match(PS_NAME) ?? [];
+    // Anti-vacuous-pass guard: a doc restructure that strips the ps_* names
+    // (or a stale DOC path) must fail here, not silently disarm the check.
+    expect(new Set(names).size).toBeGreaterThanOrEqual(10);
+    for (const name of names) {
       const tier = TOOL_TIERS[name];
       if (tier !== 'community' && tier !== 'pro') {
         offenders.push(`${name} (tier: ${tier ?? 'UNKNOWN'})`);
@@ -38,6 +42,7 @@ describe('pro-features drift guard', () => {
   it('lists each tool under the section matching its tier', () => {
     const source = readFileSync(DOC, 'utf8');
     const offenders: string[] = [];
+    const seen = { community: 0, pro: 0 };
     let expected: 'community' | 'pro' | null = null;
     for (const line of source.split('\n')) {
       if (/^## Community\b/.test(line)) expected = 'community';
@@ -45,11 +50,17 @@ describe('pro-features drift guard', () => {
       else if (/^## /.test(line)) expected = null;
       if (!expected) continue;
       for (const name of line.match(PS_NAME) ?? []) {
+        seen[expected] += 1;
         if (TOOL_TIERS[name] !== expected) {
           offenders.push(`${name} listed under the ${expected} section but is ${TOOL_TIERS[name]}`);
         }
       }
     }
     expect(offenders).toEqual([]);
+    // Anti-vacuous-pass guard: renaming either canonical heading would leave
+    // `expected` forever null and this test checking nothing. Each section
+    // must have been entered and contributed at least one tool.
+    expect(seen.community).toBeGreaterThan(0);
+    expect(seen.pro).toBeGreaterThan(0);
   });
 });
