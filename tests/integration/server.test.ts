@@ -42,7 +42,7 @@ describe('EditmameiServer construction', () => {
     const names = server.toolRegistry.list().map((t) => t.name);
     expect(names, 'ps_ping should be registered').toContain('ps_ping');
     // A Pro tool must NOT be present until the downloaded module loads.
-    // (ps_select_subject re-tiered to community in v0.22, so it's a built-in now —
+    // (ps_select_subject is community tier, so it's a built-in now —
     // ps_apply_camera_raw stays Pro, so it's the not-yet-loaded probe.)
     expect(names).not.toContain('ps_apply_camera_raw');
   });
@@ -150,7 +150,7 @@ describe('EditmameiServer construction', () => {
 // ===========================================================================
 // Boot-time update check — its result rides ps_ping (an MCP server's
 // stderr never reaches the user; a tool result does). The not-connected ping
-// path still builds + attempts the pingState round trip (audit finding 10 —
+// path still builds + attempts the pingState round trip (
 // pingState is now the sole liveness probe), but a null `PhotoshopInfo`
 // makes that attempt fail fast (createAPI() throws before any script would
 // reach a real Photoshop), so it's still the clean seam to assert the
@@ -210,7 +210,7 @@ describe('ps_ping surfaces update_available', () => {
 // shape the old ping()-false branch produced, since there is no longer a
 // cheaper separate reachability probe to distinguish the two cases.
 // ===========================================================================
-describe('ps_ping — pingState is the sole liveness probe (audit finding 10)', () => {
+describe('ps_ping — pingState is the sole liveness probe', () => {
   type PingServerFull = {
     session: { connection: unknown };
     updateInfo: unknown;
@@ -426,7 +426,7 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
 // stdio server. Previously only the registry's throw-on-unknown was tested,
 // not the wrapper that catches it.
 // ===========================================================================
-describe('tools/call dispatch wrapper (audit M13)', () => {
+describe('tools/call dispatch wrapper', () => {
   it('returns an isError result for an unknown tool name instead of throwing', async () => {
     const server = new EditmameiServer() as unknown as {
       handleToolCall(

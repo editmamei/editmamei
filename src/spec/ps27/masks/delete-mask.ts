@@ -24,7 +24,7 @@
  * work; the snippet\'s explicit form is safer for an LLM-driven
  * invocation where the caller may not have pre-targeted the mask.
  *
- * Group D audit verdict (2026-06-04): **OK**. Snippet matches the
+ * Spec-vs-snippet verdict: **OK**. Snippet matches the
  * captured event ID exactly; the reference-shape divergence is
  * intentional hardening over the UI\'s "current target" assumption.
  */

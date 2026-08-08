@@ -11,8 +11,8 @@ import (
 // All carry selection_info via getSelectionInfo() (which embeds
 // restoreCompositeChannel in its finally), so no separate context return.
 //
-// selectSubject / selectSky (Adobe Sensei) were RE-TIERED pro->community 2026-07-07
-// (v0.22). Their emitters moved here from the deleted selections_pro.go and their
+// selectSubject / selectSky (Adobe Sensei) are community tier. Their emitters
+// moved here from the deleted selections_pro.go and their
 // fragment bodies to fragments_sensei.go, so the CE binary now emits them. Slot
 // order (both): selectionTypeHelpers, getSelectionInfo, selType, sampleAll.
 
@@ -84,7 +84,7 @@ type pointXY struct{ X, Y float64 }
 // the polygonal/freehand/magnetic lasso families (they bake to the identical
 // Plgn point list). Auto-closes the ring (first vertex repeated as last) to
 // match the captured Polygonal Lasso. Mirrors the channel-stash selection-type
-// pattern. Ground truth: m1-selection STEP-22.
+// pattern. Ground truth: ScriptListener capture.
 func selectPolygon(points []pointXY, antiAlias bool, selectionType string) string {
 	// Close the ring if the caller didn't repeat the first vertex.
 	pts := points
@@ -155,7 +155,7 @@ func modifySelectionEdge(mode string, amountPx float64, atCanvasBounds bool) str
 // (not pixels). Relative scale (Wdth/Hght #Prc), rotation (Angl #Ang) and
 // translation (Ofst #Pxl) about the selection's own anchor (FTcs=QCSt/Qcsa),
 // bicubic interpolation (Intr=Intp/Bcbc). Requires an active selection. Ground
-// truth: m1-selection STEP-19 (scale+offset) / STEP-20 (rotate).
+// truth: ScriptListener captures (scale+offset, rotate).
 func transformSelection(scaleXPct, scaleYPct, rotateDeg, offsetX, offsetY float64) string {
 	sx, sy := jsNum(scaleXPct), jsNum(scaleYPct)
 	rot := jsNum(rotateDeg)
@@ -358,7 +358,7 @@ func loadSelectionFromChannel(channelName, operation string) string {
 
 // duplicateChannel — DOM duplicate of a named alpha/spot channel within the same
 // document. Optional new name (PS auto-names "<src> copy" when omitted). Skips
-// component channels. Ground truth: m4a STEP-12.
+// component channels. Ground truth: ScriptListener capture.
 func duplicateChannel(channelName, newName string, hasNewName bool) string {
 	newNameLit := "null"
 	if hasNewName {
@@ -368,7 +368,7 @@ func duplicateChannel(channelName, newName string, hasNewName bool) string {
 }
 
 // deleteChannel — DOM remove of a named alpha/spot channel. Refuses to delete
-// component (RGB/CMYK/Lab) channels. Ground truth: m4a STEP-13.
+// component (RGB/CMYK/Lab) channels. Ground truth: ScriptListener capture.
 func deleteChannel(channelName string) string {
 	return fmt.Sprintf(tpl[vault.ChanDel], getMinimalContextInfo(), jsLit(channelName))
 }

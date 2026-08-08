@@ -33,7 +33,7 @@ func longEdgeResizeBlock(longEdgePx float64, has bool) string {
 
 // newDocumentModeSet is the closed allowlist for the raw NewDocumentMode enum
 // expression interpolated below — the registry rejects anything else before it
-// can land a caller string as JS source (audit M8 follow-up). The values are the
+// can land a caller string as JS source. The values are the
 // full `NewDocumentMode.<X>` expressions the TS colorModeMap produces.
 var newDocumentModeSet = map[string]bool{
 	"NewDocumentMode.RGB":       true,

@@ -6,7 +6,7 @@ import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolErrorResult, applyToActiveLayerProp } from '../utils/tool-helpers.js';
 
 /**
- * Channel-compose tools (m4a Tier-2) — `ps_apply_image` and `ps_calculations`.
+ * Channel-compose tools — `ps_apply_image` and `ps_calculations`.
  * Both blend image sources via Photoshop's "calculation" engine (the AM Clcl
  * object), sharing the channel+layer reference builder in go-core. AM-only —
  * Photoshop exposes no DOM API for either.

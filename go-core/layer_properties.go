@@ -124,8 +124,9 @@ func addLayerStyle(styleType string, cr, cg, cb, opacity, angle, distance, sprea
 	st := jsLit(styleType)
 	crS, cgS, cbS := jsNum(cr), jsNum(cg), jsNum(cb)
 	op := jsNum(opacity)
-	// m4b additions route to a SEPARATE fragment so the migration golden for the
-	// original drop_shadow/stroke/outer_glow stays frozen (golden_test.go).
+	// The later layer-style additions route to a SEPARATE fragment so the
+	// migration golden for the original drop_shadow/stroke/outer_glow stays
+	// frozen (golden_test.go).
 	if styleType == "inner_shadow" || styleType == "inner_glow" || styleType == "color_overlay" {
 		return fmt.Sprintf(
 			tpl[vault.AddLayerStyle2],

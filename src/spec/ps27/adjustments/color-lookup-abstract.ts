@@ -23,7 +23,7 @@
  * `throw new Error('Color Lookup ' + clLutTypeRaw + ' is not yet
  * supported. Only 3dlut is verified...')`.
  *
- * Group A audit (STEP 19) classified OK — the refusal is appropriate
+ * Verdict: OK — the refusal is appropriate
  * given the same binary-profile limitation as 3DLUT.
  *
  * This spec documents the descriptor surface for completeness so that

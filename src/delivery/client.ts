@@ -24,8 +24,8 @@ export interface DeliveryResponse {
   headers?: { get: (name: string) => string | null };
   /**
    * Streamed body — the real fetch Response satisfies this. `fetchArtifact`
-   * reads it chunk-by-chunk to enforce the byte cap DURING the fetch (review
-   * finding DL-2) rather than after `arrayBuffer()` has already allocated the
+   * reads it chunk-by-chunk to enforce the byte cap DURING the fetch
+   * rather than after `arrayBuffer()` has already allocated the
    * whole thing. Test doubles may omit it (falls back to `arrayBuffer()`,
    * still cap-checked, just after allocation).
    */
@@ -45,7 +45,7 @@ export interface ModuleVersionEntry {
   /**
    * Detached base64 Ed25519 signature over (sku, version, sha256) from the
    * maintainer's offline key — the host verifies it against a pinned public key
-   * before installing (see delivery/signing.ts, audit H1). Optional on the wire
+   * before installing (see delivery/signing.ts). Optional on the wire
    * (older manifests omit it); a missing signature fails verification → the
    * module is refused, never silently installed.
    */
@@ -86,7 +86,7 @@ export class DeliveryError extends Error {
     /**
      * Stable code for callers; messages are not API. `server` keeps the grace
      * cache. `oversize` is a client-side refusal (declared or streamed body
-     * exceeds the artifact byte cap, DL-2) — never retried, same as
+     * exceeds the artifact byte cap) — never retried, same as
      * not_entitled/not_found.
      */
     readonly code:
@@ -105,8 +105,8 @@ export class DeliveryError extends Error {
 }
 
 /**
- * Hard cap on a downloaded artifact body, enforced DURING the fetch (review
- * finding DL-2): `fetchArtifact` used to buffer the whole response with
+ * Hard cap on a downloaded artifact body, enforced DURING the fetch.
+ * `fetchArtifact` used to buffer the whole response with
  * `arrayBuffer()` and only check the size afterward, so a hostile/MITM'd
  * delivery endpoint could stream a multi-GB body and OOM the host before the
  * sha256/signature gates in provision.ts ever ran. Mirrors provision.ts's own
@@ -212,7 +212,7 @@ export class DeliveryClient {
     return this.withRetry(async () => {
       const res = await this.get(`/v1/modules/${sku}/${version}`, key);
       if (!res.ok) throw this.errorFor(res.status, await safeText(res), this.retryAfterMsOf(res));
-      // Reject a DECLARED oversize before reading any body bytes (DL-2). Content-Length
+      // Reject a DECLARED oversize before reading any body bytes. Content-Length
       // is attacker-influenced (same trust level as the manifest's vEntry.size in
       // provision.ts) so this is a cheap early-out, not the real gate — the streaming
       // counter below is what actually bounds peak memory when it's absent or lies low.
@@ -234,7 +234,7 @@ export class DeliveryClient {
 
   /**
    * Read `body` chunk-by-chunk with a running byte counter instead of
-   * `arrayBuffer()`'s whole-body allocation (DL-2) — the moment the running total
+   * `arrayBuffer()`'s whole-body allocation — the moment the running total
    * exceeds the cap, cancel the underlying stream and throw, so a hostile/MITM'd
    * endpoint can never get the host to buffer more than `maxArtifactBytes`.
    */

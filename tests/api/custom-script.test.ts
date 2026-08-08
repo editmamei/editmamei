@@ -96,7 +96,7 @@ describe('wrapCustomScript', () => {
   });
 
   // ===========================================================================
-  // Adversarial cases (audit M5) — pin the heuristic parser on this trust
+  // Adversarial cases — pin the heuristic parser on this trust
   // boundary so a future refactor can't silently regress its return semantics.
   // ===========================================================================
   it('wraps a trailing expression that follows a block comment', () => {

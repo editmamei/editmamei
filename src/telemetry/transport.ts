@@ -3,7 +3,7 @@
  * function so the client logic is testable without a socket and the single place that
  * touches `fetch` is auditable.
  *
- * Honest framing (telemetry-and-settings.md §6): the MCP server — the process actually
+ * Honest framing (see docs/privacy.md, "Where it goes"): the MCP server — the process actually
  * running during use — sends its own telemetry, async and fire-and-forget. There is no
  * separate uploader daemon. The send is best-effort: a timeout or network error is
  * swallowed by the caller; telemetry must never break or block a tool call.

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { encode } from 'jpeg-js';
 import { decodeJpeg, decodeJpegBuffer } from '@editmamei/detection/runtime.ts';
 
-// decodeJpeg / decodeJpegBuffer — perf-audit H4 split a single decode path into a
+// decodeJpeg / decodeJpegBuffer split a single decode path into a
 // path-based entry (decodeJpeg, reads + decodes) and a buffer-based entry
 // (decodeJpegBuffer, decodes only) so a caller that already holds the export bytes
 // in memory (detectActiveDoc) can decode ONCE instead of re-reading the file per

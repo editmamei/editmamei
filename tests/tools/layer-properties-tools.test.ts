@@ -50,7 +50,7 @@ describe('createLayerPropertiesTools', () => {
     expect(snippetClient.lastBuild().name).toBe('convertToSmartObject');
   });
 
-  // 2026-06-29 — new_via_copy added after the m4a STEP-02 capture
+  // 2026-06-29 — new_via_copy added after a ScriptListener capture
   // (placedLayerMakeCopy; independent SO copy).
   it('convert_to_smart_object mode=new_via_copy → newSmartObjectViaCopy', async () => {
     const tools = createLayerPropertiesTools(conn.asConnection(), snippetClient);
@@ -116,8 +116,8 @@ describe('createLayerPropertiesTools', () => {
     expect(build.params.into_active_group).toBe(true);
   });
 
-  // 2026-06-29 — layer-style family extension (capture m4b STEP-37/38/41).
-  it('add_layer_style exposes the six styles incl. the m4b additions', () => {
+  // 2026-06-29 — layer-style family extension (capture).
+  it('add_layer_style exposes the six styles incl. the later additions', () => {
     const tools = createLayerPropertiesTools(conn.asConnection(), snippetClient);
     const tool = tools.find((t) => t.tool.name === 'ps_add_layer_style')!;
     const schema = tool.tool.inputSchema as unknown as {

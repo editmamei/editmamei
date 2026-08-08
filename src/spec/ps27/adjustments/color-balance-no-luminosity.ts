@@ -14,7 +14,7 @@
  * Color Balance, **unticked Preserve Luminosity in the New Layer dialog**,
  * accepted, then nudged Midtones Cyan-Red to +35.
  *
- * Group A audit (STEP 08) classified this OK — the only delta from
+ * Verdict: OK — the only delta from
  * STEP 07 is the PrsL boolean value. All structural points are the
  * same as color-balance.ts; this spec exists to document that PS
  * faithfully records the PrsL toggle into the Mk envelope (i.e. it is

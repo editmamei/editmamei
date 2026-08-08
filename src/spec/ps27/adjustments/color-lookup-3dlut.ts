@@ -27,7 +27,7 @@
  *
  * The snippet handles this by validating the LUT file exists, creating
  * the empty layer, and emitting guidance — explicitly NOT emitting a
- * broken setd. Group A audit (STEP 18) classified this OK by design.
+ * broken setd. Verdict: OK by design.
  */
 
 import type { AmEventSpec } from '../../types.js';

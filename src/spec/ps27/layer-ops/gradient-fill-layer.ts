@@ -13,7 +13,7 @@
  *      macOS-strict rejection class).
  *   2. setd → null(ref contentLayer/Ordn/Trgt) → T(gradientLayer) — the FULL
  *      descriptor including Angl (#Ang) and, when reverse is on, Rvrs. This
- *      is where PS itself carries the angle (STEP-13 desc846/847).
+ *      is where PS itself carries the angle.
  *
  * The `Grad → Grdn` payload (Nm/GrdF/Intr + Clrs/Trns stop lists) is
  * byte-identical in shape to the gradient-map spec — see

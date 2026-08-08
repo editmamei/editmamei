@@ -269,7 +269,7 @@ describe('listTemplates', () => {
   });
 
   // Reads are now parallelized via Promise.all instead of a sequential
-  // per-directory await (audit finding 10). Mixes several valid templates
+  // per-directory await. Mixes several valid templates
   // (out of created-order on disk) with corrupt entries interspersed
   // alphabetically between them, so a naive Promise.all that just preserved
   // array-iteration order by luck wouldn't be enough to pass — the sort

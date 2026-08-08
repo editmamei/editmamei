@@ -6,9 +6,9 @@ import (
 	"editmamei-core/internal/vault"
 )
 
-// Shape layers (m4a Tier-3): ps_shape. A real vector shape (contentLayer) with
-// geometry baked in ABSOLUTE document pixels. Ground truth: m4a STEP-29 (rectangle/
-// rounded), STEP-31 (ellipse), STEP-33 (line). Coordinate-baking — the caller must
+// Shape layers: ps_shape. A real vector shape (contentLayer) with
+// geometry baked in ABSOLUTE document pixels. Ground truth: ScriptListener capture (rectangle/
+// rounded), ellipse, line. Coordinate-baking — the caller must
 // supply document-pixel positions (aim via ps_get_preview's coordinate grid).
 // Held at dev tier: the aiming primitive (coordinate grid) is still weak, so an
 // un-aimable shape tool stays out of the shipped surface until that's solid.

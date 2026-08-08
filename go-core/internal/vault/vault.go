@@ -118,8 +118,8 @@ const (
 	SelClrPre  = "s17" // selectColorPreset (AM ClrR Clrs enum; skinTone/OtOf)
 	SelPolygon = "s18" // selectPolygon (AM setd Plgn; Pts list of Pnt Hrzn/Vrtc)
 	XformSel   = "s19" // transformSelection (AM Trnf on fsel; scale/rotate/offset)
-	ChanDup    = "s20" // duplicateChannel (DOM alpha-channel duplicate; m4a STEP-12)
-	ChanDel    = "s21" // deleteChannel (DOM channel.remove; alpha-only guard; m4a STEP-13)
+	ChanDup    = "s20" // duplicateChannel (DOM alpha-channel duplicate)
+	ChanDel    = "s21" // deleteChannel (DOM channel.remove; alpha-only guard)
 
 	// more shared helpers
 	HelperFns = "hfn"  // helperFunctions (cTID/sTID)
@@ -127,7 +127,7 @@ const (
 	NormName  = "hnn"  // normNameHelper (dash/whitespace/case normalizer)
 	GPI       = "hgpi" // getPathInfo (path inventory: count + kind/subpath/anchor counts)
 
-	// path-interchange family (primitive B, coordinate-and-path-synthesis.md)
+	// path-interchange family
 	PathCreate  = "pa1" // createPathFromSelection (DOM makeWorkPath; clears selection)
 	PathSave    = "pa2" // savePath (AM make named path from work path; verified live 2026-06-24)
 	PathList    = "pa3" // listPaths (DOM pathItems iteration; read-only)
@@ -142,10 +142,10 @@ const (
 	VMAdd    = "vm1" // addVectorMask (Mk path At=vectorMask Usng=active path)
 	VMDel    = "vm2" // deleteVectorMask (Dlt on vectorMask channel)
 	VMLink   = "vm3" // setVectorMaskLink (setd vectorMaskLinked boolean)
-	VMFill   = "vm4" // addVectorMaskFill (Mk path At=vectorMask Usng=enum RvlA/HdAl; m4a STEP-23/24)
-	VMEnable = "vm5" // setVectorMaskEnabled (setd vectorMaskEnabled boolean; m4a STEP-28)
+	VMFill   = "vm4" // addVectorMaskFill (Mk path At=vectorMask Usng=enum RvlA/HdAl)
+	VMEnable = "vm5" // setVectorMaskEnabled (setd vectorMaskEnabled boolean)
 
-	// channel-compose family (m4a Tier-2; AM AppI / Mk-Chnl-Using-Clcl).
+	// channel-compose family (AM AppI / Mk-Chnl-Using-Clcl).
 	// Ground truth confirmed via ScriptListener capture.
 	ApplyImage   = "ci1" // applyImage (AM AppI; composite source layer+channel onto active layer)
 	Calculations = "ci2" // calculations (AM Mk Chnl Using Clcl; two sources → new alpha channel)
@@ -187,9 +187,9 @@ const (
 	LayerViaCopy   = "l9"  // layerViaCopy (CpTL on the active selection)
 	BakeLayer      = "l10" // bakeLayer (hide-others + stamp clip group + restore)
 	AddFillLayer   = "l11" // addFillLayer (Mk contentLayer; solid color for now)
-	SONewViaCopy   = "l12" // newSmartObjectViaCopy (placedLayerMakeCopy; independent SO copy; m4a STEP-02)
-	CreateShape    = "l13" // createShape (Mk contentLayer; vector shape layer — rectangle/ellipse/line; m4a STEP-29/31/33)
-	AddGradFill    = "l14" // addGradientFillLayer (Mk contentLayer; gradientLayer w/ custom stops; 2026-06-20 STEP-13/14)
+	SONewViaCopy   = "l12" // newSmartObjectViaCopy (placedLayerMakeCopy; independent SO copy)
+	CreateShape    = "l13" // createShape (Mk contentLayer; vector shape layer — rectangle/ellipse/line)
+	AddGradFill    = "l14" // addGradientFillLayer (Mk contentLayer; gradientLayer w/ custom stops)
 
 	// gradients — shared stop-line building blocks (interpolated per stop into
 	// the l14 / al9 stop-block slots; both call the makeColorStop/makeOpacityStop
@@ -202,7 +202,7 @@ const (
 	SelectLayer    = "lp1" // selectLayer
 	RasterizeLayer = "lp2" // rasterizeLayer
 	AddLayerStyle  = "lp3" // addLayerStyle
-	AddLayerStyle2 = "lp4" // addLayerStyle m4b additions (inner_shadow/inner_glow/color_overlay)
+	AddLayerStyle2 = "lp4" // addLayerStyle later additions (inner_shadow/inner_glow/color_overlay)
 
 	// history
 	Undo       = "h1" // undo
@@ -238,7 +238,7 @@ const (
 	GuideAdd    = "lt8"  // addGuide (DOM doc.guides.add; orientation + position)
 	GuideLayout = "lt9"  // addGuideLayout (AM newGuideLayout; colCount/rowCount)
 	GuideClear  = "lt10" // clearGuides (AM clearAllGuides; zero-field)
-	WarpMesh    = "lt11" // warpMesh (AM Trnf → quiltWarp custom mesh; pinned-edge grounded warp). STEP-17..20.
+	WarpMesh    = "lt11" // warpMesh (AM Trnf → quiltWarp custom mesh; pinned-edge grounded warp).
 
 	// adjustments (smaller; addAdjustmentLayer comes in its own pass)
 	ShadowsHL   = "a1" // applyShadowsHighlights

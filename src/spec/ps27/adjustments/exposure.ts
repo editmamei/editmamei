@@ -13,7 +13,7 @@
  *   setd: T → Exps → { presetKindCustom, Exps=value, Ofst=value }
  *   (gamma is in the Mk but also re-emittable via setd)
  *
- * Group A audit (STEP 17) classified OK — snippet matches ground truth.
+ * Verdict: OK — snippet matches ground truth.
  * Notable: `Exps` is used both as the type-class charID AND as the
  * exposure-value charID. PS distinguishes by descriptor context (the
  * inner Exps key holds a putDouble; the outer Exps class wraps the

@@ -41,8 +41,7 @@
  *   4. Mark the tool as `'dev'` tier in `src/core/tool-tiers.ts`
  *      until verification is complete (per the dev-default policy).
  *
- * Group D audit verdict (2026-06-04): **HIGH**. Possible silent no-op.
- * Single biggest fix-now item in the group.
+ * Spec-vs-snippet verdict: **HIGH**. Possible silent no-op.
  *
  * **Localized Color Clusters extension (not in current snippet).** The
  * second capture in the log file (lines 252-313) shows the multi-

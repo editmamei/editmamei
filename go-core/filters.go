@@ -59,7 +59,7 @@ func applyUnsharpMask(amount, radius, threshold float64, applyToActiveLayer bool
 
 // noiseDistributionSet is the closed allowlist for the raw `NoiseDistribution.<x>`
 // enum slot below — the registry rejects anything else before it can interpolate
-// a caller string as a bare JS identifier (audit M8 follow-up: the Go core is the
+// a caller string as a bare JS identifier (the Go core is the
 // trust boundary, so it can't lean on the TS schema enum alone).
 var noiseDistributionSet = map[string]bool{"UNIFORM": true, "GAUSSIAN": true}
 
@@ -332,7 +332,7 @@ func applyDistort(mode string, p map[string]any, applyToActiveLayer bool) string
 			", wavelength_max: " + wlmax + ", amplitude_min: " + ammin + ", amplitude_max: " + ammax +
 			", scale_horizontal: " + sh + ", scale_vertical: " + sv + ", undefined_areas: " + jsLit(ua) +
 			", random_seed: " + rs + ","
-	// m4b additions (2026-06-29, STEP-19..21). Enum sub-options (spherize
+	// Later additions. Enum sub-options (spherize
 	// horizontal/vertical, zigzag around-center/out-from-center) deferred —
 	// only the captured default enum value is shipped; the rest need a capture.
 	case "pinch":
@@ -410,7 +410,7 @@ func applyHighPass(radius float64, applyToActiveLayer bool) string {
 	)
 }
 
-// Stylize enum maps (m4b STEP-11..18, 2026-06-29). wind method/direction +
+// Stylize enum maps. wind method/direction +
 // trace-contour edge are stable PS charIDs (captured Wnd/Left/Lwr; the rest are
 // the documented siblings, live-verified before ship). The registry validates.
 var windMethodMap = map[string]string{"wind": "Wnd ", "blast": "Blst", "stagger": "Stgr"}
@@ -473,7 +473,7 @@ func applyStylize(mode string, p map[string]any, applyToActiveLayer bool) string
 	)
 }
 
-// applyRender — Filter > Render family (m4b STEP-01..03). clouds/difference-
+// applyRender — Filter > Render family. clouds/difference-
 // clouds are parameterless (use the current FG/BG colors); fibers takes
 // variance/strength/seed. Shares the FilterMulti skeleton.
 func applyRender(mode string, p map[string]any, applyToActiveLayer bool) string {
@@ -506,7 +506,7 @@ func applyRender(mode string, p map[string]any, applyToActiveLayer bool) string 
 	)
 }
 
-// applyOther — Filter > Other family (m4b STEP-33..35). maximum/minimum share
+// applyOther — Filter > Other family. maximum/minimum share
 // Rds + preserveShape (roundness=Rndn charID / squareness=stringID — both
 // captured); offset = Hrzn/Vrtc + fill hardcoded to wrap (Wrp), its other fill
 // modes deferred. Shares the FilterMulti skeleton.
@@ -549,7 +549,7 @@ func applyOther(mode string, p map[string]any, applyToActiveLayer bool) string {
 	)
 }
 
-// applyDenoise — Filter > Noise reduction family (m4b STEP-28..30). median uses
+// applyDenoise — Filter > Noise reduction family. median uses
 // Rds as unitDouble #Pxl; dust_and_scratches uses Rds as putInteger + Thsh;
 // despeckle is parameterless. Shares the FilterMulti skeleton.
 func applyDenoise(mode string, p map[string]any, applyToActiveLayer bool) string {
@@ -583,7 +583,7 @@ func applyDenoise(mode string, p map[string]any, applyToActiveLayer bool) string
 	)
 }
 
-// applyBlurAdv — the lesser Blur-menu filters (m4b STEP-23/25/27). surfaceBlur/
+// applyBlurAdv — the lesser Blur-menu filters. surfaceBlur/
 // boxblur are stringID events; average is charID Avrg (parameterless). smart_blur
 // + shape_blur deferred (mode/quality enums + custom-shape ref). FilterMulti.
 func applyBlurAdv(mode string, p map[string]any, applyToActiveLayer bool) string {

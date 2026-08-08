@@ -18,7 +18,7 @@ import { FakeDetectionClient, CANNED, EXPORT_RESULT } from '../fixtures/fake-det
  * get_selection_info merged into ps_inspect(what='selection_info') in
  * Phase 1b (2026-06-26); get_selection_preview stays separate (image-returning
  * verification primitive). The Sensei selectors (select_subject / select_sky) were
- * RE-TIERED pro→community in v0.22 and now live in createSelectionTools. Per-mode/op
+ * are community tier and live in createSelectionTools. Per-mode/op
  * handlers are unchanged; these tests pin the (name, params) forwarded to the
  * SnippetClient, reached via the discriminator.
  */
@@ -40,7 +40,7 @@ describe('createSelectionTools', () => {
     const tools = createSelectionTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
     // get_selection_info merged into ps_inspect(what='selection_info') — Phase 1b.
-    // ps_select_subject / ps_select_sky RE-TIERED pro→community in v0.22 (now here).
+    // ps_select_subject / ps_select_sky are community tier (now here).
     expect(tools.map((t) => t.tool.name)).toEqual([
       'ps_select',
       'ps_modify_selection',
@@ -576,7 +576,7 @@ describe('createSelectionTools', () => {
     expect(schema.properties.op.enum).toEqual(['save', 'load', 'duplicate', 'delete']);
   });
 
-  // 2026-06-29 — duplicate/delete added after the m4a STEP-12/13 captures
+  // 2026-06-29 — duplicate/delete added after a ScriptListener capture
   // (DOM channel.duplicate() / .remove()).
   it('op=duplicate dispatches duplicateChannel with channel + optional new name', async () => {
     const tools = createSelectionTools(conn.asConnection(), snippetClient);
@@ -682,7 +682,7 @@ describe('createSelectionTools', () => {
     expect(conn.executions.length).toBe(0);
   });
 
-  // ---------- Sensei selectors (RE-TIERED pro→community in v0.22; behavior unchanged) ----------
+  // ---------- Sensei selectors (community tier) ----------
 
   it('select_subject dispatches the selectSubject snippet via the SnippetClient', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
@@ -717,7 +717,7 @@ describe('createSelectionTools', () => {
   });
 
   // Migrated from the deleted selection-tools-pro.test.ts — schema-validation paths
-  // for the now-CE-shipped Sensei tool (v0.22 pro→community re-tier).
+  // for the now-CE-shipped Sensei tool.
   it('select_subject honors sample_all_layers=false', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', { sample_all_layers: false });

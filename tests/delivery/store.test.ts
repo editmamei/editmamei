@@ -425,7 +425,7 @@ describe('installModule force path — atomic staging swap (ML-2)', () => {
   });
 });
 
-describe('loadVerifiedModule regen — atomic staging swap (DL-3)', () => {
+describe('loadVerifiedModule regen — atomic staging swap', () => {
   it('regenerates via a staging dir and leaves the final dir complete, with no staging residue', () => {
     const dir = tmpDir();
     try {
@@ -510,7 +510,7 @@ describe('loadVerifiedModule regen — atomic staging swap (DL-3)', () => {
       const first = loadVerifiedModule('pro', { dir }, [pubB64]);
       expect(first).not.toBeNull();
       // The retained, signature-bound artifact MUST survive the swap — the boot
-      // verifier re-reads it on EVERY load (audit H1). If the staging swap dropped
+      // verifier re-reads it on EVERY load. If the staging swap dropped
       // it, this file is gone and the NEXT load throws ENOENT -> null -> Pro dark /
       // re-download loop. (Before the fix, this assertion — and the second load
       // below — failed.)

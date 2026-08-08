@@ -1,6 +1,6 @@
 /**
- * Shared JPEG-quality constant for the ANNOTATED-PREVIEW encode sites (perf-audit
- * M5/M6) — detection boxes (`ps_detect`), scene overlays (`ps_read_scene`),
+ * Shared JPEG-quality constant for the ANNOTATED-PREVIEW encode sites —
+ * detection boxes (`ps_detect`), scene overlays (`ps_read_scene`),
  * landmark points (`ps_detect_landmarks`), and the spatial-grounding review crop
  * (`ps_resolve_placement`). These all encode via `jpeg-js`'s `encode(imgData,
  * quality)`, whose `quality` is the standard 0-100 JPEG scale — a DIFFERENT knob

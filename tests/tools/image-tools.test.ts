@@ -26,7 +26,7 @@ describe('createImageTools', () => {
     ]);
   });
 
-  // 2026-06-20 — convert_image_mode (dev tier, from gap-backlog capture STEP-35).
+  // 2026-06-20 — convert_image_mode (dev tier, from gap-backlog capture).
   it('convert_image_mode dispatches convertImageMode with the mode', async () => {
     const tools = createImageTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_convert_image_mode', { mode: 'grayscale' });
@@ -35,7 +35,7 @@ describe('createImageTools', () => {
     expect(build.params.mode).toBe('grayscale');
   });
 
-  // 2026-06-20 — bitmap mode forwards the halftone screen params (STEP-36).
+  // 2026-06-20 — bitmap mode forwards the halftone screen params.
   it('convert_image_mode bitmap forwards halftone frequency/angle/shape', async () => {
     const tools = createImageTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_convert_image_mode', {

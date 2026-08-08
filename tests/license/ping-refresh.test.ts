@@ -1,5 +1,5 @@
 /**
- * WO-7 — the ps_ping license-refresh piggyback (every-ping trigger, throttled).
+ * The ps_ping license-refresh piggyback (every-ping trigger, throttled).
  *
  * The staleness/grace/clock-skew policy itself lives in `refreshIfStale` and is
  * covered by refresh-if-stale.test.ts. Here we only pin the piggyback wrapper

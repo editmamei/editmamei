@@ -34,7 +34,7 @@ export interface LicenseRecord {
   /** ISO timestamp of the last successful online validate — drives the grace window. */
   last_validated_at: string;
   /**
-   * DL-1 backward-clock guard: the maximum wall-clock time ever observed
+   * Backward-clock guard: the maximum wall-clock time ever observed
    * while writing this record (ISO timestamp), never allowed to move
    * backward — see `nextHighWaterMark`. Optional so license.json files
    * written before this field existed still parse; `evaluateEntitlement`
@@ -97,7 +97,7 @@ export function writeLicense(rec: LicenseRecord, opts: LicenseStoreOptions = {})
 }
 
 /**
- * Compute the next `high_water_mark` (DL-1): the max of the device's prior
+ * Compute the next `high_water_mark`: the max of the device's prior
  * `high_water_mark` (if any) and every candidate timestamp passed in
  * (callers pass the injected clock's `now`, which is also what the freshly
  * written `last_validated_at` equals at that same write — so passing `now`
@@ -110,7 +110,7 @@ export function writeLicense(rec: LicenseRecord, opts: LicenseStoreOptions = {})
  * `high_water_mark` is absent (a legacy record, written before this field
  * existed): `last_validated_at` alone can't be trusted as a floor — it's
  * exactly the value that reads as "future" under accidental forward clock
- * skew (WO-7), and seeding the new high-water-mark from a stale future
+ * skew, and seeding the new high-water-mark from a stale future
  * value would permanently lock out a legitimately-corrected clock with no
  * way to recover. A legacy record simply starts its high-water-mark fresh
  * at the next successful write, from real observed time only.

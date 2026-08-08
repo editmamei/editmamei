@@ -91,9 +91,9 @@ describe('evaluateEntitlement', () => {
     ).toBe('grace-expired');
   });
 
-  // DL-1 backward-clock guard: a persisted monotonic high-water-mark means
+  // The persisted monotonic high-water-mark means
   // rolling the system clock back can't manufacture a fresh-looking record.
-  describe('DL-1 backward-clock guard', () => {
+  describe('backward-clock guard', () => {
     it('(a) normal forward-time record, high_water_mark behind now → still entitled', () => {
       const r = rec({ high_water_mark: new Date(NOW - DAY_MS).toISOString() });
       expect(evaluateEntitlement(r, NOW)).toEqual({ entitled: true, reason: 'granted' });
@@ -171,7 +171,7 @@ describe('activate', () => {
     expect(r.expires_at).toBe('2027-06-15T00:00:00.000Z');
     expect(r.display_key).toBe('****-Z');
     expect(r.last_validated_at).toBe(new Date(NOW).toISOString());
-    // DL-1: a fresh activation seeds the monotonic high-water-mark from now.
+    // A fresh activation seeds the monotonic high-water-mark from now.
     expect(r.high_water_mark).toBe(new Date(NOW).toISOString());
     expect(readLicense({ dir })?.activation_id).toBe('act_99');
     expect(readLicense({ dir })?.high_water_mark).toBe(new Date(NOW).toISOString());
@@ -288,7 +288,7 @@ describe('refresh + deactivate', () => {
     expect(readLicense({ dir })?.high_water_mark).toBe(new Date(later).toISOString());
   });
 
-  it('refresh never moves high_water_mark backward, even when the clock rolls back (DL-1)', async () => {
+  it('refresh never moves high_water_mark backward, even when the clock rolls back', async () => {
     const pinnedHwm = new Date(NOW).toISOString();
     writeLicense(rec({ high_water_mark: pinnedHwm }), { dir });
     const { fetchImpl } = fakeFetch([

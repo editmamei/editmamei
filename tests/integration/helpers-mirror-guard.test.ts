@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
 /**
- * Review debt B3 — the go-core <-> TS ExtendScript helper mirror is
+ * The go-core <-> TS ExtendScript helper mirror is
  * unguarded and hand-maintained. Every mirrored helper exists in TWO
  * hand-kept copies: a raw-string fragment in a go-core
  * `go-core/cmd/buildtemplates/fragments_*.go` file (keyed by a

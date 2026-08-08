@@ -142,7 +142,7 @@ export interface SceneBuildResult {
   exportBytes: Buffer;
   /** The export decoded ONCE by detectActiveDoc — reused for the row-brightness
    *  profile and any annotated-preview drawing instead of re-decoding exportBytes
-   *  (perf-audit H4). Undefined when the export was unreadable/undecodable. */
+   *  (decode-once invariant). Undefined when the export was unreadable/undecodable. */
   decoded: DecodedImage | undefined;
   /** Detection boxes in EXPORT-pixel space (for drawing on exportBytes). */
   rawFaces: BBox[];

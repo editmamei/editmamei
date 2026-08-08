@@ -1,6 +1,6 @@
 /**
  * TelemetryClient — batches content-free events and sends them to the telemetry Worker,
- * consent-gated and fire-and-forget (telemetry-and-settings.md §6).
+ * consent-gated and fire-and-forget (see docs/privacy.md, "Where it goes").
  *
  * Lifecycle: the server tees every tool call into `recordCall` (and failures into
  * `recordDiagnostic`) from the same `onCall` hook that feeds the session NDJSON. Events

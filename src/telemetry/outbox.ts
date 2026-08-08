@@ -1,6 +1,6 @@
 /**
  * Durable telemetry outbox — disk-backed reliability for events that an in-process,
- * fire-on-exit network send can't guarantee (telemetry-and-settings.md §6).
+ * fire-on-exit network send can't guarantee (see docs/privacy.md, "Where it goes").
  *
  * Why this exists: the MCP server sends telemetry itself, and the host (e.g. Claude Desktop
  * on macOS) tears the process down at session end faster than an async POST can complete —

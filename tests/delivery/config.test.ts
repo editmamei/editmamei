@@ -3,10 +3,10 @@ import { resolveDeliveryConfig } from '@editmamei/delivery/config.ts';
 
 /**
  * The delivery endpoint carries the license key (request header) and returns the
- * AES content key (response body) — so it must never be a plaintext origin
- * (audit M2). resolveDeliveryConfig enforces https for non-loopback hosts.
+ * AES content key (response body) — so it must never be a plaintext origin.
+ * resolveDeliveryConfig enforces https for non-loopback hosts.
  */
-describe('resolveDeliveryConfig — transport security (M2)', () => {
+describe('resolveDeliveryConfig — transport security', () => {
   it('accepts the baked https default and strips a trailing slash', () => {
     expect(resolveDeliveryConfig(undefined).baseUrl).toMatch(/^https:\/\//);
     expect(resolveDeliveryConfig('https://example.com/').baseUrl).toBe('https://example.com');

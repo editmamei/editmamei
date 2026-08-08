@@ -16,7 +16,7 @@
  * Shape is very flat compared to Hue/Sat: no `Adjs` list, no per-range
  * objects, just three primitives on the BrgC descriptor.
  *
- * Group A audit (STEP 03) classified this OK — snippet matches ground
+ * Verdict: OK — snippet matches ground
  * truth. The only LOW-severity drift is that the snippet emits
  * `presetKindCustom` on the inline Mk-with-values path; ground truth
  * has no presetKind anywhere on the setd. PS tolerates the extra key.

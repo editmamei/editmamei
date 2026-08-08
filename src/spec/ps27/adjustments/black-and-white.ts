@@ -10,7 +10,7 @@
  * The Mk envelope captured all six color-channel integers plus a
  * `tintColor` RGBC object inline (no separate setd needed).
  *
- * Group A audit (STEP 06) classified this OK — snippet matches ground
+ * Verdict: OK — snippet matches ground
  * truth. All six color-channel keys (`Rd `, `Yllw`, `Grn `, `Cyn `,
  * `Bl  `, `Mgnt`) and the `useTint`/`tintColor` shape are correct.
  *

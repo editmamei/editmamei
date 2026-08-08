@@ -134,7 +134,7 @@ export class ModuleLifecycle {
       // Boot-time re-verification: re-hash + re-check the Ed25519 signature of the
       // retained artifact against the pinned key and regenerate the decrypted tree
       // before we import it, so a local code-swap between install and boot can't
-      // load unverified Pro code (audit H1). null → Pro stays dark (fail-closed).
+      // load unverified Pro code. null → Pro stays dark (fail-closed).
       const verified = loadVerifiedModule(PRO_SKU);
       if (verified) {
         // Carry the pointer's abi for the HOST_MIN_ABI gate. loadVerifiedModule

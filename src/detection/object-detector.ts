@@ -129,7 +129,7 @@ const sigmoid = (x: number): number => 1 / (1 + Math.exp(-x));
  * Detect COCO-80 objects in an exported JPEG. Coordinates are in the EXPORT
  * image's pixel space (carry `width`/`height` for scaling to document pixels).
  * `decoded` is the export already decoded once by the caller (detectActiveDoc) —
- * when supplied, this skips its own decode (perf-audit H4).
+ * when supplied, this skips its own decode (decode-once invariant).
  */
 export async function detectObjects(
   imagePath: string,

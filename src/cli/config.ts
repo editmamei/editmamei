@@ -1,7 +1,7 @@
 /**
  * `editmamei config` — get / set / list the settings at `~/.editmamei/settings.json`.
  * One of the Phase-1 control surfaces over the single settings source of truth
- * (telemetry-and-settings.md §7). Scriptable counterpart to hand-editing the file.
+ * (see docs/privacy.md, "How to control it"). Scriptable counterpart to hand-editing the file.
  *
  *   editmamei config list
  *   editmamei config get telemetry.usage

@@ -1,7 +1,7 @@
 /**
- * WO-7 (extends WO-1) — the `ps_ping` license-refresh piggyback.
+ * The `ps_ping` license-refresh piggyback.
  *
- * WO-1 revalidates a stale cached license on the boot path so an always-online
+ * The boot-path refresh revalidates a stale cached license so an always-online
  * Pro user never falls off the grace cliff. But Claude Desktop keeps an MCP
  * server alive for long stretches — a process can cross the staleness line
  * (and eventually the grace cliff) without ever restarting, so boot-only

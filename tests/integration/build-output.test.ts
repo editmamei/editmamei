@@ -1,8 +1,7 @@
 /**
  * Build-output regression test.
  *
- * Pins the BLOCK-1 / BLOCK-2 / BLOCK-5 fixes from the 2026-05-30
- * launch-readiness audit: the CE bundle must NOT contain Pro source
+ * Pins the build-output invariants: the CE bundle must NOT contain Pro source
  * (the Pro module is pruned from CE dist after compile);
  * bundles must not ship source maps or .d.ts files; the lockfile must be
  * committed; tsconfig.build.json must keep its IP-protection flags set.
@@ -29,7 +28,7 @@ const PRO_DIST = join(REPO_ROOT, 'packages', 'pro', 'dist');
 // Source of truth: derived from tool-tiers.ts. Pre-2026-06-10 this was a
 // hand-maintained list of 6 names — and only covered the tools that
 // happened to live in stubbed files. New Pro tools added to shared files
-// (the 9 audit H2/Q1 flagged) slipped through silently. Deriving the
+// (the 9 that were flagged) slipped through silently. Deriving the
 // list closes that drift class structurally.
 const PRO_TOOL_NAMES = toolsInTier('pro');
 
@@ -40,7 +39,7 @@ const PRO_TOOL_NAMES = toolsInTier('pro');
 const PRO_SOURCES_PRESENT = existsSync(join(REPO_ROOT, 'src', 'modules', 'pro', 'index.ts'));
 const proIt = PRO_SOURCES_PRESENT ? it : it.skip;
 
-// The expected prune set, DERIVED from disk (WO-2 stage B): every
+// The expected prune set, DERIVED from disk: every
 // `src/tools/*-pro.ts` — the source side of the same glob
 // `pruneProFromCE` runs against dist at build time. A new *-pro.ts file joins
 // the prune AND these assertions automatically; there is no hand list left to
@@ -110,7 +109,7 @@ describe.skipIf(!bundlesBuilt)('CE bundle composition', () => {
   });
 
   // ===========================================================================
-  // v0.7.2 audit H2/Q1 — tree-wide Pro-tier absent-from-CE assertion
+  // Tree-wide Pro-tier absent-from-CE assertion
   //
   // The per-stub-file check above proves the stub mechanism itself didn't
   // leak; THIS test proves no compiled .js file in the CE bundle's tree
@@ -160,7 +159,7 @@ describe.skipIf(!bundlesBuilt)('CE bundle composition', () => {
     //  - `perception/grounding-locate.js` + `tools/{brush,image,layer-transform,
     //    selection,shape}-tools.js` — these CE-shipped files carry
     //    `'ps_resolve_placement'` in their `placement`-param DESCRIPTIONS: a
-    //    delegation/vocabulary REFERENCE, not an implementation. WO-3 Option A
+    //    delegation/vocabulary REFERENCE, not an implementation. The locator
     //    (2026-07-07): the locator TOOL is Pro (its factory lives in the pruned
     //    grounding-tools-pro.js), but the grounding ENGINE stays CE-host-shipped so
     //    the community tools keep their placement params. Same delegation-not-impl
@@ -171,7 +170,7 @@ describe.skipIf(!bundlesBuilt)('CE bundle composition', () => {
         norm === 'core/tool-tiers.js' ||
         norm === 'core/tool-groups.js' ||
         norm === 'tools/scene-tools.js' ||
-        // WO-3 Option A — ps_resolve_placement reference-not-implementation (see above).
+        // ps_resolve_placement reference-not-implementation (see above).
         norm === 'perception/grounding-locate.js' ||
         norm === 'tools/brush-tools.js' ||
         norm === 'tools/image-tools.js' ||
@@ -296,12 +295,12 @@ describe.skipIf(!bundlesBuilt)('Pro bundle composition', () => {
   });
 
   it('Pro tool names appear in their respective Pro implementation files', () => {
-    // 2026-06-16 tier rollout: the whole template surface is Pro now, so
+    // The whole template surface is Pro, so
     // template-tools-pro.js carries all 7 template tools. layer-transform and
     // retouch became community-tier — their files are no longer *-pro.js and
     // ship in both editions, so they're not asserted here.
     const expectedInFile: Record<string, string[]> = {
-      // v0.22 re-tier: selection-tools-pro.js is GONE (Sensei select_subject/select_sky
+      // selection-tools-pro.js is GONE (Sensei select_subject/select_sky
       // moved to community selection-tools.ts); camera-raw-tools-pro.js now ships as a
       // Pro file (apply_camera_raw promoted to pro).
       'tools/camera-raw-tools-pro.js': ['ps_apply_camera_raw'],
@@ -379,7 +378,7 @@ describe.skipIf(!bundlesBuilt)('Bundle parity diagnostics', () => {
 
 describe('Repo-config invariants for the build pipeline', () => {
   // -----------------------------------------------------------------------
-  // BLOCK-5 companion — package-lock.json must be committed for `npm ci`
+  // package-lock.json must be committed for `npm ci`
   // in CI and for npm provenance / reproducible builds. Was previously
   // gitignored; T07 P1 flagged the removal. Test pins the new state so
   // it cannot regress silently.
@@ -400,7 +399,7 @@ describe('Repo-config invariants for the build pipeline', () => {
   });
 
   // -----------------------------------------------------------------------
-  // BLOCK-2 companion — tsconfig.build.json keeps the IP-protection flags
+  // tsconfig.build.json keeps the IP-protection flags
   // set. If any of these flips, the next CE/Pro build will start shipping
   // source maps / .d.ts files / inline TypeScript content.
   // -----------------------------------------------------------------------

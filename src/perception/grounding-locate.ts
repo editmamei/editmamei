@@ -354,7 +354,7 @@ export async function resolveToGeometry(
   });
   const docW = det.docWidth;
   const docH = det.docHeight;
-  // Already decoded once by detectActiveDoc (perf-audit H4) — no re-decode here.
+  // Already decoded once by detectActiveDoc (decode-once invariant) — no re-decode here.
   const exportImg: RgbaImage | null = det.decoded ?? null;
   const s = exportImg ? exportImg.width / docW : 1;
 

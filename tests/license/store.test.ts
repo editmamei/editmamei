@@ -70,7 +70,7 @@ describe('license store', () => {
   });
 });
 
-describe('nextHighWaterMark (DL-1)', () => {
+describe('nextHighWaterMark', () => {
   const NOW = Date.parse('2026-07-07T00:00:00.000Z');
   const DAY_MS = 24 * 60 * 60 * 1000;
 

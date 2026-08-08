@@ -63,7 +63,7 @@ describe('createFilterTools', () => {
     expect(conn.executions.length).toBe(0);
   });
 
-  // 2026-06-20 — apply_displace (capture STEP-19). Map path travels in
+  // 2026-06-20 — apply_displace (capture). Map path travels in
   // the descriptor (putPath DspF), so it forwards as a param.
   it('type=displace forwards map path + scale + enum params', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
@@ -232,7 +232,7 @@ describe('createFilterTools', () => {
     expect(build.params.cellSize).toBe(12);
   });
 
-  // 2026-06-29 — pixelate family extension (capture m4b STEP-06..10).
+  // 2026-06-29 — pixelate family extension (capture).
   it('type=pixelate crystallize passes cell_size', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_apply_filter', {
@@ -309,7 +309,7 @@ describe('createFilterTools', () => {
     expect(build.params.undefinedAreas).toBe('repeat_edge');
   });
 
-  // 2026-06-29 — distort family extension (capture m4b STEP-19..21).
+  // 2026-06-29 — distort family extension (capture).
   it('type=distort pinch passes the amount', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_apply_filter', { type: 'distort', mode: 'pinch', amount: 60 });
@@ -343,7 +343,7 @@ describe('createFilterTools', () => {
     expect(build.params.ridges).toBe(8);
   });
 
-  // 2026-06-29 — stylize family (new tool; capture m4b STEP-11..18).
+  // 2026-06-29 — stylize family (new tool).
   it('type=stylize emboss passes angle/height/amount', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_apply_filter', {
@@ -412,7 +412,7 @@ describe('createFilterTools', () => {
     expect(build.params.mode).toBe('find_edges');
   });
 
-  // 2026-06-29 — render family (new tool; capture m4b STEP-01..03).
+  // 2026-06-29 — render family (new tool).
   it('type=render clouds dispatches parameterless', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_apply_filter', { type: 'render', mode: 'clouds' });
@@ -437,7 +437,7 @@ describe('createFilterTools', () => {
     expect(build.params.seed).toBe(999);
   });
 
-  // 2026-06-29 — other/denoise/blur families (new tools; capture m4b STEP-23..35).
+  // 2026-06-29 — other/denoise/blur families (new tools).
   it('type=other maximum passes radius + preserve', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_apply_filter', {
