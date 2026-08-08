@@ -35,8 +35,8 @@ var guideDirectionMap = map[string]string{
 
 // addGuide — DOM doc.guides.add(direction, coordinate). The captured AM Mk path
 // bakes a runtime document id + guide index into the descriptor; the DOM API is
-// the robust coordinate-free equivalent (it exists, so prefer it — see CLAUDE.md
-// "verify DOM method exists or default to AM").
+// the robust coordinate-free equivalent (it exists, so prefer it — see
+// docs/engineering/am-descriptor-conventions.md "DOM vs. AM").
 func addGuide(orientation string, position float64) string {
 	return fmt.Sprintf(
 		tpl[vault.GuideAdd],

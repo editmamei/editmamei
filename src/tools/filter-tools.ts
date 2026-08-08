@@ -12,8 +12,8 @@ import { toolErrorResult, runSnippetTool, applyToActiveLayerProp } from '../util
 // layer before applying the destructive op. The original layer is
 // preserved; the filtered copy becomes the active layer. Callers that
 // want the historical bake-into-active-layer behavior set
-// `apply_to_active_layer: true`. See CLAUDE.md "Auto-duplicate-first
-// pattern" for the rule.
+// `apply_to_active_layer: true`. See docs/engineering/tool-design.md
+// "Auto-duplicate-first pattern" for the rule.
 
 const gaussianBlurSchema: JsonSchemaObject = {
   type: 'object',

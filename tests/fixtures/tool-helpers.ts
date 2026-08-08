@@ -39,7 +39,8 @@ export function textOf(result: ToolResult): string {
 
 /**
  * Assert every tool has a non-empty name, description, inputSchema, outputSchema,
- * and annotations.title — the full MCP surface contract from CLAUDE.md.
+ * and annotations.title — the full MCP surface contract from
+ * docs/engineering/tool-design.md.
  *
  * This is the single guard that future tool additions inherit. If you add a new
  * tool without an outputSchema or title annotation, the matching factory's

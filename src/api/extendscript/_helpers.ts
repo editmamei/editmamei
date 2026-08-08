@@ -511,8 +511,8 @@ function getContextInfo() {
  * every tool call and bloats LLM context — the 2026-06-06 full-tool demo
  * showed LLM-thinking time growing to 70+ minutes over 108 calls,
  * dominated by re-processing duplicated context payloads. Tools on the
- * "EXEMPT" list in CLAUDE.md don't change what's active, so the LLM
- * already knew it from the prior result; minimal-context just confirms
+ * "EXEMPT" list in docs/engineering/tool-design.md don't change what's
+ * active, so the LLM already knew it from the prior result; minimal-context just confirms
  * the document and active layer are still what the caller expected.
  *
  * Tools that DO change what's active (create_layer, select_layer, etc.)
