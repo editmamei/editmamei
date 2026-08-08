@@ -240,6 +240,11 @@ describe('mcpb bundle packaging', () => {
       writeFileSync(join(srcCe, 'dist', 'index.js'), '// server\n', 'utf8');
       writeFileSync(join(srcCe, 'dist', 'bin', 'editmamei-core-win-x64.exe'), 'BIN', 'utf8');
       writeFileSync(join(srcCe, 'package.json'), JSON.stringify({ name: 'editmamei' }), 'utf8');
+      // stageMcpb requires these to be present (copyDistributionFiles guarantees them in a
+      // real CE build) — a synthetic fixture has to supply them too.
+      writeFileSync(join(srcCe, 'LICENSE.md'), 'LICENSE\n', 'utf8');
+      writeFileSync(join(srcCe, 'NOTICES.md'), 'NOTICES\n', 'utf8');
+      writeFileSync(join(srcCe, 'README.md'), 'README\n', 'utf8');
 
       const staging = join(work, 'staging');
       stageMcpb(srcCe, staging, '9.9.9');
