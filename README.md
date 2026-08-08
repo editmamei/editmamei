@@ -12,7 +12,7 @@ Editmamei is a Model Context Protocol (MCP) server that drives the Adobe Photosh
 
 It serves photographers and retouchers who want to edit by conversation just as much as developers wiring Photoshop into an AI pipeline. To learn more or get started, visit **[editmamei.com](https://editmamei.com)**.
 
-**[editmamei.com](https://editmamei.com)** · [Docs & wiki](https://github.com/editmamei/editmamei-wiki) · [Report a bug](https://github.com/editmamei/editmamei-wiki/issues)
+**[editmamei.com](https://editmamei.com)** · [Docs](docs/getting-started.md) · [Report a bug](https://github.com/editmamei/editmamei/issues)
 
 ## How it works
 
@@ -44,7 +44,7 @@ editmamei status    # confirms install state + Photoshop detection
 
 Then restart your AI client and ask it: _"Is Photoshop connected?"_
 
-Prefer not to use a terminal? Claude Desktop users can install the one-click `.mcpb` extension from [the latest release](https://github.com/editmamei/editmamei-wiki/releases/latest) (no system Node required, Claude Desktop ships its own runtime). Full walkthrough in the [install guide](https://github.com/editmamei/editmamei-wiki/blob/main/docs/installation.md).
+Prefer not to use a terminal? Claude Desktop users can install the one-click [`.mcpb` extension](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb) directly (no system Node required, Claude Desktop ships its own runtime). Full walkthrough in the [install guide](docs/installation.md).
 
 **Requirements:** Adobe Photoshop 2026 (v27.x), Windows 10/11 or macOS 12+, Node.js 20+ (for the npm path), and an MCP-compatible AI client (Claude Desktop, Cursor, Claude Code).
 
@@ -104,7 +104,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 - **Community** is free and covers the everyday editing surface: documents, layers, selections (including AI Select Subject and Select Sky), non-destructive adjustments, filters, masks, type, retouching, on-device perception, and the inspect/verify primitives.
 - **Pro** adds Camera Raw develop, the grounded precision tools (warp, named-object masks, precision placement), subject-instance targeting, face-mesh perception, the reproducible-template system, and Photoshop Actions plus the scripting escape hatch.
 
-The split is detailed in [pro-features.md](https://github.com/editmamei/editmamei-wiki/blob/main/docs/pro-features.md). Pricing is at [editmamei.com](https://editmamei.com).
+The split is detailed in [pro-features.md](docs/pro-features.md). Pricing is at [editmamei.com](https://editmamei.com).
 
 This repository holds the Community source. Pro is a separately licensed module and its source is not published here; Community never imports it, so this tree builds and runs on its own.
 
@@ -138,15 +138,19 @@ editmamei config set ps_path "/path/to/Photoshop"
 
 ## Privacy
 
-Editmamei runs on your computer and edits in your own Photoshop. No image content, document data, or file paths are sent to Editmamei's servers. It reports anonymous, content-free usage telemetry (on by default, turn it off with `editmamei config set telemetry.usage false`). When your AI assistant needs to see a result, Editmamei sends it a downscaled preview, the same as dropping a photo into a chat with that assistant. Every field is documented in [privacy.md](https://github.com/editmamei/editmamei-wiki/blob/main/docs/privacy.md).
+Editmamei runs on your computer and edits in your own Photoshop. No image content, document data, or file paths are sent to Editmamei's servers. It reports anonymous, content-free usage telemetry (on by default, turn it off with `editmamei config set telemetry.usage false`). When your AI assistant needs to see a result, Editmamei sends it a downscaled preview, the same as dropping a photo into a chat with that assistant. Every field is documented in [privacy.md](docs/privacy.md).
 
 The source in this repository is the same code published to npm, so none of the above has to be taken on trust.
 
 ## Docs and support
 
 - **Features and pricing:** [editmamei.com](https://editmamei.com)
-- **Install, getting started, FAQ, Pro features:** [the wiki](https://github.com/editmamei/editmamei-wiki)
-- **Bugs and feature requests:** [the issue tracker](https://github.com/editmamei/editmamei-wiki/issues). If something's broken, ask your assistant to "report a problem" (or run `editmamei report`) to drop an anonymized diagnostic bundle in your Downloads folder, then attach it to the issue.
+- **Install:** [docs/installation.md](docs/installation.md)
+- **Getting started:** [docs/getting-started.md](docs/getting-started.md)
+- **FAQ:** [docs/faq.md](docs/faq.md)
+- **Pro features:** [docs/pro-features.md](docs/pro-features.md)
+- **Roadmap:** [docs/roadmap.md](docs/roadmap.md)
+- **Bugs and feature requests:** [the issue tracker](https://github.com/editmamei/editmamei/issues). If something's broken, ask your assistant to "report a problem" (or run `editmamei report`) to drop an anonymized diagnostic bundle in your Downloads folder, then attach it to the issue.
 - **Security:** see [SECURITY.md](SECURITY.md) (don't file security issues publicly)
 
 ## License
