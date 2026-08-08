@@ -38,7 +38,7 @@ import { detectDownloadsDir } from '../cli/downloads-dir.js';
 
 export const DIAGNOSTIC_BUNDLE_SCHEMA = 1;
 /** Where users file the bundle. */
-export const ISSUES_URL = 'https://github.com/editmamei/editmamei-wiki/issues';
+export const ISSUES_URL = 'https://github.com/editmamei/editmamei/issues';
 
 const MAX_LOG_LINES = 1000;
 const MAX_DESKTOP_LOG_LINES = 400;

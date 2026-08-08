@@ -214,12 +214,17 @@ export function stageMcpb(
     cpSync(srcLock, join(stagingDir, 'package-lock.json'));
   }
 
-  // Ship the legal docs alongside the bundle so the .mcpb carries the same LICENSE +
+  // Ship the legal docs alongside the bundle so the .mcpb carries the same LICENSE.md +
   // third-party attribution as the npm tarball — Claude Desktop installs the zip as-is, with
-  // no npm `files` filter applying. Each is best-effort (present in a real CE build).
-  for (const doc of ['LICENSE', 'NOTICES.md', 'README.md']) {
+  // no npm `files` filter applying. copyDistributionFiles (build-common.ts) guarantees these
+  // are present in srcCeDir by the time this runs, so a missing doc here fails loudly rather
+  // than shipping a bundle silently missing its license.
+  for (const doc of ['LICENSE.md', 'NOTICES.md', 'README.md']) {
     const srcDoc = join(srcCeDir, doc);
-    if (existsSync(srcDoc)) cpSync(srcDoc, join(stagingDir, doc));
+    if (!existsSync(srcDoc)) {
+      throw new Error(`stageMcpb: required legal doc missing from CE build: ${srcDoc}`);
+    }
+    cpSync(srcDoc, join(stagingDir, doc));
   }
 
   writeFileSync(

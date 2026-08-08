@@ -58,7 +58,7 @@
   },
   "homepage": "https://editmamei.com",
   "bugs": {
-    "url": "https://github.com/editmamei/editmamei-wiki/issues"
+    "url": "https://github.com/editmamei/editmamei/issues"
   },
   "engines": {
     "node": ">=20.0.0"

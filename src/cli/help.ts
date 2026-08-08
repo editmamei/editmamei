@@ -59,6 +59,6 @@ Examples:
 Per-user data and session logs live in ~/.editmamei/; uninstall preserves them.
 
 Docs: https://editmamei.com/docs
-Issues: https://github.com/editmamei/editmamei-wiki/issues
+Issues: https://github.com/editmamei/editmamei/issues
 `);
 }

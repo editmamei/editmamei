@@ -240,6 +240,11 @@ describe('mcpb bundle packaging', () => {
       writeFileSync(join(srcCe, 'dist', 'index.js'), '// server\n', 'utf8');
       writeFileSync(join(srcCe, 'dist', 'bin', 'editmamei-core-win-x64.exe'), 'BIN', 'utf8');
       writeFileSync(join(srcCe, 'package.json'), JSON.stringify({ name: 'editmamei' }), 'utf8');
+      // stageMcpb requires these to be present (copyDistributionFiles guarantees them in a
+      // real CE build) — a synthetic fixture has to supply them too.
+      writeFileSync(join(srcCe, 'LICENSE.md'), 'LICENSE\n', 'utf8');
+      writeFileSync(join(srcCe, 'NOTICES.md'), 'NOTICES\n', 'utf8');
+      writeFileSync(join(srcCe, 'README.md'), 'README\n', 'utf8');
 
       const staging = join(work, 'staging');
       stageMcpb(srcCe, staging, '9.9.9');
@@ -247,6 +252,11 @@ describe('mcpb bundle packaging', () => {
       expect(existsSync(join(staging, 'dist', 'index.js'))).toBe(true);
       // go-core binaries ride along so the bundle is self-contained.
       expect(existsSync(join(staging, 'dist', 'bin', 'editmamei-core-win-x64.exe'))).toBe(true);
+      // The legal docs must land next to the bundle too — deleting the copy
+      // loop in stageMcpb would still pass every other assertion here.
+      expect(existsSync(join(staging, 'LICENSE.md'))).toBe(true);
+      expect(existsSync(join(staging, 'NOTICES.md'))).toBe(true);
+      expect(existsSync(join(staging, 'README.md'))).toBe(true);
       const manifest = JSON.parse(readFileSync(join(staging, 'manifest.json'), 'utf8'));
       expect(manifest.version).toBe('9.9.9');
       expect(manifest.server.entry_point).toBe('dist/index.js');
