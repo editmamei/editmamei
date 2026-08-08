@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Editmamei website
+    url: https://editmamei.com
+    about: Features, pricing, install guides, and the FAQ.
+  - name: Security disclosure
+    url: https://github.com/editmamei/editmamei/security/advisories/new
+    about: Report a security vulnerability privately, per SECURITY.md. Do not open a public issue.
