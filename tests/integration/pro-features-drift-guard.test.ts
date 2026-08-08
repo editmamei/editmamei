@@ -1,46 +1,69 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { TOOL_TIERS } from '@editmamei/core/tool-tiers.js';
 
-// docs/pro-features.md is the canonical Community/Pro split. It used to be
-// wiki-tier-drift-guard.test.ts, checked against a sibling editmamei-ce wiki
-// checkout, and skipped in CI whenever that checkout was missing. The
-// 2026-08-07 split archived the wiki and migrated its docs in-repo, so the
-// doc this guard checks now lives right here — it runs unconditionally,
-// everywhere. Two rules, preserved from the wiki-era guard:
-//   1. Every ps_* identifier the doc mentions must be a real, shipped
-//      community/pro tool (dev/none-tier and unknown names must not appear).
-//   2. A tool listed under a tier-labeled section must match its tier table
-//      entry — "## Community: what's included free" and "## What Pro adds to
-//      Editmamei" are the canonical split.
+// docs/ is user-facing and edition-labeled, so it gets the same drift guard the
+// wiki used to have. This used to be wiki-tier-drift-guard.test.ts, checked
+// against a sibling editmamei-ce wiki checkout, and skipped in CI whenever that
+// checkout was missing. The 2026-08-07 split archived the wiki and migrated its
+// docs in-repo, so the docs this guard checks now live right here — it runs
+// unconditionally, everywhere. Rules, preserved from the wiki-era guard:
+//   1. Every ps_* identifier in ANY doc must be a real, shipped community/pro
+//      tool (dev/none-tier and unknown names must not appear) — the original
+//      incident this guard exists for was in getting-started.md, not the
+//      pro-features table.
+//   2. In pro-features.md, a tool listed under a tier-labeled section must
+//      match its tier table entry — "## Community: ..." and "## What Pro
+//      adds ..." are the canonical split.
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const DOC = join(ROOT, 'docs', 'pro-features.md');
+const DOCS_DIR = join(ROOT, 'docs');
+const PRO_FEATURES = join(DOCS_DIR, 'pro-features.md');
 
 const PS_NAME = /\bps_[a-z0-9_]+\b/g;
 
-describe('pro-features drift guard', () => {
-  it('every ps_* identifier in pro-features.md is a shipped community/pro tool', () => {
+// ps_*-shaped identifiers that are legitimately not tools: settings keys the
+// privacy doc documents. Anything added here needs the same justification.
+const NON_TOOL_PS_NAMES = new Set(['ps_version', 'ps_path']);
+
+function docFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...docFiles(full));
+    else if (entry.name.endsWith('.md')) out.push(full);
+  }
+  return out;
+}
+
+describe('docs tier drift guard', () => {
+  it('every ps_* identifier across docs/ is a shipped community/pro tool', () => {
+    const files = docFiles(DOCS_DIR);
+    // Anti-vacuous-pass guard: the docs tree exists and mentions tools. A
+    // restructure that empties either must fail here, not disarm the check.
+    expect(files.length).toBeGreaterThan(0);
     const offenders: string[] = [];
-    const source = readFileSync(DOC, 'utf8');
-    const names = source.match(PS_NAME) ?? [];
-    // Anti-vacuous-pass guard: a doc restructure that strips the ps_* names
-    // (or a stale DOC path) must fail here, not silently disarm the check.
-    expect(new Set(names).size).toBeGreaterThanOrEqual(10);
-    for (const name of names) {
-      const tier = TOOL_TIERS[name];
-      if (tier !== 'community' && tier !== 'pro') {
-        offenders.push(`${name} (tier: ${tier ?? 'UNKNOWN'})`);
+    let totalNames = 0;
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8');
+      for (const name of source.match(PS_NAME) ?? []) {
+        if (NON_TOOL_PS_NAMES.has(name)) continue;
+        totalNames += 1;
+        const tier = TOOL_TIERS[name];
+        if (tier !== 'community' && tier !== 'pro') {
+          offenders.push(`${file}: ${name} (tier: ${tier ?? 'UNKNOWN'})`);
+        }
       }
     }
+    expect(totalNames).toBeGreaterThanOrEqual(25);
     expect(offenders).toEqual([]);
   });
 
-  it('lists each tool under the section matching its tier', () => {
-    const source = readFileSync(DOC, 'utf8');
+  it('pro-features.md lists each tool under the section matching its tier', () => {
+    const source = readFileSync(PRO_FEATURES, 'utf8');
     const offenders: string[] = [];
     const seen = { community: 0, pro: 0 };
     let expected: 'community' | 'pro' | null = null;
@@ -50,6 +73,7 @@ describe('pro-features drift guard', () => {
       else if (/^## /.test(line)) expected = null;
       if (!expected) continue;
       for (const name of line.match(PS_NAME) ?? []) {
+        if (NON_TOOL_PS_NAMES.has(name)) continue;
         seen[expected] += 1;
         if (TOOL_TIERS[name] !== expected) {
           offenders.push(`${name} listed under the ${expected} section but is ${TOOL_TIERS[name]}`);

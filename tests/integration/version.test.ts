@@ -29,10 +29,26 @@ describe('VERSION constant', () => {
 });
 
 describe('server.json', () => {
-  it('both version fields match package.json version', () => {
+  it('every version field matches package.json version', () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
     const server = JSON.parse(readFileSync(join(REPO_ROOT, 'server.json'), 'utf8'));
     expect(server.version).toBe(pkg.version);
-    expect(server.packages[0].version).toBe(pkg.version);
+    // Iterate rather than index: a future second package entry (e.g. the
+    // .mcpb) must be pinned the moment it appears, not silently skipped.
+    expect(server.packages.length).toBeGreaterThanOrEqual(1);
+    for (const entry of server.packages) {
+      expect(entry.version).toBe(pkg.version);
+    }
+  });
+});
+
+describe('package-lock.json', () => {
+  it('both lockfile version fields match package.json version', () => {
+    // A desync here fails `npm ci` inside the release workflow — it has
+    // happened at a real RC cut. Cheap to pin, expensive to rediscover.
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+    const lock = JSON.parse(readFileSync(join(REPO_ROOT, 'package-lock.json'), 'utf8'));
+    expect(lock.version).toBe(pkg.version);
+    expect(lock.packages[''].version).toBe(pkg.version);
   });
 });

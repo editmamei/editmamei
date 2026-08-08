@@ -50,7 +50,7 @@ Minimal steps the maintainer can follow to see the same bug. Example:
 
 ## Environment
 
-- Editmamei version: <!-- run `editmamei --version` -->
+- Editmamei version: <!-- run `editmamei status`, or `npm ls -g editmamei` -->
 - Edition: <!-- Community / Pro -->
 - MCP client: <!-- Claude Desktop / Cursor / Claude Code / other -->
 - MCP client version:

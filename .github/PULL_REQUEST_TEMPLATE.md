@@ -27,4 +27,4 @@ squash.
 - [ ] `npm run build` then `npm test` pass locally (build first — spec tests skip silently without the compiled Go binary)
 - [ ] `npm run lint` and `npm run typecheck` pass locally
 - [ ] Added or updated a test for anything behavioral
-- [ ] I've signed the [CLA](../CLA.md), or the CLA bot will prompt me on this PR (it blocks merge until signed)
+- [ ] I've signed the [CLA](https://github.com/editmamei/editmamei/blob/dev/CLA.md), or the CLA bot will prompt me on this PR (it blocks merge until signed)
