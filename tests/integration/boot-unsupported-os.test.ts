@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { platform } from 'os';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { EditmameiServer } from '@editmamei/core/server.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
 
@@ -43,6 +46,27 @@ describe('boot on an unsupported OS', () => {
     expect(onLinux.count()).toBe(onWindows.count());
   });
 
+  it('completes the MCP handshake and answers tools/list', async () => {
+    // The assertion that matches what a scanner actually does. Constructing
+    // the server is not the bar — the bar is a client connecting and getting
+    // an inventory back. start() binds stdio, so this drives the same
+    // sequence (loadModules, then connect) over a linked in-memory pair.
+    vi.mocked(platform).mockReturnValue('linux');
+    const editmamei = new EditmameiServer();
+    await editmamei.loadModules();
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const internal = (editmamei as unknown as { server: Server }).server;
+    const client = new Client({ name: 'scanner', version: '0.0.0' });
+
+    await Promise.all([internal.connect(serverTransport), client.connect(clientTransport)]);
+    const listed = await client.listTools();
+
+    expect(listed.tools.length).toBeGreaterThan(0);
+    expect(listed.tools.map((t) => t.name)).toContain('ps_ping');
+    await client.close();
+  });
+
   it('refuses an actual Photoshop call, naming the OS', async () => {
     vi.mocked(platform).mockReturnValue('linux');
     const server = new EditmameiServer() as unknown as {
@@ -51,5 +75,24 @@ describe('boot on an unsupported OS', () => {
     await expect(server.session.getConnection().executeScript('$.__mcp__ = 1;')).rejects.toThrow(
       /Windows and macOS/
     );
+  });
+
+  it('ps_ping explains the platform instead of blaming a closed Photoshop', async () => {
+    // The tool a scanner (or a confused WSL user) reaches for first. Without
+    // the reason it reports "Photoshop did not respond", which reads as an
+    // application that is merely closed and sends the reader after a fix that
+    // cannot work here.
+    vi.mocked(platform).mockReturnValue('linux');
+    const server = new EditmameiServer() as unknown as {
+      pingPhotoshop(): Promise<{
+        content: Array<{ text: string }>;
+        structuredContent: { connected: boolean };
+      }>;
+    };
+    const res = await server.pingPhotoshop();
+
+    expect(res.structuredContent.connected).toBe(false);
+    expect(res.content[0].text).toMatch(/"linux"/);
+    expect(res.content[0].text).toMatch(/Windows and macOS/);
   });
 });

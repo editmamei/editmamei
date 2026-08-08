@@ -2,10 +2,10 @@
  * Resolves which operating system we are on and hands back everything the rest
  * of the server needs from it.
  *
- * The `win32` / `darwin` / otherwise-throw decision used to be written out in
+ * The `win32` / `darwin` / everything-else decision used to be written out in
  * three places — the connection's constructor, the detector's constructor, and
  * the detector's `detect()` — which meant adding a platform, or changing how an
- * unsupported one fails, was a three-site edit with no compiler help if you
+ * unsupported one behaves, was a three-site edit with no compiler help if you
  * missed one. It lives here now, once.
  */
 
@@ -50,6 +50,17 @@ function noPhotoshopHere(os: string): string {
     `Editmamei runs on Windows and macOS; this process is on "${os}". ` +
     'Adobe ships no Linux build of Photoshop, so there is nothing here to drive.'
   );
+}
+
+/**
+ * That same sentence when this host cannot run Photoshop at all, otherwise
+ * null. For callers that report *why* something is unreachable: without it, a
+ * failed liveness probe on Linux reads as "Photoshop is closed" and sends the
+ * reader after a fix that cannot work.
+ */
+export function unsupportedHostReason(): string | null {
+  const os = platform();
+  return os === 'win32' || os === 'darwin' ? null : noPhotoshopHere(os);
 }
 
 /**
