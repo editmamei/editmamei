@@ -185,7 +185,7 @@ describe('buildSessionSummary', () => {
 });
 
 describe('buildDiagnosticEvent', () => {
-  it('omits edition (per §4.3) and includes optional fields only when present', () => {
+  it('omits edition and includes optional fields only when present', () => {
     const withOpt = buildDiagnosticEvent(
       dims('2026'),
       {

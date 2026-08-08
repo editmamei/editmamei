@@ -30,6 +30,7 @@ import { Kernel } from '../kernel/kernel.js';
 import { ceModule } from '../modules/ce/index.js';
 import { hostDetectionRuntime } from '../detection/runtime.js';
 import { ModuleLifecycle, classifyModuleOutcome } from '../kernel/module-lifecycle.js';
+import { unsupportedHostReason } from '../platform/host-platform.js';
 
 // Re-exported for tests + call sites that import the taxonomy from server.ts
 // (its historical home) rather than reaching into kernel/module-lifecycle.ts.
@@ -564,9 +565,16 @@ export class EditmameiServer {
       );
       const alive = await connection.ping().catch(() => false);
       if (!alive) {
+        // On an OS Photoshop does not ship for, "did not respond" reads as a
+        // closed application and sends the reader after the wrong fix. The
+        // host knows the real reason; say it.
+        const reason = unsupportedHostReason();
         return {
           content: [
-            { type: 'text' as const, text: 'Photoshop did not respond' + this.updateNote() },
+            {
+              type: 'text' as const,
+              text: (reason ?? 'Photoshop did not respond') + this.updateNote(),
+            },
           ],
           structuredContent: { connected: false, update_available: this.updateInfo },
         };

@@ -14,7 +14,8 @@
  * 1. The spec models the GROUND-TRUTH sequence (PS UI emits `Mk AdjL`
  *    default + separate `setd` with values). The Editmamei snippet
  *    uses the equivalent "create with values" pattern (one Mk with
- *    values embedded — see CLAUDE.md's "Hst2 bug history" comment).
+ *    values embedded — see docs/engineering/am-descriptor-conventions.md's
+ *    "Hst2 / Hsrt gotcha" section).
  *    Both forms produce the same final layer state. This test treats
  *    them as equivalent by filtering out the setd-only typeIDs.
  *    When V2 ships a structural matcher, it will need to model the

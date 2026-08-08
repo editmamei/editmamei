@@ -24,8 +24,8 @@
  * every registered tool is grouped, and every grouped name is a real tool.
  *
  * The altitude rule for whether a new operation is a NEW tool or a new
- * discriminator on an existing one lives in `CLAUDE.md` § "Tool consolidation
- * — the altitude rule".
+ * discriminator on an existing one lives in `docs/engineering/tool-design.md`
+ * § "Tool consolidation — the altitude rule".
  */
 
 export type ToolGroup =

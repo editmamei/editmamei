@@ -2,7 +2,10 @@
 #
 # Runs on every push and pull request. This is the check that pull requests are
 # gated on, so it deliberately runs exactly what CONTRIBUTING asks contributors
-# to run locally: format, lint, typecheck, and the full test suite.
+# to run locally: format, lint, typecheck, and the full test suite. A separate,
+# NON-required `audit` job surfaces dependency advisories on every PR without
+# letting a newly published advisory in a transitive dep (or a registry outage)
+# block unrelated merges — the release workflow keeps the blocking audit gate.
 #
 # Why Windows is the primary runner: Editmamei drives Adobe Photoshop, which
 # ships on Windows and macOS only. Parts of the CLI resolve platform-specific
@@ -71,6 +74,25 @@ jobs:
         run: |
           go build ./...
           go test ./...
+
+  # Deliberately NOT in the required status checks: advisories should be
+  # visible on the PR, not able to freeze unrelated merges. release.yml runs
+  # the same audit as a hard gate before anything publishes.
+  audit:
+    name: audit (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - name: audit
+        run: npm run audit:ci
 
   macos:
     # GATING, as of 2026-08-07. macOS is a supported platform and this is its only

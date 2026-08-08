@@ -61,7 +61,7 @@ export const createClippingMaskSpec: AmEventSpec = {
     'Event ID has two paired aliases: `GrpL` (charID — emitted by the PS menu capture) and `groupEvent` (stringID — used by the inline implementation in `addAdjustmentLayer`). Both resolve to the same internal event in modern PS. Verified: `app.typeIDToStringID(app.charIDToTypeID("GrpL")) === "groupEvent"` in PS 27.x.',
     "Inverse operation (release clipping mask) is `Ungr` charID / `ungroupEvent` stringID — same alias pattern. NOT the same as the layer-section `ungroupLayersEvent` used by `ps_ungroup`. Three distinct stringIDs: `groupEvent` (clip to below), `ungroupEvent` (release clipping mask), `ungroupLayersEvent` (dissolve a layer group). Don't confuse them.",
     'The clipping mask is conceptually "use the layer below as the alpha source for this layer." It requires the layer below to exist; PS silently no-ops if the active layer is at the bottom of the document.',
-    'When adding the future standalone tool, pin both the `GrpL` ↔ `groupEvent` alias and the `Ungr` ↔ `ungroupEvent` alias with `.not.toContain` regression guards on legacy / fictional event IDs (see CLAUDE.md "Forum-lore event IDs ... pin against ScriptListener capture before shipping").',
+    'When adding the future standalone tool, pin both the `GrpL` ↔ `groupEvent` alias and the `Ungr` ↔ `ungroupEvent` alias with `.not.toContain` regression guards on legacy / fictional event IDs (see docs/engineering/am-descriptor-conventions.md "Forum-lore event IDs — verify before shipping").',
   ],
   versionNotes: [
     'Capture from PS 27.7.0 Windows; the GrpL/groupEvent alias has been stable since at least PS 21.',

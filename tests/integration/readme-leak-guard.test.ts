@@ -62,19 +62,11 @@ function containsToolName(content: string, name: string): boolean {
  * tool that is still 'dev' / 'none' in Editmamei's tool-tiers.ts."
  */
 describe('public README leak guard', () => {
-  // Both public READMEs get the same invariant: the one shipped in the npm
-  // tarball today, and the seeded README the export lays onto the public
-  // source tree. They are separate files (the shipped one still carries the
-  // pre-flip license section), so without this the seed could drift and
-  // advertise an unverified tool. The seeded copy only exists alongside the
-  // tooling that produces it — in a checkout without that tooling, this
-  // repo's own README.md already IS that public README, so just scan
-  // whichever of the two paths is actually present.
-  const seedReadmePath = join(REPO_ROOT, 'scripts', 'export', 'seed', 'README.md');
-  const readme = [
-    readFileSync(join(REPO_ROOT, 'README.md'), 'utf8'),
-    existsSync(seedReadmePath) ? readFileSync(seedReadmePath, 'utf8') : '',
-  ].join('\n');
+  // The npm tarball ships this repo's own README.md — it IS the public
+  // README, and the single file this guard scans. (The pre-split export
+  // pipeline seeded a second copy onto the public tree; that pipeline is
+  // retired, and its seed path retired with it.)
+  const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
 
   it("no 'dev'-tier tool name appears in README.md", () => {
     const devTools = Object.entries(TOOL_TIERS)
