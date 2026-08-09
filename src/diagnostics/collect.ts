@@ -146,8 +146,7 @@ export async function collectDiagnostics(opts: CollectOptions = {}): Promise<Dia
   for (const id of recentIds) {
     const entries = await readSessionLog(id, { dir: sessionsDir });
     const meta = [...entries].reverse().find((e) => e.type === 'meta') as
-      | SessionLogMetaEntry
-      | undefined;
+      SessionLogMetaEntry | undefined;
     const calls = entries.filter((e): e is SessionLogCallEntry => e.type === 'call');
     const reduced: DiagnosticSessionCall[] = calls.slice(-MAX_CALLS_PER_SESSION).map((c) => ({
       seq: c.seq,

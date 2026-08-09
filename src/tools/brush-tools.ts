@@ -290,8 +290,7 @@ async function applyBrushStroke(
     // Grounded clone/heal SAMPLE point: a source_placement (resolved point + gate)
     // names the sample location instead of guessing source_point pixels; it wins.
     let source_point = args.source_point as
-      | { x: number; y: number; layer_name?: string }
-      | undefined;
+      { x: number; y: number; layer_name?: string } | undefined;
     let sourcePlacementInfo: { target: string; point: { x: number; y: number } } | undefined;
     if (args.source_placement) {
       const sp = await resolveExpectedPlacement(
@@ -305,8 +304,7 @@ async function applyBrushStroke(
       sourcePlacementInfo = { target: sp.target, point: sp.point };
     }
     const foreground_color = args.foreground_color as
-      | { red: number; green: number; blue: number }
-      | undefined;
+      { red: number; green: number; blue: number } | undefined;
     const closed = (args.closed as boolean | undefined) ?? false;
     const jitter_px = (args.jitter_px as number | undefined) ?? 0;
     const hardness_pct = args.hardness_pct as number | undefined;
