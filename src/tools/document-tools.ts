@@ -236,7 +236,7 @@ export function createDocumentTools(
       tool: {
         name: 'ps_open_document',
         description:
-          'Open a file from disk into Photoshop with all dialogs suppressed (uses last-used Camera Raw settings for raw/HEIC). Returns document name, dimensions, color mode, and whether the source was a raw format. Use this in the pipeline to load Inbox files for editing. If the file is ALREADY open, its existing document is activated rather than opened a second time — `already_open: true` says so, and any edits made to it are still there (Photoshop would otherwise open a duplicate with a fresh Background, which silently strands prior work).',
+          'Open a file from disk into Photoshop with all dialogs suppressed (uses last-used Camera Raw settings for raw/HEIC). Returns document name, dimensions, color mode, and whether the source was a raw format. `is_raw_source` is workflow-critical, not a passive status field: when true, the first edit should be a Camera Raw develop pass on the base smart object (via a camera-raw develop tool, if one is registered in tools/list) — NOT stacked tonal adjustment layers. Use this in the pipeline to load Inbox files for editing. If the file is ALREADY open, its existing document is activated rather than opened a second time — `already_open: true` says so, and any edits made to it are still there (Photoshop would otherwise open a duplicate with a fresh Background, which silently strands prior work).',
         inputSchema: openDocumentSchema,
         outputSchema: {
           type: 'object',
@@ -248,7 +248,11 @@ export function createDocumentTools(
             resolution: { type: 'number' },
             color_mode: { type: 'string' },
             bits_per_channel: { type: 'number' },
-            is_raw_source: { type: 'boolean' },
+            is_raw_source: {
+              type: 'boolean',
+              description:
+                'True when the source file was a raw capture (DNG/NEF/CR3/ARW/…). Workflow-critical: the open used last-used/default Camera Raw settings, so no deliberate develop has happened yet. When true, run the Camera Raw develop pass FIRST (via a camera-raw develop tool, if registered) for global tone/color — before any tonal adjustment layers — unless the user explicitly directs otherwise.',
+            },
             already_open: { type: 'boolean' },
             file_path: { type: 'string' },
             context: { type: 'object' },

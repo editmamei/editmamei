@@ -3,6 +3,7 @@ import { createAdjustmentTools } from '@editmamei/tools/adjustment-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
+import { markRawOpened, __clearRawDevelopState } from '@editmamei/core/raw-develop-state.ts';
 
 describe('createAdjustmentTools', () => {
   let conn: FakePhotoshopConnection;
@@ -11,6 +12,7 @@ describe('createAdjustmentTools', () => {
   beforeEach(() => {
     conn = makeConnection();
     snippetClient = makeSnippetClient();
+    __clearRawDevelopState();
   });
 
   it('returns 2 well-formed tools — non-destructive entry point + consolidated destructive apply_adjustment', () => {
@@ -337,5 +339,33 @@ describe('createAdjustmentTools', () => {
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyShadowsHighlights');
     expect(build.params.applyToActiveLayer).toBe(true);
+  });
+
+  // ===========================================================================
+  // raw_develop_pending advisory — soft nudge appended to the result when a
+  // raw-sourced document has no Camera Raw develop pass yet (the flag is set
+  // by the server dispatch layer; see raw-develop-state.ts).
+  // ===========================================================================
+  it('add_adjustment_layer attaches raw_develop_pending when the flag is set', async () => {
+    markRawOpened('IMG_9265.dng', '/photos/IMG_9265.dng');
+    // Object result — the advisory field piggybacks on the snippet's payload.
+    const objConn = makeConnection({ result: { created: true, type: 'levels' } });
+    const tools = createAdjustmentTools(objConn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_add_adjustment_layer', { type: 'levels' });
+    const sc = result.structuredContent as { raw_develop_pending?: string };
+    expect(sc.raw_develop_pending).toContain('IMG_9265.dng');
+    expect(sc.raw_develop_pending).toContain('ps_apply_camera_raw');
+    expect(result.isError).toBeUndefined();
+    const text = (result.content?.[0] as { text: string }).text;
+    expect(text).toContain('no Camera Raw develop pass yet');
+  });
+
+  it('add_adjustment_layer omits raw_develop_pending when the flag is clear', async () => {
+    const tools = createAdjustmentTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_add_adjustment_layer', { type: 'levels' });
+    const sc = result.structuredContent as { raw_develop_pending?: string };
+    expect(sc.raw_develop_pending).toBeUndefined();
+    const text = (result.content?.[0] as { text: string }).text;
+    expect(text).not.toContain('develop pass');
   });
 });
