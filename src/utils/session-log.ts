@@ -241,7 +241,7 @@ export function elideImagePayloads(value: unknown): unknown {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// result_bytes sizing (audit finding 11)
+// result_bytes sizing
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -441,7 +441,7 @@ export class SessionLog {
   private getMcpClientFn?: () => { name: string; version: string } | null | undefined;
   // Held append-mode handle, opened lazily on the first write and reused
   // for the rest of the session's lifetime instead of the previous
-  // open→append→close cycle done on EVERY line (audit finding 11: 3
+  // open→append→close cycle done on EVERY line (3
   // syscalls of handle churn per tool call). See ensureHandle/openHandle.
   private fileHandle: FileHandle | null = null;
   private openingHandle: Promise<FileHandle | null> | null = null;

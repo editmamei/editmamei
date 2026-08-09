@@ -54,7 +54,7 @@ export interface DetectActiveDocOptions {
 }
 
 /** Injectable I/O seam (default: real fs read + the real jpeg-js decode). Lets a
- *  test prove the decode-once invariant (perf-audit H4) without a real PS export
+ *  test prove the decode-once invariant without a real PS export
  *  on disk — the unit harness has no live Photoshop to write `tempPath`. */
 export interface DetectActiveDocDeps {
   readFile?: (path: string) => Promise<Buffer>;
@@ -76,7 +76,7 @@ export interface DetectActiveDocResult {
    * The export decoded ONCE here and threaded to the detector plus every
    * downstream consumer that needs pixels (annotated previews, row-brightness,
    * SAM/grounding pixel readers) instead of each re-reading + re-decoding the
-   * same file (perf-audit H4 — up to 4-5 redundant decodes per perception call).
+   * same file (up to 4-5 redundant decodes per perception call).
    * Undefined when the export bytes were unreadable or undecodable — callers
    * guard on this exactly as they used to guard on an empty `exportBytes`.
    */

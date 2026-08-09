@@ -254,9 +254,9 @@ export const outerGlowSpec: AmEventSpec = {
                         unit: { charID: '#Prc' },
                         range: { min: 0, max: 100, default: 0 },
                         description:
-                          'Glow shading noise (distinct from `Nose`). Editmamei snippet OMITS this — MED audit finding. Add `glow_shading_noise` parameter to addLayerStyle to close the gap.',
+                          'Glow shading noise (distinct from `Nose`). Editmamei snippet OMITS this — MED severity. Add `glow_shading_noise` parameter to addLayerStyle to close the gap.',
                         gotchas: [
-                          'Missing from current Editmamei snippet — MED audit finding 2026-06-03. PS default is 0; the omission is invisible for typical use but constrains the tool surface.',
+                          'Missing from current Editmamei snippet — MED severity. PS default is 0; the omission is invisible for typical use but constrains the tool surface.',
                         ],
                       },
                       {
@@ -296,9 +296,9 @@ export const outerGlowSpec: AmEventSpec = {
                         unit: { charID: '#Prc' },
                         range: { min: 0, max: 100, default: 50 },
                         description:
-                          'Glow input range — the UI\'s "Range" slider that controls which part of the glow contour is used. Editmamei snippet OMITS this — MED audit finding. Add `glow_range` parameter to addLayerStyle to close the gap.',
+                          'Glow input range — the UI\'s "Range" slider that controls which part of the glow contour is used. Editmamei snippet OMITS this — MED severity. Add `glow_range` parameter to addLayerStyle to close the gap.',
                         gotchas: [
-                          'Missing from current Editmamei snippet — MED audit finding 2026-06-03. PS default is 50; tunes contour input range.',
+                          'Missing from current Editmamei snippet — MED severity. PS default is 50; tunes contour input range.',
                         ],
                       },
                     ],

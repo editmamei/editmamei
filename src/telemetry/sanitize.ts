@@ -1,7 +1,7 @@
 /**
  * Category-B diagnostic message sanitizer.
  *
- * The privacy hard line (telemetry-and-settings.md §2/§5): no full filesystem paths, no
+ * The privacy hard line (see docs/privacy.md, "Sanitization"): no full filesystem paths, no
  * PII, ever — basenames only. Category A carries no free text so it needs nothing here;
  * Category B carries a sanitized error message, failing-snippet name, and stderr tail.
  * This collapses any path to its basename, redacts the running user's home directory, and

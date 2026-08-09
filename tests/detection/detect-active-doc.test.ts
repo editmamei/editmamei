@@ -8,7 +8,7 @@ import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connec
 import { FakeDetectionClient, CANNED, EXPORT_RESULT } from '../fixtures/fake-detection-client.ts';
 
 /**
- * detectActiveDoc — perf-audit H4's decode-once seam. The real flow (export via a
+ * detectActiveDoc — decode-once seam. The real flow (export via a
  * PS round trip, read the file, decode it) can't run in the unit harness (no real
  * PS export lands on disk), so `readFile`/`decode` are injectable — this proves the
  * decode-once invariant with a spy instead of a real JPEG: the export is read
@@ -39,7 +39,7 @@ function countingDeps(overrides: Partial<DetectActiveDocDeps> = {}): {
   return { deps, readCount: () => reads, decodeCount: () => decodes };
 }
 
-describe('detectActiveDoc — decode-once (perf-audit H4)', () => {
+describe('detectActiveDoc — decode-once', () => {
   let conn: FakePhotoshopConnection;
   beforeEach(() => {
     conn = makeConnection({ result: EXPORT_RESULT });

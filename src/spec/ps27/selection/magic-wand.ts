@@ -33,7 +33,7 @@
  * specify Contiguous and Sample-All-Layers per-call without the
  * persistent-tool-state coupling.
  *
- * Group D audit verdict (2026-06-04): **OK**. Snippet exactly matches
+ * Spec-vs-snippet verdict: **OK**. Snippet exactly matches
  * the captured `setd Chnl/fsel + Pnt + Tlrn + AntA` shape. The
  * Cntg/Mrgd extras are PS-tolerated per-call overrides. The
  * tool-selection Phase 1 skip is intentional and correct.

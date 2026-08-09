@@ -287,7 +287,7 @@ func init() {
     };
   `,
 
-		// addVectorMaskFill — reveal_all / hide_all empty vector masks (m4a STEP-23/24).
+		// addVectorMaskFill — reveal_all / hide_all empty vector masks.
 		// Unlike VMAdd these need NO existing path: Usng is an ENUM (vectorMaskEnabled
 		// RvlA/HdAl), not a path reference. Slots: 1=getMinimalContextInfo,
 		// 2=source(jsLit), 3=RvlA|HdAl charID.
@@ -367,7 +367,7 @@ func init() {
   `,
 
 		// setVectorMaskEnabled — AM set vectorMaskEnabled. Slots: 1=getMinimalContextInfo,
-		// 2=enabled(bool). Ground truth: m4a STEP-28 (PS 27.x Windows) — disable (false)
+		// 2=enabled(bool). Ground truth: ScriptListener capture (PS 27.x Windows) — disable (false)
 		// and enable (true) both verified on a layer that has a vector mask. Exact parallel
 		// to setVectorMaskLink, swapping vectorMaskLinked → vectorMaskEnabled.
 		vault.VMEnable: `

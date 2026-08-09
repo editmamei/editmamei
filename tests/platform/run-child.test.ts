@@ -95,7 +95,7 @@ describe('runChildWithTimeout', () => {
   });
 
   // ===========================================================================
-  // BLOCK-3 — timeout kills the child via SIGTERM, then SIGKILL after grace.
+  // Timeout kills the child via SIGTERM, then SIGKILL after grace.
   //
   // Previous execAsync model: timeout rejected the caller-facing promise but
   // never killed the child. Photoshop modal dialog → cscript/osascript hung
@@ -130,7 +130,7 @@ describe('runChildWithTimeout', () => {
 
   // The killed child is NOT proof the PS-side operation failed — Photoshop is
   // a separate process that keeps running the JSX it already received (see
-  // the file-header BLOCK-3 note). The message must say so honestly instead
+  // the file-header note). The message must say so honestly instead
   // of asserting a modal dialog as the cause: modal *detection* doesn't exist
   // in this product, and a large-RAW/first-Camera-Raw-open is at least as
   // likely. See classifyError's 'timeout' vs 'ps_modal_blocking' test in

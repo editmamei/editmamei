@@ -12,8 +12,8 @@
  * layer's mask slot, with `using` → `userMaskEnabled` / `revealAll`
  * (User Mask / Reveal All — fully white mask).
  *
- * **The "two equivalent forms" claim from the 2026-06-04 Group D audit
- * was WRONG.** The audit was Windows-only and concluded that
+ * **The "two equivalent forms" claim from the earlier Windows-only
+ * review was WRONG.** It concluded that
  * `desc.putClass(sTID('new'), sTID('channel'))` and the
  * `desc.putReference(cTID('null'), ref<class=channel>)` shapes were
  * routed to the same internal dispatcher. The 2026-06-08 macOS capture

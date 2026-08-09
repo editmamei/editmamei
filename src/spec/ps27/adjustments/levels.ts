@@ -1,6 +1,5 @@
 /**
- * Levels adjustment layer — **HIGH-severity spec** for the audit's
- * biggest fix-now item.
+ * Levels adjustment layer — **HIGH-severity spec**.
  *
  * Ground truth: PS 27.7.0 Windows, captured 2026-06-03.
  * Capture log: JS-05-levels.log
@@ -9,7 +8,7 @@
  * Levels, accepted defaults, then set Input black to 20, Input white to
  * 240, gamma to 1.2 in the Properties panel.
  *
- * Group A audit (STEP 05) flagged THREE simultaneous silent-no-op
+ * Spec review flagged THREE simultaneous silent-no-op
  * drifts in the current snippet (go-core/cmd/buildtemplates/fragments_adjustments.go, vault.AdjLvlPM):
  *   - `Chnl` MUST be a putReference (NOT putEnumerated)
  *   - `Inpt` MUST be a 2-int LIST [black, white] (NOT separate Inpt + Wht keys)

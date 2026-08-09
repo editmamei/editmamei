@@ -2,8 +2,8 @@ import { PhotoshopAPI, PhotoshopAPIFactory } from '../api/photoshop-api.js';
 import type { PhotoshopConnection } from '../platform/connection.js';
 
 /**
- * Per-connection memo of the constructed `PhotoshopAPI` (audit finding 16 /
- * perf M8). Before this, every one of the ~185 `runScript` call sites built
+ * Per-connection memo of the constructed `PhotoshopAPI`.
+ * Before this, every one of the ~185 `runScript` call sites built
  * a fresh `PhotoshopAPIFactory` + `ExtendScriptPhotoshopAPI` + `Logger` on
  * every single script — pure waste, since `ExtendScriptPhotoshopAPI` holds
  * only the `connection` reference and has no other mutable per-call state

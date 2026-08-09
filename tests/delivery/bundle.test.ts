@@ -123,7 +123,7 @@ describe('installBundle', () => {
   });
 });
 
-describe('isUnsafeEntryName (unzip-boundary traversal guard, audit M11)', () => {
+describe('isUnsafeEntryName (unzip-boundary traversal guard)', () => {
   it('rejects `..` traversal segments anywhere in the path', () => {
     expect(isUnsafeEntryName('../escape.txt')).toBe(true);
     expect(isUnsafeEntryName('a/../../b')).toBe(true);

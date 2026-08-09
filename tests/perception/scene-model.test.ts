@@ -16,7 +16,7 @@ import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 
 /**
  * rowBrightnessProfile — reduces an ALREADY-DECODED export to top→bottom row-strip
- * mean luminances for the horizon facet. Perf-audit H4 changed its signature from
+ * mean luminances for the horizon facet. The decode-once change moved its signature from
  * "raw export JPEG bytes (decode it yourself)" to "the DecodedImage detectActiveDoc
  * already decoded once" — no decode happens in this module anymore. These pin the
  * new signature's behavior directly (no jpeg-js round trip needed).

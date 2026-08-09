@@ -431,7 +431,7 @@ func init() {
 		// text, shape, and adjustment layers. Auto-promotes the background layer
 		// so it can be wrapped (consistent with the layer-transform pattern).
 		// VERIFIED: newPlacedLayer event confirmed by ScriptListener capture on
-		// PS 27.x Windows (m4a STEP-01, 2026-06-29) in addition to broad practitioner
+		// PS 27.x Windows in addition to broad practitioner
 		// consensus. Tier: community.
 		vault.ConvertToSO: `
     %s
@@ -473,7 +473,7 @@ func init() {
 		// object that is an INDEPENDENT copy (its own embedded source), unlinked from the
 		// original SO's shared source — so editing the copy's contents does NOT propagate
 		// to the original (unlike ps_duplicate_layer of an SO, which keeps the shared
-		// source). Event placedLayerMakeCopy (parameterless). Ground truth: m4a STEP-02
+		// source). Event placedLayerMakeCopy (parameterless). Ground truth: ScriptListener capture
 		// (PS 27.x Windows). REQUIRES the active layer already be a smart object — throws
 		// a clear error otherwise. Slot: 1=getContextInfo body.
 		vault.SONewViaCopy: `
@@ -499,8 +499,8 @@ func init() {
   `,
 
 		// createShape (l13) — Mk contentLayer: a real vector SHAPE layer, geometry baked
-		// in ABSOLUTE document pixels. Ground truth: m4a STEP-29 (rectangle/rounded =
-		// Rctn bounds + 4 corner radii), STEP-31 (ellipse = Elps bounds), STEP-33 (line =
+		// in ABSOLUTE document pixels. Ground truth: ScriptListener capture (rectangle/rounded =
+		// Rctn bounds + 4 corner radii), ellipse (Elps bounds), line (
 		// Ln Strt/End + Wdth + arrowheads off). All wrap in Usng:contentLayer{ Type:
 		// solidColorLayer{fill}, Shp:<geometry>, strokeStyle{...} }. Slots (in order):
 		// 1=parentPathHelper, 2=hoistFromActiveGroupHelper, 3=getContextInfo,

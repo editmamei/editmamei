@@ -19,7 +19,7 @@ func TestAddGradientFillLayerDefaults(t *testing.T) {
 		t.Fatalf("addGradientFillLayer defaults: %v", err)
 	}
 	for _, want := range []string{
-		// Mk + setd two-event shape (capture STEP-13: Angl lives on the setd,
+		// Mk + setd two-event shape (capture: Angl lives on the setd,
 		// never the create-time descriptor).
 		`executeAction(charIDToTypeID('Mk  ')`,
 		`executeAction(charIDToTypeID('setd')`,

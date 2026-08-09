@@ -14,7 +14,7 @@
  * even when 0 — they appear to be ancestor fields from an older
  * descriptor version that PS still volunteers.
  *
- * Group A audit (STEP 11) classified LOW — snippet matches on `vibrance`
+ * Verdict: LOW — snippet matches on `vibrance`
  * and `Strt`/`saturation` (PS aliases), omits `temperature`/`tint`/
  * `useLegacy` (extra fields PS volunteers, no behavior change).
  *

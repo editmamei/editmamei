@@ -272,20 +272,50 @@ export function packageFilesList(edition: Edition): string[] {
   return ['dist', ...requiredDistributionDocs(edition)];
 }
 
+/** The repo-root package.json fields the published manifest draws from. */
+export interface SourcePackageJson {
+  name: string;
+  mcpName: string;
+  bin: Record<string, string>;
+  scripts: Record<string, string>;
+  keywords: string[];
+  author: string;
+  license: string;
+  repository: unknown;
+  homepage: string;
+  bugs: unknown;
+  engines: unknown;
+  dependencies: Record<string, string>;
+}
+
 /**
- * Writes a CE/Pro-flavored package.json to <packageDir>. The published
- * package.json carries the public-facing metadata only — devDependencies,
- * dev scripts, and internal-only fields are stripped.
+ * Builds the CE/Pro-flavored package.json object. The published package.json
+ * carries the public-facing metadata only — devDependencies, dev scripts, and
+ * internal-only fields are stripped by this explicit field whitelist.
+ *
+ * `mcpName` is on the whitelist deliberately: it is the official MCP
+ * registry's npm-ownership marker, read from the PUBLISHED package.json and
+ * required to match server.json's server name before the registry accepts a
+ * listing. Dropping it here blocks that listing until the next patch release,
+ * because npm versions are immutable — which is exactly what happened to
+ * 1.0.0 through 1.0.2.
+ *
+ * Pure (no I/O) so the whitelist is directly unit-testable without needing a
+ * built packages/<edition>/ dir on disk — same split as packageFilesList.
  */
-export function writePackageJson(edition: Edition, version: string): void {
-  const src = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-  const dst = {
+export function buildPackageJson(
+  edition: Edition,
+  version: string,
+  src: SourcePackageJson
+): Record<string, unknown> {
+  return {
     name: src.name,
     version,
     description:
       edition === 'community'
         ? 'Photoshop MCP server: natural-language AI photo editing with your own Photoshop (Community Edition)'
         : 'Photoshop MCP server: natural-language AI photo editing with your own Photoshop (Pro Edition)',
+    mcpName: src.mcpName,
     main: 'dist/index.js',
     type: 'module',
     bin: src.bin,
@@ -300,9 +330,14 @@ export function writePackageJson(edition: Edition, version: string): void {
     engines: src.engines,
     dependencies: src.dependencies,
   };
+}
+
+/** Writes the CE/Pro-flavored package.json to <packageDir>. */
+export function writePackageJson(edition: Edition, version: string): void {
+  const src: SourcePackageJson = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
   writeFileSync(
     join(packageDir(edition), 'package.json'),
-    JSON.stringify(dst, null, 2) + '\n',
+    JSON.stringify(buildPackageJson(edition, version, src), null, 2) + '\n',
     'utf8'
   );
 }

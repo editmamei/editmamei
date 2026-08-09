@@ -17,8 +17,8 @@ func init() {
 	addFragments(map[string]string{
 		// addGradientFillLayer — Mk contentLayer / gradientLayer with custom
 		// stops, then a follow-up setd. The Mk descriptor is CAPTURE-SHAPE
-		// (STEP-13 desc835: no Angl, no Rvrs — PS omits both at create time);
-		// the angle and reverse land via the setd (STEP-13 desc846/847, which
+		// (capture: no Angl, no Rvrs — PS omits both at create time);
+		// the angle and reverse land via the setd (which
 		// carries the full gradientLayer descriptor including Angl). Keeping
 		// unverified keys off the Mk avoids the Windows-lenient/macOS-strict
 		// descriptor asymmetry. noisePreSeed (a dither seed present in the

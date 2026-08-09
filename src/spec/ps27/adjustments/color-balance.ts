@@ -13,7 +13,7 @@
  * as default 3-int lists `[0, 0, 0]` plus `PrsL` boolean. Subsequent
  * setd events only re-emit the range lists the user actually touched.
  *
- * Group A audit (STEP 07) classified this OK — the 2026-05-31
+ * Verdict: OK — the 2026-05-31
  * fix that replaced the forum-lore `Mdtn`/`Lmnc` keys with the canonical
  * `MdtL`/`PrsL` is durable.
  *

@@ -6,7 +6,7 @@ func init() {
 	addFragments(map[string]string{
 		// rotateCanvas — AM Rtte targeting the document (Dcmn/Ordn/Frst, NOT a layer
 		// ref — that is the discriminator vs layer-rotate). Arbitrary degrees incl.
-		// 90/180. STEP-26. Slots: 1=Angl, 2=degrees(result).
+		// 90/180. Slots: 1=Angl, 2=degrees(result).
 		vault.CanvasRot: `
     if (app.documents.length === 0) {
       throw new Error('No document is open in Photoshop');
@@ -21,7 +21,7 @@ func init() {
     return { rotated_canvas: true, degrees: %s };
   `,
 
-		// flipCanvas — AM Flip targeting the document (Dcmn/Ordn/Frst). STEP-27.
+		// flipCanvas — AM Flip targeting the document (Dcmn/Ordn/Frst).
 		// Slots: 1=Axis Ornt charID (Hrzn/Vrtc), 2=axis(jsLit result).
 		vault.CanvasFlip: `
     if (app.documents.length === 0) {
@@ -39,7 +39,7 @@ func init() {
 
 		// addGuide — DOM doc.guides.add(direction, coordinate). The captured AM Mk
 		// path bakes a runtime document id + guide index into the descriptor; the
-		// DOM API is the robust coordinate-free equivalent. STEP-32/33.
+		// DOM API is the robust coordinate-free equivalent.
 		// Slots: 1=Direction enum, 2=position px, 3=orientation(jsLit), 4=position(result).
 		vault.GuideAdd: `
     if (app.documents.length === 0) {
@@ -53,7 +53,7 @@ func init() {
 
 		// addGuideLayout — AM newGuideLayout with presetKindCustom + a guideLayout
 		// obj carrying colCount/rowCount. Guide color fields (GdC*) are omitted — PS
-		// defaults them. STEP-34. Slots: 1=colCount, 2=rowCount, 3=columns(result),
+		// defaults them. Slots: 1=colCount, 2=rowCount, 3=columns(result),
 		// 4=rows(result).
 		vault.GuideLayout: `
     if (app.documents.length === 0) {
@@ -72,7 +72,6 @@ func init() {
   `,
 
 		// clearGuides — AM clearAllGuides (zero-field event; undefined descriptor).
-		// STEP-35.
 		vault.GuideClear: `
     if (app.documents.length === 0) {
       throw new Error('No document is open in Photoshop');

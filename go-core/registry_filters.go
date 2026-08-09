@@ -127,7 +127,7 @@ func buildFilters(name string, params map[string]any) (string, bool, error) {
 		mode := strParam(params, "mode", "")
 		switch mode {
 		case "twirl":
-		case "pinch", "spherize", "zigzag": // m4b additions (hardcoded enum defaults)
+		case "pinch", "spherize", "zigzag": // later additions (hardcoded enum defaults)
 		case "polar":
 			if _, ok := polarConvMap[strParam(params, "conversion", "rect_to_polar")]; !ok {
 				return "", true, fmt.Errorf("applyDistort: unknown conversion")

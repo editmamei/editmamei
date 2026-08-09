@@ -36,7 +36,7 @@ func TestWarpMeshEmitterHighLevel(t *testing.T) {
 	}
 
 	// The quilt carries the deformation; the sibling warp obj is warpNone — that
-	// pairing is the quilt-vs-simple discriminator (STEP-18 ground truth).
+	// pairing is the quilt-vs-simple discriminator (ground truth).
 	if !strings.Contains(out, `stringIDToTypeID('warpNone')`) {
 		t.Error("warpMesh should emit warpNone on the (non-quilt) warp object")
 	}

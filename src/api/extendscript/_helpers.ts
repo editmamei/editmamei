@@ -407,8 +407,7 @@ function getContextInfo() {
   // during the context probe should NOT make the op look failed to the
   // caller. On any unexpected throw we return a degraded context with
   // an error_reading field so the caller can see something happened
-  // but the structured result still arrives. T05 P1-4 in the
-  // launch-readiness review.
+  // but the structured result still arrives.
   try {
     var context = {
       hasDocument: app.documents.length > 0

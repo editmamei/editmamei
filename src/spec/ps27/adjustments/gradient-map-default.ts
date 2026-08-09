@@ -21,7 +21,7 @@
  *     }
  *   }
  *
- * Group A audit (STEP 15) classified LOW: snippet uses
+ * Verdict: LOW — snippet uses
  * `sTID('interfaceIconFrameDimmed')` for the 4096 value — that stringID
  * IS an Adobe-symbol-table alias for `Intr` (interpolation length, charID),
  * same typeID, works fine but reads bizarrely. The audit recommended

@@ -13,8 +13,8 @@ import { toolErrorResult } from '../utils/tool-helpers.js';
  * Photoshop exposes NO DOM API for vector masks — these are AM-only, authored
  * from the canonical "make vector mask" idiom. Verified live against PS 27.2.0:
  * add (from_current_path) / delete / link / unlink on 2026-06-24; the
- * reveal_all / hide_all empty-mask `add` variants on 2026-06-29 after the m4a
- * STEP-23/24 ScriptListener capture pinned their descriptor (Usng = enum
+ * reveal_all / hide_all empty-mask `add` variants on 2026-06-29, after a
+ * ScriptListener capture pinned their descriptor (Usng = enum
  * vectorMaskEnabled RvlA/HdAl, no path needed).
  */
 

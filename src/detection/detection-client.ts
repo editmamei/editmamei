@@ -100,8 +100,8 @@ export interface DetectOptions {
 /** Backend-agnostic seam; the Pro deep models implement this too. */
 export interface DetectionClient {
   /**
-   * `decoded` is the export already decoded ONCE by the caller (detectActiveDoc,
-   * perf-audit H4) — pass it through to whatever does the actual model inference
+   * `decoded` is the export already decoded ONCE by the caller
+   * (detectActiveDoc) — pass it through to whatever does the actual model inference
    * instead of re-decoding `imagePath`. Optional so existing fakes/implementers
    * with the 2-arg signature stay valid.
    */

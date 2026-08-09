@@ -1,5 +1,5 @@
 /**
- * Shared RGBA overlay-drawing primitives (audit finding 9, 2026-07-30).
+ * Shared RGBA overlay-drawing primitives.
  *
  * Before this module, `setPx` + the box/ring/disc/square stamping loops were
  * copied four ways: detection-tools `drawBoxes`, scene-tools `annotateScene`,

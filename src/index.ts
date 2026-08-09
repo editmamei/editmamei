@@ -13,7 +13,7 @@ const logger = new Logger('Main');
 /**
  * Install process-level safety nets BEFORE we boot anything else.
  *
- * BLOCK-4 in the launch-readiness review: the MCP server runs as a
+ * The MCP server runs as a
  * long-lived stdio subprocess of the client (Claude Desktop, Cursor,
  * etc.). Any stray unhandled rejection or uncaught exception kills
  * the process abruptly; the client sees EOF on stdin with no error.
@@ -107,7 +107,7 @@ async function main() {
     // No-op for npm/CLI users (who use `editmamei activate`) and when unset.
     await maybeActivateFromEnv();
 
-    // Staleness-driven license re-validation (WO-1: boot never
+    // Staleness-driven license re-validation (boot never
     // refreshed `last_validated_at`, so online Pro users degraded to CE 30
     // days after activation and stayed there). Fresh cache: no network.
     // Stale (> 7 d): fire-and-forget, adds zero handshake latency. Past

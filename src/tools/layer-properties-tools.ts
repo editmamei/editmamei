@@ -358,8 +358,7 @@ export function createLayerPropertiesTools(
         annotations: {
           title: 'Duplicate Layer',
           // Each call creates another copy — emphatically not idempotent.
-          // The previous annotation contradicted the description. T04
-          // P1-C in the launch-readiness review.
+          // The previous annotation contradicted the description.
           idempotentHint: false,
         },
       },

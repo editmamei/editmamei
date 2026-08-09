@@ -47,7 +47,7 @@ describe('createVectorMaskTools', () => {
     );
   });
 
-  // 2026-06-29 — reveal_all/hide_all added after the m4a STEP-23/24 capture.
+  // 2026-06-29 — reveal_all/hide_all added after a ScriptListener capture.
   it('add source enum includes from_current_path + reveal_all/hide_all', () => {
     const tools = createVectorMaskTools(conn.asConnection(), snippetClient);
     const schema = tools[0].tool.inputSchema as unknown as {
@@ -101,7 +101,7 @@ describe('createVectorMaskTools', () => {
     expect(build.params.linked).toBe(false);
   });
 
-  // 2026-06-29 — enable/disable added after the m4a STEP-28 capture
+  // 2026-06-29 — enable/disable added after a ScriptListener capture
   // (setd vectorMaskEnabled boolean).
   it('enable → setVectorMaskEnabled with enabled=true', async () => {
     const tools = createVectorMaskTools(conn.asConnection(), snippetClient);

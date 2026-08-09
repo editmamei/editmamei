@@ -12,11 +12,11 @@ import (
 // Photoshop exposes NO DOM API for vector masks — they are AM-only, authored
 // from the canonical "make vector mask" idiom. The 2026-06-24 live-smoke against
 // PS 27.2.0 VERIFIED add (from_current_path) / delete / link / unlink; the
-// reveal_all / hide_all empty-mask add variants were then pinned by the m4a
-// STEP-23/24 ScriptListener capture and shipped (2026-06-29). enable / disable
-// (vectorMaskEnabled) were pinned by m4a STEP-28. The tool is community tier.
+// reveal_all / hide_all empty-mask add variants were then pinned by a
+// ScriptListener capture and shipped. enable / disable (vectorMaskEnabled)
+// were pinned by a further capture. The tool is community tier.
 
-// vmFillMap maps the empty-mask sources to their PS charID (m4a STEP-23/24).
+// vmFillMap maps the empty-mask sources to their PS charID.
 var vmFillMap = map[string]string{"reveal_all": "RvlA", "hide_all": "HdAl"}
 
 // addVectorMask — AM "make path At=vectorMask Usng=<...>". from_current_path
@@ -43,7 +43,7 @@ func setVectorMaskLink(linked bool) string {
 }
 
 // setVectorMaskEnabled — AM "set" of the layer's vectorMaskEnabled flag. Covers
-// both enable (true) and disable (false). Ground truth: m4a STEP-28 (PS 27.x).
+// both enable (true) and disable (false). Ground truth: ScriptListener capture (PS 27.x).
 func setVectorMaskEnabled(enabled bool) string {
 	return fmt.Sprintf(tpl[vault.VMEnable], getMinimalContextInfo(), jsBool(enabled))
 }

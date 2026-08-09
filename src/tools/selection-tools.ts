@@ -15,7 +15,7 @@ import { SELECT_SUBJECT_TIMEOUT_MS, SELECT_SKY_TIMEOUT_MS } from '../utils/opera
 //
 // selectionTypeFragment / selectionInfoFragment are used across this file's
 // selection tools — including the Sensei ps_select_subject / ps_select_sky pair,
-// which moved here from selection-tools-pro.ts in the v0.22 pro→community re-tier.
+// which moved here from selection-tools-pro.ts when they became community tier.
 
 export const SELECTION_TYPE_ENUM = ['replace', 'add', 'subtract', 'intersect'] as const;
 
@@ -882,8 +882,8 @@ export function createSelectionTools(
       },
       handler: async (args) => selectionChannel(connection, snippetClient, args),
     },
-    // ps_select_subject + ps_select_sky (Adobe Sensei) — RE-TIERED pro→community
-    // 2026-07-07 (v0.22). Moved from the deleted selection-tools-pro.ts; their
+    // ps_select_subject + ps_select_sky (Adobe Sensei) — community tier.
+    // Moved from the deleted selection-tools-pro.ts; their
     // go-core selectSubject/selectSky emitters likewise moved to the community binary.
     {
       tool: {
@@ -954,7 +954,7 @@ export function createSelectionTools(
   ];
 }
 
-// ---------- Sensei selections (RE-TIERED pro→community 2026-07-07, v0.22) ----------
+// ---------- Sensei selections (community tier) ----------
 // Moved verbatim from selection-tools-pro.ts (deleted). CE-shipped now; the go-core
 // selectSubject/selectSky snippets moved to the community binary in the same change.
 

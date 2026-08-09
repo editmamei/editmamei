@@ -21,8 +21,8 @@ func buildMasks(name string, params map[string]any) (string, bool, error) {
 	// ---- vector-mask family (dev-tier; canonical AM, UNVERIFIED) -----------
 	case "addVectorMask":
 		src := strParam(params, "source", "from_current_path")
-		// from_current_path (2026-06-24) + reveal_all/hide_all (m4a STEP-23/24
-		// capture, 2026-06-29) are all live-verified.
+		// from_current_path + reveal_all/hide_all (ScriptListener captures) are
+		// all live-verified.
 		if src != "from_current_path" {
 			if _, ok := vmFillMap[src]; !ok {
 				return "", true, fmt.Errorf(

@@ -57,49 +57,43 @@ const ceFactories = [
   createHistoryTools,
   createLayerOrderingTools,
   createPreviewTools,
-  // ps_inspect (Phase 1b, 2026-06-26) consolidates the read-only state
-  // readers (get_metadata/get_layer_tree/get_history/get_selection_info). The
+  // ps_inspect consolidates the read-only state readers
+  // (get_metadata/get_layer_tree/get_history/get_selection_info). The
   // verification primitives (get_preview/get_histogram/compare_regions/
   // get_layer_bounds_diff/get_selection_preview) stay separate, named tools.
   createInspectTools,
   createOverviewTools,
-  // ps_report_problem (2026-06-27) — writes an anonymized diagnostic
-  // bundle to Downloads for bug reports. Meta tool; does not touch Photoshop.
+  // ps_report_problem — writes an anonymized diagnostic bundle to Downloads
+  // for bug reports. Meta tool; does not touch Photoshop.
   createDiagnosticsTools,
   createRetouchTools,
   createBrushTools,
-  // M2 (2026-06-21) — community-tier canvas + guide tools (warp_layer is Pro,
-  // registered by the Pro module). transform_layer's op=skew/op=free ride the
-  // existing createLayerTransformTools above.
+  // Canvas + guide tools (warp_layer is Pro, registered by the Pro module).
+  // transform_layer's op=skew/op=free ride the existing
+  // createLayerTransformTools above.
   createTransformCanvasTools,
   createGuideTools,
-  // Local-vision perception (2026-06-22) — ps_detect (faces + COCO-80
-  // objects via on-device ONNX). Starts dev-tier; promotes to community after
-  // live verification.
+  // Local-vision perception — ps_detect (faces + COCO-80 objects via on-device
+  // ONNX).
   createDetectionTools,
-  // Detection-driven orchestration (2026-06-22) — ps_portrait_touchup (dodge_face /
-  // soften_skin). Dev-tier until live-verified. (ps_edit_object + ps_add_text_to_object
-  // PROMOTED to pro 2026-07-07 → now registered by the Pro module.)
+  // Detection-driven orchestration — ps_portrait_touchup (dodge_face /
+  // soften_skin). ps_edit_object + ps_add_text_to_object are Pro, registered by
+  // the Pro module.
   createPortraitTools,
-  // Path-interchange surface + vector masks (2026-06-24) — ps_path
-  // (selection↔path round-trip + stroke/fill/clip) and ps_vector_mask
-  // (path → vector mask). Primitive B of coordinate-and-path-synthesis.md.
-  // Dev-tier until live-verified (vector-mask AM descriptors are unverified).
+  // Path-interchange surface + vector masks — ps_path (selection↔path
+  // round-trip + stroke/fill/clip) and ps_vector_mask (path → vector mask).
   createPathTools,
   createVectorMaskTools,
-  // Channel-compose (m4a Tier-2, 2026-06-30) — ps_apply_image + ps_calculations
-  // (AM Apply Image / Calculations; channel math for blends + advanced masks).
-  // Dev-tier until live-verified, then promoted to community.
+  // Channel-compose — ps_apply_image + ps_calculations (AM Apply Image /
+  // Calculations; channel math for blends + advanced masks).
   createChannelComposeTools,
-  // Shape layers (m4a Tier-3, 2026-06-30) — ps_shape (vector rectangle/ellipse/line,
-  // coordinate-baking). HELD AT DEV: the coordinate-aiming primitive (grid preview)
-  // is still weak, so an un-aimable shape tool stays out of the shipped surface until
-  // the coordinate-identification redesign lands.
+  // Shape layers — ps_shape (vector rectangle/ellipse/line, coordinate-baking).
+  // Aiming goes through the grounded `placement` path.
   createShapeTools,
-  // ps_resolve_placement (the spatial-grounding locator) PROMOTED to pro 2026-07-07
-  // → registered by the Pro module now (WO-3 Option A). The grounding ENGINE
-  // (src/perception/grounding-*) stays CE-host-shipped: the community tools above
-  // import it directly for their placement params. See wo3-grounding-tier-decision.md.
+  // ps_resolve_placement (the spatial-grounding locator) is registered by the
+  // Pro module. The grounding ENGINE (src/perception/grounding-*) stays
+  // CE-host-shipped: the community tools above import it directly for their
+  // placement params.
   // NOTE: createSceneTools is registered separately in register() below — it needs
   // host.invokeTool (the cross-module broker) to reach the Pro select_subject_instance
   // refine, which the generic (connection, snippet) factory call can't supply.
@@ -112,12 +106,11 @@ export const ceModule: EditmameiModule = {
     const { connection, snippet } = host;
     const defs = [
       ...ceFactories.flatMap((f) => f(connection, snippet)),
-      // Scene Model v1 (2026-06-23) — ps_read_scene (perception read) +
-      // ps_select_by_reference (named region → real pixel selection; the
-      // rectangle-reflex kill). Reuses the detection decode + CE-native recipes.
-      // Passed host.invokeTool so subject can refine through the Pro
-      // select_subject_instance (Sensei) when entitled, else CE fallback.
-      // Dev-tier until live-verified.
+      // Scene Model — ps_read_scene (perception read) + ps_select_by_reference
+      // (named region → real pixel selection; the rectangle-reflex kill).
+      // Reuses the detection decode + CE-native recipes. Passed host.invokeTool
+      // so subject can refine through the Pro select_subject_instance (Sensei)
+      // when entitled, else CE fallback.
       ...createSceneTools(connection, snippet, { invokeTool: host.invokeTool }),
     ].filter((def) => isToolAllowedInEdition(def.tool.name, EDITION));
     host.registerTools(defs);

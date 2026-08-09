@@ -307,7 +307,7 @@ describe('provisionModules', () => {
     }
   });
 
-  it('blocks a signed downgrade — refuses a manifest latest older than installed (M3/WO-9)', async () => {
+  it('blocks a signed downgrade — refuses a manifest latest older than installed', async () => {
     const dir = tmpDir();
     const newer = fakeDelivery('2.0.0');
     const older = fakeDelivery('1.0.0');
@@ -337,7 +337,7 @@ describe('provisionModules', () => {
     }
   });
 
-  it('force reinstalls the SAME version but never bypasses signature verification (A1/WO-9)', async () => {
+  it('force reinstalls the SAME version but never bypasses signature verification', async () => {
     const dir = tmpDir();
     const good = fakeDelivery('0.18.0');
     try {
@@ -378,7 +378,7 @@ describe('provisionModules', () => {
   });
 });
 
-describe('loadVerifiedModule (boot integrity gate, audit H1)', () => {
+describe('loadVerifiedModule (boot integrity gate)', () => {
   /** Provision a real signed module into `dir`, returning the signer pub key. */
   async function installSigned(dir: string, version = '0.17.0') {
     const fake = fakeDelivery(version);

@@ -58,7 +58,7 @@ export function __resetLogScriptOnErrorWarnForTests(): void {
 }
 
 /**
- * First-run disclosure (telemetry-and-settings.md §8). The MCP server has no UI, so the
+ * First-run disclosure (see docs/privacy.md, "What you control"). The MCP server has no UI, so the
  * one place we can plainly state what Category-A telemetry collects + how to opt out is
  * stderr on the run that creates settings.json. Content-never guarantee stated up front.
  */
@@ -105,10 +105,10 @@ export class EditmameiServer {
   // read (pingPhotoshop).
   private snippetClient = new GoSnippetClient();
   /**
-   * WO-7 — fires the self-gating license staleness refresh on every ps_ping.
+   * Fires the self-gating license staleness refresh on every ps_ping.
    * Long-lived Claude Desktop hosts can cross the staleness line (and
    * eventually the grace cliff) without ever restarting to hit the boot
-   * refresh (WO-1). Outbound traffic is bounded twice: refreshIfStale's cache
+   * refresh. Outbound traffic is bounded twice: refreshIfStale's cache
    * age gate (fresh → local no-op) and the trigger's own attempt throttle
    * (PING_REFRESH_MIN_INTERVAL_MS, covering the persistent-failure case).
    * Fire-and-forget, so it adds zero latency to the ping, and a hard no-op
@@ -494,7 +494,7 @@ export class EditmameiServer {
 
   /**
    * The tools/call dispatch wrapper, factored out of setupHandlers so it can be
-   * tested without a transport (audit M13). It is the DoS guard: a thrown handler
+   * tested without a transport. It is the DoS guard: a thrown handler
    * (or an unknown tool name, which the registry throws on) is converted into a
    * clean `{ isError: true }` result instead of propagating out and tearing down
    * the long-lived stdio server. @internal — exercised directly by server tests.
@@ -512,7 +512,7 @@ export class EditmameiServer {
   }
 
   private async pingPhotoshop() {
-    // WO-7: piggyback a once-per-process license staleness refresh here (not
+    // Piggyback a once-per-process license staleness refresh here (not
     // gated on the PS connection — license I/O is independent of Photoshop).
     // Fire-and-forget; never awaited, so the ping result never waits on it.
     this.refreshLicenseOnPing();

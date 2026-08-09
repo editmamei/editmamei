@@ -154,7 +154,7 @@ function decodeJpegBytes(bytes: Uint8Array | Buffer): DecodedImage {
 
 /**
  * Decode already-in-memory JPEG bytes to an RGBA pixel buffer. Split out from
- * {@link decodeJpeg} (perf-audit H4) so a caller that already holds the export
+ * {@link decodeJpeg} so a caller that already holds the export
  * bytes in memory (`detectActiveDoc`) can decode ONCE and thread the result
  * through the detectors + every downstream consumer, instead of each one
  * re-reading and re-decoding the same file off disk.

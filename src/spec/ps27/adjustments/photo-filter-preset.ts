@@ -8,7 +8,7 @@
  * Photo Filter, picked "Warming Filter (85)" from the preset dropdown,
  * set density to 25, left Preserve Luminosity ticked.
  *
- * **Important capture-vs-snippet drift** (Group A audit STEP 09 MEDIUM):
+ * **Important capture-vs-snippet drift** (MEDIUM):
  * PS 2026 has migrated the built-in preset path to emit a literal
  * `Clr → LbCl{Lmnc, A, B doubles}` Lab-color object that encodes the
  * preset (warming-85 ≈ Lab 67.06/+32/+120). There is **no `Fltr`

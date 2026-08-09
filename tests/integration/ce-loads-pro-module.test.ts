@@ -32,7 +32,7 @@ vi.mock('node:os', async (importOriginal) => {
 });
 // The real PROD signing key's private half isn't available to tests, so we sign
 // the fixture artifact with an ephemeral key and pin its public half here — this
-// is what lets the boot-time re-verification (audit H1) accept the fixture. The
+// is what lets the boot-time re-verification accept the fixture. The
 // getter reads fx.pub lazily, after beforeAll mints the key. Everything else in
 // signing.ts (verifyModuleSignature, moduleSigMessage) stays real.
 vi.mock('@editmamei/delivery/signing.ts', async (importOriginal) => {
@@ -52,7 +52,7 @@ const MOD_VERSION = '9.9.9';
 // The downloaded module: a minimal EditmameiModule that registers one tool. Its
 // name (ps_list_actions) is a classified 'pro' tool NOT provided by the CE module,
 // so assertToolsClassified passes and there's no duplicate-registration clash. (The
-// v0.22 re-tier moved ps_select_subject to community, so the CE module registers it
+// ps_select_subject is community tier, so the CE module registers it
 // now — using that name here would collide.) No goCoreSnippets → the kernel uses the
 // community client (no Pro binary spawn needed for registration).
 const HANDLERS_SRC = [
@@ -91,7 +91,7 @@ beforeAll(() => {
   );
 
   // A genuinely signed, encrypted module artifact — boot-time re-verification
-  // (audit H1) decrypts + signature-checks it before loading, so an unsigned/fake
+  // decrypts + signature-checks it before loading, so an unsigned/fake
   // pointer (the pre-H1 fixture) is now correctly refused. Sign with an ephemeral
   // key whose public half is pinned via the signing.ts mock above.
   const contentKey = randomBytes(32).toString('base64');

@@ -31,7 +31,7 @@ const logger = new Logger('Modules');
  * The manifest's `sku` and `version` become filesystem path components (the
  * install dir) and ultimately an `import()` target — so they are NEVER trusted
  * as paths. We constrain both to a plain sku / strict semver before any path or
- * fetch use (audit M1). The Worker constrains its own routes the same way; the
+ * fetch use. The Worker constrains its own routes the same way; the
  * client must not assume the manifest it consumed is honest. The Ed25519
  * signature below also covers (sku, version), but these checks fail-close even
  * an unsigned or malformed manifest before it can touch the filesystem.
@@ -103,7 +103,7 @@ export async function provisionModules(
       return result;
     }
     // A misconfigured endpoint — e.g. a plaintext EDITMAMEI_DELIVERY_URL rejected
-    // by assertSecureEndpoint (audit M2) — is non-fatal by contract: record it and
+    // by assertSecureEndpoint — is non-fatal by contract: record it and
     // keep the activated license rather than throwing out of provisioning.
     result.errors.push({ sku: '*', message: errMsg(e) });
     return result;
@@ -120,7 +120,7 @@ export async function provisionModules(
   for (const [sku, entry] of Object.entries(manifest.modules)) {
     try {
       // The server-supplied sku/version become path components + an import()
-      // target — validate their shape before any path or fetch use (audit M1).
+      // target — validate their shape before any path or fetch use.
       if (!SKU_RE.test(sku)) {
         result.errors.push({ sku, message: `manifest sku '${sku}' has an invalid format` });
         continue;
@@ -140,7 +140,7 @@ export async function provisionModules(
         result.skipped.push({ sku, version: latest, reason: 'up-to-date' });
         continue;
       }
-      // Downgrade guard (audit M3, hardened WO-9): the Ed25519 signature binds
+      // Downgrade guard: the Ed25519 signature binds
       // (sku, version, sha256), so an OLD signature can't be replayed onto a NEW
       // version — but a compromised/rolled-back manifest could still pin an older,
       // genuinely signed (and possibly vulnerable) release, and `pruneOldModuleVersions`
@@ -187,7 +187,7 @@ export async function provisionModules(
         continue;
       }
 
-      // Authenticity gate (audit H1): the artifact must carry a valid OFFLINE
+      // Authenticity gate: the artifact must carry a valid OFFLINE
       // signature over (sku, version, sha256) from a pinned key. sha256 + the GCM
       // tag only prove the bytes match what THIS server said and decrypt with
       // THIS server's key — not that WE authored them. Without this, a compromised
@@ -242,7 +242,7 @@ export async function provisionModules(
       // installModule decrypts + unpacks the bundle (GCM-authenticated, so a
       // key/artifact mismatch throws here and is caught below rather than leaving
       // Pro half-installed). The verified signature is persisted with the pointer
-      // so the BOOT path can re-verify it (audit H1 — see store.loadVerifiedModule).
+      // so the BOOT path can re-verify it (see store.loadVerifiedModule).
       // `sig` is non-null here: verifyModuleSignature returns false for undefined.
       installModule(
         {

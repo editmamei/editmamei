@@ -4,7 +4,7 @@
  * facing promise.
  *
  * The previous `execAsync(...)` model in both runners had two latent
- * failure modes BLOCK-3 surfaced:
+ * latent failure modes:
  *
  *   1. Per-task `setTimeout(reject, N)` only rejects the promise. The
  *      `cscript` / `osascript` child keeps running, holding the COM /

@@ -27,7 +27,7 @@ describe('createLayerTools', () => {
     ]);
   });
 
-  // 2026-06-20 — add_fill_layer (dev tier, capture STEP-32). Makes a solid-color
+  // 2026-06-20 — add_fill_layer (dev tier, capture). Makes a solid-color
   // content/fill layer (distinct from fill_layer which bakes into pixels).
   it('add_fill_layer passes the solid color to the snippet', async () => {
     const tools = createLayerTools(conn.asConnection(), snippetClient);
@@ -70,7 +70,7 @@ describe('createLayerTools', () => {
 
   // ===========================================================================
   // 2026-08 gradient build — fill_type=gradient routes to the
-  // addGradientFillLayer snippet (captures 2026-06-20 STEP-13/14); solid_color
+  // addGradientFillLayer snippet (captures); solid_color
   // keeps the original snippet with rgb enforced at the handler (the schema no
   // longer hard-requires them because gradient calls omit them).
   // ===========================================================================

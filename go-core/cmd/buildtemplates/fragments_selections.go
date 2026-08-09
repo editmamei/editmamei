@@ -133,7 +133,7 @@ func init() {
 		// the caller's vertices into slot 4 (pntN descriptors + ptsList.putObject).
 		// Channel-stash combine. Slots: 1=selectionTypeHelpers, 2=getSelectionInfo,
 		// 3=selType(jsLit), 4=points block, 5=antiAlias(jsBool), 6=point_count(int),
-		// 7=antiAlias(jsBool, result). Ground truth: m1-selection STEP-22.
+		// 7=antiAlias(jsBool, result). Ground truth: ScriptListener capture.
 		vault.SelPolygon: `
     %s
     %s
@@ -183,7 +183,7 @@ func init() {
 		// cTID/sTID helpers). Slots: 1=selectionTypeHelpers, 2=getSelectionInfo,
 		// 3=selType(jsLit), 4-7=Top,Left,Btom,Rght (nums), 8=feather(num),
 		// 9=antiAlias(jsBool), 10-13=left,top,right,bottom (requested_bounds nums),
-		// 14=antiAlias(jsBool, result). Ground truth: m1-selection STEP-01 (+STEP-07).
+		// 14=antiAlias(jsBool, result). Ground truth: ScriptListener capture.
 		vault.SelEllipse: `
     %s
     %s
@@ -239,9 +239,9 @@ func init() {
 		// (Expn) / contract (Cntc) / border (Brdr) / smooth (Smth). The emitter
 		// supplies the event-specific descriptor block (slot 2) and the event charID
 		// (slot 3). Slots: 1=getSelectionInfo, 2=descriptor block, 3=event(jsLit),
-		// 4=mode(jsLit, result), 5=amount(num, result). Ground truth: m1-selection
-		// STEP-11 (border Brdr/Wdth) / STEP-12 (smooth Smth/Rds) / STEP-13 (expand
-		// Expn/By) / STEP-14 (contract Cntc/By).
+		// 4=mode(jsLit, result), 5=amount(num, result). Ground truth: a ScriptListener capture.
+		// border (Brdr/Wdth) / smooth (Smth/Rds) / expand (Expn/By) /
+		// contract (Cntc/By).
 		vault.ModifySel: `
     %s
 
@@ -279,7 +279,7 @@ func init() {
 		// AntA (boolean) directly. Requires an active selection. Slots:
 		// 1=getSelectionInfo, 2=tolerance(num), 3=antiAlias(jsBool), 4=event(jsLit),
 		// 5=mode(jsLit, result), 6=tolerance(num, result), 7=antiAlias(jsBool,
-		// result). Ground truth: m1-selection STEP-16 (Grow) / STEP-17 (Smlr).
+		// result). Ground truth: ScriptListener captures (Grow, Smlr).
 		vault.GrowSel: `
     %s
 
@@ -322,7 +322,7 @@ func init() {
 		// (#Prc), Angl (#Ang), bicubic Intr. Requires an active selection. Slots:
 		// 1=getSelectionInfo, 2=offsetX, 3=offsetY, 4=scaleX%, 5=scaleY%, 6=angle,
 		// then result: 7=scaleX%, 8=scaleY%, 9=angle, 10=offsetX, 11=offsetY. Ground
-		// truth: m1-selection STEP-19 (scale+offset) / STEP-20 (rotate).
+		// truth: ScriptListener captures (scale+offset, rotate).
 		vault.XformSel: `
     %s
 

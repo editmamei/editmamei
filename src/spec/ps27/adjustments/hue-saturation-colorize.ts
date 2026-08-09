@@ -30,7 +30,7 @@
  * a unitDouble #Ang — verified by ground truth. Same shape as master,
  * different semantic interpretation by PS.
  *
- * The Group A audit found the original drift: addAdjustmentLayer's schema
+ * The original drift: addAdjustmentLayer's schema
  * does NOT expose colorize today; the colorize path is reachable only
  * via the `adjust_hue_saturation` tool surface.
  */
