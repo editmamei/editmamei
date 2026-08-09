@@ -309,8 +309,7 @@ export function farEndLift(
 /** Extract the active layer's bounds from a getContextInfo() snapshot (throws if absent/empty). */
 export function activeLayerBounds(context: Record<string, unknown> | undefined): WBounds {
   const al = context?.activeLayer as
-    | { bounds?: { left: number; top: number; right: number; bottom: number } }
-    | undefined;
+    { bounds?: { left: number; top: number; right: number; bottom: number } } | undefined;
   const b = al?.bounds;
   if (!b || ![b.left, b.top, b.right, b.bottom].every((n) => Number.isFinite(n)))
     throw new Error('could not read the active layer bounds (no active layer?)');

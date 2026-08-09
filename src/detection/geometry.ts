@@ -29,12 +29,7 @@ export function iou(a: Box, b: Box): number {
  * handles them locally.
  */
 export type SpatialPick =
-  | 'leftmost'
-  | 'rightmost'
-  | 'topmost'
-  | 'bottommost'
-  | 'largest'
-  | 'smallest';
+  'leftmost' | 'rightmost' | 'topmost' | 'bottommost' | 'largest' | 'smallest';
 
 const cx = (b: Box): number => (b[0] + b[2]) / 2;
 const cy = (b: Box): number => (b[1] + b[3]) / 2;

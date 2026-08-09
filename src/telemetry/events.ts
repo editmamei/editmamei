@@ -143,11 +143,7 @@ export interface DiagnosticEvent {
 }
 
 export type TelemetryEvent =
-  | UsageEvent
-  | SessionSummaryEvent
-  | SessionStartEvent
-  | ModuleStatusEvent
-  | DiagnosticEvent;
+  UsageEvent | SessionSummaryEvent | SessionStartEvent | ModuleStatusEvent | DiagnosticEvent;
 
 /**
  * ps_version is `null` until the first ping identifies Photoshop, but the server requires

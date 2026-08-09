@@ -90,12 +90,7 @@ export class DeliveryError extends Error {
      * not_entitled/not_found.
      */
     readonly code:
-      | 'not_entitled'
-      | 'not_found'
-      | 'server'
-      | 'network'
-      | 'not_configured'
-      | 'oversize',
+      'not_entitled' | 'not_found' | 'server' | 'network' | 'not_configured' | 'oversize',
     /** From a 429/503 Retry-After header when the server supplied one (ms). */
     readonly retryAfterMs?: number
   ) {

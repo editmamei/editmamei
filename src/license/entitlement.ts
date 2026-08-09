@@ -59,12 +59,7 @@ export const EXPIRED_REFRESH_TIMEOUT_MS = 5_000;
 export const CLOCK_SKEW_TOLERANCE_MS = 24 * 60 * 60 * 1000;
 
 export type EntitlementReason =
-  | 'granted'
-  | 'no-license'
-  | 'revoked'
-  | 'disabled'
-  | 'expired'
-  | 'grace-expired';
+  'granted' | 'no-license' | 'revoked' | 'disabled' | 'expired' | 'grace-expired';
 
 export interface Entitlement {
   entitled: boolean;

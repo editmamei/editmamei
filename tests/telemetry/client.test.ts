@@ -225,8 +225,7 @@ describe('start() boot ping', () => {
     c.start();
     await new Promise((r) => setTimeout(r, 0)); // let the prompt fire-and-forget flush settle
     const boot = rec.batches.flat().find((e) => e.type === 'session_start') as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(boot).toBeDefined();
     // content-free: exactly the shared Category A dimensions + channel, no counts / free text.
     expect(Object.keys(boot!).sort()).toEqual(
@@ -254,8 +253,7 @@ describe('start() boot ping', () => {
     c.start();
     await new Promise((r) => setTimeout(r, 0));
     const boot = rec.batches.flat().find((e) => e.type === 'session_start') as
-      | { edition: string; channel: string }
-      | undefined;
+      { edition: string; channel: string } | undefined;
     expect(boot?.edition).toBe('pro');
     expect(boot?.channel).toBe('mcpb');
   });
@@ -344,8 +342,7 @@ describe('shutdown → durable outbox', () => {
     // Exit-time send is the unreliable path we replaced — nothing goes over the wire here.
     expect(rec.batches).toHaveLength(0);
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { tool_call_count: number; distinct_tools: number; any_failures: boolean }
-      | undefined;
+      { tool_call_count: number; distinct_tools: number; any_failures: boolean } | undefined;
     expect(summary).toBeDefined();
     expect(summary?.tool_call_count).toBe(3);
     expect(summary?.distinct_tools).toBe(2);
@@ -417,8 +414,7 @@ describe('flushOutboxOnStartup', () => {
     await c.flushOutboxOnStartup();
 
     const summary = rec.batches.flat().find((e) => e.type === 'session_summary') as
-      | { tool_call_count: number; distinct_tools: number; platform: string }
-      | undefined;
+      { tool_call_count: number; distinct_tools: number; platform: string } | undefined;
     expect(summary).toBeDefined();
     expect(summary?.tool_call_count).toBe(7);
     expect(summary?.distinct_tools).toBe(4);
