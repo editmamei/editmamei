@@ -46,7 +46,7 @@ jobs:
       # the build, which compiles the editmamei-core Go binary. The build warns
       # rather than fails without Go, so installing it here is what makes the
       # binary actually get built and exercised.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go-core/go.mod
 
@@ -122,7 +122,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go-core/go.mod
 
