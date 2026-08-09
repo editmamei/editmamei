@@ -62,7 +62,7 @@
     "url": "https://github.com/editmamei/editmamei/issues"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
