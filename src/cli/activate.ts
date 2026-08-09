@@ -48,7 +48,7 @@ export async function runActivate(opts: ActivateOptions = {}): Promise<void> {
   } catch (e) {
     if (e instanceof PolarLicenseError) {
       err(`Activation failed: ${e.message}\n`);
-      throw new Error(e.code);
+      throw new Error(e.code, { cause: e });
     }
     throw e;
   }

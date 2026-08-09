@@ -138,7 +138,7 @@ export function runConfig(args: string[], io: ConfigIo & LoadSettingsOptions = {
       coerced = spec.coerce(value);
     } catch (e) {
       err(`Invalid value for ${key}: ${e instanceof Error ? e.message : String(e)}\n`);
-      throw new Error('config set: bad value');
+      throw new Error('config set: bad value', { cause: e });
     }
     const { settings } = loadSettings(io);
     spec.set(settings, coerced);

@@ -71,12 +71,13 @@
     "onnxruntime-web": "1.27.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.10.5",
     "@typescript-eslint/eslint-plugin": "^8.66.0",
     "@typescript-eslint/parser": "^8.20.0",
     "@vitest/coverage-v8": "^4.1.10",
     "esbuild": "^0.28.0",
-    "eslint": "^9.18.0",
+    "eslint": "^10.8.1",
     "globals": "^17.9.0",
     "prettier": "^3.9.6",
     "tsx": "^4.23.8",

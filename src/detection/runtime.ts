@@ -164,7 +164,7 @@ export function decodeJpegBuffer(bytes: Uint8Array | Buffer): DecodedImage {
     return decodeJpegBytes(bytes);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`failed to decode JPEG buffer: ${msg}`);
+    throw new Error(`failed to decode JPEG buffer: ${msg}`, { cause: err });
   }
 }
 
@@ -177,6 +177,6 @@ export function decodeJpeg(path: string): DecodedImage {
     return decodeJpegBytes(readFileSync(path));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`failed to decode JPEG at ${path}: ${msg}`);
+    throw new Error(`failed to decode JPEG at ${path}: ${msg}`, { cause: err });
   }
 }
