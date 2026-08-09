@@ -1,0 +1,65 @@
+# The pull request title and body become the squash commit message, so this job
+# is the last point at which something can be kept out of public history.
+#
+# The rule this enforces already existed in prose — the pull request template
+# asks for no machine attribution — and prose alone did not hold: an agent added
+# an attribution trailer and a session URL to a PR body anyway. Only the parts
+# that can be matched literally are checked here. Judgement calls (is this
+# business detail? does this narrate Pro internals?) stay with CLAUDE.md and
+# review, because a regex would either miss them or cry wolf.
+#
+# Branch commits are deliberately NOT scanned. They do not survive the squash,
+# and CONTRIBUTING tells contributors they may be messy.
+
+name: PR hygiene
+
+on:
+  pull_request:
+    # `edited` matters as much as `synchronize`: the title and body are what is
+    # being checked, and they change without the branch moving.
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  message:
+    name: message hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject machine attribution in the title and body
+        # Passed through the environment rather than interpolated into the
+        # script body. A pull request title is attacker-controlled text, and
+        # `${{ }}` inside `run:` would splice it straight into the shell.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -uo pipefail
+          printf '%s\n\n%s\n' "${PR_TITLE:-}" "${PR_BODY:-}" > message.txt
+
+          status=0
+          reject() {
+            if grep -Eiq -- "$1" message.txt; then
+              echo "::error title=PR hygiene::$2"
+              status=1
+            fi
+          }
+
+          reject 'co-authored-by:.*(claude|anthropic|copilot|gpt)' \
+            'Machine attribution trailer found. The PR body becomes the commit message; remove the trailer.'
+          reject 'generated with[[:space:]]*\[?[[:space:]]*claude' \
+            'Generated-with attribution found. Remove it.'
+          reject 'claude\.ai/[^[:space:]]*session' \
+            'Assistant session URL found. These are internal links and must not enter public history.'
+          reject '^[[:space:]]*claude-session:' \
+            'Session trailer found. Remove it.'
+          reject 'noreply@anthropic\.com' \
+            'Anthropic noreply address found. Remove it.'
+
+          if [ "$status" -eq 0 ]; then
+            echo "No machine attribution in the title or body."
+          else
+            echo "See CLAUDE.md, 'Never in public history'."
+          fi
+          exit "$status"
