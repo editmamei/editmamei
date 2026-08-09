@@ -27,6 +27,7 @@ import { runScript } from '../utils/run-script.js';
 import { listTemplates } from '../utils/template-storage.js';
 import { toolErrorResult } from '../utils/tool-helpers.js';
 import { Kernel } from '../kernel/kernel.js';
+import { markRawOpened, clearPendingRawDevelop } from './raw-develop-state.js';
 import { ceModule } from '../modules/ce/index.js';
 import { hostDetectionRuntime } from '../detection/runtime.js';
 import { ModuleLifecycle, classifyModuleOutcome } from '../kernel/module-lifecycle.js';
@@ -504,10 +505,35 @@ export class EditmameiServer {
       const result = await this.toolRegistry.execute(name, args);
       // Update session activity
       this.session.updateActivity();
+      this.trackRawDevelopState(name, result);
       return result;
     } catch (error) {
       this.logger.error(`Tool execution failed: ${name}`, error);
       return toolErrorResult('Error', error);
+    }
+  }
+
+  /**
+   * Maintain the one-slot "raw opened, no develop pass yet" flag off the
+   * dispatch stream (see raw-develop-state.ts). Lives here rather than in the
+   * onCall observer so it has synchronous access to the registry: the flag is
+   * only ever set when a camera-raw develop tool is actually registered, so a
+   * session without one never sees advisories about a tool it can't call.
+   */
+  private trackRawDevelopState(name: string, result: ToolResult): void {
+    if (result.isError) return;
+    if (name === 'ps_open_document') {
+      const sc = result.structuredContent as { is_raw_source?: unknown } | undefined;
+      if (sc?.is_raw_source === true && this.toolRegistry.get('ps_apply_camera_raw')) {
+        const opened = sc as { document_name?: unknown; file_path?: unknown };
+        markRawOpened(String(opened.document_name ?? ''), String(opened.file_path ?? ''));
+      } else {
+        // The active document changed to a non-raw one — one slot, so any
+        // pending flag now refers to a document that is no longer active.
+        clearPendingRawDevelop();
+      }
+    } else if (name === 'ps_apply_camera_raw' || name === 'ps_close_document') {
+      clearPendingRawDevelop();
     }
   }
 

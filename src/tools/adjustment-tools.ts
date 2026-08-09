@@ -4,6 +4,7 @@ import type { SnippetClient } from '../api/snippet-client.js';
 import { runScript } from '../utils/run-script.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolErrorResult, runSnippetTool, applyToActiveLayerProp } from '../utils/tool-helpers.js';
+import { getPendingRawDevelop } from '../core/raw-develop-state.js';
 
 // On 2026-05-31 the four destructive bake adjustments — `auto_levels`,
 // `auto_contrast`, `desaturate`, `invert` — were removed. Each was a strict
@@ -789,7 +790,7 @@ export function createAdjustmentTools(
       tool: {
         name: 'ps_add_adjustment_layer',
         description:
-          "Create a non-destructive adjustment layer above the active layer — hoisted out of the active layer's group by default even though Photoshop's own Mk-AdjL placement rule would otherwise nest it INSIDE that group (pass into_active_group:true to keep that native nesting). Supports the full real-Photoshop tonal/color surface: Curves (with S-curve presets), Levels, Hue/Saturation, Brightness/Contrast, Black & White (with optional tint), Color Balance, Photo Filter (preset or custom color), Vibrance, Channel Mixer, Selective Color, Gradient Map (preset), Exposure (stops + offset + gamma), Color Lookup (3DLUT presets or custom file path), and Invert. Values are editable, maskable, and removable. This is the canonical entry point for ALL tonal/color adjustments; the old destructive bake tools (auto_levels / auto_contrast / desaturate / invert) were removed on 2026-05-31 — if you genuinely need a pixel bake, follow this call with `ps_merge` (mode=visible). Optionally clips the adjustment to only affect the layer directly below it. If a selection is active at call time, the new layer is automatically masked by it (toggle with mask_from_selection / mask_inverted). For destructive ops that don't have an adjustment-layer equivalent in Photoshop (Shadows/Highlights — single-pass shadow/highlight recovery), use `ps_apply_adjustment` (type=shadows_highlights) which auto-duplicates the active layer to keep the original intact. Returns context (the new adjustment layer becomes active) plus parent_path — the actual containing-group chain, so placement is never silent.",
+          "Create a non-destructive adjustment layer above the active layer — hoisted out of the active layer's group by default even though Photoshop's own Mk-AdjL placement rule would otherwise nest it INSIDE that group (pass into_active_group:true to keep that native nesting). Supports the full real-Photoshop tonal/color surface: Curves (with S-curve presets), Levels, Hue/Saturation, Brightness/Contrast, Black & White (with optional tint), Color Balance, Photo Filter (preset or custom color), Vibrance, Channel Mixer, Selective Color, Gradient Map (preset), Exposure (stops + offset + gamma), Color Lookup (3DLUT presets or custom file path), and Invert. Values are editable, maskable, and removable. This is the canonical entry point for tonal/color adjustments — EXCEPT global tone/color on raw-sourced documents, which starts with a Camera Raw develop pass when a camera-raw develop tool is registered (see ps_open_document's is_raw_source); the old destructive bake tools (auto_levels / auto_contrast / desaturate / invert) were removed on 2026-05-31 — if you genuinely need a pixel bake, follow this call with `ps_merge` (mode=visible). Optionally clips the adjustment to only affect the layer directly below it. If a selection is active at call time, the new layer is automatically masked by it (toggle with mask_from_selection / mask_inverted). For destructive ops that don't have an adjustment-layer equivalent in Photoshop (Shadows/Highlights — single-pass shadow/highlight recovery), use `ps_apply_adjustment` (type=shadows_highlights) which auto-duplicates the active layer to keep the original intact. Returns context (the new adjustment layer becomes active) plus parent_path — the actual containing-group chain, so placement is never silent.",
         inputSchema: addAdjustmentLayerSchema,
         outputSchema: {
           type: 'object',
@@ -816,6 +817,11 @@ export function createAdjustmentTools(
               items: { type: 'string' },
               description:
                 'The containing-group name chain (outermost first), empty array at the document root.',
+            },
+            raw_develop_pending: {
+              type: 'string',
+              description:
+                'Advisory, present only when the active document was opened from a raw source this session and no Camera Raw develop pass has run yet. Nothing failed — the layer was created. Global tone/color on raw sources normally starts with the camera-raw develop pass; ignore if the user prescribed this exact layer or the file was already developed elsewhere.',
             },
             context: { type: 'object' },
           },
@@ -989,14 +995,32 @@ async function addAdjustmentLayer(
     const script = await snippetClient.build('addAdjustmentLayer', buildParams);
     const result = await runScript(connection, script);
 
+    const structured = result as Record<string, unknown>;
+    let advisory = '';
+    // Soft nudge, not a failure: the layer was created either way. Only fires
+    // when the dispatch layer saw a raw open with a camera-raw develop tool
+    // registered and no develop pass since (see raw-develop-state.ts).
+    const pendingRaw = getPendingRawDevelop();
+    if (pendingRaw) {
+      const source = pendingRaw.documentName || pendingRaw.filePath || 'a raw source';
+      const note =
+        `This document was opened from raw source ${source} with no Camera Raw develop pass yet — ` +
+        'consider ps_apply_camera_raw first for global tone/color. Nothing failed; ignore if the ' +
+        'user prescribed this exact layer or the file was already developed elsewhere.';
+      if (typeof result === 'object' && result !== null) {
+        structured.raw_develop_pending = note;
+      }
+      advisory = `\nNote: ${note}`;
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: `Adjustment layer added:\n${JSON.stringify(result, null, 2)}`,
+          text: `Adjustment layer added:\n${JSON.stringify(result, null, 2)}${advisory}`,
         },
       ],
-      structuredContent: result as Record<string, unknown>,
+      structuredContent: structured,
     };
   } catch (error) {
     return toolErrorResult('Error adding adjustment layer', error);

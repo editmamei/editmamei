@@ -18,9 +18,9 @@ import type { SnippetClient } from '../api/snippet-client.js';
  * no doc required, read-only. Referenced from `ps_ping`'s
  * description so the discovery hits at session boot.
  *
- * Content evolves with the codebase. Aim for under 8 KB so the LLM
+ * Content evolves with the codebase. Keep it lean so the LLM
  * doesn't have to skim — every line should change behavior. Current
- * body is ~6.5 KB and the test ceiling is 8 KB. If a section grows
+ * body is just under the 10 KB test ceiling. If a section grows
  * past one screen, split it into a sub-tool or trim back to a
  * pointer + link to the canonical doc.
  *
@@ -56,6 +56,8 @@ Every non-trivial edit follows the same six phases:
 
 1. **Assess** — \`ps_inspect\` (what=metadata / layer_tree / history /
    selection_info) + \`ps_get_preview\` to understand what you're working with.
+   If \`ps_open_document\` reported \`is_raw_source: true\`, see
+   "Raw-sourced documents" below.
 2. **Plan** — name the intent, the layers/regions involved, and the
    exit criteria. Tell the user before you execute.
 3. **Enact** — call the tools.
@@ -68,6 +70,33 @@ Every non-trivial edit follows the same six phases:
    \`ps_save_psd\`. Confirm the user wants to flatten before
    destructive saves.
 
+## Raw-sourced documents
+
+\`ps_open_document\` reports \`is_raw_source: true\` for raw captures
+(DNG, NEF, CR3, ARW, …) — the open applied last-used/default Camera
+Raw settings, so no deliberate develop has happened yet. When
+\`tools/list\` includes a camera-raw develop tool, the FIRST enacting
+step on a raw document is that develop pass on the base smart object —
+NOT stacked Levels/Curves adjustment layers. The develop pass owns
+global tone and color; adjustment layers come after, for local/masked
+corrections and finishing moves.
+
+Make the first develop pass a complete grade in ONE call, not a timid
+nudge: tone endpoints (exposure, contrast, highlights/shadows AND
+whites/blacks), presence (texture, clarity, dehaze), a parametric
+curve, white balance + vibrance + per-channel HSL where colors need
+steering, color grading, capture sharpening + noise reduction (raws
+get none by default), optics/vignette where they serve the image.
+Three sliders at small values reads as "untouched." Large moves are
+safe — the develop is a re-editable smart filter, nothing bakes:
+start bold, check preview + histogram, ease off.
+
+To refine, call the develop tool again in its adjust-existing mode —
+it preserves every slider you don't pass. Never add a second
+camera-raw filter. If no camera-raw develop tool is in \`tools/list\`,
+say so in one sentence and build global tone with adjustment layers.
+Explicit user instructions always win.
+
 ## Capabilities map
 
 This map covers the workflow categories. For specific tool names and
@@ -77,7 +106,8 @@ schemas in this session, consult \`tools/list\`.
   covers brightness/contrast, levels, curves, hue/sat, color balance,
   photo filter, vibrance, channel mixer, selective color, black & white,
   gradient map, exposure, color lookup, invert. Always prefer this over
-  destructive filters for tone/color work.
+  destructive filters for tone/color work — except raw-sourced
+  documents: the camera-raw develop pass goes first (see above).
 - **Filters (destructive)** — \`ps_apply_filter\` with a
   \`type\` (gaussian_blur, motion_blur, lens_blur, radial_blur, sharpen,
   smart_sharpen, noise, reduce_noise, high_pass, pixelate, distort,

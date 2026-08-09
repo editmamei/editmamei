@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EditmameiServer, __resetLogScriptOnErrorWarnForTests } from '@editmamei/core/server.ts';
+import { getPendingRawDevelop, __clearRawDevelopState } from '@editmamei/core/raw-develop-state.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
@@ -464,5 +465,122 @@ describe('tools/call dispatch wrapper', () => {
     });
     const res = await server.handleToolCall('photoshop_throws_for_test', {});
     expect(res.isError).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Raw-develop advisory flag — the dispatch wrapper maintains a one-slot
+// "raw opened, no develop pass yet" flag (src/core/raw-develop-state.ts).
+// Set only when ps_open_document reports is_raw_source AND a camera-raw
+// develop tool is registered; cleared by a develop pass, a non-raw open,
+// a close, or an error result.
+// ===========================================================================
+describe('raw develop pending flag (dispatch-level)', () => {
+  interface FlagServer {
+    toolRegistry: {
+      register(
+        name: string,
+        def: {
+          tool: { name: string; description: string; inputSchema: object };
+          handler: () => Promise<unknown>;
+        }
+      ): void;
+    };
+    handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+  }
+
+  const stub = (name: string, result: Record<string, unknown>, isError = false) => ({
+    tool: {
+      name,
+      description: `${name} (test fixture)`,
+      inputSchema: { type: 'object' as const, properties: {} },
+    },
+    handler: async () => ({
+      content: [{ type: 'text' as const, text: 'ok' }],
+      structuredContent: result,
+      ...(isError ? { isError: true } : {}),
+    }),
+  });
+
+  beforeEach(() => {
+    __clearRawDevelopState();
+  });
+
+  it('a raw open with a camera-raw tool registered sets the flag', async () => {
+    const server = new EditmameiServer() as unknown as FlagServer;
+    server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', {
+        is_raw_source: true,
+        document_name: 'a.dng',
+        file_path: '/a.dng',
+      })
+    );
+    await server.handleToolCall('ps_open_document', {});
+    expect(getPendingRawDevelop()?.documentName).toBe('a.dng');
+  });
+
+  it('a raw open WITHOUT a camera-raw tool registered does not set the flag', async () => {
+    const server = new EditmameiServer() as unknown as FlagServer;
+    // CE surface: ps_apply_camera_raw is deliberately absent.
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: true, document_name: 'a.dng' })
+    );
+    await server.handleToolCall('ps_open_document', {});
+    expect(getPendingRawDevelop()).toBeNull();
+  });
+
+  it('a non-raw open clears a previously set flag', async () => {
+    const server = new EditmameiServer() as unknown as FlagServer;
+    server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: true, document_name: 'a.dng' })
+    );
+    await server.handleToolCall('ps_open_document', {});
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: false, document_name: 'b.jpg' })
+    );
+    await server.handleToolCall('ps_open_document', {});
+    expect(getPendingRawDevelop()).toBeNull();
+  });
+
+  it('a ps_apply_camera_raw dispatch clears the flag', async () => {
+    const server = new EditmameiServer() as unknown as FlagServer;
+    server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: true, document_name: 'a.dng' })
+    );
+    await server.handleToolCall('ps_open_document', {});
+    await server.handleToolCall('ps_apply_camera_raw', {});
+    expect(getPendingRawDevelop()).toBeNull();
+  });
+
+  it('a ps_close_document dispatch clears the flag', async () => {
+    const server = new EditmameiServer() as unknown as FlagServer;
+    server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: true, document_name: 'a.dng' })
+    );
+    server.toolRegistry.register('ps_close_document', stub('ps_close_document', {}));
+    await server.handleToolCall('ps_open_document', {});
+    await server.handleToolCall('ps_close_document', {});
+    expect(getPendingRawDevelop()).toBeNull();
+  });
+
+  it('an isError open result never sets the flag', async () => {
+    const server = new EditmameiServer() as unknown as FlagServer;
+    server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: true, document_name: 'a.dng' }, true)
+    );
+    await server.handleToolCall('ps_open_document', {});
+    expect(getPendingRawDevelop()).toBeNull();
   });
 });

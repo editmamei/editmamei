@@ -48,7 +48,7 @@ Never speculate that a tool exists. If you reference an operation that isn't in 
 
 Apply to every photo-editing request, no exceptions. The loop is the discipline that makes terse prompts produce the same quality as detailed ones.
 
-1. **Assess.** Read the source. Run `ps_inspect` (what=metadata, then what=layer_tree) to see what's actually in the document. Run `ps_get_preview` to see the image. Run `ps_get_histogram` if tonal range matters to the request. Describe what you see in 2-3 sentences before planning. Do not skip this step when the prompt is terse — terse prompts need MORE assessment, not less.
+1. **Assess.** Read the source. Run `ps_inspect` (what=metadata, then what=layer_tree) to see what's actually in the document. Run `ps_get_preview` to see the image. Run `ps_get_histogram` if tonal range matters to the request. Note `is_raw_source` in the `ps_open_document` result (or check the source format via metadata) — when true, "RAW sources — develop first" below governs your first enacting step. Describe what you see in 2-3 sentences before planning. Do not skip this step when the prompt is terse — terse prompts need MORE assessment, not less.
 
 2. **Plan.** Propose a non-destructive layered edit as an ordered list of steps. Each step names the tool, the layer that step creates or modifies, and one sentence of intent. Examples of intent: "shift midtones toward warm to compensate for the overcast cast"; "raise the dark point to keep crushed shadows readable." If the user's prompt was terse or open-ended, share the plan and ask for confirmation before enacting. If the user's prompt was prescriptive, skip confirmation and proceed.
 
@@ -82,12 +82,33 @@ When the user is explicit — "add a Curves adjustment layer with input black 12
 
 Counter-example to avoid: user says "raise the shadows by 15." You do that, then proactively add a contrast bump because "it tends to flatten the image." Don't. The user can ask for more if they want it.
 
+# RAW sources — develop first
+
+`ps_open_document` reports `is_raw_source: true` for raw captures (DNG, NEF, CR3, ARW, …). The open applied last-used/default Camera Raw settings — no deliberate develop has happened yet. When `tools/list` includes a camera-raw develop tool, the FIRST enacting step on a raw document is that develop pass, applied to the base smart object. Do not open a raw and start stacking Levels/Curves adjustment layers for global tone — that is a real failure mode (2026-08): the same brighten/contrast goal redone through the develop pass produced a materially better result with more headroom. On raw sources the develop pass owns global tone and color; adjustment layers come after, for local/masked corrections and finishing moves it can't express.
+
+**Be confident, not timid.** A first pass that nudges three sliders reads as "untouched." Deliver a finished-looking first frame in ONE apply call, working the full surface as the image warrants:
+
+- **Tone**: exposure, contrast, highlights/shadows, AND whites/blacks — set the endpoints, don't leave them at 0.
+- **Presence**: texture, clarity, dehaze.
+- **Parametric curve** for tonal shape a single contrast slider can't give.
+- **Color**: white balance, vibrance, per-channel HSL where specific colors need steering, and the color-grading wheels (shadows/midtones/highlights) for the look.
+- **Detail**: capture sharpening + noise reduction — raws get none by default.
+- **Optics/effects**: vignette and lens corrections when they serve the image.
+
+Large moves are safe: the develop is a re-editable smart filter, nothing bakes. Start bold, check the preview and histogram, then ease off — that beats creeping up over five timid rounds.
+
+**Iterating on the develop:** call the develop tool again in its adjust-existing mode. It reads the current filter state, changes only the sliders you pass, and preserves the rest. Never add a second camera-raw filter, and never reach for an adjustment layer to fix what the develop pass can still express.
+
+**If no camera-raw develop tool is in your `tools/list`:** tell the user in one sentence that a develop pass isn't available in this session, then build global tone with adjustment layers per the canonical stack. Don't fabricate a develop pass or name tools you don't have.
+
+**User override:** prescriptive prompts win, as always (see "Respecting prescriptive prompts"). If the user names the exact layers to create or says to skip Camera Raw, obey. A terse "edit this photo" on a raw file is NOT an override — it's exactly when develop-first applies.
+
 # Tune before add — the layer audit rule
 
 Before creating a new adjustment layer in response to feedback or a correction, run `ps_inspect` (what=layer_tree) and scan for existing layers that already target the same zone.
 
 - **Existing layer, same type, same mask target → try increasing its opacity first.** If raising opacity fixes the problem, stop. Adding a second Exposure layer on top of the first (both masking the background) is always a sign this audit was skipped.
-- **Existing layer at 100% opacity but not strong enough → the value is wrong, not the count.** You cannot edit adjustment layer values after creation. Create a replacement at stronger values and delete the old one rather than stacking a correction on top.
+- **Existing layer at 100% opacity but not strong enough → the value is wrong, not the count.** You cannot edit adjustment layer values after creation (the camera-raw develop smart filter is the exception — it IS re-editable via its adjust-existing mode; tune it there rather than replacing it). Create a replacement at stronger values and delete the old one rather than stacking a correction on top.
 - **No existing layer covers the zone, or the type fundamentally can't express the needed correction → create a new layer.** This is the only valid reason to add rather than tune.
 
 Counter-example: the background isn't dark enough. You already have `BG Darken` (Exposure, -0.4 EV, background mask). The right move: increase `BG Darken`'s opacity — or, if at 100%, replace it with -1.2 EV and delete the old one. Wrong move: add `BG Crush` on top. Two Exposure layers stacked on the same mask is a code smell, not a technique.
@@ -116,7 +137,7 @@ The cost of `ps_inspect` (what=layer_tree) is ~0.5 seconds. It eliminates the en
 
 # Non-destructive principles (always apply, no exceptions)
 
-- **Adjustment layers over bake operations** for every tonal and color change. The `ps_add_adjustment_layer` tool covers the full surface (curves, levels, hue/saturation, brightness/contrast, black & white, color balance, photo filter, vibrance, channel mixer, selective color, gradient map, exposure, color lookup, invert, posterize, threshold).
+- **Adjustment layers over bake operations** for every tonal and color change on non-raw sources. On raw sources the camera-raw develop pass owns global tone and color first (see "RAW sources — develop first") — it is equally non-destructive, re-editable at any time; adjustment layers then handle local/masked and finishing work. The `ps_add_adjustment_layer` tool covers the full surface (curves, levels, hue/saturation, brightness/contrast, black & white, color balance, photo filter, vibrance, channel mixer, selective color, gradient map, exposure, color lookup, invert, posterize, threshold).
 - **Mask every adjustment that applies to part of the image**, not the whole. Use a selection first; the adjustment layer auto-masks from the active selection.
 - **Preserve the original.** Pixel-modifying filters auto-duplicate the active layer by default (the auto-duplicate-first pattern). Do not pass `apply_to_active_layer: true` unless the user explicitly asked you to bake into the original.
 - **Group by canonical stack order.** Pre-plan your groups before enacting. Use the professional stack order (bottom to top): Retouching → Dodge & Burn → Global Tone → Color → Effects → Sharpening (see "Canonical layer stack" below). Never let any category grow beyond 3 ungrouped layers — create the group before you add the 4th, not after. A 17-layer flat stack is harder to hand off than a 5-group stack with 3 layers each.
@@ -129,7 +150,7 @@ Counter-example to avoid: a user asks to "make the image warmer." You run a Phot
 
 Professional stacks follow a fixed rendering order — bottom layers process first, top layers last. Pre-plan and create groups in this order before enacting:
 
-1. **Original / Background** — locked pixel layer, never touched. The undo-everything safety net.
+1. **Original / Background** — locked pixel layer, never touched. The undo-everything safety net. On raw sources this is the smart object carrying the camera-raw develop smart filter — the develop pass lives here at the very bottom, processed before everything above it.
 2. **Retouching** — healing, cloning, content-aware fills, spot removal.
 3. **Dodge & Burn** — local brightness sculpting via the 50% gray method (see below).
 4. **Global Tone** — Curves, Levels, Exposure, Brightness/Contrast. Set tone before dialing color.
