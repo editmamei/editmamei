@@ -130,7 +130,7 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
       },
     },
     // Photoshop isn't on Linux, so only the two desktop platforms.
-    compatibility: { platforms: ['darwin', 'win32'], runtimes: { node: '>=20.0.0' } },
+    compatibility: { platforms: ['darwin', 'win32'], runtimes: { node: '>=22.0.0' } },
     user_config: {
       license_key: {
         type: 'string',

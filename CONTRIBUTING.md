@@ -38,7 +38,7 @@ npm run build
 npm test
 ```
 
-You need Node 20 or newer and a Go toolchain. `npm run build` compiles the `editmamei-core` Go
+You need Node 22 or newer and a Go toolchain. `npm run build` compiles the `editmamei-core` Go
 binary that the server calls at runtime. It warns instead of failing when Go is missing, so a
 docs or test-only contributor is not blocked, but you will need Go to exercise anything that
 emits ExtendScript.

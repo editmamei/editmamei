@@ -61,11 +61,11 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           registry-url: 'https://registry.npmjs.org'
 
-      # OIDC trusted publishing needs npm >= 11.5.1; Node 20 bundles 10.x.
+      # OIDC trusted publishing needs npm >= 11.5.1; Node 22 bundles 10.x.
       - name: Upgrade npm
         run: npm install -g npm@11
 
