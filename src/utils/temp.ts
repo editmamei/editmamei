@@ -107,7 +107,8 @@ export class TempDir {
       throw new Error(
         `TempDir.create: tmpdir() at ${tmpdir()} was not writable (${primaryMsg}); ` +
           `user-owned fallback ${fbRoot} also failed (${fbMsg}). ` +
-          `Most common cause: TMPDIR inherited from a sudo session — start a fresh shell.`
+          `Most common cause: TMPDIR inherited from a sudo session — start a fresh shell.`,
+        { cause: fbErr }
       );
     }
   }

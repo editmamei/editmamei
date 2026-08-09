@@ -233,7 +233,7 @@ export function scoreRegion(
     };
   }
 
-  let confidence = 0;
+  let confidence: number;
 
   switch (kind) {
     case 'sky': {

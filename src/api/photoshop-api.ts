@@ -88,7 +88,8 @@ class ExtendScriptPhotoshopAPI implements PhotoshopAPI {
             'This usually means PS is in a stuck/modal state (a leaked preview duplicate ' +
             'or a pending dialog from a prior timeout), or there is no active document. ' +
             'Check that a document is open and try once more; if it persists, dismiss any ' +
-            'open Photoshop dialog.'
+            'open Photoshop dialog.',
+          { cause: err }
         );
       }
       throw err instanceof Error ? err : new Error(msg);

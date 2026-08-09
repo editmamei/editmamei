@@ -24,7 +24,7 @@ export async function runDeactivate(opts: DeactivateOptions = {}): Promise<void>
   } catch (e) {
     if (e instanceof PolarLicenseError) {
       err(`Deactivate failed: ${e.message}\n`);
-      throw new Error(e.code);
+      throw new Error(e.code, { cause: e });
     }
     throw e;
   }
