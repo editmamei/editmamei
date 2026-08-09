@@ -40,15 +40,19 @@ const smartFilterInputSchema: JsonSchemaObject = {
         'list: read every Smart Filter on the active layer (index, name, type, enabled, opacity, blend mode). Read-only — call it first to get the indices the other ops take. ' +
         'set_visibility: turn one filter on or off without removing it (needs `index` + `enabled`). ' +
         "set_blend: change one filter's `opacity` and/or `blend_mode` (needs `index` + at least one of them). " +
-        'remove: delete one filter from the stack (needs `index`).',
+        'remove: delete one filter from the stack (needs `index`). Removing a filter renumbers every index above it — re-run op=list before the next index-taking call.',
     },
     index: {
       // integer, not number: the Go side narrows this with int(), so a
       // fractional 1.5 would silently become filter 1 rather than being refused.
+      // maximum is a backstop, not a real limit: no Smart Object gets anywhere
+      // near this many filters, and it keeps an out-of-range float64 from
+      // reaching Go's int() narrowing, which is implementation-defined there.
       type: 'integer',
       description:
         "1-based index of the filter to act on, as reported by op=list. 1 is the FIRST-APPLIED filter (bottom of the Smart Filters stack in the Layers panel). Required for every op except 'list'.",
       minimum: 1,
+      maximum: 1000,
     },
     enabled: {
       type: 'boolean',
@@ -210,7 +214,12 @@ async function runSmartFilterOp(
         },
         successText: (result) => {
           const r = result as Record<string, unknown>;
-          return `Smart Filter ${String(r.index)} (${String(r.filter_name)}) is now ${String(r.blend_mode)} at ${String(r.opacity)}% opacity on "${String(r.layer_name)}".`;
+          // Photoshop reports the quantized stored opacity (e.g.
+          // 69.80392156862745%) — round to 1dp for the human-facing text only;
+          // structuredContent keeps the raw value.
+          const opacity = Number(r.opacity);
+          const opacityText = Number.isFinite(opacity) ? opacity.toFixed(1) : String(r.opacity);
+          return `Smart Filter ${String(r.index)} (${String(r.filter_name)}) is now ${String(r.blend_mode)} at ${opacityText}% opacity on "${String(r.layer_name)}".`;
         },
       });
     }
@@ -226,7 +235,7 @@ async function runSmartFilterOp(
         params: (a) => ({ index: a.index }),
         successText: (result) => {
           const r = result as Record<string, unknown>;
-          return `Removed Smart Filter ${String(r.index)} (${String(r.removed_filter_name)}) from "${String(r.layer_name)}". ${String(r.remaining_count)} remaining.`;
+          return `Removed Smart Filter ${String(r.index)} (${String(r.removed_filter_name)}) from "${String(r.layer_name)}". ${String(r.remaining_count)} remaining. Indices renumbered — re-run op=list before the next index-taking call.`;
         },
       });
 

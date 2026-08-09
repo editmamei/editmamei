@@ -71,6 +71,9 @@ func TestSetSmartFilterVisibilityDescriptor(t *testing.T) {
 		`__sfTarget(index);`,
 		// Report Photoshop's state after the write, not the requested state.
 		`var after = __sfRead();`,
+		// Pins the 1-based/0-based index mapping (write index N reads back at
+		// entry [N-1]) for set_visibility too — previously only remove pinned it.
+		`var entry = after[index - 1];`,
 		`enabled: entry.enabled,`,
 		`requested_enabled: enabled,`,
 	} {
@@ -96,6 +99,9 @@ func TestSetSmartFilterBlendDescriptor(t *testing.T) {
 	for _, want := range []string{
 		filterFXIndexRef,
 		`executeAction(charIDToTypeID('setd')`,
+		// Pins the 1-based/0-based index mapping for set_blend too —
+		// previously only remove pinned it.
+		`var entry = after[index - 1];`,
 		// blendOptions nests inside a filterFX wrapper object (STEP-04).
 		`bo.putUnitDouble(charIDToTypeID('Opct'), charIDToTypeID('#Prc'), 70);`,
 		`bo.putEnumerated(charIDToTypeID('Md  '), charIDToTypeID('BlnM'), stringIDToTypeID(__sfAmMode("SCREEN")));`,
@@ -247,6 +253,10 @@ func TestEverySmartFilterWriteValidatesFirst(t *testing.T) {
 // This pins the two Go-reachable copies to each other; the TS copy is pinned to
 // layerBlendModeSet by tests/integration/blend-mode-parity.test.ts. Adding a mode
 // to one and not the others makes it either unvalidatable or untranslatable.
+// Reads the COMPILED template (tpl[vault.SFGuard], decrypted from
+// templates.enc), not the fragment source in fragments_smartobject.go —
+// `npm run build` must run after editing the table for this test to see the
+// change; otherwise it validates a stale blob.
 func TestSmartFilterBlendModeTableMatchesValidator(t *testing.T) {
 	table := tpl[vault.SFGuard]
 	start := strings.Index(table, "var __SF_MODES = {")

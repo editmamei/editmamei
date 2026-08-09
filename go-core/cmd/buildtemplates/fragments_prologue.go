@@ -51,9 +51,17 @@ func init() {
 %s
   `,
 
-		// Text and smart-object layers cannot take a filter directly. Where the
-		// caller let us duplicate, this rasterizes the copy and the original
-		// survives untouched.
+		// Text layers cannot take a filter directly. A smart-object layer CAN —
+		// an ordinary filter applied to a Smart Object becomes a re-editable
+		// Smart Filter instead of failing (verified live on PS 27.2.0,
+		// 2026-08-09: applyGaussianBlur / applyUnSharpMask / applyAddNoise /
+		// applyMotionBlur all apply correctly to an un-rasterized Smart
+		// Object). This block rasterizes it anyway ONLY because the DEFAULT
+		// path here is the destructive bake, which needs real pixels — the
+		// smart-filter path (FiltRastSO below) deliberately skips this block
+		// so the Smart Object survives and the filter lands as a Smart Filter
+		// instead. Where the caller let us duplicate, this rasterizes the copy
+		// and the original survives untouched.
 		vault.FiltRast: `
     if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);

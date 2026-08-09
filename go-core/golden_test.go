@@ -176,6 +176,12 @@ func TestGaussianBlurGolden(t *testing.T) {
 		got string
 	}{
 		{"applyGaussianBlur(2,false)", applyGaussianBlur(2, false, false)},
+		// asSmartFilter=true — one DOM-method filter (measured live to apply
+		// correctly to an un-rasterized Smart Object, see fragments_prologue.go)
+		// and one Action-Manager filter (below, next to applyHighPass), pinning
+		// that the smart-filter path (FiltRastSO/FiltKindSO) is reachable
+		// through both filter families.
+		{"applyGaussianBlur(2,false,true)", applyGaussianBlur(2, false, true)},
 		{"applyGaussianBlur(5.5,true)", applyGaussianBlur(5.5, true, false)},
 		{"applyUnsharpMask(80,1.2,3,false)", applyUnsharpMask(80, 1.2, 3, false, false)},
 		{"applyUnsharpMask(85,1.8,3,true)", applyUnsharpMask(85, 1.8, 3, true, false)},
@@ -195,6 +201,7 @@ func TestGaussianBlurGolden(t *testing.T) {
 			applyReduceNoise(8, 60, 50, 30, true, true, 6, 40, 6, 40, 9, 30, true, false)},
 		{"applyHighPass(10)", applyHighPass(10, false, false)},
 		{"applyHighPass(24,true)", applyHighPass(24, true, false)},
+		{"applyHighPass(10,false,true)", applyHighPass(10, false, true)},
 		{"applyShadowsHighlights(35,50,30,0,50,30,20,0)",
 			applyShadowsHighlights(35, 50, 30, 0, 50, 30, 20, 0, 0.01, 0.01, false)},
 		{"applyShadowsHighlights(50,60,40,25,55,35,30,10,0.02,0.05,true)",

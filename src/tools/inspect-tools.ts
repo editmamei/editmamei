@@ -10,14 +10,15 @@ import { getSelectionInfoHandler } from './selection-tools.js';
 import { getSmartObjectInfoHandler } from './smart-object-tools.js';
 
 /**
- * ps_inspect — consolidates the four read-only state readers
- * (`get_metadata`, `get_layer_tree`, `get_history`, `get_selection_info`)
- * into one `what`-discriminated tool (Phase 1b, 2026-06-26).
+ * ps_inspect — consolidates the five read-only state readers
+ * (`get_metadata`, `get_layer_tree`, `get_history`, `get_selection_info`,
+ * `get_smart_object_info`) into one `what`-discriminated tool (Phase 1b,
+ * 2026-06-26; `smart_object` added 2026-08-08).
  *
  * Same merge pattern as the Phase-1 consolidations: the discriminator is
  * stripped and the call delegates to the UNCHANGED per-reader handler, which
  * keeps its own snippet, output shape, and (for metadata) its own
- * validation. Only `metadata` carries params (`sections`); the other three
+ * validation. Only `metadata` carries params (`sections`); the other four
  * are param-free, so the union input schema is just `what` + `sections`.
  *
  * Deliberately NOT merged here (kept as named, prominent tools): the
@@ -95,9 +96,11 @@ export function createInspectTools(
             // smart_object
             is_smart_object: { type: 'boolean' },
             linked: { type: 'boolean' },
-            file_reference: { type: 'string' },
-            document_id: { type: 'string' },
-            placed: { type: 'string' },
+            // null for an embedded Smart Object (the common case) — only a
+            // LINKED one carries a file_reference/document_id/placed value.
+            file_reference: { type: ['string', 'null'] },
+            document_id: { type: ['string', 'null'] },
+            placed: { type: ['string', 'null'] },
             smart_filter_count: { type: 'number' },
             layer_name: { type: 'string' },
             layer_kind: { type: 'string' },

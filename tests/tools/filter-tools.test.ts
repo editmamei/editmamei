@@ -777,4 +777,68 @@ describe('createFilterTools', () => {
       expect(build.params.radius).toBe(3.5);
     });
   });
+
+  // ===========================================================================
+  // as_smart_filter forwarding. Every filter type declares the opt-in
+  // (asSmartFilterProp, shared across all 18 schemas) and must forward it — or
+  // its absence — to the snippet unmodified. Table-driven over the tool's OWN
+  // schema enum (not a hand-copied list) so a new filter type auto-joins this
+  // coverage instead of silently going unchecked.
+  // ===========================================================================
+  describe('as_smart_filter forwarding', () => {
+    // Minimal valid params per type — just enough to satisfy that type's
+    // required fields (per the per-type schemas above), nothing more.
+    const requiredParamsByType: Record<string, Record<string, unknown>> = {
+      gaussian_blur: { radius: 10 },
+      motion_blur: { angle: 10, radius: 10 },
+      lens_blur: {},
+      radial_blur: {},
+      sharpen: { amount: 50, radius: 2 },
+      smart_sharpen: {},
+      noise: { amount: 10 },
+      reduce_noise: {},
+      high_pass: { radius: 10 },
+      pixelate: { mode: 'mosaic' },
+      distort: { mode: 'twirl' },
+      stylize: { mode: 'emboss' },
+      render: { mode: 'clouds' },
+      other: { mode: 'offset' },
+      denoise: { mode: 'despeckle' },
+      blur: { mode: 'average' },
+      displace: { map_path: 'C:/maps/disp.psd' },
+      oil_paint: {},
+    };
+
+    const schemaTools = createFilterTools(makeConnection().asConnection(), makeSnippetClient());
+    const filterTypeSchema = schemaTools[0].tool.inputSchema as unknown as {
+      properties: { type: { enum: string[] } };
+    };
+    const types = filterTypeSchema.properties.type.enum;
+
+    it('the params table above covers every type the tool accepts (so a new type fails loudly, not silently)', () => {
+      expect(Object.keys(requiredParamsByType).sort()).toEqual([...types].sort());
+    });
+
+    for (const type of types) {
+      it(`type=${type} forwards as_smart_filter:true`, async () => {
+        const tools = createFilterTools(conn.asConnection(), snippetClient);
+        await callTool(tools, 'ps_apply_filter', {
+          type,
+          ...requiredParamsByType[type],
+          as_smart_filter: true,
+        });
+        expect(snippetClient.lastBuild().params.asSmartFilter).toBe(true);
+      });
+
+      it(`type=${type} omitting as_smart_filter forwards false/absent`, async () => {
+        const tools = createFilterTools(conn.asConnection(), snippetClient);
+        await callTool(tools, 'ps_apply_filter', {
+          type,
+          ...requiredParamsByType[type],
+        });
+        const asSmartFilter = snippetClient.lastBuild().params.asSmartFilter;
+        expect(asSmartFilter === false || asSmartFilter === undefined).toBe(true);
+      });
+    }
+  });
 });

@@ -23,13 +23,13 @@ func smartFilterHelpers() string {
 }
 
 func listSmartFilters() string {
-	return fmt.Sprintf(tpl[vault.SFList], smartFilterHelpers(), getContextInfo())
+	return fmt.Sprintf(tpl[vault.SFList], smartFilterHelpers(), getMinimalContextInfo())
 }
 
 func setSmartFilterVisibility(index int, enabled bool) string {
 	return fmt.Sprintf(
 		tpl[vault.SFVis],
-		smartFilterHelpers(), getContextInfo(), jsInt(index), jsBool(enabled),
+		smartFilterHelpers(), getMinimalContextInfo(), jsInt(index), jsBool(enabled),
 	)
 }
 
@@ -72,14 +72,18 @@ func setSmartFilterBlend(
 
 	return fmt.Sprintf(
 		tpl[vault.SFBlend],
-		smartFilterHelpers(), getContextInfo(), jsInt(index), opacityBlock, modeBlock,
+		smartFilterHelpers(), getMinimalContextInfo(), jsInt(index), opacityBlock, modeBlock,
 	), nil
 }
 
+// removeSmartFilter is the one write op that stays on the FULL context (the
+// other three read/toggle ops use getMinimalContextInfo): removing a filter
+// changes what exists, which is exactly what getContextInfo's richer probe is
+// for.
 func removeSmartFilter(index int) string {
 	return fmt.Sprintf(tpl[vault.SFDel], smartFilterHelpers(), getContextInfo(), jsInt(index))
 }
 
 func getSmartObjectInfo() string {
-	return fmt.Sprintf(tpl[vault.SOInfo], smartFilterHelpers(), getContextInfo())
+	return fmt.Sprintf(tpl[vault.SOInfo], smartFilterHelpers(), getMinimalContextInfo())
 }

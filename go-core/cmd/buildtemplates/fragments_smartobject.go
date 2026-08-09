@@ -30,9 +30,19 @@ import "editmamei-core/internal/vault"
 // so the guard resolves the list itself and throws something actionable.
 func init() {
 	addFragments(map[string]string{
-		// Shared smart-filter helpers. No slots — pure function declarations that
-		// the read and write fragments both pull into scope.
+		// Shared smart-filter helpers. No slots. Also carries the no-document
+		// guard and active-layer resolution every one of the five fragments
+		// below needs — hoisted here (2026-08-09) instead of five hand-copies.
+		// fragments_prologue.go documents the production defect this EXACT
+		// pattern of duplication (fourteen copies in the filter family alone)
+		// caused: a fix to the guard had to be applied in every copy to land.
+		// Five copies became one.
 		vault.SFGuard: `
+    if (app.documents.length === 0) {
+      throw new Error('No document is open in Photoshop');
+    }
+    var layer = app.activeDocument.activeLayer;
+
     // Blend modes: ONE table, used in both directions, so ps_smart_filter speaks
     // the same vocabulary as ps_set_layer / ps_set_group_blend_mode instead of
     // making the caller learn a second set of names for the same modes. Keys are
@@ -76,7 +86,15 @@ func init() {
       var ld = executeActionGet(ref);
       var soKey = stringIDToTypeID('smartObject');
       if (!ld.hasKey(soKey)) return null;
-      var so = ld.getObjectValue(soKey);
+      return __sfReadFrom(ld.getObjectValue(soKey));
+    }
+
+    // Parses the filter list out of an ALREADY-FETCHED smartObject compound.
+    // Split out of __sfRead() so a caller that already holds the compound (e.g.
+    // getSmartObjectInfo, which reads the layer descriptor for its own purposes
+    // anyway) can reuse the parsing without a second, identical
+    // executeActionGet round trip.
+    function __sfReadFrom(so) {
       var fxKey = stringIDToTypeID('filterFX');
       if (!so.hasKey(fxKey)) return [];
 
@@ -142,10 +160,6 @@ func init() {
     %s
     %s
 
-    if (app.documents.length === 0) {
-      throw new Error('No document is open in Photoshop');
-    }
-    var layer = app.activeDocument.activeLayer;
     var filters = __sfRead();
 
     return {
@@ -153,7 +167,7 @@ func init() {
       count: filters === null ? 0 : filters.length,
       filters: filters === null ? [] : filters,
       layer_name: layer.name,
-      context: getContextInfo()
+      context: getMinimalContextInfo()
     };
   `,
 
@@ -165,12 +179,8 @@ func init() {
     %s
     %s
 
-    if (app.documents.length === 0) {
-      throw new Error('No document is open in Photoshop');
-    }
     var index = %s;
     var enabled = %s;
-    var layer = app.activeDocument.activeLayer;
     __sfTarget(index);
 
     var d = new ActionDescriptor();
@@ -182,6 +192,9 @@ func init() {
     // without error and leave visibility untouched, and a claimed success that
     // nothing checked is worse than an honest failure.
     var after = __sfRead();
+    if (after === null || !after[index - 1]) {
+      throw new Error('The write completed but "' + layer.name + '" no longer reads back as a Smart Object with a filter at index ' + index + ', so the result could not be verified.');
+    }
     var entry = after[index - 1];
     if (entry.enabled !== enabled) {
       throw new Error('Photoshop reported no error, but Smart Filter ' + index + ' (' + entry.name + ') is still ' + (entry.enabled ? 'visible' : 'hidden') + '. The visibility change did not take.');
@@ -194,7 +207,7 @@ func init() {
       filter_name: entry.name,
       filter_type: entry.type,
       layer_name: layer.name,
-      context: getContextInfo()
+      context: getMinimalContextInfo()
     };
   `,
 
@@ -208,11 +221,7 @@ func init() {
     %s
     %s
 
-    if (app.documents.length === 0) {
-      throw new Error('No document is open in Photoshop');
-    }
     var index = %s;
-    var layer = app.activeDocument.activeLayer;
     __sfTarget(index);
 
     // The emitted blocks below assign these alongside the descriptor keys, so
@@ -236,6 +245,9 @@ func init() {
     // Verified post-condition. Opacity is compared with a tolerance because
     // Photoshop stores it as a percentage double and rounds on the way back.
     var after = __sfRead();
+    if (after === null || !after[index - 1]) {
+      throw new Error('The write completed but "' + layer.name + '" no longer reads back as a Smart Object with a filter at index ' + index + ', so the result could not be verified.');
+    }
     var entry = after[index - 1];
     if (__expectMode !== null && entry.blend_mode !== __expectMode) {
       throw new Error('Photoshop reported no error, but Smart Filter ' + index + ' is still in ' + entry.blend_mode + ' (asked for ' + __expectMode + '). The blend change did not take.');
@@ -250,23 +262,21 @@ func init() {
       filter_name: entry.name,
       filter_type: entry.type,
       layer_name: layer.name,
-      context: getContextInfo()
+      context: getMinimalContextInfo()
     };
   `,
 
 		// removeSmartFilter. Slots: 1=SFGuard, 2=getContextInfo, 3=index literal.
-		// Dlt  on a filterFX index ref (m4a STEP-07). Removes something, so it
-		// carries the full context block. Reports the removed filter's identity
-		// (captured before the delete) plus the remaining count.
+		// Dlt  on a filterFX index ref (m4a STEP-07). Removes something (changes
+		// what exists), so it carries the FULL context block — unlike the other
+		// four smart-filter fragments, which only read or toggle state and use
+		// getMinimalContextInfo. Reports the removed filter's identity (captured
+		// before the delete) plus the remaining count.
 		vault.SFDel: `
     %s
     %s
 
-    if (app.documents.length === 0) {
-      throw new Error('No document is open in Photoshop');
-    }
     var index = %s;
-    var layer = app.activeDocument.activeLayer;
     var before = __sfTarget(index);
     var removed = before[index - 1];
 
@@ -303,11 +313,6 @@ func init() {
     %s
     %s
 
-    if (app.documents.length === 0) {
-      throw new Error('No document is open in Photoshop');
-    }
-    var layer = app.activeDocument.activeLayer;
-
     var ref = new ActionReference();
     ref.putEnumerated(charIDToTypeID('Lyr '), charIDToTypeID('Ordn'), charIDToTypeID('Trgt'));
     var ld = executeActionGet(ref);
@@ -318,12 +323,12 @@ func init() {
         is_smart_object: false,
         layer_name: layer.name,
         layer_kind: String(layer.kind),
-        context: getContextInfo()
+        context: getMinimalContextInfo()
       };
     }
 
     var so = ld.getObjectValue(soKey);
-    var filters = __sfRead();
+    var filters = __sfReadFrom(so);
     var linkedKey = stringIDToTypeID('linked');
     var fileRefKey = stringIDToTypeID('fileReference');
     var docIDKey = stringIDToTypeID('documentID');
@@ -332,13 +337,36 @@ func init() {
     var info = {
       is_smart_object: true,
       linked: so.hasKey(linkedKey) ? so.getBoolean(linkedKey) : false,
-      file_reference: so.hasKey(fileRefKey) ? so.getString(fileRefKey) : null,
-      document_id: so.hasKey(docIDKey) ? so.getString(docIDKey) : null,
-      placed: so.hasKey(placedKey) ? typeIDToStringID(so.getEnumerationValue(placedKey)) : null,
+      file_reference: null,
+      document_id: null,
+      placed: null,
       smart_filter_count: filters === null ? 0 : filters.length,
       layer_name: layer.name,
-      context: getContextInfo()
+      context: getMinimalContextInfo()
     };
+
+    // Each of these three throws if the stored type differs from what the
+    // getter expects (a malformed/unusual Smart Object entry can have a key
+    // present but not shaped the way getString/getEnumerationValue want), so
+    // each gets its own try/catch defaulting to null — same style as bounds
+    // below — rather than letting one bad field fail the whole read.
+    try {
+      info.file_reference = so.hasKey(fileRefKey) ? so.getString(fileRefKey) : null;
+    } catch (eF) {
+      info.file_reference = null;
+    }
+
+    try {
+      info.document_id = so.hasKey(docIDKey) ? so.getString(docIDKey) : null;
+    } catch (eD) {
+      info.document_id = null;
+    }
+
+    try {
+      info.placed = so.hasKey(placedKey) ? typeIDToStringID(so.getEnumerationValue(placedKey)) : null;
+    } catch (eP) {
+      info.placed = null;
+    }
 
     try {
       var b = layer.bounds;
