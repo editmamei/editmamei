@@ -1,3 +1,18 @@
+# Major-version updates are pinned across every ecosystem below.
+#
+# A major here is rarely a merge — it is a migration, and a weekly PR for one
+# goes red and stays red. TypeScript 7 is the standing example: it cannot
+# resolve at all while typescript-eslint declares a peer of `<6.1.0`, so
+# `npm ci` fails before a single test runs.
+#
+# `@types/node` is a different case with no upstream blocker: it is held to
+# match the `engines` floor on purpose. Types ahead of the floor typecheck
+# clean and fail at a user's runtime instead, so the two move together or not
+# at all.
+#
+# Minor and patch updates still flow — those are the ones worth taking on a
+# schedule. Majors get picked up deliberately, when the migration is the work.
+
 version: 2
 updates:
   - package-ecosystem: npm
@@ -5,13 +20,16 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    # Batch routine bumps into one PR; majors stay individual so a breaking
-    # change is reviewed on its own.
+    # Batch routine bumps into one PR.
     groups:
       npm-minor-and-patch:
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: gomod
     directory: /go-core
@@ -23,9 +41,21 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - version-update:semver-major
 
+  # Action majors are pinned on the same terms, with one caveat: GitHub retires
+  # runner versions on its own schedule, and a forced major (a Node runtime
+  # deprecation, say) arrives as a deprecation warning on the job rather than as
+  # a Dependabot PR. Watch the workflow annotations, not this file.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - version-update:semver-major
