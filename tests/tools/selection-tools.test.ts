@@ -472,7 +472,7 @@ describe('createSelectionTools', () => {
     expect(build.params.decontaminate).toBe(false);
   });
 
-  it('the modify_selection op field enumerates all seven ops', () => {
+  it('the modify_selection op field enumerates all nine ops', () => {
     const tools = createSelectionTools(conn.asConnection(), snippetClient);
     const tool = tools.find((t) => t.tool.name === 'ps_modify_selection')!;
     const schema = tool.tool.inputSchema as unknown as {
@@ -486,7 +486,59 @@ describe('createSelectionTools', () => {
       'border',
       'smooth',
       'transform',
+      'grow',
+      'similar',
     ]);
+  });
+
+  it('op=grow / similar dispatch growSelection with the right mode + tolerance', async () => {
+    const cases = [
+      { op: 'grow', tolerance: 50 },
+      { op: 'similar', tolerance: 12 },
+    ];
+    for (const { op, tolerance } of cases) {
+      snippetClient = makeSnippetClient();
+      const tools = createSelectionTools(conn.asConnection(), snippetClient);
+      await callTool(tools, 'ps_modify_selection', { op, tolerance });
+      const build = snippetClient.lastBuild();
+      expect(build.name, op).toBe('growSelection');
+      expect(build.params.mode, op).toBe(op);
+      expect(build.params.tolerance, op).toBe(tolerance);
+    }
+  });
+
+  it('op=grow defaults tolerance to 32 and anti_alias to true', async () => {
+    const tools = createSelectionTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_modify_selection', { op: 'grow' });
+    const build = snippetClient.lastBuild();
+    expect(build.params.tolerance).toBe(32);
+    expect(build.params.antiAlias).toBe(true);
+  });
+
+  // The important equivalence: moving grow/similar from ps_select's mode to
+  // ps_modify_selection's op must not change behaviour. Both paths dispatch
+  // the identical growSelection snippet with the identical param object —
+  // this is what proves the move is behaviour-preserving, not a rewrite.
+  it('deprecated ps_select mode=grow/similar builds the identical snippet + params as ps_modify_selection op=grow/similar', async () => {
+    for (const mode of ['grow', 'similar'] as const) {
+      const selectClient = makeSnippetClient();
+      const modifyClient = makeSnippetClient();
+      const selectTools = createSelectionTools(conn.asConnection(), selectClient);
+      const modifyTools = createSelectionTools(conn.asConnection(), modifyClient);
+
+      await callTool(selectTools, 'ps_select', { mode, tolerance: 44, anti_alias: false });
+      await callTool(modifyTools, 'ps_modify_selection', {
+        op: mode,
+        tolerance: 44,
+        anti_alias: false,
+      });
+
+      const selectBuild = selectClient.lastBuild();
+      const modifyBuild = modifyClient.lastBuild();
+      expect(selectBuild.name, mode).toBe(modifyBuild.name);
+      expect(selectBuild.name, mode).toBe('growSelection');
+      expect(selectBuild.params, mode).toEqual(modifyBuild.params);
+    }
   });
 
   it('op=transform forwards scale / rotate / offset (defaulting identity)', async () => {
