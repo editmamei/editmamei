@@ -15,8 +15,12 @@ one discriminated tool only when **all five** of these hold:
 1. **Same verb, same object** — every variant is "do *one action* to *one kind of target*,"
    differing only by an enum value.
 2. **Param sets overlap heavily** — the union schema isn't mostly-empty on any given call.
-3. **Same safety class** — all read-only, or all destructive with the *same* guard. Never put a
-   reader and a baking (pixel-modifying) operation behind one tool name.
+3. **Same safety class** — all read-only, or all destructive with the *same* guard. Don't put a
+   reader and a baking (pixel-modifying) operation behind one tool name *when they are about
+   different things*. Read/write on the SAME noun is fine and is the established pattern:
+   `ps_path` ships `list` beside `delete` and `stroke`, `ps_vector_mask` ships `add` beside
+   `delete`, `ps_filter` ships `list` beside `remove`. What this criterion rules out is a tool
+   that has quietly become an unrelated getter bolted onto an unrelated baker.
 4. **Same tier** — a tool has one tier (see below); never merge tools that ship in different
    editions.
 5. **Same output-shape family** — one output shape, or a clean discriminated union, not several
@@ -28,6 +32,21 @@ tool; that isn't a failure to consolidate. As a smell test in the other directio
 discriminated union ends up with more than about four wildly different param sets, or a person
 reading only the schema can't tell which params apply to which discriminator value, it's
 over-merged and should be split back apart.
+
+"Wildly different" is doing the work in that sentence, and it means *semantically unrelated* — not
+merely numerous. A large family of same-noun variants is not over-merged so long as each
+discriminator value's own description states which params it takes: `ps_filter` carries 18 filter
+types alongside five ops and is correctly one tool, because every one of them is still "a filter on
+this layer." Count the unrelated *ideas* behind the discriminator, not the number of values.
+
+**Read this section against the surface, not just literally.** The five criteria are a checklist
+for a judgement, not a scoring rubric — applying them strictly, one at a time, will tell you to
+split tools this codebase has deliberately merged. The decisive question is the one the criteria
+are proxies for: **would an AI assistant pick correctly more often with one tool or with two?**
+Two tools whose names differ by a word, in the same group and the same tier, are the failure mode
+worth avoiding — that is what motivated folding the Smart Filter operations into `ps_filter`
+(2026-08-09). Creating a filter and managing the resulting stack had been two tools whose names
+differed by two letters, and a reader could not tell from either name which one did what.
 
 Consolidation (which tools exist) and grouping (`src/core/tool-groups.ts`, how the tool surface is
 organized and presented) are separate axes — changing one doesn't imply changing the other.

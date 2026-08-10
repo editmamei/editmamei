@@ -68,7 +68,7 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   inspect: {
     id: 'inspect',
     label: 'Inspect',
-    purpose: 'Read document/layer/selection/history state and render previews.',
+    purpose: 'Read document/layer/selection/history/smart-object state and render previews.',
   },
   verify: {
     id: 'verify',
@@ -102,7 +102,7 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
     id: 'filter',
     label: 'Filters',
     purpose:
-      'Blur/sharpen/noise/stylize filters (auto-duplicate-first by default), plus managing the re-editable Smart Filter stack on a Smart Object.',
+      'Blur/sharpen/noise/stylize filters (auto-duplicate-first by default) and the Camera Raw develop surface, plus managing the re-editable Smart Filter stack on a Smart Object.',
   },
   retouch: {
     id: 'retouch',
