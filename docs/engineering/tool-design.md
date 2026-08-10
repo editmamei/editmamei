@@ -37,7 +37,7 @@ organized and presented) are separate axes — changing one doesn't imply changi
 Every destructive, pixel-modifying tool defaults to operating on a **duplicate** of the active
 layer rather than the layer itself. The original is preserved; the operation runs on a freshly
 named copy (`"<Op Name> (<Original Layer Name>)"`); undoing the effect is as simple as deleting
-the copy. This is what the filter family (`ps_apply_filter` and its Gaussian blur / sharpen /
+the copy. This is what the filter family (`ps_filter` op=apply and its Gaussian blur / sharpen /
 noise / lens blur / etc. variants) and the retouch family (content-aware fill, patch, move) do —
 `duplicateForOp` on the Go side, mirrored by the equivalent helper in
 [`src/api/extendscript/_helpers.ts`](../../src/api/extendscript/_helpers.ts) for the tools that

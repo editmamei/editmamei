@@ -25,7 +25,7 @@ export const highPassSpec: AmEventSpec = {
   id: 'filters/high-pass',
   displayName: 'High Pass filter',
   category: 'filters',
-  emittedBy: ['ps_apply_filter (type=high_pass)'],
+  emittedBy: ['ps_filter (type=high_pass)'],
   snippetRef:
     'go-core/cmd/buildtemplates/fragments_filters.go (vault.HighPass — VERIFIED OK by this Windows capture)',
   groundTruth: {

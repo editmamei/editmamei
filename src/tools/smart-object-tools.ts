@@ -1,4 +1,4 @@
-import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
+import type { ToolResult } from '../core/tool-registry.js';
 import { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
@@ -6,17 +6,22 @@ import { runSnippetTool, toolErrorResult } from '../utils/tool-helpers.js';
 import { LAYER_BLEND_MODES } from '../utils/blend-modes.js';
 
 /**
- * ps_smart_filter — read and manage the filter stack on a Smart Object.
+ * Backs `ps_filter`'s management ops (op=list / set_visibility / set_blend /
+ * remove) plus `ps_inspect what=smart_object` — the read/manage side of the
+ * Smart Filter stack on a Smart Object. This module no longer registers a
+ * tool of its own: it merged into `ps_filter` (src/tools/filter-tools.ts),
+ * which imports `runSmartFilterOp` below and delegates to it for every op
+ * except `apply`.
  *
  * Smart Filters are Photoshop's re-editable filter layer: the filter is recorded
  * against the Smart Object rather than burned into pixels, so it can be toggled,
  * re-blended, reordered or removed afterwards. Editmamei could previously CREATE
- * a Smart Object and (with `ps_apply_filter as_smart_filter`) put a filter on
+ * a Smart Object and (with `ps_filter as_smart_filter`) put a filter on
  * one, but nothing could read or change the resulting stack.
  *
- * One op-discriminated tool: list / set_visibility / set_blend / remove. This
- * mixes a reader with a destructive op, which the altitude rule discourages —
- * but the ops share one target (a filter on the active layer), one param shape
+ * Four ops sharing one dispatcher: list / set_visibility / set_blend / remove.
+ * This mixes a reader with a destructive op, which the altitude rule discourages
+ * — but the ops share one target (a filter on the active layer), one param shape
  * (an index), and one output family, and the sibling structural tools `ps_path`
  * and `ps_vector_mask` already combine list/add/delete the same way. Consistency
  * with the family it belongs to beats consistency with the general rule here.
@@ -76,59 +81,14 @@ const smartFilterInputSchema: JsonSchemaObject = {
   required: ['op'],
 };
 
-export function createSmartObjectTools(
-  connection: PhotoshopConnection,
-  snippetClient: SnippetClient
-): ToolDefinition[] {
-  return [
-    {
-      tool: {
-        name: 'ps_smart_filter',
-        description:
-          "Read and manage the SMART FILTER stack on a Smart Object — the re-editable filters that ride a Smart Object instead of being baked into pixels. Ops: `list` (every filter with its index, name, type, enabled state, opacity and blend mode), `set_visibility` (toggle one filter off/on without losing its settings), `set_blend` (restyle one filter's opacity/blend mode), `remove` (delete one). **Reach for this after applying a filter with `ps_apply_filter as_smart_filter=true`**, or on any layer a user built as a Smart Object. Indices are 1-based and come from `op=list`; index 1 is the first-applied filter at the bottom of the stack. Needs the target Smart Object to be the ACTIVE layer (select it with ps_select_layer first). For whether a layer is a Smart Object at all, use ps_inspect what=smart_object.",
-        inputSchema: smartFilterInputSchema,
-        outputSchema: {
-          type: 'object',
-          properties: {
-            // list
-            is_smart_object: { type: 'boolean' },
-            count: { type: 'number' },
-            filters: { type: 'array' },
-            // set_visibility
-            visibility_set: { type: 'boolean' },
-            requested_enabled: { type: 'boolean' },
-            enabled: { type: 'boolean' },
-            // set_blend — no "did it work" flag: the snippet throws if the
-            // change did not take, so these ARE the confirmation.
-            opacity: { type: 'number' },
-            blend_mode: { type: 'string' },
-            // remove
-            removed: { type: 'boolean' },
-            removed_filter_name: { type: 'string' },
-            removed_filter_type: { type: 'string' },
-            remaining_count: { type: 'number' },
-            // shared
-            index: { type: 'number' },
-            filter_name: { type: 'string' },
-            filter_type: { type: 'string' },
-            layer_name: { type: 'string' },
-            context: { type: 'object' },
-          },
-        },
-        annotations: {
-          title: 'Smart Filter',
-          // `list` is read-only, but `remove` deletes a filter and the tool
-          // carries one annotation set — so it declares the strongest op.
-          destructiveHint: true,
-          idempotentHint: false,
-        },
-      },
-      handler: async (args) => runSmartFilterOp(connection, snippetClient, args),
-    },
-  ];
-}
-
-async function runSmartFilterOp(
+/**
+ * Runs the op=list/set_visibility/set_blend/remove management ops that ride
+ * `ps_filter` (src/tools/filter-tools.ts delegates here for every `op` except
+ * `apply`). Validates `rawArgs` against this module's own schema — independent
+ * of `ps_filter`'s merged input schema, which only exists to advertise the
+ * params to the LLM.
+ */
+export async function runSmartFilterOp(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
   rawArgs: Record<string, unknown>
@@ -137,7 +97,7 @@ async function runSmartFilterOp(
   try {
     args = validateArgs(smartFilterInputSchema, rawArgs);
   } catch (error) {
-    return toolErrorResult('Error in ps_smart_filter', error);
+    return toolErrorResult('Error in ps_filter', error);
   }
 
   const op = args.op as (typeof SMART_FILTER_OPS)[number];
@@ -147,7 +107,7 @@ async function runSmartFilterOp(
   // param instead of a snippet failing on a defaulted index.
   if (op !== 'list' && args.index === undefined) {
     return toolErrorResult(
-      'Error in ps_smart_filter',
+      'Error in ps_filter',
       new Error(
         `op=${op} needs an \`index\`. Call op=list first to see the filters and their indices.`
       )
@@ -169,7 +129,7 @@ async function runSmartFilterOp(
     case 'set_visibility': {
       if (args.enabled === undefined) {
         return toolErrorResult(
-          'Error in ps_smart_filter',
+          'Error in ps_filter',
           new Error(
             'op=set_visibility needs `enabled` (true to show the filter, false to hide it).'
           )
@@ -193,7 +153,7 @@ async function runSmartFilterOp(
     case 'set_blend': {
       if (args.opacity === undefined && args.blend_mode === undefined) {
         return toolErrorResult(
-          'Error in ps_smart_filter',
+          'Error in ps_filter',
           new Error('op=set_blend needs at least one of `opacity` or `blend_mode`.')
         );
       }
@@ -241,7 +201,7 @@ async function runSmartFilterOp(
 
     default:
       return toolErrorResult(
-        'Error in ps_smart_filter',
+        'Error in ps_filter',
         new Error(
           `Unknown smart-filter op: ${String(op)}. Allowed: ${SMART_FILTER_OPS.join(', ')}.`
         )
@@ -256,7 +216,7 @@ function summarizeList(r: Record<string, unknown>): string {
   }
   const filters = Array.isArray(r.filters) ? (r.filters as Record<string, unknown>[]) : [];
   if (filters.length === 0) {
-    return `"${layer}" is a Smart Object with no Smart Filters yet. Add one with ps_apply_filter as_smart_filter=true.`;
+    return `"${layer}" is a Smart Object with no Smart Filters yet. Add one with ps_filter as_smart_filter=true.`;
   }
   const lines = filters.map((f) => {
     const state = f.enabled === false ? ' [hidden]' : '';

@@ -108,7 +108,7 @@ schemas in this session, consult \`tools/list\`.
   gradient map, exposure, color lookup, invert. Always prefer this over
   destructive filters for tone/color work — except raw-sourced
   documents: the camera-raw develop pass goes first (see above).
-- **Filters (destructive)** — \`ps_apply_filter\` with a
+- **Filters (destructive)** — \`ps_filter\` with a
   \`type\` (gaussian_blur, motion_blur, lens_blur, radial_blur, sharpen,
   smart_sharpen, noise, reduce_noise, high_pass, pixelate, distort,
   displace, oil_paint). Auto-duplicates the active layer by default so

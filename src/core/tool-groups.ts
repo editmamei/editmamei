@@ -101,7 +101,8 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   filter: {
     id: 'filter',
     label: 'Filters',
-    purpose: 'Blur/sharpen/noise/stylize filters (auto-duplicate-first by default).',
+    purpose:
+      'Blur/sharpen/noise/stylize filters (auto-duplicate-first by default), plus managing the re-editable Smart Filter stack on a Smart Object.',
   },
   retouch: {
     id: 'retouch',
@@ -201,7 +202,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_apply_adjustment: 'adjust',
 
   // filters
-  ps_apply_filter: 'filter',
+  ps_filter: 'filter',
   ps_apply_camera_raw: 'filter',
 
   // retouch
@@ -218,7 +219,6 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_duplicate_layer: 'layers',
   ps_copy_to_new_layer: 'layers',
   ps_convert_to_smart_object: 'layers',
-  ps_smart_filter: 'layers',
   ps_rasterize_layer: 'layers',
   ps_set_layer: 'layers',
   ps_merge: 'layers',

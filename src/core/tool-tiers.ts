@@ -73,8 +73,10 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // export_jpeg + export_png consolidated into ps_export
   ps_export: 'community',
 
-  // filter-tools — consolidated into one type-discriminated tool
-  ps_apply_filter: 'community',
+  // filter-tools — consolidated into one op-discriminated tool: apply (type-
+  // discriminated) plus the Smart Filter management ops merged in from the
+  // former standalone Smart-Filter tool (2026-08-09).
+  ps_filter: 'community',
 
   // group-tools
   ps_create_group: 'community',
@@ -102,11 +104,6 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // layer-properties-tools — set_* → ps_set_layer; merge_visible/stamp/flatten → ps_merge
   ps_convert_to_smart_object: 'community',
   ps_rasterize_layer: 'community',
-
-  // smart-object-tools — the Smart Filter stack on a Smart Object (m4a
-  // STEP-03/04/05/07). New tool: starts at 'dev' per the dev-default gate and
-  // stays there until the user accepts it.
-  ps_smart_filter: 'dev',
 
   ps_set_layer: 'community',
   ps_duplicate_layer: 'community',

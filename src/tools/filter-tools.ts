@@ -12,6 +12,8 @@ import {
   applyToActiveLayerProp,
   asSmartFilterProp,
 } from '../utils/tool-helpers.js';
+import { LAYER_BLEND_MODES } from '../utils/blend-modes.js';
+import { runSmartFilterOp } from './smart-object-tools.js';
 
 // Every filter tool auto-duplicates the active
 // layer before applying the destructive op. The original layer is
@@ -944,14 +946,40 @@ const displaceSchema: JsonSchemaObject = {
   required: ['map_path'],
 };
 
+// Union of the op=apply output fields and the op=list/set_visibility/set_blend/
+// remove output fields (the former standalone Smart-Filter tool's outputSchema)
+// — one merged shape for the consolidated tool.
 const FILTER_OUTPUT_SCHEMA = {
   type: 'object' as const,
   properties: {
+    // apply
     applied: { type: 'boolean' as const },
     filter: { type: 'string' as const },
     target_was_copy: { type: 'boolean' as const },
     target_layer_name: { type: 'string' as const },
     original_layer_name: { type: 'string' as const },
+    // list
+    is_smart_object: { type: 'boolean' as const },
+    count: { type: 'number' as const },
+    filters: { type: 'array' as const },
+    // set_visibility
+    visibility_set: { type: 'boolean' as const },
+    requested_enabled: { type: 'boolean' as const },
+    enabled: { type: 'boolean' as const },
+    // set_blend — no "did it work" flag: the snippet throws if the change did
+    // not take, so these ARE the confirmation.
+    opacity: { type: 'number' as const },
+    blend_mode: { type: 'string' as const },
+    // remove
+    removed: { type: 'boolean' as const },
+    removed_filter_name: { type: 'string' as const },
+    removed_filter_type: { type: 'string' as const },
+    remaining_count: { type: 'number' as const },
+    // shared across the management ops
+    index: { type: 'number' as const },
+    filter_name: { type: 'string' as const },
+    filter_type: { type: 'string' as const },
+    layer_name: { type: 'string' as const },
     context: { type: 'object' as const },
   },
 };
@@ -977,9 +1005,16 @@ const FILTER_TYPES = [
   'oil_paint',
 ] as const;
 
-// Single discriminated input schema for the consolidated ps_apply_filter
-// tool. Built by merging every per-type schema's properties so the LLM sees the
-// full parameter surface; the `type` field documents which params each filter
+// op values for the consolidated ps_filter tool. 'apply' is the default (and
+// the only op that existed before the smart-object-tools merge), so an
+// existing caller that never sets `op` keeps hitting the `type` dispatch below
+// byte-for-byte. The other four read/manage the re-editable Smart Filter stack
+// that `apply as_smart_filter=true` creates.
+const FILTER_OPS = ['apply', 'list', 'set_visibility', 'set_blend', 'remove'] as const;
+
+// Single discriminated input schema for the consolidated ps_filter tool. Built
+// by merging every per-type schema's properties so the LLM sees the full
+// parameter surface; the `type` field documents which params each filter
 // uses, and the handler re-validates the args against the EXACT per-type schema
 // (correct ranges + required fields). Shared param names (radius/amount/angle)
 // carry generic descriptions here because their range depends on `type` — the
@@ -987,11 +1022,24 @@ const FILTER_TYPES = [
 const FILTER_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
+    op: {
+      type: 'string',
+      enum: [...FILTER_OPS],
+      default: 'apply',
+      description:
+        'apply (default): apply a NEW filter — set `type` (+ its own params). ' +
+        'list: read every re-editable Smart Filter on the active Smart Object (index, name, type, enabled, opacity, blend mode). ' +
+        'set_visibility: turn one Smart Filter on/off without losing its settings (needs `index` + `enabled`). ' +
+        "set_blend: restyle one Smart Filter's `opacity` and/or `blend_mode` (needs `index` + at least one of them). " +
+        'remove: delete one Smart Filter from the stack (needs `index`). ' +
+        'The four management ops act on the Smart Filter stack that apply as_smart_filter=true creates; indices are ' +
+        '1-based and come from op=list, where 1 is the first-applied filter (bottom of the stack).',
+    },
     type: {
       type: 'string',
       enum: [...FILTER_TYPES],
       description:
-        'Which filter to apply. Each type uses its own parameters: ' +
+        'Which filter to apply. Required when op=apply (the default); ignored otherwise. Each type uses its own parameters: ' +
         'gaussian_blur(radius); motion_blur(angle, radius); lens_blur(radius, iris_shape, …); ' +
         'radial_blur(amount, method spin|zoom, quality, center_x, center_y); ' +
         'sharpen=Unsharp Mask(amount, radius, threshold); smart_sharpen(amount, radius, remove_mode, …); ' +
@@ -1039,8 +1087,39 @@ const FILTER_INPUT_SCHEMA: JsonSchemaObject = {
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
     as_smart_filter: asSmartFilterProp(),
+    // op=list/set_visibility/set_blend/remove params, copied verbatim from the
+    // former standalone Smart-Filter tool (src/tools/smart-object-tools.ts).
+    index: {
+      // integer, not number: the Go side narrows this with int(), so a
+      // fractional 1.5 would silently become filter 1 rather than being refused.
+      // maximum is a backstop, not a real limit: no Smart Object gets anywhere
+      // near this many filters, and it keeps an out-of-range float64 from
+      // reaching Go's int() narrowing, which is implementation-defined there.
+      type: 'integer',
+      description:
+        "1-based index of the filter to act on, as reported by op=list. 1 is the FIRST-APPLIED filter (bottom of the Smart Filters stack in the Layers panel). Required for every op except 'list'.",
+      minimum: 1,
+      maximum: 1000,
+    },
+    enabled: {
+      type: 'boolean',
+      description:
+        'set_visibility only: true shows the filter, false hides it. The filter stays in the stack either way and keeps all its settings.',
+    },
+    opacity: {
+      type: 'number',
+      description:
+        'set_blend only: filter opacity 0-100. Omit to leave the current opacity untouched.',
+      minimum: 0,
+      maximum: 100,
+    },
+    blend_mode: {
+      type: 'string',
+      enum: [...LAYER_BLEND_MODES],
+      description:
+        'set_blend only: how the filter result composites against the unfiltered layer. Same names as ps_set_layer. Omit to leave the current mode untouched.',
+    },
   },
-  required: ['type'],
 };
 
 export function createFilterTools(
@@ -1054,24 +1133,50 @@ export function createFilterTools(
   return [
     {
       tool: {
-        name: 'ps_apply_filter',
+        name: 'ps_filter',
         description:
-          'Apply a Photoshop filter to a DUPLICATE of the active layer by default (auto-duplicate-first — the original is preserved, undo by deleting the copy). Pass `apply_to_active_layer: true` to bake into the original. Auto-rasterizes text/smart-object layers — or pass `as_smart_filter: true` on a Smart Object to apply the filter as a re-editable SMART FILTER instead (nothing is rasterized, and the filter stays adjustable afterwards). Choose the filter with `type`; each type takes its own parameters (see the `type` field). Covers blur (gaussian_blur/motion_blur/lens_blur/radial_blur), sharpen (`sharpen`=Unsharp Mask, `smart_sharpen`), noise (`noise`=Add Noise, `reduce_noise`), high_pass, pixelate, distort, displace, and oil_paint.',
+          "Apply a Photoshop filter (op=apply, the default) to a DUPLICATE of the active layer by default — the original is preserved, undo by deleting the copy. Pass apply_to_active_layer:true to bake into the original instead. Choose the filter with `type` (see the `type` field for its params); pass as_smart_filter:true on a Smart Object to apply it as a re-editable SMART FILTER instead of rasterizing. This same tool also reads and manages that re-editable Smart Filter stack: op=list (every filter's index/name/type/enabled/opacity/blend), op=set_visibility (toggle one off/on), op=set_blend (restyle opacity/blend_mode), op=remove (delete one). Management ops need a 1-based `index` from op=list first — index 1 is the first-applied filter, at the bottom of the stack. Covers blur, sharpen, noise, high_pass, pixelate, distort, displace, and oil_paint.",
         inputSchema: FILTER_INPUT_SCHEMA,
         outputSchema: FILTER_OUTPUT_SCHEMA,
         annotations: {
-          title: 'Apply Filter',
+          title: 'Filter',
           destructiveHint: true,
           idempotentHint: false,
         },
       },
-      handler: async (args) => applyFilter(connection, snippetClient, client, args),
+      handler: async (args) => runFilterTool(connection, snippetClient, client, args),
     },
   ];
 }
 
-// Dispatch the consolidated tool to the per-filter handler. `type` is stripped
-// so the delegate validates only its own params against its per-type schema.
+// Top-level dispatch for the consolidated tool. `op` defaults to 'apply' when
+// absent, so a pre-merge caller that never set `op` (every caller before this
+// merge) still hits the `type` dispatch below byte-for-byte. The other four
+// ops delegate to the former standalone Smart-Filter tool's op handlers in
+// smart-object-tools.ts, unchanged.
+async function runFilterTool(
+  connection: PhotoshopConnection,
+  snippetClient: SnippetClient,
+  detClient: DetectionClient,
+  rawArgs: Record<string, unknown>
+): Promise<ToolResult> {
+  const op = (rawArgs.op as string | undefined) ?? 'apply';
+  if (op !== 'apply') {
+    return runSmartFilterOp(connection, snippetClient, rawArgs);
+  }
+  if (rawArgs.type === undefined) {
+    return toolErrorResult(
+      'Error in ps_filter',
+      new Error(
+        'op=apply needs a `type` (which filter to apply) — see the `type` field for the full list.'
+      )
+    );
+  }
+  return applyFilter(connection, snippetClient, detClient, rawArgs);
+}
+
+// Dispatch op=apply to the per-filter handler. `type`/`op` are stripped so the
+// delegate validates only its own params against its per-type schema.
 async function applyFilter(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
@@ -1079,7 +1184,7 @@ async function applyFilter(
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
   const type = rawArgs.type;
-  const { type: _omit, ...rest } = rawArgs;
+  const { type: _omitType, op: _omitOp, ...rest } = rawArgs;
   switch (type) {
     case 'gaussian_blur':
       return applyGaussianBlur(connection, snippetClient, rest);

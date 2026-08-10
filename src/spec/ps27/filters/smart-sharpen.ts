@@ -82,7 +82,7 @@ export const smartSharpenSpec: AmEventSpec = {
   id: 'filters/smart-sharpen',
   displayName: 'Smart Sharpen filter',
   category: 'filters',
-  emittedBy: ['ps_apply_filter (type=smart_sharpen)'],
+  emittedBy: ['ps_filter (type=smart_sharpen)'],
   snippetRef:
     'go-core/cmd/buildtemplates/fragments_filters.go (vault.SmartShrp — sub-object spelling typo, slated for fix)',
   groundTruth: {

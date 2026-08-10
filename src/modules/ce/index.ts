@@ -40,7 +40,6 @@ import { createPathTools } from '../../tools/path-tools.js';
 import { createVectorMaskTools } from '../../tools/vector-mask-tools.js';
 import { createChannelComposeTools } from '../../tools/channel-compose-tools.js';
 import { createShapeTools } from '../../tools/shape-tools.js';
-import { createSmartObjectTools } from '../../tools/smart-object-tools.js';
 
 // CE-tier factories; each takes (connection, snippetClient).
 const ceFactories = [
@@ -91,11 +90,12 @@ const ceFactories = [
   // Shape layers — ps_shape (vector rectangle/ellipse/line, coordinate-baking).
   // Aiming goes through the grounded `placement` path.
   createShapeTools,
-  // Smart filters (2026-08-08) — ps_smart_filter reads and manages the
-  // re-editable filter stack on a Smart Object. Pairs with ps_apply_filter's
-  // as_smart_filter, which is what puts filters there in the first place.
-  // Dev-tier until the user accepts it.
-  createSmartObjectTools,
+  // Smart filters (2026-08-08) — reading and managing the re-editable filter
+  // stack on a Smart Object merged into ps_filter
+  // (op=list/set_visibility/set_blend/remove, 2026-08-09) rather than
+  // registering as its own tool; createFilterTools above covers it, and
+  // src/tools/smart-object-tools.ts now only exports handlers ps_filter and
+  // ps_inspect what=smart_object call into.
   // ps_resolve_placement (the spatial-grounding locator) is registered by the
   // Pro module. The grounding ENGINE (src/perception/grounding-*) stays
   // CE-host-shipped: the community tools above import it directly for their

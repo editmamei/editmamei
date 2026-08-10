@@ -43,7 +43,7 @@ func init() {
     }
     var layer = app.activeDocument.activeLayer;
 
-    // Blend modes: ONE table, used in both directions, so ps_smart_filter speaks
+    // Blend modes: ONE table, used in both directions, so ps_filter speaks
     // the same vocabulary as ps_set_layer / ps_set_group_blend_mode instead of
     // making the caller learn a second set of names for the same modes. Keys are
     // the ExtendScript BlendMode enum names (the canonical surface vocabulary,
@@ -136,10 +136,10 @@ func init() {
         throw new Error('The active layer ("' + layer.name + '") is not a Smart Object, so it has no Smart Filters. Convert it first with ps_convert_to_smart_object.');
       }
       if (filters.length === 0) {
-        throw new Error('The Smart Object "' + layer.name + '" has no Smart Filters yet. Apply one with ps_apply_filter using as_smart_filter=true.');
+        throw new Error('The Smart Object "' + layer.name + '" has no Smart Filters yet. Apply one with ps_filter using as_smart_filter=true.');
       }
       if (index < 1 || index > filters.length) {
-        throw new Error('No Smart Filter at index ' + index + '. "' + layer.name + '" has ' + filters.length + ' (valid: 1-' + filters.length + ', where 1 is the first-applied filter at the bottom of the stack). Call ps_smart_filter op=list to see them.');
+        throw new Error('No Smart Filter at index ' + index + '. "' + layer.name + '" has ' + filters.length + ' (valid: 1-' + filters.length + ', where 1 is the first-applied filter at the bottom of the stack). Call ps_filter op=list to see them.');
       }
       return filters;
     }

@@ -1,6 +1,7 @@
 /**
- * ps_smart_filter — the Smart-Object filter stack (list / set_visibility /
- * set_blend / remove), plus ps_inspect what=smart_object's handler.
+ * ps_filter's management ops (op=list / set_visibility / set_blend / remove —
+ * the former standalone Smart-Filter tool, merged into ps_filter 2026-08-09),
+ * plus ps_inspect what=smart_object's handler.
  *
  * These unit tests pin the TS→snippet (name, params) forwarding contract and
  * the per-op requirement checks the JSON schema cannot express. The Photoshop
@@ -9,18 +10,25 @@
  * siblings, and all 27 blend modes round-tripping through stringIDToTypeID —
  * were measured against live PS 27.2.0 (2026-08-08); see
  * go-core/cmd/buildtemplates/fragments_smartobject.go.
+ *
+ * The management ops themselves are exercised THROUGH ps_filter
+ * (createFilterTools), not by calling src/tools/smart-object-tools.ts's
+ * exported runSmartFilterOp directly — the former standalone tool no longer
+ * exists as a registered tool, so this is the only way a real caller reaches
+ * this logic.
+ * File kept as smart-object-tools.test.ts (1:1 with the source module it
+ * exercises, src/tools/smart-object-tools.ts, which still holds this logic
+ * even though it no longer registers its own tool).
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  createSmartObjectTools,
-  getSmartObjectInfoHandler,
-} from '@editmamei/tools/smart-object-tools.ts';
+import { createFilterTools } from '@editmamei/tools/filter-tools.ts';
+import { getSmartObjectInfoHandler } from '@editmamei/tools/smart-object-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
-import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
+import { callTool, textOf } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 
-describe('createSmartObjectTools', () => {
+describe('ps_filter — Smart Filter management ops (op=list/set_visibility/set_blend/remove)', () => {
   let conn: FakePhotoshopConnection;
   let snippetClient: FakeSnippetClient;
 
@@ -63,47 +71,33 @@ describe('createSmartObjectTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('exposes a single well-formed tool named ps_smart_filter', () => {
-    const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-    assertToolShape(tools);
-    expect(tools.map((t) => t.tool.name)).toEqual(['ps_smart_filter']);
-  });
-
-  it('op enum exposes list/set_visibility/set_blend/remove', () => {
-    const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-    const schema = tools[0].tool.inputSchema as unknown as {
-      properties: { op: { enum: string[] } };
-    };
-    expect(schema.properties.op.enum).toEqual(['list', 'set_visibility', 'set_blend', 'remove']);
-  });
-
   it('list → listSmartFilters, no params', async () => {
-    const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_smart_filter', { op: 'list' });
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_filter', { op: 'list' });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('listSmartFilters');
     expect(build.params).toEqual({});
   });
 
   it('set_visibility → setSmartFilterVisibility forwarding index + enabled', async () => {
-    const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_smart_filter', { op: 'set_visibility', index: 2, enabled: false });
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_filter', { op: 'set_visibility', index: 2, enabled: false });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('setSmartFilterVisibility');
     expect(build.params).toEqual({ index: 2, enabled: false });
   });
 
   it('remove → removeSmartFilter forwarding the index', async () => {
-    const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_smart_filter', { op: 'remove', index: 1 });
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_filter', { op: 'remove', index: 1 });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('removeSmartFilter');
     expect(build.params).toEqual({ index: 1 });
   });
 
   it('set_blend maps blend_mode → blendMode and forwards opacity', async () => {
-    const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_smart_filter', {
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_filter', {
       op: 'set_blend',
       index: 1,
       opacity: 70,
@@ -118,16 +112,16 @@ describe('createSmartObjectTools', () => {
   // forwarding a defaulted value would silently reset the other half of the
   // blend. Only what the caller supplied may reach the snippet.
   it('set_blend forwards ONLY the supplied half (opacity alone)', async () => {
-    const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_smart_filter', { op: 'set_blend', index: 1, opacity: 40 });
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_filter', { op: 'set_blend', index: 1, opacity: 40 });
     const build = snippetClient.lastBuild();
     expect(build.params).toEqual({ index: 1, opacity: 40 });
     expect(build.params).not.toHaveProperty('blendMode');
   });
 
   it('set_blend forwards ONLY the supplied half (blend_mode alone)', async () => {
-    const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_smart_filter', {
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_filter', {
       op: 'set_blend',
       index: 1,
       blend_mode: 'MULTIPLY',
@@ -139,7 +133,7 @@ describe('createSmartObjectTools', () => {
 
   it('blend_mode enum matches the shared LAYER_BLEND_MODES vocabulary', async () => {
     const { LAYER_BLEND_MODES } = await import('@editmamei/utils/blend-modes.ts');
-    const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
     const schema = tools[0].tool.inputSchema as unknown as {
       properties: { blend_mode: { enum: string[] } };
     };
@@ -148,32 +142,32 @@ describe('createSmartObjectTools', () => {
 
   describe('per-op requirements the schema cannot express', () => {
     it.each(['set_visibility', 'set_blend', 'remove'])('%s without index errors', async (op) => {
-      const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-      const res = await callTool(tools, 'ps_smart_filter', { op, enabled: true });
+      const tools = createFilterTools(conn.asConnection(), snippetClient);
+      const res = await callTool(tools, 'ps_filter', { op, enabled: true });
       expect(res.isError).toBe(true);
       expect(textOf(res)).toContain('needs an `index`');
       expect(snippetClient.allBuilds()).toHaveLength(0);
     });
 
     it('set_visibility without enabled errors', async () => {
-      const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-      const res = await callTool(tools, 'ps_smart_filter', { op: 'set_visibility', index: 1 });
+      const tools = createFilterTools(conn.asConnection(), snippetClient);
+      const res = await callTool(tools, 'ps_filter', { op: 'set_visibility', index: 1 });
       expect(res.isError).toBe(true);
       expect(textOf(res)).toContain('needs `enabled`');
       expect(snippetClient.allBuilds()).toHaveLength(0);
     });
 
     it('set_blend with neither opacity nor blend_mode errors', async () => {
-      const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-      const res = await callTool(tools, 'ps_smart_filter', { op: 'set_blend', index: 1 });
+      const tools = createFilterTools(conn.asConnection(), snippetClient);
+      const res = await callTool(tools, 'ps_filter', { op: 'set_blend', index: 1 });
       expect(res.isError).toBe(true);
       expect(textOf(res)).toContain('at least one of `opacity` or `blend_mode`');
       expect(snippetClient.allBuilds()).toHaveLength(0);
     });
 
     it('index below 1 is rejected by the schema', async () => {
-      const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-      const res = await callTool(tools, 'ps_smart_filter', { op: 'remove', index: 0 });
+      const tools = createFilterTools(conn.asConnection(), snippetClient);
+      const res = await callTool(tools, 'ps_filter', { op: 'remove', index: 0 });
       expect(res.isError).toBe(true);
       expect(snippetClient.allBuilds()).toHaveLength(0);
     });
@@ -181,8 +175,8 @@ describe('createSmartObjectTools', () => {
     // The Go side narrows the index with int(), so a fractional index would
     // silently act on a different filter than the caller named.
     it('a fractional index is rejected rather than truncated', async () => {
-      const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-      const res = await callTool(tools, 'ps_smart_filter', { op: 'remove', index: 1.5 });
+      const tools = createFilterTools(conn.asConnection(), snippetClient);
+      const res = await callTool(tools, 'ps_filter', { op: 'remove', index: 1.5 });
       expect(res.isError).toBe(true);
       expect(textOf(res)).toContain('integer');
       expect(snippetClient.allBuilds()).toHaveLength(0);
@@ -191,8 +185,8 @@ describe('createSmartObjectTools', () => {
 
   describe('summaries', () => {
     it('list names each filter with its 1-based index and stack orientation', async () => {
-      const tools = createSmartObjectTools(conn.asConnection(), snippetClient);
-      const res = await callTool(tools, 'ps_smart_filter', { op: 'list' });
+      const tools = createFilterTools(conn.asConnection(), snippetClient);
+      const res = await callTool(tools, 'ps_filter', { op: 'list' });
       const text = textOf(res);
       expect(text).toContain('2 Smart Filters');
       expect(text).toContain('1 = first applied');
@@ -205,15 +199,15 @@ describe('createSmartObjectTools', () => {
       const plain = makeConnection({
         result: { is_smart_object: false, count: 0, filters: [], layer_name: 'Background' },
       });
-      let tools = createSmartObjectTools(plain.asConnection(), makeSnippetClient());
-      let res = await callTool(tools, 'ps_smart_filter', { op: 'list' });
+      let tools = createFilterTools(plain.asConnection(), makeSnippetClient());
+      let res = await callTool(tools, 'ps_filter', { op: 'list' });
       expect(textOf(res)).toContain('is not a Smart Object');
 
       const empty = makeConnection({
         result: { is_smart_object: true, count: 0, filters: [], layer_name: 'Portrait' },
       });
-      tools = createSmartObjectTools(empty.asConnection(), makeSnippetClient());
-      res = await callTool(tools, 'ps_smart_filter', { op: 'list' });
+      tools = createFilterTools(empty.asConnection(), makeSnippetClient());
+      res = await callTool(tools, 'ps_filter', { op: 'list' });
       expect(textOf(res)).toContain('no Smart Filters yet');
       expect(textOf(res)).toContain('as_smart_filter=true');
     });
