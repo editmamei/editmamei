@@ -1,0 +1,192 @@
+# QA review gate.
+#
+# The quality pass on a pull request used to be a convention with no witness:
+# an agent session ran a review, and a human merged when it looked done. The
+# failure mode was silence — when the review session did not run, nothing on
+# the pull request said so.
+#
+# This workflow turns that silence into a red required check. It passes only
+# when the pull request carries a QA review comment in the format defined in
+# .github/qa-review.md, stamped with the full current head SHA and posted by
+# someone with write access. Push a commit and the stamp no longer matches, so
+# the gate re-arms: every code state gets a review, including the fixes the
+# previous review caused.
+#
+# What this proves is bounded: a structured review was recorded for exactly
+# this code. Whether the review was any good stays a judgement call, the same
+# division of labor as the commit-msg hook.
+#
+# `pull_request_target`, not `pull_request`, for two reasons. First, the same
+# reason as cla.yml: the job needs `statuses: write` even when the head is a
+# fork, and `pull_request` from a fork gets a read-only token. Second, a
+# `pull_request` workflow runs on the merge ref, which does not exist for a
+# merge-conflicted pull request — the workflow silently never runs on exactly
+# the pull request most in need of a red signal. `pull_request_target` fires
+# regardless of mergeability. This workflow deliberately never checks out or
+# executes the pull request's code, which is what makes `pull_request_target`
+# safe here.
+#
+# Reporting is a commit status named "qa-review", not a check run, so the
+# issue_comment-triggered runs land on the head commit too. The other half of
+# gating lives in the `dev` ruleset's required status checks, which must list
+# "qa-review" — this file cannot enforce that, so if the context name here
+# ever changes, update the ruleset in the same breath or gating silently
+# lapses.
+
+name: QA review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  statuses: write
+
+# One evaluation per pull request at a time, newest wins. Statuses are
+# last-write-wins, so a stale run finishing after a fresh one could otherwise
+# report against a head it never looked at.
+concurrency:
+  group: qa-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  qa-review:
+    # Only comments that could plausibly be a QA review start a runner; the
+    # `issue.pull_request` guard keeps ordinary issue comments out entirely.
+    # Same economics as the CLA workflow's signing-phrase filter.
+    if: >
+      github.event_name == 'pull_request_target'
+      || (github.event.issue.pull_request &&
+          contains(github.event.comment.body, 'QA-Reviewed:'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber =
+              context.eventName === 'issue_comment'
+                ? context.payload.issue.number
+                : context.payload.pull_request.number;
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber,
+            });
+            const head = pr.head.sha;
+            const short = head.slice(0, 7);
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const docUrl = `${context.serverUrl}/${owner}/${repo}/blob/dev/.github/qa-review.md`;
+
+            const setStatus = (state, description) =>
+              github.rest.repos.createCommitStatus({
+                owner,
+                repo,
+                sha: head,
+                state,
+                context: 'qa-review',
+                description: description.slice(0, 140),
+                target_url: runUrl,
+              });
+
+            // Dependabot's grouped minor/patch bumps are already gated twice:
+            // CI, and the pinned-majors policy in dependabot.yml. A QA comment
+            // on top would be ceremony, and unstaffed ceremony rots a gate.
+            if (pr.user.login === 'dependabot[bot]') {
+              await setStatus('success', 'Exempt: automated dependency bump. CI is the gate.');
+              return;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            // Anyone can comment on a public pull request. Without this
+            // restriction a fork author could stamp their own approval, so
+            // only write-access comments can satisfy the gate.
+            const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+            // The mechanical half of the format in .github/qa-review.md. Keep
+            // the two in lockstep: what that file promises, this parses.
+            const parse = (body) => {
+              if (!/^###\s+QA review\s*$/m.test(body)) return null;
+              return {
+                sha: body.match(/^QA-Reviewed:\s*([0-9a-f]{40})\b/m)?.[1],
+                verdict: body.match(/^Verdict:\s*(pass|findings-addressed)\s*$/m)?.[1],
+                exercised: body.match(/^Exercised:\s*(\S.*)$/m)?.[1],
+              };
+            };
+
+            const reviews = comments
+              .filter((c) => TRUSTED.has(c.author_association))
+              .map((c) => ({ user: c.user.login, fields: parse(c.body ?? '') }))
+              .filter(({ fields }) => fields !== null);
+
+            const valid = reviews.filter(
+              ({ fields }) => fields.sha === head && fields.verdict && fields.exercised,
+            );
+
+            if (valid.length > 0) {
+              const latest = valid[valid.length - 1];
+              await setStatus(
+                'success',
+                `QA ${latest.fields.verdict} for ${short} by ${latest.user}`,
+              );
+              return;
+            }
+
+            // No valid review. Diagnose the near-misses so the red check says
+            // what to do next instead of just "no".
+            const malformed = reviews.filter(
+              ({ fields }) => fields.sha === head && (!fields.verdict || !fields.exercised),
+            );
+            const stale = reviews.filter(({ fields }) => fields.sha && fields.sha !== head);
+
+            let description;
+            if (malformed.length > 0) {
+              description = `QA comment for ${short} lacks a valid Verdict or Exercised line. See .github/qa-review.md.`;
+            } else if (stale.length > 0) {
+              const staleSha = stale[stale.length - 1].fields.sha.slice(0, 7);
+              description = `QA review is for ${staleSha}, head is now ${short}. Re-review the current code.`;
+            } else {
+              description = `No QA review for ${short}. Post one per .github/qa-review.md.`;
+            }
+
+            await core.summary
+              .addHeading('QA review required', 2)
+              .addRaw(
+                [
+                  `This pull request has no valid QA review for its current head commit \`${head}\`.`,
+                  '',
+                  `Run the review as described in [.github/qa-review.md](${docUrl}) — in a session that did not`,
+                  'produce the change — then post a comment on the pull request in exactly this shape:',
+                  '',
+                  '```markdown',
+                  '### QA review',
+                  '',
+                  `QA-Reviewed: ${head}`,
+                  'Verdict: pass',
+                  'Exercised: <what you ran and what you reviewed>',
+                  '',
+                  'Findings:',
+                  '- none',
+                  '```',
+                  '',
+                  'Use `Verdict: findings-addressed` for the round after findings: the fixes are pushed,',
+                  'the head moves, and the fresh review of the new head carries the new SHA. The stamp',
+                  'must be the full 40-character head SHA; pushing any commit re-arms this gate.',
+                ].join('\n'),
+              )
+              .write();
+
+            await setStatus('failure', description);
+            core.setFailed(description);
