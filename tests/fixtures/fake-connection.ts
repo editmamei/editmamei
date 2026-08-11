@@ -38,6 +38,7 @@ export class FakePhotoshopConnection {
   private result: unknown;
   private resultFor?: (script: string) => unknown;
   private throwOnExecute: Error | null;
+  private everReachedPhotoshop = false;
 
   constructor(options: FakeConnectionOptions = {}) {
     this.info = options.info === undefined ? DEFAULT_INFO : options.info;
@@ -48,7 +49,11 @@ export class FakePhotoshopConnection {
 
   async ping(): Promise<boolean> {
     this.pingCalls++;
-    return this.info !== null;
+    // Mirrors PhotoshopConnection.ping, which is itself built on executeScript
+    // in production — a successful ping is a successful round trip.
+    const reached = this.info !== null;
+    if (reached) this.everReachedPhotoshop = true;
+    return reached;
   }
 
   async getVersion(): Promise<string> {
@@ -61,6 +66,9 @@ export class FakePhotoshopConnection {
     if (this.throwOnExecute) {
       throw this.throwOnExecute;
     }
+    // Mirrors PhotoshopConnection.executeScript (2026-08-11) — only a script that
+    // actually completed counts as having reached Photoshop.
+    this.everReachedPhotoshop = true;
     if (this.resultFor) {
       return this.resultFor(script);
     }
@@ -69,6 +77,11 @@ export class FakePhotoshopConnection {
 
   getPhotoshopInfo(): PhotoshopInfo | null {
     return this.info;
+  }
+
+  /** Mirrors PhotoshopConnection.hasReachedPhotoshop (2026-08-11). */
+  hasReachedPhotoshop(): boolean {
+    return this.everReachedPhotoshop;
   }
 
   /**
@@ -112,6 +125,7 @@ export class FakePhotoshopConnection {
     this.ensureRunningCalls = 0;
     this.pingCalls = 0;
     this.versionCalls = 0;
+    this.everReachedPhotoshop = false;
   }
 
   /** Cast helper so tests don't repeat the `as unknown as` dance. */

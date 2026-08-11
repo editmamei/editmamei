@@ -73,6 +73,9 @@ export class PhotoshopConnection {
   /** Epoch ms until which a running Photoshop is trusted without probing; 0 = stale. */
   private runningLatchUntil = 0;
 
+  /** Set once a script has ever completed against Photoshop. See `hasReachedPhotoshop`. */
+  private everReachedPhotoshop = false;
+
   constructor(opts: PhotoshopConnectionOptions = {}) {
     this.logger = new Logger('PhotoshopConnection');
     this.now = opts.now ?? Date.now;
@@ -165,6 +168,9 @@ export class PhotoshopConnection {
       // A script that ran is itself proof Photoshop is up, so refresh the latch
       // and spare a busy session the probe between calls.
       this.runningLatchUntil = this.now() + RUNNING_LATCH_TTL_MS;
+      // Distinct from `photoshopInfo`, which is pure disk/registry detection and
+      // says nothing about whether Photoshop ever answered — see `hasReachedPhotoshop`.
+      this.everReachedPhotoshop = true;
       return result;
     } catch (error) {
       // Clear the latch so the next call probes — and can relaunch — rather
@@ -215,5 +221,18 @@ export class PhotoshopConnection {
 
   getPhotoshopInfo(): PhotoshopInfo | null {
     return this.photoshopInfo;
+  }
+
+  /**
+   * Whether a script has EVER completed against Photoshop on this connection —
+   * i.e. genuine proof of a live round trip, not just that an install was found on
+   * disk (`getPhotoshopInfo()` populates from pure detection and stays populated
+   * even when Photoshop never answers). Callers that want to piggyback more work
+   * onto "Photoshop is reachable" — without risking `ensureRunning()`'s auto-launch
+   * as a side effect of a call that was never going to touch Photoshop — must gate
+   * on this, not on `getPhotoshopInfo() !== null`.
+   */
+  hasReachedPhotoshop(): boolean {
+    return this.everReachedPhotoshop;
   }
 }

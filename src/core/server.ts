@@ -97,12 +97,18 @@ export class EditmameiServer {
     return this.moduleLifecycle.moduleSkipReason;
   }
   /**
-   * Latest known Photoshop version string. `ps_ping` sets this from its own live query;
-   * any other successful tool call also opportunistically stamps it (see the `onCall`
-   * hook below) from whatever version `PhotoshopConnection` already resolved to run
-   * the script — a session that never calls `ps_ping` would otherwise report this as
-   * `null` (and telemetry's `ps_version` as `'unknown'`) forever, despite genuinely
-   * driving Photoshop.
+   * Latest known Photoshop version string, in the LIVE-queried format (e.g. `'27.8.0'`) —
+   * the same value space `ps_ping`'s pingState round trip produces. `ps_ping` sets this
+   * from its own live query; a session that never calls `ps_ping` gets it from
+   * `resolveLiveVersionInBackground` instead, fired opportunistically the first time
+   * some OTHER successful tool call proves Photoshop was genuinely reached (see the
+   * `onCall` hook below) — without that, telemetry's `ps_version` would report
+   * `'unknown'` for the whole session despite genuinely driving Photoshop.
+   *
+   * Never stamped from `PhotoshopConnection.getPhotoshopInfo()` — that field is pure
+   * disk/registry detection (on Windows: a release year or a bare version parsed out of
+   * the install path) and is a DIFFERENT, incompatible value space from the live one.
+   * Mixing the two here would corrupt the ps_version-keyed rollups downstream.
    */
   private psVersion: string | null = null;
   /**
@@ -110,12 +116,22 @@ export class EditmameiServer {
    * signal, orthogonal to the MCP response shape. `pingPhotoshop()` returns a normal
    * (non-`isError`) content payload on both the connected and not-connected paths (so the
    * user sees a helpful "not connected" message, not an alarming tool failure), which means
-   * the registry's own success flag can't tell the two apart. Reset to `null` at the top of
-   * every `pingPhotoshop()` call so an unexpected throw ahead of the branch that would set it
-   * falls back to the registry's own (correctly-false) success signal instead of reusing a
-   * stale value from a PRIOR ping.
+   * the registry's own success flag can't tell the two apart. Reset to `null` as the very
+   * first thing every `pingPhotoshop()` call does, so an unexpected throw ahead of the
+   * branch that would set it falls back to the registry's own (correctly-false) success
+   * signal instead of reusing a stale value from a PRIOR ping.
+   *
+   * LOAD-BEARING ordering: the `onCall` hook below reads this field synchronously, in the
+   * same microtask turn `pingPhotoshop()`'s return resolves — `ToolRegistry.execute()` has
+   * no `await` between receiving the handler's result and invoking `onCall` in its
+   * `finally` block. That is what makes a shared instance field safe as a side channel
+   * between one `ps_ping` call and its own `onCall` invocation. Inserting an `await`
+   * anywhere in that span would let a second, concurrent `ps_ping` call's assignment
+   * interleave and be read by the first call's `onCall` instead of its own.
    */
   private lastPingReachedPs: boolean | null = null;
+  /** Re-entry guard for `resolveLiveVersionInBackground` — see there. */
+  private resolvingLiveVersion = false;
   /** A newer published version, if the boot-time check found one. Surfaced on ps_ping. */
   private updateInfo: UpdateInfo | null = null;
   // The host/community Go snippet core seam — the CE go-core binary, used by the
@@ -189,19 +205,21 @@ export class EditmameiServer {
 
     this.toolRegistry = new ToolRegistry({
       onCall: (entry) => {
-        // Opportunistic ps_version stamp (see the field doc above): any successful
-        // call that talked to Photoshop already forced the connection to resolve its
-        // install info, so this is a synchronous cache read — no extra probing, and a
-        // no-op once the version is known from an earlier call or from ps_ping itself.
-        // Excludes ps_ping: its handler reports success even when it never reached
-        // Photoshop (see lastPingReachedPs above), so its own success flag can't be
-        // trusted here the way every other tool's can — ps_ping stamps psVersion
-        // itself, from its live query, only on the genuinely-connected path.
+        // Opportunistic ps_version resolution (see the field doc above): once some
+        // OTHER successful tool call has proven the connection genuinely reached
+        // Photoshop, fire the one-time background live-version probe. Gated on
+        // hasReachedPhotoshop() specifically — NOT on entry.success alone — so this
+        // can never be the thing that first reaches Photoshop: a tool call that never
+        // touched Photoshop (ps_list_capabilities, template listing) must not risk
+        // driving `ensureRunning()`'s auto-launch as a side effect of resolving a
+        // telemetry dimension. Excludes ps_ping: its handler reports success even when
+        // it never reached Photoshop (see lastPingReachedPs above), so its own success
+        // flag can't be trusted the way every other tool's can — ps_ping resolves
+        // psVersion itself, from the same live query, only on the genuinely-connected
+        // path.
         if (entry.success && entry.tool !== 'ps_ping' && this.psVersion === null) {
-          const info = this.session.getConnection().getPhotoshopInfo();
-          if (info && info.version !== 'Unknown') {
-            this.psVersion = info.version;
-            void this.sessionLog.setPsVersion(info.version);
+          if (this.session.getConnection().hasReachedPhotoshop()) {
+            this.resolveLiveVersionInBackground();
           }
         }
         // Local NDJSON evidence log — fire-and-forget (append never throws).
@@ -219,11 +237,13 @@ export class EditmameiServer {
         // additionally feed an opt-in Category-B diagnostic (sanitized message). Both are
         // gated/inert inside the client; nothing here can throw into the tool-call path.
         // ps_ping's registry-level success is not the right signal for telemetry — see
-        // lastPingReachedPs above — so it overrides `entry.success` there specifically.
+        // lastPingReachedPs above — so it can DOWNGRADE entry.success to false here.
+        // Deliberately never upgrades: if the handler genuinely threw AFTER already
+        // setting lastPingReachedPs = true (entry.success false, field stale-true), the
+        // real failure must still win — telemetry success only overrides true → false,
+        // never false → true.
         const telemetrySuccess =
-          entry.tool === 'ps_ping' && this.lastPingReachedPs !== null
-            ? this.lastPingReachedPs
-            : entry.success;
+          entry.tool === 'ps_ping' && this.lastPingReachedPs === false ? false : entry.success;
         const errorClass = classifyError(entry.error);
         this.telemetry.recordCall({
           tool: entry.tool,
@@ -576,17 +596,56 @@ export class EditmameiServer {
     }
   }
 
-  private async pingPhotoshop() {
-    // Piggyback a once-per-process license staleness refresh here (not
-    // gated on the PS connection — license I/O is independent of Photoshop).
-    // Fire-and-forget; never awaited, so the ping result never waits on it.
-    this.refreshLicenseOnPing();
+  /**
+   * One-time, fire-and-forget live-version resolution for sessions that drive
+   * Photoshop without ever calling `ps_ping`. Only ever invoked by the `onCall`
+   * hook after `PhotoshopConnection.hasReachedPhotoshop()` is already true, so
+   * this never risks being the first thing to reach (and possibly auto-launch)
+   * Photoshop. Reuses the exact same `pingState` round trip `ps_ping` itself
+   * uses, so the resolved value lands in the SAME live-queried format
+   * (`'27.8.0'`) — never the disk-detected install record.
+   *
+   * Guarded by `resolvingLiveVersion` so concurrent early tool calls, all
+   * finding `psVersion` still null, fire this at most once; best-effort, so a
+   * failed probe just leaves the session at the honest `'unknown'` placeholder
+   * rather than a guessed value.
+   */
+  private resolveLiveVersionInBackground(): void {
+    if (this.resolvingLiveVersion || this.psVersion !== null) return;
+    this.resolvingLiveVersion = true;
+    void (async () => {
+      try {
+        const connection = this.session.getConnection();
+        const snippet = await this.snippetClient.build('pingState');
+        const state = (await runScript(connection, snippet)) as { version?: string };
+        if (state.version && state.version !== 'Unknown' && this.psVersion === null) {
+          this.psVersion = state.version;
+          void this.sessionLog.setPsVersion(state.version);
+          this.telemetry.onPsVersionResolved();
+        }
+      } catch (err) {
+        this.logger.debug(
+          `background ps_version resolution failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      } finally {
+        this.resolvingLiveVersion = false;
+      }
+    })();
+  }
 
+  private async pingPhotoshop() {
     // Reset the telemetry-only reached-Photoshop signal — see the field doc. Every
     // branch below that returns sets it explicitly; this default only survives an
     // unexpected throw ahead of all of them, in which case onCall falls back to the
     // registry's own (correctly-false) success flag rather than a stale prior value.
+    // Placed before everything else in this method, including the license refresh
+    // below, so nothing can throw ahead of it.
     this.lastPingReachedPs = null;
+
+    // Piggyback a once-per-process license staleness refresh here (not
+    // gated on the PS connection — license I/O is independent of Photoshop).
+    // Fire-and-forget; never awaited, so the ping result never waits on it.
+    this.refreshLicenseOnPing();
 
     const connection = this.session.getConnection();
 
