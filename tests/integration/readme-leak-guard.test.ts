@@ -232,8 +232,16 @@ describe('skills/ leak guard', () => {
  * in the npm tarball and is read directly by users and by anyone
  * auditing the public repo on GitHub. Same invariant as the README: no
  * 'dev' / 'none'-tier tool name may appear in any docs markdown file.
+ *
+ * Only in this repo, though: in the commercial overlay (where this file
+ * runs hydrated, detected the same way tool-tiers.test.ts gates its Pro
+ * checks), docs/ is internal planning material that legitimately names
+ * dev-tier tools and ships nowhere. The scan is gated to the tree whose
+ * docs/ is the published surface; CI here enforces it on every change.
  */
-describe('docs/ leak guard', () => {
+const HYDRATED_OVERLAY = existsSync(join(REPO_ROOT, 'src', 'modules', 'pro', 'index.ts'));
+
+describe.skipIf(HYDRATED_OVERLAY)('docs/ leak guard', () => {
   const docsDir = join(REPO_ROOT, 'docs');
   const docFiles = listFilesRecursive(docsDir).filter((p) => /\.md$/i.test(p));
 
