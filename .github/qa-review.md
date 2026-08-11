@@ -61,10 +61,11 @@ Findings:
 
 Field rules, with the machine-checked parts marked:
 
-- `### QA review` — the heading the workflow searches for. *(checked)*
-- `QA-Reviewed:` — the full 40-character SHA of the head commit you reviewed.
-  Full length on purpose: a short hash pasted from the wrong terminal passes a
-  prefix match. *(checked, must equal the current head)*
+- `### QA review` — the heading the workflow searches for; case-insensitive.
+  *(checked)*
+- `QA-Reviewed:` — the full 40-character SHA of the head commit you reviewed,
+  either case. Full length on purpose: a short hash pasted from the wrong
+  terminal passes a prefix match. *(checked, must equal the current head)*
 - `Verdict:` — `pass`, or `findings-addressed` when this review covers the head
   produced by fixing the previous round's findings. *(checked)*
 - `Exercised:` — one line: what you ran, on what platform, and what you read.
@@ -74,15 +75,24 @@ Field rules, with the machine-checked parts marked:
   verdict still belong here; they are the record the next reviewer builds on.
   *(judgement, not checked)*
 
+The comment must come from an account holding write or admin permission on
+this repository — verified against the collaborators API, not inferred from
+who is allowed to comment. A review posted by anyone else is ignored, however
+well-formed.
+
 Everything the workflow checks mechanically is listed above; if you change the
 format here, change the parser in `.github/workflows/qa-review.yml` in the same
 commit.
 
 ## Exemptions
 
-Dependabot's grouped minor/patch bumps pass automatically. They are gated by CI
-and by the pinned-majors policy in `dependabot.yml`, and a hand-posted comment
-on every routine bump would train everyone to paste without reading.
+Every pull request authored by `dependabot[bot]` passes automatically — the
+grouped npm and gomod bumps, the ungrouped Actions bumps, and security updates
+alike. They are gated by CI and by the pinned-majors policy in
+`dependabot.yml`, and a hand-posted comment on every routine bump would train
+everyone to paste without reading. A Dependabot PR that deserves human eyes —
+an Actions bump that changes workflow behavior, say — deserves them before the
+merge button regardless of what this check reports.
 
 ## Enforcement
 
