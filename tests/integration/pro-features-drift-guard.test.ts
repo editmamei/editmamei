@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -10,7 +10,10 @@ import { TOOL_TIERS } from '@editmamei/core/tool-tiers.js';
 // against a sibling editmamei-ce wiki checkout, and skipped in CI whenever that
 // checkout was missing. The 2026-08-07 split archived the wiki and migrated its
 // docs in-repo, so the docs this guard checks now live right here — it runs
-// unconditionally, everywhere. Rules, preserved from the wiki-era guard:
+// unconditionally in this repo. (The docs/-wide sweep alone is gated off in the
+// hydrated commercial overlay, whose docs/ tree is unpublished planning
+// material that legitimately names dev-tier tools.) Rules, preserved from the
+// wiki-era guard:
 //   1. Every ps_* identifier in ANY doc must be a real, shipped community/pro
 //      tool (dev/none-tier and unknown names must not appear) — the original
 //      incident this guard exists for was in getting-started.md, not the
@@ -24,6 +27,10 @@ const DOCS_DIR = join(ROOT, 'docs');
 const PRO_FEATURES = join(DOCS_DIR, 'pro-features.md');
 
 const PS_NAME = /\bps_[a-z0-9_]+\b/g;
+
+// Same overlay detection as tool-tiers.test.ts: Pro sources exist only in the
+// hydrated commercial tree, where docs/ is not the published user docs.
+const HYDRATED_OVERLAY = existsSync(join(ROOT, 'src', 'modules', 'pro', 'index.ts'));
 
 // ps_*-shaped identifiers that are legitimately not tools: settings keys the
 // privacy doc documents. Anything added here needs the same justification.
@@ -40,27 +47,30 @@ function docFiles(dir: string): string[] {
 }
 
 describe('docs tier drift guard', () => {
-  it('every ps_* identifier across docs/ is a shipped community/pro tool', () => {
-    const files = docFiles(DOCS_DIR);
-    // Anti-vacuous-pass guard: the docs tree exists and mentions tools. A
-    // restructure that empties either must fail here, not disarm the check.
-    expect(files.length).toBeGreaterThan(0);
-    const offenders: string[] = [];
-    let totalNames = 0;
-    for (const file of files) {
-      const source = readFileSync(file, 'utf8');
-      for (const name of source.match(PS_NAME) ?? []) {
-        if (NON_TOOL_PS_NAMES.has(name)) continue;
-        totalNames += 1;
-        const tier = TOOL_TIERS[name];
-        if (tier !== 'community' && tier !== 'pro') {
-          offenders.push(`${file}: ${name} (tier: ${tier ?? 'UNKNOWN'})`);
+  it.skipIf(HYDRATED_OVERLAY)(
+    'every ps_* identifier across docs/ is a shipped community/pro tool',
+    () => {
+      const files = docFiles(DOCS_DIR);
+      // Anti-vacuous-pass guard: the docs tree exists and mentions tools. A
+      // restructure that empties either must fail here, not disarm the check.
+      expect(files.length).toBeGreaterThan(0);
+      const offenders: string[] = [];
+      let totalNames = 0;
+      for (const file of files) {
+        const source = readFileSync(file, 'utf8');
+        for (const name of source.match(PS_NAME) ?? []) {
+          if (NON_TOOL_PS_NAMES.has(name)) continue;
+          totalNames += 1;
+          const tier = TOOL_TIERS[name];
+          if (tier !== 'community' && tier !== 'pro') {
+            offenders.push(`${file}: ${name} (tier: ${tier ?? 'UNKNOWN'})`);
+          }
         }
       }
+      expect(totalNames).toBeGreaterThanOrEqual(25);
+      expect(offenders).toEqual([]);
     }
-    expect(totalNames).toBeGreaterThanOrEqual(25);
-    expect(offenders).toEqual([]);
-  });
+  );
 
   it('pro-features.md lists each tool under the section matching its tier', () => {
     const source = readFileSync(PRO_FEATURES, 'utf8');
