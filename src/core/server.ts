@@ -96,8 +96,26 @@ export class EditmameiServer {
   get moduleSkipReason(): 'corrupt' | 'incompatible' | null {
     return this.moduleLifecycle.moduleSkipReason;
   }
-  /** Latest known Photoshop version string; populated on first successful ping. */
+  /**
+   * Latest known Photoshop version string. `ps_ping` sets this from its own live query;
+   * any other successful tool call also opportunistically stamps it (see the `onCall`
+   * hook below) from whatever version `PhotoshopConnection` already resolved to run
+   * the script — a session that never calls `ps_ping` would otherwise report this as
+   * `null` (and telemetry's `ps_version` as `'unknown'`) forever, despite genuinely
+   * driving Photoshop.
+   */
   private psVersion: string | null = null;
+  /**
+   * Whether the most recent `ps_ping` call actually reached Photoshop — a telemetry-only
+   * signal, orthogonal to the MCP response shape. `pingPhotoshop()` returns a normal
+   * (non-`isError`) content payload on both the connected and not-connected paths (so the
+   * user sees a helpful "not connected" message, not an alarming tool failure), which means
+   * the registry's own success flag can't tell the two apart. Reset to `null` at the top of
+   * every `pingPhotoshop()` call so an unexpected throw ahead of the branch that would set it
+   * falls back to the registry's own (correctly-false) success signal instead of reusing a
+   * stale value from a PRIOR ping.
+   */
+  private lastPingReachedPs: boolean | null = null;
   /** A newer published version, if the boot-time check found one. Surfaced on ps_ping. */
   private updateInfo: UpdateInfo | null = null;
   // The host/community Go snippet core seam — the CE go-core binary, used by the
@@ -171,6 +189,21 @@ export class EditmameiServer {
 
     this.toolRegistry = new ToolRegistry({
       onCall: (entry) => {
+        // Opportunistic ps_version stamp (see the field doc above): any successful
+        // call that talked to Photoshop already forced the connection to resolve its
+        // install info, so this is a synchronous cache read — no extra probing, and a
+        // no-op once the version is known from an earlier call or from ps_ping itself.
+        // Excludes ps_ping: its handler reports success even when it never reached
+        // Photoshop (see lastPingReachedPs above), so its own success flag can't be
+        // trusted here the way every other tool's can — ps_ping stamps psVersion
+        // itself, from its live query, only on the genuinely-connected path.
+        if (entry.success && entry.tool !== 'ps_ping' && this.psVersion === null) {
+          const info = this.session.getConnection().getPhotoshopInfo();
+          if (info && info.version !== 'Unknown') {
+            this.psVersion = info.version;
+            void this.sessionLog.setPsVersion(info.version);
+          }
+        }
         // Local NDJSON evidence log — fire-and-forget (append never throws).
         void this.sessionLog.append(
           {
@@ -185,10 +218,16 @@ export class EditmameiServer {
         // Tee the same call into content-free telemetry (Category A, opt-out). Failures
         // additionally feed an opt-in Category-B diagnostic (sanitized message). Both are
         // gated/inert inside the client; nothing here can throw into the tool-call path.
+        // ps_ping's registry-level success is not the right signal for telemetry — see
+        // lastPingReachedPs above — so it overrides `entry.success` there specifically.
+        const telemetrySuccess =
+          entry.tool === 'ps_ping' && this.lastPingReachedPs !== null
+            ? this.lastPingReachedPs
+            : entry.success;
         const errorClass = classifyError(entry.error);
         this.telemetry.recordCall({
           tool: entry.tool,
-          success: entry.success,
+          success: telemetrySuccess,
           duration_ms: entry.duration_ms,
           error_class: errorClass,
         });
@@ -543,6 +582,12 @@ export class EditmameiServer {
     // Fire-and-forget; never awaited, so the ping result never waits on it.
     this.refreshLicenseOnPing();
 
+    // Reset the telemetry-only reached-Photoshop signal — see the field doc. Every
+    // branch below that returns sets it explicitly; this default only survives an
+    // unexpected throw ahead of all of them, in which case onCall falls back to the
+    // registry's own (correctly-false) success flag rather than a stale prior value.
+    this.lastPingReachedPs = null;
+
     const connection = this.session.getConnection();
 
     // Discovery-signal fetch. Each branch is independent; failures in one
@@ -595,6 +640,7 @@ export class EditmameiServer {
         // closed application and sends the reader after the wrong fix. The
         // host knows the real reason; say it.
         const reason = unsupportedHostReason();
+        this.lastPingReachedPs = false;
         return {
           content: [
             {
@@ -631,6 +677,7 @@ export class EditmameiServer {
         this.logger.warn(
           `pingState snippet failed: ${err instanceof Error ? err.message : String(err)}`
         );
+        this.lastPingReachedPs = false;
         return {
           content: [
             { type: 'text' as const, text: 'Photoshop did not respond' + this.updateNote() },
@@ -662,6 +709,11 @@ export class EditmameiServer {
       // placeholder. Best-effort + content-free; never affects the ping result.
       this.telemetry.onPsVersionResolved();
     }
+
+    // Every path above that didn't already return early DID reach Photoshop — the
+    // build-failure branch's degraded fallback included, since it only falls through
+    // here after connection.ping() confirmed liveness.
+    this.lastPingReachedPs = true;
 
     const degradedNote = degraded.length ? ` (degraded: ${degraded.join(', ')})` : '';
     return {

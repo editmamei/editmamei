@@ -421,6 +421,86 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
 });
 
 // ===========================================================================
+// Telemetry defects (2026-08-11) — two "the metric silently lied" bugs found
+// by reading the live rollups. Neither changes the MCP response a client
+// sees; both change only what gets recorded to telemetry.
+// ===========================================================================
+describe('psVersion is stamped opportunistically, not only by ps_ping', () => {
+  it('a successful tool call other than ps_ping resolves psVersion even when ps_ping was never called', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      psVersion: string | null;
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<{ content: unknown[]; structuredContent?: object }>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+    server.session.connection = makeConnection({
+      info: {
+        version: '26.3',
+        path: 'C:/Program Files/Adobe/Adobe Photoshop 2026/Photoshop.exe',
+      },
+    });
+    server.toolRegistry.register('test_tool_reaches_photoshop', {
+      tool: {
+        name: 'test_tool_reaches_photoshop',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => ({ content: [{ type: 'text', text: 'ok' }], structuredContent: {} }),
+    });
+
+    expect(server.psVersion).toBeNull();
+    await server.handleToolCall('test_tool_reaches_photoshop', {});
+    expect(server.psVersion).toBe('26.3');
+  });
+});
+
+describe('telemetry: a ps_ping that never reached Photoshop is not recorded as a success', () => {
+  it('records success:false for telemetry on a not-connected ping, without changing the tool result', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall(call: {
+          tool: string;
+          success: boolean;
+          duration_ms: number;
+          error_class: string | null;
+        }): void;
+      };
+      handleToolCall(
+        name: string,
+        args: Record<string, unknown>
+      ): Promise<{ isError?: boolean; structuredContent: { connected: boolean } }>;
+    };
+    // Same shape as the "pingState script failure" case above: build() succeeds,
+    // but the round trip itself throws — a genuine "did not respond" ping.
+    server.session.connection = makeConnection({ throwOnExecute: new Error('boom') });
+    server.snippetClient = makeSnippetClient();
+    const recordCallSpy = vi.fn();
+    server.telemetry = { recordCall: recordCallSpy };
+
+    const res = await server.handleToolCall('ps_ping', {});
+
+    // User-facing behavior is unchanged — still a normal, helpful "not connected"
+    // payload, not an isError result.
+    expect(res.isError).toBeUndefined();
+    expect(res.structuredContent.connected).toBe(false);
+
+    // But telemetry must not count a ping that never reached Photoshop as a success.
+    expect(recordCallSpy).toHaveBeenCalledTimes(1);
+    expect(recordCallSpy.mock.calls[0][0]).toMatchObject({ tool: 'ps_ping', success: false });
+  });
+});
+
+// ===========================================================================
 // Audit M13 — the tools/call dispatch wrapper (handleToolCall) is the DoS
 // guard: a thrown handler or an unknown tool name must become a clean
 // { isError: true } result, never propagate out and tear down the long-lived
