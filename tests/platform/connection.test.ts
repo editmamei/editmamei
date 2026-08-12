@@ -199,6 +199,56 @@ describe('PhotoshopConnection — a rejecting useInstall must not poison the con
   });
 });
 
+describe('PhotoshopConnection — isCurrentlyRunning (a check that must never launch)', () => {
+  it('returns false without probing when photoshopInfo has never been resolved', async () => {
+    const adapter = new MockAdapter([true], [() => 'ok']);
+    const conn = makeConnection(adapter, () => 1_000_000);
+
+    const running = await conn.isCurrentlyRunning();
+
+    expect(running).toBe(false);
+    expect(adapter.isRunningCalls).toBe(0);
+  });
+
+  it('never calls launch, even when Photoshop is reported not running', async () => {
+    const adapter = new MockAdapter([false], [() => 'ok']);
+    const conn = makeConnection(adapter, () => 1_000_000);
+    await conn.getVersion(); // populate photoshopInfo without touching the running latch
+
+    const running = await conn.isCurrentlyRunning();
+
+    expect(running).toBe(false);
+    expect(adapter.launchCalls).toBe(0);
+  });
+
+  it('resolves false, not a rejection, when the adapter check throws', async () => {
+    class ThrowingAdapter extends MockAdapter {
+      override async isRunning(): Promise<boolean> {
+        throw new Error('tasklist failed');
+      }
+    }
+    const adapter = new ThrowingAdapter([true], [() => 'ok']);
+    const conn = makeConnection(adapter, () => 1_000_000);
+    await conn.getVersion();
+
+    await expect(conn.isCurrentlyRunning()).resolves.toBe(false);
+  });
+
+  it('does not refresh the running-check latch — a call right after still probes on its own', async () => {
+    const adapter = new MockAdapter([true], [() => 'ok']);
+    const conn = makeConnection(adapter, () => 1_000_000);
+    await conn.getVersion();
+
+    await conn.isCurrentlyRunning();
+    expect(adapter.isRunningCalls).toBe(1);
+
+    // If isCurrentlyRunning had latched this positive result the way ensureRunning
+    // does, executeScript would trust it and skip its own probe here.
+    await conn.executeScript('a');
+    expect(adapter.isRunningCalls).toBe(2);
+  });
+});
+
 describe('truncateForLog', () => {
   it('passes strings at or under the limit through unchanged', () => {
     expect(connectionModule.truncateForLog('short', 200)).toBe('short');

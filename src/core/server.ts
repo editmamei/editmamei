@@ -77,11 +77,14 @@ const FIRST_RUN_DISCLOSURE =
  * through (ScriptQueue in platform/script-queue.ts); left at the runners' 30s
  * DEFAULT_SCRIPT_TIMEOUT_MS default, a stuck probe would hold up the user's NEXT
  * command behind it for up to 30s. A normal pingState round trip takes ~1.2s; 3s
- * leaves generous headroom for a slow machine. Abandoning the probe when Photoshop
- * is slow to answer is strictly better than making a real user wait on it — the
+ * leaves generous headroom for a slow machine. Worst-case queue occupancy is this
+ * value PLUS the runner's SIGTERM kill grace (killGraceMs, 2s — see run-child.ts)
+ * before a timed-out probe actually releases the queue, so ~5s, not 3s — still a
+ * large improvement over the 30s default. Abandoning the probe when Photoshop is
+ * slow to answer is strictly better than making a real user wait on it — the
  * version just stays 'unknown' a while longer, which is honest, not wrong.
  */
-const BACKGROUND_VERSION_PROBE_TIMEOUT_MS = 3_000;
+export const BACKGROUND_VERSION_PROBE_TIMEOUT_MS = 3_000;
 
 export class EditmameiServer {
   private server: Server;
@@ -150,14 +153,25 @@ export class EditmameiServer {
    */
   private lastPingReachedPs: boolean | null = null;
   /**
-   * One-shot latch for `resolveLiveVersionInBackground` — set the instant an
-   * attempt STARTS and never cleared, whether that attempt succeeds or fails.
-   * This is "at most one attempt per session," not an in-flight lock: a session
-   * where the first (and only) attempt fails leaves psVersion at 'unknown' for
-   * the rest of the session, rather than re-firing a fresh pingState round trip
-   * off every later successful tool call for as long as Photoshop stays
-   * unreachable. See resolveLiveVersionInBackground for the failure scenario
-   * this closes.
+   * One-shot latch for `resolveLiveVersionInBackground` — set only once we
+   * actually commit to a round trip (Photoshop confirmed running RIGHT NOW),
+   * and never cleared after that, whether the round trip succeeds or fails.
+   * This is "at most one ROUND TRIP per session," not an in-flight lock and not
+   * "at most one CHECK": a session where the one round trip fails leaves
+   * psVersion at 'unknown' for the rest of the session, rather than re-firing a
+   * fresh pingState round trip off every later successful tool call for as long
+   * as Photoshop stays unreachable.
+   *
+   * Deliberately NOT set on a DECLINE (Photoshop not currently running) — that
+   * path costs one cheap process check and never touches the script queue, so
+   * it doesn't need the same one-shot budget as a real attempt. Latching on
+   * decline would mean: Photoshop quits, a local-only tool call declines the
+   * probe and (if latched here) permanently spends the session's only shot,
+   * then the user reopens Photoshop and works for an hour without ever calling
+   * ps_ping — ps_version stays 'unknown' for a session that genuinely drove
+   * Photoshop the whole time. See resolveLiveVersionInBackground for the full
+   * shape, including the accepted concurrent-double-fire trade this ordering
+   * implies.
    */
   private liveVersionResolutionAttempted = false;
   /** A newer published version, if the boot-time check found one. Surfaced on ps_ping. */
@@ -632,35 +646,54 @@ export class EditmameiServer {
    * round trip `ps_ping` itself uses, so the resolved value lands in the SAME
    * live-queried format (`'27.8.0'`) — never the disk-detected install record.
    *
-   * Two independent guards, for two different failure modes:
+   * Ordering is deliberate and load-bearing:
    *
-   * - `liveVersionResolutionAttempted` is a latch, not an in-flight lock — set
-   *   the instant an attempt starts and never cleared. Without this, a FAILED
-   *   probe (Photoshop quit mid-session, went modal, a transient hiccup) would
-   *   re-fire on every later successful non-`ps_ping` call for the rest of the
-   *   session, each one queuing a fresh round trip behind the FIFO script queue.
-   *   One attempt per session, success or failure, is the whole budget.
-   * - `isCurrentlyRunning()`, checked immediately before touching the
-   *   connection, is what keeps this a telemetry probe and never the thing that
-   *   STARTS Photoshop. `hasReachedPhotoshop()` (checked by the `onCall` caller)
-   *   is sticky and never resets, so it stays true long after Photoshop quits;
-   *   without this second, live check, a probe firing after the user closed
-   *   Photoshop would fall into `executeScript`'s `ensureRunning()` and silently
-   *   relaunch it. `isCurrentlyRunning()` is a cheap process check, not a script
-   *   round trip, so this costs nothing on the common path.
+   * 1. `snippetClient.build('pingState')` runs FIRST. It's a pure function of
+   *    (binary, name, params) with no Photoshop dependency, so it's safe ahead
+   *    of the liveness check — and `GoSnippetClient` memoizes it in-process, so
+   *    every call after the session's first pays a Map lookup, not a subprocess
+   *    spawn. Building first — rather than between the check and the act —
+   *    shrinks the check-then-act window below to promise plumbing only.
+   * 2. `isCurrentlyRunning()` — a direct, non-launching process check — runs
+   *    immediately before the round trip. `hasReachedPhotoshop()` (checked by
+   *    the `onCall` caller before this method is even invoked) is STICKY and
+   *    never resets, so it stays true long after Photoshop quits; without this
+   *    second, live check here, a probe firing after the user closed Photoshop
+   *    would fall into `executeScript`'s `ensureRunning()` and silently
+   *    relaunch it. A `false` here is a DECLINE, not a failed attempt — see
+   *    below.
+   * 3. `liveVersionResolutionAttempted` is set ONLY once we commit to the round
+   *    trip (step 2 passed) — never on a decline. A decline costs one cheap
+   *    process check and never touches the script queue, so it doesn't spend
+   *    the one-shot budget: the NEXT successful tool call, whenever Photoshop
+   *    is next confirmed running, gets its own chance. Latching on a mere
+   *    decline would strand a session that quits-then-reopens Photoshop at
+   *    `ps_version: 'unknown'` even after an hour of genuine, un-pinged use —
+   *    exactly the corruption this mechanism exists to prevent. See the field
+   *    doc for the full scenario.
    *
-   * Best-effort throughout: any failure (including "not running") just leaves
-   * the session at the honest `'unknown'` placeholder rather than a guessed
-   * value.
+   * Trade accepted: because the latch is set inside the async body rather than
+   * synchronously at the top, two tool calls whose `onCall` fires close enough
+   * together CAN both pass the initial guard and both attempt a round trip
+   * concurrently. Each write to `psVersion` is still guarded by its own
+   * `=== null` check, so a race resolves to "whichever finishes first wins,"
+   * never a corrupted or mixed value — at worst, one redundant pingState round
+   * trip. Deliberately not fixed with a cooldown/mutex: the failure mode this
+   * method exists to prevent (indefinite re-firing for the rest of a session)
+   * is unbounded, while this race is bounded to the rare handful of calls that
+   * land in one short window.
+   *
+   * Best-effort throughout: any failure (including a decline) just leaves the
+   * session at the honest `'unknown'` placeholder rather than a guessed value.
    */
   private resolveLiveVersionInBackground(): void {
     if (this.liveVersionResolutionAttempted || this.psVersion !== null) return;
-    this.liveVersionResolutionAttempted = true;
     void (async () => {
       try {
         const connection = this.session.getConnection();
-        if (!(await connection.isCurrentlyRunning())) return;
         const snippet = await this.snippetClient.build('pingState');
+        if (!(await connection.isCurrentlyRunning())) return; // decline — latch NOT spent
+        this.liveVersionResolutionAttempted = true; // committed to the round trip
         const state = (await runScript(
           connection,
           snippet,
@@ -814,16 +847,20 @@ export class EditmameiServer {
       degraded.push('templates');
     }
 
-    // Update ps_version in the session-log meta line + telemetry dimensions once we know
-    // it LIVE: the build()-failure-but-alive degraded branch above never reaches the
-    // pingState query, so `version` there is whatever connection.getVersion() returned
-    // — the disk-detected install record, a different value space from every other
-    // ps_version reading. Gating on versionIsLive keeps that value out of telemetry; it
-    // still surfaces in this response's own text/structuredContent below, unchanged.
-    // Fire-and-forget — telemetry must never affect the ping result.
+    // Update the session-log meta line whenever we know SOME version — live or, on the
+    // build()-failure-but-alive degraded branch above, connection.getVersion()'s
+    // disk-detected fallback. The local NDJSON isn't the telemetry value space and has
+    // no mixed-bucket problem (diagnostics/collect.ts has no other source for this
+    // field), so it's fine to carry the disk value there even though telemetry's
+    // psVersion must not. Fire-and-forget — never affects the ping result.
+    if (version !== 'Unknown') {
+      void this.sessionLog.setPsVersion(version);
+    }
+    // Telemetry dimensions only ever take the LIVE value — see the psVersion field doc
+    // for why mixing in the disk-detected fallback corrupts the ps_version-keyed
+    // rollups downstream.
     if (versionIsLive && version !== 'Unknown') {
       this.psVersion = version;
-      void this.sessionLog.setPsVersion(version);
       // Re-stamp the telemetry session-state snapshot now the version is known, so a later
       // hard-kill reconstructs the summary with the real ps_version, not the pre-ping
       // placeholder. Best-effort + content-free; never affects the ping result.

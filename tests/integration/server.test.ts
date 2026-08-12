@@ -2,7 +2,11 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EditmameiServer, __resetLogScriptOnErrorWarnForTests } from '@editmamei/core/server.ts';
+import {
+  EditmameiServer,
+  __resetLogScriptOnErrorWarnForTests,
+  BACKGROUND_VERSION_PROBE_TIMEOUT_MS,
+} from '@editmamei/core/server.ts';
 import { getPendingRawDevelop, __clearRawDevelopState } from '@editmamei/core/raw-develop-state.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
@@ -671,8 +675,7 @@ describe('psVersion is resolved opportunistically, not only by ps_ping', () => {
 
     const pingStateExecution = fakeConn.executions.find((e) => e.script.includes('pingState'));
     expect(pingStateExecution, 'expected a pingState execution to have been recorded').toBeTruthy();
-    expect(pingStateExecution!.timeout).toBeDefined();
-    expect(pingStateExecution!.timeout).toBeLessThan(30_000);
+    expect(pingStateExecution!.timeout).toBe(BACKGROUND_VERSION_PROBE_TIMEOUT_MS);
   });
 
   // N3 — hasReachedPhotoshop() is sticky and never resets, so it stays true long
@@ -710,13 +713,63 @@ describe('psVersion is resolved opportunistically, not only by ps_ping', () => {
     expect(server.psVersion).toBeNull();
   });
 
+  // MED 1 — a DECLINE (Photoshop not currently running) must not spend the
+  // one-shot budget the way a real, attempted round trip does. Without this, the
+  // exact scenario below leaves a session that drove Photoshop for an hour
+  // stuck at ps_version 'unknown': Photoshop is reached, then quits; a
+  // local-only tool call finds hasReachedPhotoshop() still (stickily) true, the
+  // probe declines because Photoshop isn't running RIGHT NOW, and if that
+  // decline burned the latch, Photoshop reopening later would never get a
+  // second chance.
+  it('a decline does not spend the one-shot budget — a later call, once Photoshop is running again, still resolves psVersion', async () => {
+    const server = new EditmameiServer() as unknown as PsVersionServer;
+    const fakeConn = makeConnection({
+      info: { version: '26.3', path: 'C:/x/Photoshop.exe' },
+      currentlyRunning: false, // starts "quit"
+      resultFor: (script) =>
+        script.includes('pingState')
+          ? { version: '27.8.0', action_sets_count: 0, open_documents: [] }
+          : { status: 'ok' },
+    });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    server.toolRegistry.register('test_tool_reaches_photoshop_reopen', {
+      tool: {
+        name: 'test_tool_reaches_photoshop_reopen',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        await fakeConn.executeScript('some real tool script');
+        return { content: [{ type: 'text', text: 'ok' }], structuredContent: {} };
+      },
+    });
+
+    // First call: reaches Photoshop (proving hasReachedPhotoshop()), but the
+    // probe should decline since Photoshop isn't currently running — and that
+    // decline must not spend the session's only shot.
+    await server.handleToolCall('test_tool_reaches_photoshop_reopen', {});
+    await new Promise((resolve) => setTimeout(resolve, 20)); // let the decline settle
+    expect(server.psVersion).toBeNull();
+
+    // Photoshop "reopens".
+    fakeConn.setCurrentlyRunning(true);
+
+    // A later successful call now gets its own chance and actually resolves
+    // psVersion — proving the earlier decline never spent the latch.
+    await server.handleToolCall('test_tool_reaches_photoshop_reopen', {});
+    await vi.waitFor(() => {
+      expect(server.psVersion).toBe('27.8.0');
+    });
+  });
+
   // F2 residue — pingPhotoshop()'s own build()-failure-but-alive degraded branch
   // never reaches the live pingState query (pingStateSnippet stays null), so
   // `version` there is whatever connection.getVersion() returned: the
   // disk-detected install record, a bare year like '2026' on Windows — a
   // different value space from every other ps_version reading. The user-facing
   // ping response is unaffected; only the telemetry stamp is gated.
-  it('the degraded build-failure-but-alive ping path does not stamp a disk-format version into telemetry', async () => {
+  it('the degraded build-failure-but-alive ping path does not stamp a disk-format version into telemetry, but still stamps the local session log', async () => {
     const server = new EditmameiServer() as unknown as PsVersionServer;
     server.session.connection = makeConnection({
       info: { version: '2026', path: 'C:/x/Photoshop.exe' },
@@ -726,6 +779,7 @@ describe('psVersion is resolved opportunistically, not only by ps_ping', () => {
         throw new Error('go-core binary missing');
       },
     };
+    const setPsVersionSpy = vi.spyOn(server.sessionLog, 'setPsVersion');
 
     const res = (await server.handleToolCall('ps_ping', {})) as {
       structuredContent: { connected: boolean; version?: string };
@@ -735,8 +789,12 @@ describe('psVersion is resolved opportunistically, not only by ps_ping', () => {
     // Unchanged, pre-existing user-facing behavior — the disk-detected fallback
     // still surfaces in the response text/structuredContent.
     expect(res.structuredContent.version).toBe('2026');
-    // But it must never reach telemetry's psVersion.
+    // But it must never reach telemetry's psVersion...
     expect(server.psVersion).toBeNull();
+    // ...while the local NDJSON (not the telemetry value space, and diagnostics/
+    // collect.ts's only source for this field) still carries it, unchanged from
+    // before the F2-residue fix.
+    expect(setPsVersionSpy).toHaveBeenCalledWith('2026');
   });
 });
 

@@ -42,6 +42,11 @@ export class FakePhotoshopConnection {
   private throwOnExecute: Error | null;
   private everReachedPhotoshop = false;
   private currentlyRunning: boolean;
+  // The as-constructed value, restored by reset() — currentlyRunning is mutable via
+  // setCurrentlyRunning() (unlike info/result/etc., which stay fixed for the fake's
+  // lifetime), so reset() needs its OWN initial value to return to, not a hardcoded
+  // default that could disagree with what this test explicitly configured.
+  private readonly initialCurrentlyRunning: boolean;
 
   constructor(options: FakeConnectionOptions = {}) {
     this.info = options.info === undefined ? DEFAULT_INFO : options.info;
@@ -49,6 +54,7 @@ export class FakePhotoshopConnection {
     this.resultFor = options.resultFor;
     this.throwOnExecute = options.throwOnExecute ?? null;
     this.currentlyRunning = options.currentlyRunning ?? this.info !== null;
+    this.initialCurrentlyRunning = this.currentlyRunning;
   }
 
   async ping(): Promise<boolean> {
@@ -140,6 +146,7 @@ export class FakePhotoshopConnection {
     this.pingCalls = 0;
     this.versionCalls = 0;
     this.everReachedPhotoshop = false;
+    this.currentlyRunning = this.initialCurrentlyRunning;
   }
 
   /** Cast helper so tests don't repeat the `as unknown as` dance. */
