@@ -231,8 +231,30 @@ export class PhotoshopConnection {
    * onto "Photoshop is reachable" — without risking `ensureRunning()`'s auto-launch
    * as a side effect of a call that was never going to touch Photoshop — must gate
    * on this, not on `getPhotoshopInfo() !== null`.
+   *
+   * STICKY, not live: once true it stays true for the rest of the process, even
+   * after Photoshop quits. It answers "was Photoshop EVER reached on this
+   * connection", not "is it running right now" — see `isCurrentlyRunning` for that.
    */
   hasReachedPhotoshop(): boolean {
     return this.everReachedPhotoshop;
+  }
+
+  /**
+   * Whether Photoshop is running RIGHT NOW, checked directly via the platform
+   * adapter's process check — unlike `executeScript`/`ping`, this never launches
+   * it (skips `ensureRunning` entirely). For callers that must never be the thing
+   * that starts Photoshop even when `hasReachedPhotoshop()` is stale-true (it was
+   * reached earlier in the session and has since quit) — the background
+   * ps_version probe in EditmameiServer is the motivating case. Cheap: a single
+   * process-existence check (`tasklist` / `pgrep`), not a script round trip.
+   */
+  async isCurrentlyRunning(): Promise<boolean> {
+    if (!this.photoshopInfo) return false;
+    try {
+      return await this.host.adapter.isRunning();
+    } catch {
+      return false;
+    }
   }
 }

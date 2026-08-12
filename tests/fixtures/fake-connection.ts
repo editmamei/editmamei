@@ -10,6 +10,8 @@ export interface FakeConnectionOptions {
   result?: unknown;
   resultFor?: (script: string) => unknown;
   throwOnExecute?: Error | null;
+  /** Seeds isCurrentlyRunning(). Defaults to `info !== null`; flip later with setCurrentlyRunning(). */
+  currentlyRunning?: boolean;
 }
 
 const DEFAULT_INFO: PhotoshopInfo = {
@@ -39,12 +41,14 @@ export class FakePhotoshopConnection {
   private resultFor?: (script: string) => unknown;
   private throwOnExecute: Error | null;
   private everReachedPhotoshop = false;
+  private currentlyRunning: boolean;
 
   constructor(options: FakeConnectionOptions = {}) {
     this.info = options.info === undefined ? DEFAULT_INFO : options.info;
     this.result = options.result ?? '{ status: "ok" }';
     this.resultFor = options.resultFor;
     this.throwOnExecute = options.throwOnExecute ?? null;
+    this.currentlyRunning = options.currentlyRunning ?? this.info !== null;
   }
 
   async ping(): Promise<boolean> {
@@ -82,6 +86,16 @@ export class FakePhotoshopConnection {
   /** Mirrors PhotoshopConnection.hasReachedPhotoshop (2026-08-11). */
   hasReachedPhotoshop(): boolean {
     return this.everReachedPhotoshop;
+  }
+
+  /** Mirrors PhotoshopConnection.isCurrentlyRunning (2026-08-11). */
+  async isCurrentlyRunning(): Promise<boolean> {
+    return this.currentlyRunning;
+  }
+
+  /** Test helper — flip apparent running state without touching `info`, e.g. to simulate a quit. */
+  setCurrentlyRunning(running: boolean): void {
+    this.currentlyRunning = running;
   }
 
   /**

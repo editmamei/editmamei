@@ -70,6 +70,19 @@ const FIRST_RUN_DISCLOSURE =
   '`editmamei config set telemetry.usage false` (or edit ~/.editmamei/settings.json). ' +
   'Opt in to sanitized diagnostics: `editmamei config set telemetry.diagnostics true`.';
 
+/**
+ * Timeout for the background ps_version probe (resolveLiveVersionInBackground) —
+ * deliberately short. This is a telemetry nicety piggybacking on an already-successful
+ * tool call, and it rides the SAME FIFO script queue every other tool call goes
+ * through (ScriptQueue in platform/script-queue.ts); left at the runners' 30s
+ * DEFAULT_SCRIPT_TIMEOUT_MS default, a stuck probe would hold up the user's NEXT
+ * command behind it for up to 30s. A normal pingState round trip takes ~1.2s; 3s
+ * leaves generous headroom for a slow machine. Abandoning the probe when Photoshop
+ * is slow to answer is strictly better than making a real user wait on it — the
+ * version just stays 'unknown' a while longer, which is honest, not wrong.
+ */
+const BACKGROUND_VERSION_PROBE_TIMEOUT_MS = 3_000;
+
 export class EditmameiServer {
   private server: Server;
   private logger: Logger;
@@ -105,10 +118,16 @@ export class EditmameiServer {
    * `onCall` hook below) — without that, telemetry's `ps_version` would report
    * `'unknown'` for the whole session despite genuinely driving Photoshop.
    *
-   * Never stamped from `PhotoshopConnection.getPhotoshopInfo()` — that field is pure
-   * disk/registry detection (on Windows: a release year or a bare version parsed out of
-   * the install path) and is a DIFFERENT, incompatible value space from the live one.
-   * Mixing the two here would corrupt the ps_version-keyed rollups downstream.
+   * Never stamped from `PhotoshopConnection.getPhotoshopInfo()` OR `.getVersion()` —
+   * both read the same pure disk/registry detection (on Windows: a release year or a
+   * bare version parsed out of the install path), a DIFFERENT, incompatible value space
+   * from the live one. `pingPhotoshop()`'s own build()-failure-but-alive degraded branch
+   * is the one path that can otherwise leave `version` at `getVersion()`'s fallback
+   * without a live pingState result to overwrite it — see `versionIsLive` there. If a
+   * FUTURE change adds another way to resolve `version`, it must set an equivalent
+   * "this came from a live query" flag before this field is stamped from it, or repeat
+   * this exact bug. Mixing the two value spaces corrupts the ps_version-keyed rollups
+   * downstream.
    */
   private psVersion: string | null = null;
   /**
@@ -130,8 +149,17 @@ export class EditmameiServer {
    * interleave and be read by the first call's `onCall` instead of its own.
    */
   private lastPingReachedPs: boolean | null = null;
-  /** Re-entry guard for `resolveLiveVersionInBackground` — see there. */
-  private resolvingLiveVersion = false;
+  /**
+   * One-shot latch for `resolveLiveVersionInBackground` — set the instant an
+   * attempt STARTS and never cleared, whether that attempt succeeds or fails.
+   * This is "at most one attempt per session," not an in-flight lock: a session
+   * where the first (and only) attempt fails leaves psVersion at 'unknown' for
+   * the rest of the session, rather than re-firing a fresh pingState round trip
+   * off every later successful tool call for as long as Photoshop stays
+   * unreachable. See resolveLiveVersionInBackground for the failure scenario
+   * this closes.
+   */
+  private liveVersionResolutionAttempted = false;
   /** A newer published version, if the boot-time check found one. Surfaced on ps_ping. */
   private updateInfo: UpdateInfo | null = null;
   // The host/community Go snippet core seam — the CE go-core binary, used by the
@@ -207,16 +235,18 @@ export class EditmameiServer {
       onCall: (entry) => {
         // Opportunistic ps_version resolution (see the field doc above): once some
         // OTHER successful tool call has proven the connection genuinely reached
-        // Photoshop, fire the one-time background live-version probe. Gated on
-        // hasReachedPhotoshop() specifically — NOT on entry.success alone — so this
-        // can never be the thing that first reaches Photoshop: a tool call that never
-        // touched Photoshop (ps_list_capabilities, template listing) must not risk
-        // driving `ensureRunning()`'s auto-launch as a side effect of resolving a
-        // telemetry dimension. Excludes ps_ping: its handler reports success even when
-        // it never reached Photoshop (see lastPingReachedPs above), so its own success
-        // flag can't be trusted the way every other tool's can — ps_ping resolves
-        // psVersion itself, from the same live query, only on the genuinely-connected
-        // path.
+        // Photoshop AT SOME POINT, offer the one-shot background live-version probe
+        // a chance to fire. hasReachedPhotoshop() is sticky (stays true even after
+        // Photoshop later quits), so it alone does NOT guarantee the probe can't
+        // launch Photoshop — resolveLiveVersionInBackground closes that with its own
+        // isCurrentlyRunning() check immediately before touching the connection. The
+        // gate here is what keeps a tool call that never touched Photoshop at all
+        // (ps_list_capabilities, template listing) from being the thing that offers
+        // the FIRST chance to probe. Excludes ps_ping: its handler reports success
+        // even when it never reached Photoshop (see lastPingReachedPs above), so its
+        // own success flag can't be trusted the way every other tool's can — ps_ping
+        // resolves psVersion itself, from the same live query, only on the
+        // genuinely-connected path.
         if (entry.success && entry.tool !== 'ps_ping' && this.psVersion === null) {
           if (this.session.getConnection().hasReachedPhotoshop()) {
             this.resolveLiveVersionInBackground();
@@ -597,27 +627,45 @@ export class EditmameiServer {
   }
 
   /**
-   * One-time, fire-and-forget live-version resolution for sessions that drive
-   * Photoshop without ever calling `ps_ping`. Only ever invoked by the `onCall`
-   * hook after `PhotoshopConnection.hasReachedPhotoshop()` is already true, so
-   * this never risks being the first thing to reach (and possibly auto-launch)
-   * Photoshop. Reuses the exact same `pingState` round trip `ps_ping` itself
-   * uses, so the resolved value lands in the SAME live-queried format
-   * (`'27.8.0'`) — never the disk-detected install record.
+   * One-shot, fire-and-forget live-version resolution for sessions that drive
+   * Photoshop without ever calling `ps_ping`. Reuses the exact same `pingState`
+   * round trip `ps_ping` itself uses, so the resolved value lands in the SAME
+   * live-queried format (`'27.8.0'`) — never the disk-detected install record.
    *
-   * Guarded by `resolvingLiveVersion` so concurrent early tool calls, all
-   * finding `psVersion` still null, fire this at most once; best-effort, so a
-   * failed probe just leaves the session at the honest `'unknown'` placeholder
-   * rather than a guessed value.
+   * Two independent guards, for two different failure modes:
+   *
+   * - `liveVersionResolutionAttempted` is a latch, not an in-flight lock — set
+   *   the instant an attempt starts and never cleared. Without this, a FAILED
+   *   probe (Photoshop quit mid-session, went modal, a transient hiccup) would
+   *   re-fire on every later successful non-`ps_ping` call for the rest of the
+   *   session, each one queuing a fresh round trip behind the FIFO script queue.
+   *   One attempt per session, success or failure, is the whole budget.
+   * - `isCurrentlyRunning()`, checked immediately before touching the
+   *   connection, is what keeps this a telemetry probe and never the thing that
+   *   STARTS Photoshop. `hasReachedPhotoshop()` (checked by the `onCall` caller)
+   *   is sticky and never resets, so it stays true long after Photoshop quits;
+   *   without this second, live check, a probe firing after the user closed
+   *   Photoshop would fall into `executeScript`'s `ensureRunning()` and silently
+   *   relaunch it. `isCurrentlyRunning()` is a cheap process check, not a script
+   *   round trip, so this costs nothing on the common path.
+   *
+   * Best-effort throughout: any failure (including "not running") just leaves
+   * the session at the honest `'unknown'` placeholder rather than a guessed
+   * value.
    */
   private resolveLiveVersionInBackground(): void {
-    if (this.resolvingLiveVersion || this.psVersion !== null) return;
-    this.resolvingLiveVersion = true;
+    if (this.liveVersionResolutionAttempted || this.psVersion !== null) return;
+    this.liveVersionResolutionAttempted = true;
     void (async () => {
       try {
         const connection = this.session.getConnection();
+        if (!(await connection.isCurrentlyRunning())) return;
         const snippet = await this.snippetClient.build('pingState');
-        const state = (await runScript(connection, snippet)) as { version?: string };
+        const state = (await runScript(
+          connection,
+          snippet,
+          BACKGROUND_VERSION_PROBE_TIMEOUT_MS
+        )) as { version?: string };
         if (state.version && state.version !== 'Unknown' && this.psVersion === null) {
           this.psVersion = state.version;
           void this.sessionLog.setPsVersion(state.version);
@@ -627,8 +675,6 @@ export class EditmameiServer {
         this.logger.debug(
           `background ps_version resolution failed: ${err instanceof Error ? err.message : String(err)}`
         );
-      } finally {
-        this.resolvingLiveVersion = false;
       }
     })();
   }
@@ -659,6 +705,13 @@ export class EditmameiServer {
     let actionSetsCount = 0;
     let openDocuments: string[] = [];
     const degraded: string[] = [];
+    // Tracks whether `version` came from the LIVE pingState query below, as opposed to
+    // staying at connection.getVersion()'s disk-detected fallback from the try/catch
+    // right after this block. Gates the psVersion (telemetry) stamp near the end of this
+    // method — see there — but does NOT affect this response's own `version` field: the
+    // disk-detected fallback in the text/structuredContent below is pre-existing,
+    // user-facing behavior, unrelated to telemetry's value-space requirement.
+    let versionIsLive = false;
 
     // C3/Q4: getVersion() runs FIRST, ahead of the pingState build/execute
     // below. On the real PhotoshopConnection this call is what populates
@@ -744,7 +797,10 @@ export class EditmameiServer {
           structuredContent: { connected: false, update_available: this.updateInfo },
         };
       }
-      if (state.version) version = state.version;
+      if (state.version) {
+        version = state.version;
+        versionIsLive = true;
+      }
       if (typeof state.action_sets_count === 'number') actionSetsCount = state.action_sets_count;
       if (Array.isArray(state.open_documents)) openDocuments = state.open_documents;
     }
@@ -759,8 +815,13 @@ export class EditmameiServer {
     }
 
     // Update ps_version in the session-log meta line + telemetry dimensions once we know
-    // it. Fire-and-forget — telemetry must never affect the ping result.
-    if (version !== 'Unknown') {
+    // it LIVE: the build()-failure-but-alive degraded branch above never reaches the
+    // pingState query, so `version` there is whatever connection.getVersion() returned
+    // — the disk-detected install record, a different value space from every other
+    // ps_version reading. Gating on versionIsLive keeps that value out of telemetry; it
+    // still surfaces in this response's own text/structuredContent below, unchanged.
+    // Fire-and-forget — telemetry must never affect the ping result.
+    if (versionIsLive && version !== 'Unknown') {
       this.psVersion = version;
       void this.sessionLog.setPsVersion(version);
       // Re-stamp the telemetry session-state snapshot now the version is known, so a later

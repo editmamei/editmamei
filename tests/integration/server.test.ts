@@ -587,6 +587,157 @@ describe('psVersion is resolved opportunistically, not only by ps_ping', () => {
     await server.handleToolCall('ps_ping', {});
     expect(server.psVersion).toBe('27.2.0');
   });
+
+  // N1 — the probe is a ONE-SHOT latch on ATTEMPTED, not an in-flight lock. Without
+  // this, a failed attempt (Photoshop quit mid-session, went modal, a transient
+  // hiccup) re-fires on every later successful non-ping call for the rest of the
+  // session, each one queuing a fresh pingState round trip.
+  it('the background probe fires at most once per session, even after a failed attempt', async () => {
+    const server = new EditmameiServer() as unknown as PsVersionServer;
+    let pingStateAttempts = 0;
+    const fakeConn = makeConnection({
+      info: { version: '26.3', path: 'C:/x/Photoshop.exe' },
+      resultFor: (script) => {
+        if (script.includes('pingState')) {
+          pingStateAttempts++;
+          throw new Error('transient pingState failure');
+        }
+        return { status: 'ok' };
+      },
+    });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    server.toolRegistry.register('test_tool_reaches_photoshop_repeat', {
+      tool: {
+        name: 'test_tool_reaches_photoshop_repeat',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        await fakeConn.executeScript('some real tool script');
+        return { content: [{ type: 'text', text: 'ok' }], structuredContent: {} };
+      },
+    });
+
+    await server.handleToolCall('test_tool_reaches_photoshop_repeat', {});
+    // Confirm the first (failing) attempt actually ran before asserting it never
+    // repeats. The one-shot latch is set SYNCHRONOUSLY on invocation (before any of
+    // this async work), so the two later calls below are already guaranteed to hit
+    // it regardless of how long the first attempt's own round trip takes.
+    await vi.waitFor(() => {
+      expect(pingStateAttempts).toBe(1);
+    });
+
+    await server.handleToolCall('test_tool_reaches_photoshop_repeat', {});
+    await server.handleToolCall('test_tool_reaches_photoshop_repeat', {});
+
+    expect(pingStateAttempts).toBe(1);
+    // N4 — a failed probe leaves psVersion honestly null, never throws into the
+    // triggering call, and is never re-guessed from anything else.
+    expect(server.psVersion).toBeNull();
+  });
+
+  // N2 — the probe must not inherit the runners' 30s DEFAULT_SCRIPT_TIMEOUT_MS.
+  // Left unbounded it would hold the shared FIFO script queue (ScriptQueue) for up
+  // to 30s on a stuck Photoshop, making the user's NEXT real tool call wait behind
+  // it before its own budget even starts.
+  it('the background probe uses a short explicit timeout, not the runners default 30s', async () => {
+    const server = new EditmameiServer() as unknown as PsVersionServer;
+    const fakeConn = makeConnection({
+      info: { version: '26.3', path: 'C:/x/Photoshop.exe' },
+      resultFor: (script) =>
+        script.includes('pingState')
+          ? { version: '27.8.0', action_sets_count: 0, open_documents: [] }
+          : { status: 'ok' },
+    });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    server.toolRegistry.register('test_tool_reaches_photoshop_timeout', {
+      tool: {
+        name: 'test_tool_reaches_photoshop_timeout',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        await fakeConn.executeScript('some real tool script');
+        return { content: [{ type: 'text', text: 'ok' }], structuredContent: {} };
+      },
+    });
+
+    await server.handleToolCall('test_tool_reaches_photoshop_timeout', {});
+    await vi.waitFor(() => {
+      expect(server.psVersion).toBe('27.8.0');
+    });
+
+    const pingStateExecution = fakeConn.executions.find((e) => e.script.includes('pingState'));
+    expect(pingStateExecution, 'expected a pingState execution to have been recorded').toBeTruthy();
+    expect(pingStateExecution!.timeout).toBeDefined();
+    expect(pingStateExecution!.timeout).toBeLessThan(30_000);
+  });
+
+  // N3 — hasReachedPhotoshop() is sticky and never resets, so it stays true long
+  // after Photoshop quits. The probe must independently confirm Photoshop is
+  // running RIGHT NOW before touching the connection — a telemetry probe must
+  // never be the thing that starts Photoshop via executeScript's ensureRunning()
+  // launch fallback.
+  it('the background probe never fires (sends no script at all) when Photoshop is not currently running, even though it was reached earlier', async () => {
+    const server = new EditmameiServer() as unknown as PsVersionServer;
+    const fakeConn = makeConnection({ info: { version: '26.3', path: 'C:/x/Photoshop.exe' } });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    // Prove reachability directly, then simulate the user quitting Photoshop —
+    // hasReachedPhotoshop() stays true (sticky) even though PS is no longer running.
+    await fakeConn.executeScript("'pong';");
+    fakeConn.setCurrentlyRunning(false);
+    const executionsBeforeProbe = fakeConn.executions.length;
+
+    server.toolRegistry.register('test_local_only_after_quit', {
+      tool: {
+        name: 'test_local_only_after_quit',
+        description: 'test fixture — never touches the connection itself',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => ({ content: [{ type: 'text', text: 'ok' }], structuredContent: {} }),
+    });
+
+    await server.handleToolCall('test_local_only_after_quit', {});
+    // Asserting a negative (nothing fired): give any incorrect background attempt
+    // a moment to reach the connection before checking the execution count is
+    // unchanged.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(fakeConn.executions.length).toBe(executionsBeforeProbe);
+    expect(server.psVersion).toBeNull();
+  });
+
+  // F2 residue — pingPhotoshop()'s own build()-failure-but-alive degraded branch
+  // never reaches the live pingState query (pingStateSnippet stays null), so
+  // `version` there is whatever connection.getVersion() returned: the
+  // disk-detected install record, a bare year like '2026' on Windows — a
+  // different value space from every other ps_version reading. The user-facing
+  // ping response is unaffected; only the telemetry stamp is gated.
+  it('the degraded build-failure-but-alive ping path does not stamp a disk-format version into telemetry', async () => {
+    const server = new EditmameiServer() as unknown as PsVersionServer;
+    server.session.connection = makeConnection({
+      info: { version: '2026', path: 'C:/x/Photoshop.exe' },
+    });
+    server.snippetClient = {
+      build: async () => {
+        throw new Error('go-core binary missing');
+      },
+    };
+
+    const res = (await server.handleToolCall('ps_ping', {})) as {
+      structuredContent: { connected: boolean; version?: string };
+    };
+
+    expect(res.structuredContent.connected).toBe(true);
+    // Unchanged, pre-existing user-facing behavior — the disk-detected fallback
+    // still surfaces in the response text/structuredContent.
+    expect(res.structuredContent.version).toBe('2026');
+    // But it must never reach telemetry's psVersion.
+    expect(server.psVersion).toBeNull();
+  });
 });
 
 describe('telemetry: ps_ping success reflects whether Photoshop was actually reached', () => {
@@ -753,6 +904,33 @@ describe('EditmameiServer.start() boot ordering', () => {
     // …and the warmup is fire-and-forget, never awaited inside start().
     expect(startBody).toMatch(/void this\.session\.initialize\(\)/);
     expect(startBody).not.toMatch(/await this\.session\.initialize\(\)/);
+  });
+
+  // N5 — the test above only checks the relative order of two NAMED tokens; it
+  // would miss a regression that inserts some OTHER awaited call ahead of
+  // connect() (a new PS warmup, a network call, anything this test doesn't
+  // already know the name of). This one is general: today the only awaited call
+  // before the transport connects is loadModules() (filesystem/crypto-only,
+  // documented as safe to await ahead of the handshake) — assert there is
+  // exactly one await ahead of connect(), and that it's loadModules(), so ANY
+  // additional awaited call fails this regardless of what it's named.
+  it('the only awaited call ahead of the transport connecting is loadModules() — nothing else can block the handshake', () => {
+    const serverSrc = readFileSync(join(REPO_ROOT, 'src', 'core', 'server.ts'), 'utf8');
+    const startMatch = serverSrc.match(/async start\(\)\s*\{[\s\S]*?\n  \}/);
+    expect(startMatch, 'start() body not found in server.ts').toBeTruthy();
+    // Strip comments first — prose describing what's safe to await (e.g. "safe to
+    // await ahead of the handshake") otherwise reads as a second await occurrence.
+    const startBody = startMatch![0].replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+    const connectIdx = startBody.indexOf('await this.server.connect(');
+    expect(connectIdx, 'await this.server.connect not found in start()').toBeGreaterThan(-1);
+    const beforeConnect = startBody.slice(0, connectIdx);
+    const awaitsBeforeConnect = beforeConnect.match(/\bawait\s+/g) ?? [];
+    expect(
+      awaitsBeforeConnect.length,
+      `expected exactly one awaited call ahead of connect(), found: ${JSON.stringify(awaitsBeforeConnect)}`
+    ).toBe(1);
+    expect(beforeConnect).toContain('await this.loadModules()');
   });
 });
 
