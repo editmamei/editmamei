@@ -10,6 +10,8 @@ export interface FakeConnectionOptions {
   result?: unknown;
   resultFor?: (script: string) => unknown;
   throwOnExecute?: Error | null;
+  /** Seeds isCurrentlyRunning(). Defaults to `info !== null`; flip later with setCurrentlyRunning(). */
+  currentlyRunning?: boolean;
 }
 
 const DEFAULT_INFO: PhotoshopInfo = {
@@ -38,17 +40,30 @@ export class FakePhotoshopConnection {
   private result: unknown;
   private resultFor?: (script: string) => unknown;
   private throwOnExecute: Error | null;
+  private everReachedPhotoshop = false;
+  private currentlyRunning: boolean;
+  // The as-constructed value, restored by reset() — currentlyRunning is mutable via
+  // setCurrentlyRunning() (unlike info/result/etc., which stay fixed for the fake's
+  // lifetime), so reset() needs its OWN initial value to return to, not a hardcoded
+  // default that could disagree with what this test explicitly configured.
+  private readonly initialCurrentlyRunning: boolean;
 
   constructor(options: FakeConnectionOptions = {}) {
     this.info = options.info === undefined ? DEFAULT_INFO : options.info;
     this.result = options.result ?? '{ status: "ok" }';
     this.resultFor = options.resultFor;
     this.throwOnExecute = options.throwOnExecute ?? null;
+    this.currentlyRunning = options.currentlyRunning ?? this.info !== null;
+    this.initialCurrentlyRunning = this.currentlyRunning;
   }
 
   async ping(): Promise<boolean> {
     this.pingCalls++;
-    return this.info !== null;
+    // Mirrors PhotoshopConnection.ping, which is itself built on executeScript
+    // in production — a successful ping is a successful round trip.
+    const reached = this.info !== null;
+    if (reached) this.everReachedPhotoshop = true;
+    return reached;
   }
 
   async getVersion(): Promise<string> {
@@ -61,6 +76,9 @@ export class FakePhotoshopConnection {
     if (this.throwOnExecute) {
       throw this.throwOnExecute;
     }
+    // Mirrors PhotoshopConnection.executeScript (2026-08-11) — only a script that
+    // actually completed counts as having reached Photoshop.
+    this.everReachedPhotoshop = true;
     if (this.resultFor) {
       return this.resultFor(script);
     }
@@ -69,6 +87,21 @@ export class FakePhotoshopConnection {
 
   getPhotoshopInfo(): PhotoshopInfo | null {
     return this.info;
+  }
+
+  /** Mirrors PhotoshopConnection.hasReachedPhotoshop (2026-08-11). */
+  hasReachedPhotoshop(): boolean {
+    return this.everReachedPhotoshop;
+  }
+
+  /** Mirrors PhotoshopConnection.isCurrentlyRunning (2026-08-11). */
+  async isCurrentlyRunning(): Promise<boolean> {
+    return this.currentlyRunning;
+  }
+
+  /** Test helper — flip apparent running state without touching `info`, e.g. to simulate a quit. */
+  setCurrentlyRunning(running: boolean): void {
+    this.currentlyRunning = running;
   }
 
   /**
@@ -112,6 +145,8 @@ export class FakePhotoshopConnection {
     this.ensureRunningCalls = 0;
     this.pingCalls = 0;
     this.versionCalls = 0;
+    this.everReachedPhotoshop = false;
+    this.currentlyRunning = this.initialCurrentlyRunning;
   }
 
   /** Cast helper so tests don't repeat the `as unknown as` dance. */
