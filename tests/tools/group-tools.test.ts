@@ -13,18 +13,41 @@ describe('createGroupTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('returns 7 well-formed tools', () => {
+  it('returns 6 well-formed tools', () => {
     const tools = createGroupTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
     expect(tools.map((t) => t.tool.name).sort()).toEqual([
-      'ps_create_clipping_mask',
+      'ps_clipping_mask',
       'ps_create_group',
       'ps_delete_group',
       'ps_move_layer_to_group',
-      'ps_release_clipping_mask',
       'ps_set_group_blend_mode',
       'ps_ungroup',
     ]);
+  });
+
+  it('clipping_mask op=create dispatches the createClippingMask snippet', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_clipping_mask', { op: 'create' });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('createClippingMask');
+    expect(build.params).toEqual({});
+  });
+
+  it('clipping_mask op=release dispatches the releaseClippingMask snippet', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_clipping_mask', { op: 'release' });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('releaseClippingMask');
+    expect(build.params).toEqual({});
+  });
+
+  it('clipping_mask rejects an unknown op without executing', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_clipping_mask', { op: 'invert' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/op/i);
+    expect(conn.executions.length).toBe(0);
   });
 
   it('create_group passes name and dispatches the createGroup snippet', async () => {

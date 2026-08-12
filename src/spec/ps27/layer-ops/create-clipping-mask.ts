@@ -13,17 +13,14 @@
  * stringID alias for the same event is `groupEvent`; both resolve to the
  * same internal event in PS 27.x.
  *
- * **Coverage gap (2026-06-03 audit Group C, STEP 32 — HIGH).**
+ * **Tool surface.** The standalone primitive is `ps_clipping_mask`
+ * (op=create / op=release, community tier; the 2026-06-04 Bundle 5
+ * `ps_create_clipping_mask` / `ps_release_clipping_mask` pair was
+ * consolidated into it). Snippets: `vault.ClipMask` / `vault.ReleaseClip`
+ * in `go-core/cmd/buildtemplates/fragments_groups.go`. Separately,
+ * `ps_add_adjustment_layer` keeps its inline `clip_to_below: true` path
+ * (`vault.AdjLOuter` in `fragments_adjustments.go`).
  *
- * **There is no `ps_create_clipping_mask` tool yet.** The only
- * clipping behavior in the codebase is the optional `clip_to_below: true`
- * parameter on `ps_add_adjustment_layer`, implemented inline at
- * `go-core/cmd/buildtemplates/fragments_adjustments.go` (`vault.AdjLOuter`). It uses `sTID("groupEvent")` —
- * the stringID alias — which resolves identically to `cTID("GrpL")` in
- * modern PS.
- *
- * **The audit recommends adding `ps_create_clipping_mask` (and
- * the inverse `ps_release_clipping_mask`) as tier-`'dev'` tools.**
  * The descriptor shape pinned by this spec — `GrpL` charID OR
  * `groupEvent` stringID + null-keyed reference `Lyr/Ordn/Trgt` — is the
  * canonical form, verified against the menu capture.
@@ -50,9 +47,11 @@ export const createClippingMaskSpec: AmEventSpec = {
   id: 'layer-ops/create-clipping-mask',
   displayName: 'Create clipping mask',
   category: 'layer-ops',
-  emittedBy: ['ps_create_clipping_mask (community — shipped; handler in src/tools/group-tools.ts)'],
+  emittedBy: [
+    'ps_clipping_mask op=create/release (community; handler in src/tools/group-tools.ts)',
+  ],
   snippetRef:
-    'go-core/cmd/buildtemplates/fragments_adjustments.go (vault.AdjLOuter — INLINE inside addAdjustmentLayer when clip_to_below=true; no standalone tool yet)',
+    'go-core/cmd/buildtemplates/fragments_groups.go (vault.ClipMask / vault.ReleaseClip); plus the INLINE clip_to_below=true path in fragments_adjustments.go (vault.AdjLOuter)',
   groundTruth: {
     capturedAt: '2026-06-03',
     psVersion: '27.7.0',
@@ -61,7 +60,7 @@ export const createClippingMaskSpec: AmEventSpec = {
     menuPath: 'Layer > Create Clipping Mask (Ctrl+Alt+G)',
   },
   knownGotchas: [
-    "COVERAGE GAP (HIGH) — there is no standalone `ps_create_clipping_mask` tool. The only clipping behavior in the codebase is the inline `clip_to_below: true` branch of `ps_add_adjustment_layer` in `go-core/cmd/buildtemplates/fragments_adjustments.go` (`vault.AdjLOuter`). The 2026-06-03 audit (Group C, STEP 32) recommends adding `ps_create_clipping_mask` and `ps_release_clipping_mask` as tier-`'dev'` tools.",
+    'The standalone surface is `ps_clipping_mask` (op=create / op=release) — the original create/release tool pair was consolidated into one op-discriminated tool. `ps_add_adjustment_layer` keeps its separate inline `clip_to_below: true` branch (`vault.AdjLOuter` in `fragments_adjustments.go`), which also dispatches `sTID("groupEvent")`.',
     'Event ID has two paired aliases: `GrpL` (charID — emitted by the PS menu capture) and `groupEvent` (stringID — used by the inline implementation in `addAdjustmentLayer`). Both resolve to the same internal event in modern PS. Verified: `app.typeIDToStringID(app.charIDToTypeID("GrpL")) === "groupEvent"` in PS 27.x.',
     'Inverse operation (release clipping mask) is the `Ungr` charID, stringID `"ungroup"`. There is NO `ungroupEvent` stringID — the GrpL↔groupEvent alias pattern does not extrapolate, and `sTID("ungroupEvent")` fails at dispatch with `The command "<unknown>" is not currently available` (verified live, PS 27.2.0 Windows). Also NOT the same as the layer-section `ungroupLayersEvent` used by `ps_ungroup`. Three distinct events: `groupEvent` (clip to below), `Ungr`/"ungroup" (release clipping mask), `ungroupLayersEvent` (dissolve a layer group).',
     'The clipping mask is conceptually "use the layer below as the alpha source for this layer." It requires the layer below to exist; PS silently no-ops if the active layer is at the bottom of the document.',

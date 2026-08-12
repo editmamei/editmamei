@@ -237,8 +237,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
 
   // masks & paths
   ps_layer_mask: 'masks',
-  ps_create_clipping_mask: 'masks',
-  ps_release_clipping_mask: 'masks',
+  ps_clipping_mask: 'masks',
   ps_path: 'masks',
   ps_vector_mask: 'masks',
   // channel-compose (Apply Image / Calculations) — channel math feeding blends + masks
