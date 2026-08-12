@@ -170,8 +170,8 @@ export class EditmameiServer {
    * then the user reopens Photoshop and works for an hour without ever calling
    * ps_ping — ps_version stays 'unknown' for a session that genuinely drove
    * Photoshop the whole time. See resolveLiveVersionInBackground for the full
-   * shape, including the accepted concurrent-double-fire trade this ordering
-   * implies.
+   * shape: callers that pass the initial guard together converge on a
+   * check-and-set at the commit point, so exactly one round trip runs.
    */
   private liveVersionResolutionAttempted = false;
   /** A newer published version, if the boot-time check found one. Surfaced on ps_ping. */
@@ -660,7 +660,11 @@ export class EditmameiServer {
    *    never resets, so it stays true long after Photoshop quits; without this
    *    second, live check here, a probe firing after the user closed Photoshop
    *    would fall into `executeScript`'s `ensureRunning()` and silently
-   *    relaunch it. A `false` here is a DECLINE, not a failed attempt — see
+   *    relaunch it. This NARROWS that window rather than closing it: if
+   *    Photoshop quits between the check passing and `executeScript` running,
+   *    `ensureRunning()` can still launch it. Closing it outright would mean a
+   *    never-launch mode threaded through `executeScript`, which no caller has
+   *    needed yet. A `false` here is a DECLINE, not a failed attempt — see
    *    below.
    * 3. `liveVersionResolutionAttempted` is set ONLY once we commit to the round
    *    trip (step 2 passed) — never on a decline. A decline costs one cheap
@@ -672,16 +676,14 @@ export class EditmameiServer {
    *    exactly the corruption this mechanism exists to prevent. See the field
    *    doc for the full scenario.
    *
-   * Trade accepted: because the latch is set inside the async body rather than
-   * synchronously at the top, two tool calls whose `onCall` fires close enough
-   * together CAN both pass the initial guard and both attempt a round trip
-   * concurrently. Each write to `psVersion` is still guarded by its own
-   * `=== null` check, so a race resolves to "whichever finishes first wins,"
-   * never a corrupted or mixed value — at worst, one redundant pingState round
-   * trip. Deliberately not fixed with a cooldown/mutex: the failure mode this
-   * method exists to prevent (indefinite re-firing for the rest of a session)
-   * is unbounded, while this race is bounded to the rare handful of calls that
-   * land in one short window.
+   * Concurrency: the latch is set inside the async body, not synchronously at
+   * the top, so several tool calls whose `onCall` fires in the same short
+   * window can all pass the initial guard at line 1. They converge on the
+   * check-and-set in step 3, which has no `await` between the read and the
+   * write — so exactly one wins and the rest return without touching the
+   * script queue. Each write to `psVersion` is separately guarded by its own
+   * `=== null` check, so even a losing caller cannot install a mixed or stale
+   * value.
    *
    * Best-effort throughout: any failure (including a decline) just leaves the
    * session at the honest `'unknown'` placeholder rather than a guessed value.
@@ -693,6 +695,13 @@ export class EditmameiServer {
         const connection = this.session.getConnection();
         const snippet = await this.snippetClient.build('pingState');
         if (!(await connection.isCurrentlyRunning())) return; // decline — latch NOT spent
+        // Re-check after the two awaits above, against the same pair of conditions as the
+        // entry guard: another probe may have committed, or a concurrent ps_ping may have
+        // resolved the version outright (it sets psVersion without touching this latch),
+        // in which case there is nothing left to go and fetch. This check and the
+        // assignment below have no await between them, so exactly one caller can win the
+        // latch no matter how many reach this point.
+        if (this.liveVersionResolutionAttempted || this.psVersion !== null) return;
         this.liveVersionResolutionAttempted = true; // committed to the round trip
         const state = (await runScript(
           connection,
@@ -850,9 +859,11 @@ export class EditmameiServer {
     // Update the session-log meta line whenever we know SOME version — live or, on the
     // build()-failure-but-alive degraded branch above, connection.getVersion()'s
     // disk-detected fallback. The local NDJSON isn't the telemetry value space and has
-    // no mixed-bucket problem (diagnostics/collect.ts has no other source for this
-    // field), so it's fine to carry the disk value there even though telemetry's
-    // psVersion must not. Fire-and-forget — never affects the ping result.
+    // no mixed-bucket problem to protect, so it's fine to carry the disk value there
+    // even though telemetry's psVersion must not. Note this does mean a diagnostics
+    // bundle's ps_version can be either format: diagnostics/collect.ts prefers the live
+    // value passed in, and falls back to this meta line only when there isn't one.
+    // Fire-and-forget — never affects the ping result.
     if (version !== 'Unknown') {
       void this.sessionLog.setPsVersion(version);
     }
