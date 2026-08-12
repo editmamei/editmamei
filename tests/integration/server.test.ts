@@ -625,9 +625,10 @@ describe('psVersion is resolved opportunistically, not only by ps_ping', () => {
 
     await server.handleToolCall('test_tool_reaches_photoshop_repeat', {});
     // Confirm the first (failing) attempt actually ran before asserting it never
-    // repeats. The one-shot latch is set SYNCHRONOUSLY on invocation (before any of
-    // this async work), so the two later calls below are already guaranteed to hit
-    // it regardless of how long the first attempt's own round trip takes.
+    // repeats. The latch is set part-way through the probe's async body, not
+    // synchronously on invocation, so this wait is load-bearing: it is what
+    // guarantees the first attempt has already committed the latch before the two
+    // later calls run. Dropping it would make this test racy.
     await vi.waitFor(() => {
       expect(pingStateAttempts).toBe(1);
     });
@@ -639,6 +640,50 @@ describe('psVersion is resolved opportunistically, not only by ps_ping', () => {
     // N4 — a failed probe leaves psVersion honestly null, never throws into the
     // triggering call, and is never re-guessed from anything else.
     expect(server.psVersion).toBeNull();
+  });
+
+  // Several onCall hooks can pass the probe's initial guard inside the same window,
+  // since the latch is only committed part-way through its async body. They converge on
+  // a check-and-set with no await between the read and the write, so exactly one wins.
+  // Without that re-check every concurrent caller queues its own pingState round trip,
+  // each holding the FIFO script queue for up to the probe timeout.
+  it('concurrent tool calls fire the background probe exactly once', async () => {
+    const server = new EditmameiServer() as unknown as PsVersionServer;
+    let pingStateAttempts = 0;
+    const fakeConn = makeConnection({
+      info: { version: '26.3', path: 'C:/x/Photoshop.exe' },
+      resultFor: (script) => {
+        if (script.includes('pingState')) {
+          pingStateAttempts++;
+          return { version: '27.8.0' };
+        }
+        return { status: 'ok' };
+      },
+    });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    server.toolRegistry.register('test_tool_concurrent_probe', {
+      tool: {
+        name: 'test_tool_concurrent_probe',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        await fakeConn.executeScript('some real tool script');
+        return { content: [{ type: 'text', text: 'ok' }], structuredContent: {} };
+      },
+    });
+
+    await Promise.all([
+      server.handleToolCall('test_tool_concurrent_probe', {}),
+      server.handleToolCall('test_tool_concurrent_probe', {}),
+      server.handleToolCall('test_tool_concurrent_probe', {}),
+    ]);
+    await vi.waitFor(() => {
+      expect(server.psVersion).toBe('27.8.0');
+    });
+
+    expect(pingStateAttempts).toBe(1);
   });
 
   // N2 — the probe must not inherit the runners' 30s DEFAULT_SCRIPT_TIMEOUT_MS.
