@@ -695,10 +695,13 @@ export class EditmameiServer {
         const connection = this.session.getConnection();
         const snippet = await this.snippetClient.build('pingState');
         if (!(await connection.isCurrentlyRunning())) return; // decline — latch NOT spent
-        // Re-check after the two awaits above: a concurrent probe may have committed in
-        // the meantime. This check and the assignment below have no await between them,
-        // so exactly one caller can win the latch no matter how many reach this point.
-        if (this.liveVersionResolutionAttempted) return;
+        // Re-check after the two awaits above, against the same pair of conditions as the
+        // entry guard: another probe may have committed, or a concurrent ps_ping may have
+        // resolved the version outright (it sets psVersion without touching this latch),
+        // in which case there is nothing left to go and fetch. This check and the
+        // assignment below have no await between them, so exactly one caller can win the
+        // latch no matter how many reach this point.
+        if (this.liveVersionResolutionAttempted || this.psVersion !== null) return;
         this.liveVersionResolutionAttempted = true; // committed to the round trip
         const state = (await runScript(
           connection,
