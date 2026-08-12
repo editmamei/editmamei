@@ -1,8 +1,9 @@
 /**
- * Snippet-vs-spec test for the new Clipping Mask primitives
- * (2026-06-04 Bundle 5). Pins the create/release pair against the
- * captured `groupEvent` / `ungroupEvent` stringID aliases (which
- * resolve to `GrpL` / `Ungr` charIDs on PS 27.x).
+ * Snippet-vs-spec test for the Clipping Mask primitives
+ * (2026-06-04 Bundle 5). Create pins the captured `groupEvent`
+ * stringID (alias of `GrpL`). Release pins the `Ungr` charID —
+ * there is NO `ungroupEvent` stringID alias; dispatching one fails
+ * with `The command "<unknown>" is not currently available`.
  *
  * Spec: src/spec/ps27/layer-ops/create-clipping-mask.ts
  * Capture: JS-32-Clip-Mask.log
@@ -20,12 +21,17 @@ describe.skipIf(!goCoreBinaryAvailable)('spec: layer-ops/create-clipping-mask', 
     expect(jsx).not.toContain('ungroupLayersEvent');
   });
 
-  it('releaseClippingMask dispatches the ungroupEvent stringID', async () => {
+  it('releaseClippingMask dispatches the Ungr charID behind a grouped guard', async () => {
     const jsx = await goBuild('releaseClippingMask', {});
-    expect(jsx).toContain("executeAction(sTID('ungroupEvent')");
+    expect(jsx).toContain("executeAction(cTID('Ungr')");
     expect(jsx).toContain("releaseRef.putEnumerated(cTID('Lyr '), cTID('Ordn'), cTID('Trgt'))");
-    // Same alias-disambiguation guard — ungroupEvent (release clip) is
-    // distinct from ungroupLayersEvent (dissolve a layer group).
+    // Idempotency guard: raw 'Ungr' on a non-clipped layer throws -25920,
+    // so the snippet must check clip state and no-op instead.
+    expect(jsx).toContain('doc.activeLayer.grouped');
+    // 'ungroupEvent' is not a registered stringID (typeIDToStringID of
+    // 'Ungr' is "ungroup") — dispatching it fails as command "<unknown>".
+    expect(jsx).not.toContain('ungroupEvent');
+    // And it stays distinct from the LayerSet ungroupLayersEvent.
     expect(jsx).not.toContain('ungroupLayersEvent');
   });
 });

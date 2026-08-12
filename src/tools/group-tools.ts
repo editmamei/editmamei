@@ -233,7 +233,7 @@ export function createGroupTools(
       tool: {
         name: 'ps_release_clipping_mask',
         description:
-          "Release the active layer's clipping mask (the inverse of ps_create_clipping_mask). The layer returns to compositing against the whole canvas instead of just the layer below. Equivalent to PS menu Layer > Release Clipping Mask. Idempotent on a non-clipped layer (PS silently no-ops).",
+          "Release the active layer's clipping mask (the inverse of ps_create_clipping_mask). The layer returns to compositing against the whole canvas instead of just the layer below. Equivalent to PS menu Layer > Release Clipping Mask. Idempotent on a non-clipped layer (no-ops and returns released:false).",
         inputSchema: { type: 'object', properties: {}, required: [] },
         outputSchema: {
           type: 'object',

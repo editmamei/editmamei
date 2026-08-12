@@ -35,8 +35,12 @@
  * pin it with a `.not.toContain` regression test to prevent a refactor
  * from flipping to a fictional event ID.
  *
- * The release / inverse operation is `Ungr` charID / `ungroupEvent`
- * stringID — same alias pattern.
+ * The release / inverse operation is the `Ungr` charID, whose stringID
+ * is `"ungroup"` (`typeIDToStringID(charIDToTypeID("Ungr")) === "ungroup"`,
+ * PS 27.2.0). The alias pattern does NOT extrapolate: there is no
+ * `ungroupEvent` stringID, and dispatching `sTID("ungroupEvent")` fails
+ * with `The command "<unknown>" is not currently available`. Use the
+ * charID form for the release event.
  */
 
 import type { AmEventSpec } from '../../types.js';
@@ -59,9 +63,9 @@ export const createClippingMaskSpec: AmEventSpec = {
   knownGotchas: [
     "COVERAGE GAP (HIGH) — there is no standalone `ps_create_clipping_mask` tool. The only clipping behavior in the codebase is the inline `clip_to_below: true` branch of `ps_add_adjustment_layer` in `go-core/cmd/buildtemplates/fragments_adjustments.go` (`vault.AdjLOuter`). The 2026-06-03 audit (Group C, STEP 32) recommends adding `ps_create_clipping_mask` and `ps_release_clipping_mask` as tier-`'dev'` tools.",
     'Event ID has two paired aliases: `GrpL` (charID — emitted by the PS menu capture) and `groupEvent` (stringID — used by the inline implementation in `addAdjustmentLayer`). Both resolve to the same internal event in modern PS. Verified: `app.typeIDToStringID(app.charIDToTypeID("GrpL")) === "groupEvent"` in PS 27.x.',
-    "Inverse operation (release clipping mask) is `Ungr` charID / `ungroupEvent` stringID — same alias pattern. NOT the same as the layer-section `ungroupLayersEvent` used by `ps_ungroup`. Three distinct stringIDs: `groupEvent` (clip to below), `ungroupEvent` (release clipping mask), `ungroupLayersEvent` (dissolve a layer group). Don't confuse them.",
+    'Inverse operation (release clipping mask) is the `Ungr` charID, stringID `"ungroup"`. There is NO `ungroupEvent` stringID — the GrpL↔groupEvent alias pattern does not extrapolate, and `sTID("ungroupEvent")` fails at dispatch with `The command "<unknown>" is not currently available` (verified live, PS 27.2.0 Windows). Also NOT the same as the layer-section `ungroupLayersEvent` used by `ps_ungroup`. Three distinct events: `groupEvent` (clip to below), `Ungr`/"ungroup" (release clipping mask), `ungroupLayersEvent` (dissolve a layer group).',
     'The clipping mask is conceptually "use the layer below as the alpha source for this layer." It requires the layer below to exist; PS silently no-ops if the active layer is at the bottom of the document.',
-    'When adding the future standalone tool, pin both the `GrpL` ↔ `groupEvent` alias and the `Ungr` ↔ `ungroupEvent` alias with `.not.toContain` regression guards on legacy / fictional event IDs (see docs/engineering/am-descriptor-conventions.md "Forum-lore event IDs — verify before shipping").',
+    'Pin the event IDs with `.not.toContain` regression guards on legacy / fictional forms (see docs/engineering/am-descriptor-conventions.md "Forum-lore event IDs — verify before shipping"). This spec itself fell into that trap: it originally asserted an `Ungr` ↔ `ungroupEvent` alias by extrapolation from GrpL↔groupEvent, and the fictional stringID shipped in the release snippet. tests/spec/clipping-mask.test.ts now guards `.not.toContain("ungroupEvent")`.',
   ],
   versionNotes: [
     'Capture from PS 27.7.0 Windows; the GrpL/groupEvent alias has been stable since at least PS 21.',
