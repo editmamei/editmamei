@@ -136,7 +136,7 @@ hidden fields.
   "editmamei_version": "0.24.1",
   "edition": "community",
   "platform": "win32",
-  "ps_version": "2026",
+  "ps_version": "27.8.0",
   "tool": "ps_add_adjustment_layer",
   "success": true,
   "error_class": null,
@@ -153,7 +153,7 @@ hidden fields.
 | `editmamei_version` | Which Editmamei version you're on. |
 | `edition` | `community` or `pro`. |
 | `platform` | Operating system only (`win32`, `darwin`, `linux`). |
-| `ps_version` | Your Photoshop version (e.g. `2026`), or `unknown`. |
+| `ps_version` | Your Photoshop version (e.g. `27.8.0`), or `unknown`. |
 | `tool` | The tool name that ran (e.g. `ps_add_adjustment_layer`). |
 | `success` | Whether the call succeeded. |
 | `error_class` | On failure, a short error **category** (e.g. `missing_pixel_layer`), never a message or free text. `null` on success. |
@@ -224,7 +224,7 @@ No image content, no paths, no tool arguments — an enum outcome plus the modul
   "editmamei_version": "0.24.1",
   "edition": "community",
   "platform": "win32",
-  "ps_version": "2026",
+  "ps_version": "27.8.0",
   "tool_call_count": 47,
   "distinct_tools": 11,
   "any_failures": true
@@ -246,7 +246,7 @@ Sent **only** when you set `telemetry.diagnostics true`, and only when something
   "ts_bucket": "2026-06-15",
   "editmamei_version": "0.24.1",
   "platform": "win32",
-  "ps_version": "2026",
+  "ps_version": "27.8.0",
   "tool": "ps_apply_adjustment",
   "error_class": "am_descriptor_no_op",
   "error_message": "…sanitized; paths reduced to filenames…",

@@ -661,7 +661,8 @@ describe('psVersion is resolved opportunistically, not only by ps_ping', () => {
       },
     });
     server.session.connection = fakeConn;
-    server.snippetClient = makeSnippetClient();
+    const snippetClient = makeSnippetClient();
+    server.snippetClient = snippetClient;
     server.toolRegistry.register('test_tool_concurrent_probe', {
       tool: {
         name: 'test_tool_concurrent_probe',
@@ -683,6 +684,12 @@ describe('psVersion is resolved opportunistically, not only by ps_ping', () => {
       expect(server.psVersion).toBe('27.8.0');
     });
 
+    // All three callers must actually have entered the probe body — build() runs
+    // before the liveness check, so it counts guard entries. Asserting this keeps
+    // the round-trip assertion below honest: if a fixture ever gains a real async
+    // hop, the contended window closes and this drops below 3, failing loudly
+    // instead of passing vacuously against an unfixed check-and-set.
+    expect(snippetClient.allBuilds().filter((c) => c.name === 'pingState')).toHaveLength(3);
     expect(pingStateAttempts).toBe(1);
   });
 

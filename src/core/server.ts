@@ -170,8 +170,8 @@ export class EditmameiServer {
    * then the user reopens Photoshop and works for an hour without ever calling
    * ps_ping — ps_version stays 'unknown' for a session that genuinely drove
    * Photoshop the whole time. See resolveLiveVersionInBackground for the full
-   * shape, including the accepted concurrent-double-fire trade this ordering
-   * implies.
+   * shape: callers that pass the initial guard together converge on a
+   * check-and-set at the commit point, so exactly one round trip runs.
    */
   private liveVersionResolutionAttempted = false;
   /** A newer published version, if the boot-time check found one. Surfaced on ps_ping. */
