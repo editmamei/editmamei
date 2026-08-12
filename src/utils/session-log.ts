@@ -170,6 +170,29 @@ export function generateSessionId(now: Date = new Date()): string {
 /**
  * Ordered table of error-class patterns, first match wins.
  *
+ * Every message this table sees arrives WRAPPED in a tool-handler prefix
+ * ("Error selecting layer: <cause>"), so all patterns are substring matches
+ * on the cause, never anchored to the start. Class tokens must satisfy the
+ * telemetry server's `^[a-z0-9_]{1,48}$` contract (`normalizeErrorClass`
+ * clamps defensively, but conforming here keeps the wire token readable).
+ *
+ * Tier ordering (specific state before generic outcome):
+ *   input errors → app/session state → target-not-found → layer-state
+ *   preconditions → PS-native outcomes → generic "<op> failed:" wrapper.
+ * The generic wrapper is LAST on purpose: "Select Subject failed: <PS
+ * tail>" carries the diagnostic content in the tail, so the tail's class
+ * (unavailable / timeout / general error) must win over the wrapper's.
+ *
+ * `ps_empty_error`'s phrase rule (the photoshop-api.ts empty-envelope
+ * synthetics) is deliberately FIRST in the table: those messages narrate
+ * several possible causes by name — a modal, "a prior timeout" (and
+ * `/timed? ?out/` matches the bare word "timeout"), "no active
+ * document" — so any cause-word class checked earlier would steal them.
+ * The envelope being empty is the one thing actually known. Its
+ * trailing-colon variant (a wrapper prefix whose PS cause was empty,
+ * "Error deselecting: ") instead sits LAST before the generic wrapper, so
+ * a specific cause always wins over mere emptiness.
+ *
  * `timeout` is deliberately checked BEFORE `ps_modal_blocking` (Phase 3a,
  * 2026-07). `run-child.ts`'s reworded timeout message still names a modal
  * dialog as one *possible* cause (alongside a genuinely slow operation), so
@@ -177,27 +200,65 @@ export function generateSessionId(now: Date = new Date()): string {
  * `ps_modal_blocking` purely from the word "modal" appearing in the
  * message — the exact mis-attribution this fix is for: modal *detection*
  * does not exist in this product, and the incident that prompted this
- * ordering was a plain slow Camera Raw open, not a modal. A message is only
- * classified `ps_modal_blocking` now when it reports a modal WITHOUT also
- * being a timeout (e.g. the empty-PS-error-envelope synthetic message in
- * `photoshop-api.ts`, which never contains "Script execution timeout").
+ * ordering was a plain slow Camera Raw open, not a modal.
  */
 export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> = [
+  // ── Empty-envelope synthetics (must precede every cause-word class) ──────
+  { errorClass: 'ps_empty_error', pattern: /returned an empty error|failed with no message/i },
+  // ── Input errors ─────────────────────────────────────────────────────────
   {
     errorClass: 'schema_validation',
-    pattern: /\bvalidat|required.*field|must be.*type|invalid (input|argument)/i,
+    pattern:
+      /\bvalidat|required.*field|missing required argument|must be.*type|invalid (input|argument)/i,
   },
-  { errorClass: 'layer_not_found', pattern: /layer .* not found|no layer named/i },
+  {
+    errorClass: 'invalid_argument',
+    pattern: /unknown [^:]{1,30}:|invalid |illegal argument|must be |out of bounds|unsupported/i,
+  },
+  // ── App / session state ──────────────────────────────────────────────────
+  { errorClass: 'ps_not_detected', pattern: /photoshop info not available/i },
+  {
+    errorClass: 'ps_not_running',
+    pattern: /CreateObject|photoshop.*not.*running|cannot connect.*photoshop|connection.*failed/i,
+  },
+  { errorClass: 'no_document', pattern: /no active document|no document is open/i },
+  { errorClass: 'no_active_layer', pattern: /no active layer|document has no layers/i },
+  {
+    errorClass: 'no_selection',
+    pattern: /no active selection|requires an active selection|make a selection/i,
+  },
+  // ── Target not found ─────────────────────────────────────────────────────
+  { errorClass: 'layer_not_found', pattern: /layer.*not found|no layer named/i },
+  { errorClass: 'group_not_found', pattern: /group not found/i },
+  { errorClass: 'channel_not_found', pattern: /channel not found|channel named/i },
+  { errorClass: 'path_not_found', pattern: /no path named|no paths to|no work path/i },
+  { errorClass: 'font_not_found', pattern: /font not found/i },
+  {
+    errorClass: 'file_not_found',
+    pattern: /file not found|map not found|lut not found|could not open lut/i,
+  },
+  { errorClass: 'face_not_found', pattern: /no face mesh|no face detected/i },
+  // ── Layer-state preconditions ────────────────────────────────────────────
+  { errorClass: 'background_layer', pattern: /background layer/i },
+  { errorClass: 'layer_locked', pattern: /is locked|fully locked|locked layer/i },
+  {
+    errorClass: 'wrong_layer_kind',
+    pattern: /pixel layer|text layer|smart object layer|layer kind|rasterize it first/i,
+  },
+  // ── PS-native outcomes ───────────────────────────────────────────────────
   { errorClass: 'ps_command_unavailable', pattern: /not currently available/i },
   { errorClass: 'timeout', pattern: /timed? ?out|Script execution timeout|exceeded.*bytes/i },
   {
     errorClass: 'ps_modal_blocking',
     pattern: /modal.*dialog|dialog.*blocking|blocked.*modal|photoshop.*modal/i,
   },
-  {
-    errorClass: 'ps_not_running',
-    pattern: /CreateObject|photoshop.*not.*running|cannot connect.*photoshop|connection.*failed/i,
-  },
+  { errorClass: 'ai_selection_no_result', pattern: /returned no result/i },
+  { errorClass: 'ps_general_error', pattern: /general photoshop error/i },
+  { errorClass: 'ps_no_such_element', pattern: /no such element/i },
+  { errorClass: 'write_not_verified', pattern: /did not verify/i },
+  // ── Empty cause / generic wrapper (keep last) ────────────────────────────
+  { errorClass: 'ps_empty_error', pattern: /:\s*$/ },
+  { errorClass: 'ps_op_failed', pattern: /failed[: (]/i },
 ];
 
 /** Classify an error string into one of the known error classes. Returns null for success (no error). */
