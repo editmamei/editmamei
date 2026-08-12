@@ -693,6 +693,56 @@ describe('psVersion is resolved opportunistically, not only by ps_ping', () => {
     expect(pingStateAttempts).toBe(1);
   });
 
+  // The commit-point re-check tests the resolved version as well as the latch, because a
+  // concurrent ps_ping resolves psVersion without touching the latch. A probe already
+  // between its awaits when that lands has nothing left to fetch, so it must abandon the
+  // round trip rather than spend the queue on a value it already has.
+  it('skips the probe round trip when a concurrent ps_ping resolves the version first', async () => {
+    const server = new EditmameiServer() as unknown as PsVersionServer;
+    let pingStateAttempts = 0;
+    const fakeConn = makeConnection({
+      info: { version: '26.3', path: 'C:/x/Photoshop.exe' },
+      resultFor: (script) => {
+        if (script.includes('pingState')) {
+          pingStateAttempts++;
+          return { version: '27.8.0' };
+        }
+        return { status: 'ok' };
+      },
+    });
+    server.session.connection = fakeConn;
+    // Land the version mid-probe: build() runs after the entry guard and before the
+    // commit-point re-check, so this stands in for a ps_ping resolving concurrently.
+    server.snippetClient = {
+      build: async (name: string) => {
+        if (name === 'pingState') server.psVersion = '27.8.0';
+        return JSON.stringify({ __snippet: name });
+      },
+    } as unknown as typeof server.snippetClient;
+    server.toolRegistry.register('test_tool_version_lands_mid_probe', {
+      tool: {
+        name: 'test_tool_version_lands_mid_probe',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        await fakeConn.executeScript('some real tool script');
+        return { content: [{ type: 'text', text: 'ok' }], structuredContent: {} };
+      },
+    });
+
+    await server.handleToolCall('test_tool_version_lands_mid_probe', {});
+    await vi.waitFor(() => {
+      expect(server.psVersion).toBe('27.8.0');
+    });
+    // psVersion lands inside build(), i.e. BEFORE the probe would reach runScript — so
+    // waiting on it alone would assert on the round-trip count too early and pass no
+    // matter what the re-check does. Give the probe room to finish first.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(pingStateAttempts).toBe(0);
+  });
+
   // N2 — the probe must not inherit the runners' 30s DEFAULT_SCRIPT_TIMEOUT_MS.
   // Left unbounded it would hold the shared FIFO script queue (ScriptQueue) for up
   // to 30s on a stuck Photoshop, making the user's NEXT real tool call wait behind
