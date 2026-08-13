@@ -156,7 +156,7 @@ hidden fields.
 | `ps_version` | Your Photoshop version (e.g. `27.8.0`), or `unknown`. |
 | `tool` | The tool name that ran (e.g. `ps_add_adjustment_layer`). |
 | `success` | Whether the call succeeded. |
-| `error_class` | On failure, a short error **category** (e.g. `missing_pixel_layer`), never a message or free text. `null` on success. |
+| `error_class` | On failure, a short error **category** (e.g. `wrong_layer_kind`), never a message or free text. `null` on success. |
 | `duration_ms` | How long the call took, in milliseconds. |
 
 ### Session start: once when Editmamei launches (on by default)

@@ -149,6 +149,142 @@ describe('classifyError', () => {
     expect(classifyError(message)).toBe('timeout');
   });
 
+  // The go-core throws `'Layer not found: ' + name` — colon AFTER "not
+  // found", nothing between "layer" and "not found". The pre-Go-migration
+  // pattern (`/layer .* not found/`) required the name BETWEEN them, so every
+  // real engine miss classified as 'other'. These pin the engine's actual
+  // wording, including the tool-handler wrapper it always arrives in.
+  it('classifies the go-core "Layer not found:" wording, not just the legacy shape', () => {
+    expect(classifyError('Layer not found: Curves 1')).toBe('layer_not_found');
+    expect(classifyError('Error selecting layer: Layer not found: sky')).toBe('layer_not_found');
+    expect(classifyError('layer_to_move not found: Retouch')).toBe('layer_not_found');
+    expect(classifyError('target_layer_name not found: Base')).toBe('layer_not_found');
+  });
+
+  it('classifies app/session-state guards', () => {
+    expect(
+      classifyError(
+        'Error creating layer: Photoshop info not available. Please detect Photoshop first.'
+      )
+    ).toBe('ps_not_detected');
+    expect(classifyError('Error selecting layer: No active document')).toBe('no_document');
+    expect(classifyError('No document is open in Photoshop. Open an image first.')).toBe(
+      'no_document'
+    );
+    expect(classifyError('No active layer')).toBe('no_active_layer');
+    expect(classifyError('Document has no layers')).toBe('no_active_layer');
+    expect(classifyError('No active selection to feather')).toBe('no_selection');
+    expect(
+      classifyError('Content-Aware Fill requires an active selection. Make a selection first.')
+    ).toBe('no_selection');
+  });
+
+  it('classifies the target-not-found family', () => {
+    expect(classifyError('Group not found: Effects')).toBe('group_not_found');
+    expect(classifyError('Channel not found: luminosity (have: Red, Green, Blue)')).toBe(
+      'channel_not_found'
+    );
+    expect(classifyError('No alpha channel named mask-stash')).toBe('channel_not_found');
+    expect(classifyError('No path named cutline')).toBe('path_not_found');
+    expect(
+      classifyError('No work path to save. Create one with op=create_from_selection first.')
+    ).toBe('path_not_found');
+    expect(classifyError('Font not found: Futura')).toBe('font_not_found');
+    expect(classifyError('Image file not found: input.jpg')).toBe('file_not_found');
+    expect(classifyError('Color Lookup: LUT not found: teal.cube')).toBe('file_not_found');
+    expect(classifyError('Displacement map not found: ripple.psd')).toBe('file_not_found');
+    expect(classifyError('No face mesh resolved in the active document — nothing to select.')).toBe(
+      'face_not_found'
+    );
+  });
+
+  it('classifies layer-state preconditions', () => {
+    expect(
+      classifyError(
+        'Cannot apply layer style to a background layer. Convert it to a normal layer first.'
+      )
+    ).toBe('background_layer');
+    expect(classifyError('Could not promote background layer: locked')).toBe('background_layer');
+    expect(classifyError('brush-stroke: active layer is locked. Unlock before stroking.')).toBe(
+      'layer_locked'
+    );
+    expect(classifyError('Cannot fill a fully locked layer: Base')).toBe('layer_locked');
+    expect(classifyError('Shadows/Highlights requires a pixel layer (kind=adjustment)')).toBe(
+      'wrong_layer_kind'
+    );
+    expect(classifyError('Active layer is not a text layer')).toBe('wrong_layer_kind');
+    expect(
+      classifyError('new_via_copy requires a Smart Object layer (active layer kind is normal)')
+    ).toBe('wrong_layer_kind');
+  });
+
+  it('classifies engine argument rejections as invalid_argument', () => {
+    expect(classifyError('Unknown adjustment type: vibrancy')).toBe('invalid_argument');
+    expect(classifyError('Unknown blend mode: overlaid')).toBe('invalid_argument');
+    expect(classifyError('Invalid position. Use: ABOVE, BELOW, TOP, or BOTTOM')).toBe(
+      'invalid_argument'
+    );
+    expect(classifyError('Feather radius must be > 0; got -2')).toBe('invalid_argument');
+    expect(classifyError('History state index out of bounds: 99')).toBe('invalid_argument');
+    expect(classifyError('Illegal Argument')).toBe('invalid_argument');
+    // "unknown" without the "Unknown <noun>:" shape is NOT an argument
+    // rejection — PS's own "unknown error" must stay out of this class.
+    expect(classifyError('An unknown error occurred')).toBe('other');
+  });
+
+  it('classifies missing required arguments as schema_validation', () => {
+    expect(classifyError('Error selecting layer: Missing required argument: name')).toBe(
+      'schema_validation'
+    );
+  });
+
+  it('classifies PS-native outcomes', () => {
+    expect(
+      classifyError(
+        'Error executing custom script: General Photoshop error occurred. This functionality may not be available in this version of Photoshop.'
+      )
+    ).toBe('ps_general_error');
+    expect(classifyError('Error executing custom script: No such element')).toBe(
+      'ps_no_such_element'
+    );
+    expect(classifyError('Layer visibility write did not verify: requested true, got false')).toBe(
+      'write_not_verified'
+    );
+    expect(
+      classifyError(
+        'Select Sky returned no result. PS does not distinguish between the AI model being unavailable and no sky.'
+      )
+    ).toBe('ai_selection_no_result');
+  });
+
+  // The empty-envelope synthetics narrate several possible causes by name
+  // (a modal, "a prior timeout", "no active document"). The envelope being
+  // empty is the one thing actually KNOWN, so the phrase rule sits first in
+  // the table — these pin that none of the narrated cause-words steal it.
+  it('classifies the empty-envelope synthetics as ps_empty_error despite the cause words they narrate', () => {
+    const envelope =
+      'Photoshop returned an empty error — the script failed with no message. ' +
+      'This usually means PS is in a stuck/modal state (a leaked preview duplicate ' +
+      'or a pending dialog from a prior timeout), or there is no active document. ' +
+      'Check that a document is open and try once more; if it persists, dismiss any ' +
+      'open Photoshop dialog.';
+    expect(classifyError(envelope)).toBe('ps_empty_error');
+  });
+
+  it('classifies a wrapper prefix with an empty PS cause as ps_empty_error, a non-empty one by its tail', () => {
+    expect(classifyError('Error deselecting: ')).toBe('ps_empty_error');
+    expect(classifyError('Stamp Visible failed: ')).toBe('ps_empty_error');
+    expect(classifyError('Magic Wand failed: doc.magicWandSelect is not a function')).toBe(
+      'ps_op_failed'
+    );
+    // The PS-native tail is more diagnostic than the "<op> failed:" wrapper.
+    expect(
+      classifyError(
+        'Select Subject failed: The command "Select Subject" is not currently available.'
+      )
+    ).toBe('ps_command_unavailable');
+  });
+
   it('returns other for unrecognized errors', () => {
     expect(classifyError('some weird error')).toBe('other');
     expect(classifyError('')).toBe('other');
@@ -162,6 +298,12 @@ describe('classifyError', () => {
     expect(classes).toContain('ps_modal_blocking');
     expect(classes).toContain('ps_not_running');
     expect(classes).toContain('timeout');
+  });
+
+  it('every class token satisfies the telemetry server error_class contract', () => {
+    for (const { errorClass } of ERROR_CLASS_TABLE) {
+      expect(errorClass).toMatch(/^[a-z0-9_]{1,48}$/);
+    }
   });
 });
 
