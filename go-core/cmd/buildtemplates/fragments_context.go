@@ -577,12 +577,17 @@ function normName(s) {
 		//
 		// Bounded on purpose. At most 8 names, each clipped to 40 characters, the
 		// rest counted as "(+N more)" — an unbounded list on a 300-layer document
-		// would bury the actual error. Non-ASCII characters in names are escaped
-		// as \uXXXX: the Windows cscript stdout transport is codepage-bound and
-		// flattens raw non-ASCII to '?' (measured live, PS 27.2.0 — a document
-		// name of U+80CC U+666F arrived as '??'), while the escape survives any
-		// transport losslessly and the list's reader is an LLM, which reads
-		// \uXXXX fine. The list is for reading, not for matching against.
+		// would bury the actual error. Characters outside printable ASCII — plus
+		// backslash, so the encoding is injective — are escaped as \uXXXX in both
+		// the requested name and the list: the Windows cscript stdout transport
+		// is codepage-bound and flattens raw non-ASCII to '?' (measured live,
+		// PS 27.2.0), while the escape survives any transport and the reader is
+		// an LLM, which reads \uXXXX fine. The clip backs off to the last
+		// complete escape so a truncated name never ends in a dangling half
+		// escape. A walk that partially failed appends "(list may be
+		// incomplete)" instead of presenting a truncated enumeration as
+		// authoritative; a walk that broke before counting anything emits no
+		// "Have:" clause at all. The list is for reading, not matching.
 		//
 		// The wording is load-bearing for telemetry. ERROR_CLASS_TABLE in
 		// src/utils/session-log.ts classifies these messages, so "Have:" and
@@ -592,29 +597,42 @@ function normName(s) {
 function __notFoundMessage(label, requested, groupsOnly) {
   var kept = [];
   var total = 0;
-  function consider(layer) {
-    total++;
-    if (kept.length >= 8) return;
-    var nm = String(layer.name);
-    var esc = '';
-    for (var c = 0; c < nm.length; c++) {
-      var code = nm.charCodeAt(c);
-      if (code >= 32 && code <= 126) {
-        esc += nm.charAt(c);
+  var walkBroke = false;
+  function __nfEsc(s) {
+    var out = '';
+    for (var c = 0; c < s.length; c++) {
+      var code = s.charCodeAt(c);
+      if (code >= 32 && code <= 126 && code !== 92) {
+        out += s.charAt(c);
       } else {
         var hex = code.toString(16);
         while (hex.length < 4) hex = '0' + hex;
-        esc += '\\u' + hex;
+        out += '\\u' + hex;
       }
     }
-    nm = esc;
-    if (nm.length > 40) nm = nm.substring(0, 40) + '...';
+    return out;
+  }
+  function consider(layer) {
+    var nm = '';
+    try { nm = String(layer.name); } catch (eN) { walkBroke = true; return; }
+    total++;
+    if (kept.length >= 8) return;
+    nm = __nfEsc(nm);
+    if (nm.length > 40) {
+      nm = nm.substring(0, 40);
+      var cut = nm.lastIndexOf('\\u');
+      if (cut > 34) nm = nm.substring(0, cut);
+      nm = nm + '...';
+    }
     kept.push(nm);
   }
-  var walkBroke = false;
   function walk(layers, depth) {
-    for (var i = 0; i < layers.length; i++) {
-      var l = layers[i];
+    var n = 0;
+    try { n = layers.length; } catch (eL) { walkBroke = true; return; }
+    for (var i = 0; i < n; i++) {
+      var l = null;
+      try { l = layers[i]; } catch (eI) { walkBroke = true; continue; }
+      if (!l) continue;
       var isGroup = false;
       try { isGroup = (l instanceof LayerSet); } catch (eG) {}
       if (isGroup || !groupsOnly) consider(l);
@@ -625,7 +643,7 @@ function __notFoundMessage(label, requested, groupsOnly) {
   }
   try { walk(app.activeDocument.layers, 0); } catch (eW) { walkBroke = true; }
   if (walkBroke && total === 0) {
-    return label + ' not found: ' + requested;
+    return label + ' not found: ' + __nfEsc(String(requested));
   }
   var have;
   if (total === 0) {
@@ -633,8 +651,9 @@ function __notFoundMessage(label, requested, groupsOnly) {
   } else {
     have = kept.join(', ');
     if (total > kept.length) have += ' (+' + (total - kept.length) + ' more)';
+    if (walkBroke) have += ' (list may be incomplete)';
   }
-  return label + ' not found: ' + requested + '. Have: ' + have;
+  return label + ' not found: ' + __nfEsc(String(requested)) + '. Have: ' + have;
 }
 `,
 

@@ -104,13 +104,18 @@ export function sanitizeMessage(input: string, maxLen: number = MAX_MESSAGE_LEN)
   }
   out = redactGenericUserDirs(out);
   out = basenamePaths(out);
-  // Name-miss errors enumerate OTHER layer/group/channel names off the
-  // user's canvas ("… not found: X. Have: a, b, c (+2 more)" and the
-  // channel-miss "(have: …)" idiom). Layer names are user content — client
-  // names, project names — so the diagnostic copy keeps the message shape
-  // but drops the inventory. The local session NDJSON keeps the full text.
-  out = out.replace(/\. Have: .*$/s, '. Have: [names redacted]');
-  out = out.replace(/\(have: [^)]*\)/gi, '(have: [names redacted])');
+  // Everything after a "not found:" marker is user content: the requested
+  // name (a tool argument — the privacy doc promises arguments never ship)
+  // and the "Have:" / "(have: …)" inventories of OTHER layer/group/channel
+  // names off the user's canvas. One rule drops all of it to end-of-line.
+  // Per-line on purpose: a multi-line stderr tail keeps its later lines
+  // (the error number and stack are why the tail exists), and a name cannot
+  // smuggle a newline past the redaction — the enriched messages
+  // \uXXXX-escape control characters before they ever reach this function.
+  // An earlier two-rule version scoped to the inventories alone
+  // under-redacted: its channel rule stopped at the first ')' inside a
+  // name. The local session NDJSON keeps the full text.
+  out = out.replace(/\bnot found: [^\n]*/gi, 'not found: [redacted]');
   // Any backslash left (the server rejects them) → forward slash.
   out = out.replace(/\\/g, '/');
   // The server rejects a value that starts with a separator.

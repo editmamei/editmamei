@@ -274,6 +274,11 @@ export class TelemetryClient {
    * PREVIOUS process, whose `unknown` events belong to a Photoshop session this one knows
    * nothing about — `flushOutboxOnStartup` deliberately does not come through here. Mutates
    * in place; the caller has already detached the batch from the queue.
+   *
+   * Scope is every queued event carrying a `ps_version` dimension — usage, and in principle
+   * session_start/diagnostic too (session_start flushes at boot before a ping can resolve,
+   * so its `unknown` genuinely means "not yet detected at boot" and in practice never waits
+   * long enough to be re-stamped).
    */
   private restampPsVersion(events: TelemetryEvent[]): TelemetryEvent[] {
     const resolved = this.dims.getPsVersion();

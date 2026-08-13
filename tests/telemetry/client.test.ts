@@ -549,4 +549,27 @@ describe('ps_version re-stamping at flush', () => {
     const sent = rec.batches[0]!.filter((e) => e.type === 'usage');
     expect(sent.map((e) => (e as { ps_version: string }).ps_version)).toEqual(['unknown']);
   });
+
+  // The two exclusions the re-stamp advertises, pinned directly against the
+  // method — via the public API the summary is built and re-stamped in the
+  // same tick with the same dims, so exclusion and coincidence are
+  // indistinguishable from outside.
+  it('excludes session_summary from the re-stamp by type, not by timing', () => {
+    const c = makeClient(makeSettings(), recorder(), { getPsVersion: () => '27.1.0' });
+    const summary = { type: 'session_summary', ps_version: 'unknown' };
+    const usage = { type: 'usage', ps_version: 'unknown' };
+    (c as unknown as { restampPsVersion(e: unknown[]): unknown[] }).restampPsVersion([
+      summary,
+      usage,
+    ]);
+    expect(summary.ps_version).toBe('unknown');
+    expect(usage.ps_version).toBe('27.1.0');
+  });
+
+  it('does not add a ps_version field to module_status (which carries none)', () => {
+    const c = makeClient(makeSettings(), recorder(), { getPsVersion: () => '27.1.0' });
+    const mod = { type: 'module_status' };
+    (c as unknown as { restampPsVersion(e: unknown[]): unknown[] }).restampPsVersion([mod]);
+    expect('ps_version' in mod).toBe(false);
+  });
 });

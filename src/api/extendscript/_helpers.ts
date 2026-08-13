@@ -74,29 +74,42 @@ export const notFoundMessageHelper = `
 function __notFoundMessage(label, requested, groupsOnly) {
   var kept = [];
   var total = 0;
-  function consider(layer) {
-    total++;
-    if (kept.length >= 8) return;
-    var nm = String(layer.name);
-    var esc = '';
-    for (var c = 0; c < nm.length; c++) {
-      var code = nm.charCodeAt(c);
-      if (code >= 32 && code <= 126) {
-        esc += nm.charAt(c);
+  var walkBroke = false;
+  function __nfEsc(s) {
+    var out = '';
+    for (var c = 0; c < s.length; c++) {
+      var code = s.charCodeAt(c);
+      if (code >= 32 && code <= 126 && code !== 92) {
+        out += s.charAt(c);
       } else {
         var hex = code.toString(16);
         while (hex.length < 4) hex = '0' + hex;
-        esc += '\\\\u' + hex;
+        out += '\\\\u' + hex;
       }
     }
-    nm = esc;
-    if (nm.length > 40) nm = nm.substring(0, 40) + '...';
+    return out;
+  }
+  function consider(layer) {
+    var nm = '';
+    try { nm = String(layer.name); } catch (eN) { walkBroke = true; return; }
+    total++;
+    if (kept.length >= 8) return;
+    nm = __nfEsc(nm);
+    if (nm.length > 40) {
+      nm = nm.substring(0, 40);
+      var cut = nm.lastIndexOf('\\\\u');
+      if (cut > 34) nm = nm.substring(0, cut);
+      nm = nm + '...';
+    }
     kept.push(nm);
   }
-  var walkBroke = false;
   function walk(layers, depth) {
-    for (var i = 0; i < layers.length; i++) {
-      var l = layers[i];
+    var n = 0;
+    try { n = layers.length; } catch (eL) { walkBroke = true; return; }
+    for (var i = 0; i < n; i++) {
+      var l = null;
+      try { l = layers[i]; } catch (eI) { walkBroke = true; continue; }
+      if (!l) continue;
       var isGroup = false;
       try { isGroup = (l instanceof LayerSet); } catch (eG) {}
       if (isGroup || !groupsOnly) consider(l);
@@ -107,7 +120,7 @@ function __notFoundMessage(label, requested, groupsOnly) {
   }
   try { walk(app.activeDocument.layers, 0); } catch (eW) { walkBroke = true; }
   if (walkBroke && total === 0) {
-    return label + ' not found: ' + requested;
+    return label + ' not found: ' + __nfEsc(String(requested));
   }
   var have;
   if (total === 0) {
@@ -115,8 +128,9 @@ function __notFoundMessage(label, requested, groupsOnly) {
   } else {
     have = kept.join(', ');
     if (total > kept.length) have += ' (+' + (total - kept.length) + ' more)';
+    if (walkBroke) have += ' (list may be incomplete)';
   }
-  return label + ' not found: ' + requested + '. Have: ' + have;
+  return label + ' not found: ' + __nfEsc(String(requested)) + '. Have: ' + have;
 }
 `;
 

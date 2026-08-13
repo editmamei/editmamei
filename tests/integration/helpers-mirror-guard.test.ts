@@ -79,7 +79,7 @@ function normalize(js: string): string {
  * Extracts the raw-string body of a `vault.<Key>: \`...\`` map entry from a
  * go-core fragments_*.go source file. These fragments are static JS with no
  * `%s`-style fmt.Sprintf interpolation slots (confirmed by inspection —
- * none of the ten bodies contain a `%` character), so the extracted text is
+ * none of the eleven bodies contain a `%` character), so the extracted text is
  * the literal snippet body with no substitution to undo. Throws (rather
  * than returning an empty/undefined match) so a broken extraction fails
  * loudly instead of letting the guard vacuously pass.

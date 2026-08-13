@@ -450,4 +450,43 @@ describe('__notFoundMessage (behavioral, real emitted body)', () => {
       runNotFound('Group', 'edits', true, withLayers([group('invalid stuff')]));
     expect(classifyError(groupMiss)).toBe('group_not_found');
   });
+  it('marks a partially broken walk as incomplete instead of presenting a truncated list as authoritative', () => {
+    const layers = {
+      length: 3,
+      0: flat('Background'),
+      get 1(): unknown {
+        throw new Error('dead proxy');
+      },
+      2: flat('Sky'),
+    };
+    const msg = runNotFound('Layer', 'X', false, { activeDocument: { layers } });
+    expect(msg).toContain('Background');
+    expect(msg).toContain('Sky');
+    expect(msg).toContain('(list may be incomplete)');
+    expect(classifyError('Error selecting layer: ' + msg)).toBe('layer_not_found');
+  });
+
+  it('escapes backslash so the encoding is injective', () => {
+    // A layer literally named \u00e9 (six ASCII chars) must not collide with
+    // a layer actually named é.
+    const msg = runNotFound('Layer', 'X', false, withLayers([flat('\\u00e9'), flat('é')]));
+    expect(msg).toContain('\\u005cu00e9');
+    expect(msg).toContain(', \\u00e9');
+  });
+
+  it('clips to the last complete escape, never a dangling half escape', () => {
+    // 9 CJK characters escape to 54 chars; the 40-char cut lands mid-escape
+    // and must back off to a 6-char escape boundary.
+    const msg = runNotFound('Layer', 'X', false, withLayers([flat('背景テスト画像設定拡')]));
+    expect(msg).toMatch(/(?:\\u[0-9a-f]{4})+\.\.\./);
+    expect(msg).not.toMatch(/\\u[0-9a-f]{0,3}\.\.\./);
+  });
+
+  it('the helper body stays ES3 (Photoshop rejects modern syntax at runtime)', () => {
+    // new Function proves behavior under Node's parser, which accepts syntax
+    // ExtendScript's ES3 engine does not — pin the source shape too.
+    expect(notFoundMessageHelper).not.toMatch(/\b(const |let )/);
+    expect(notFoundMessageHelper).not.toContain('=>');
+    expect(notFoundMessageHelper).not.toMatch(/\.(map|forEach|filter|includes|trim)\(/);
+  });
 });

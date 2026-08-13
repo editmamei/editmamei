@@ -276,8 +276,12 @@ Before any diagnostic string leaves, it runs through a fixed cleanup pass:
 
 1. Home directory redacted (`C:\Users\you\…` → `~\…`).
 2. Absolute paths collapsed to their final filename (`C:\photos\client\shot.psd` → `shot.psd`).
-3. Backslashes normalized to forward slashes; leading separators stripped.
-4. Length capped (error message 2000 chars, step name 128, error-output tail 4000).
+3. Name-miss detail redacted: everything after a `not found:` marker — the name that was
+   asked for and any list of the layer/group/channel names that exist — becomes
+   `[redacted]`. Layer names are your content; the full message stays in the local
+   session log on your machine only.
+4. Backslashes normalized to forward slashes; leading separators stripped.
+5. Length capped (error message 2000 chars, step name 128, error-output tail 4000).
 
 As a final backstop, any event that still looks like it contains an absolute path is **dropped
 entirely** rather than sent.

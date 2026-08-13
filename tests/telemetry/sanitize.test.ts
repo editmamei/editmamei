@@ -89,23 +89,39 @@ describe('sanitizeMessage', () => {
     expect(sanitizeMessage('x'.repeat(5000)).length).toBeLessThanOrEqual(2000);
   });
 
-  // The not-found enrichment lists OTHER layer/group names off the user's
-  // canvas — user content (client names, project names) that must not ride
-  // a Category-B diagnostic off the machine. The message shape survives so
-  // classification and debugging still work; only the inventory is dropped.
-  it('redacts the "Have:" layer-name inventory from name-miss errors', () => {
+  // Everything after "not found:" is user content — the requested name is a
+  // tool argument (the doc promises arguments never ship) and the Have:/
+  // (have:) inventories name OTHER layers/channels off the user's canvas.
+  // The message shape survives so classification and debugging still work.
+  it('redacts the requested name and the "Have:" inventory from name-miss errors', () => {
     const out = sanitizeMessage(
-      'Error selecting layer: Layer not found: Curves 1. Have: ClientName-final, NDA-brand-mark (+3 more)'
+      'Error selecting layer: Layer not found: ClientShoot-v2. Have: ClientName-final, NDA-brand-mark (+3 more)'
     );
-    expect(out).toContain('Layer not found: Curves 1. Have: [names redacted]');
+    expect(out).toContain('Layer not found: [redacted]');
+    expect(out).not.toContain('ClientShoot-v2');
     expect(out).not.toContain('ClientName-final');
     expect(out).not.toContain('NDA-brand-mark');
   });
 
-  it('redacts the channel-miss "(have: …)" inventory', () => {
-    const out = sanitizeMessage('Channel not found: cutout (have: Red, Green, Blue, client-alpha)');
-    expect(out).toContain('Channel not found: cutout (have: [names redacted])');
-    expect(out).not.toContain('client-alpha');
+  it('a close-paren inside a channel name cannot break out of the redaction', () => {
+    // The earlier inventory-scoped rule used /\(have: [^)]*\)/ and stopped at
+    // the first ')' inside a name, leaking every name after it.
+    const out = sanitizeMessage(
+      'Channel not found: cutout (have: Red, Green, Blue, Alpha 1 (backup), ClientName-mask)'
+    );
+    expect(out).toContain('Channel not found: [redacted]');
+    expect(out).not.toContain('ClientName-mask');
+    expect(out).not.toContain('backup');
+  });
+
+  it('redacts per-line so a multi-line stderr tail keeps its later lines', () => {
+    const out = sanitizeMessage(
+      'Layer not found: X. Have: ClientA, ClientB\nPS error 1302 at line 55\nstack: doApply'
+    );
+    expect(out).toContain('Layer not found: [redacted]');
+    expect(out).not.toContain('ClientA');
+    expect(out).toContain('PS error 1302 at line 55');
+    expect(out).toContain('stack: doApply');
   });
 });
 
