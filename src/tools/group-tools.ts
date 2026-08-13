@@ -4,7 +4,7 @@ import type { SnippetClient } from '../api/snippet-client.js';
 import { runScript } from '../utils/run-script.js';
 import { GROUP_BLEND_MODES } from '../utils/blend-modes.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
-import { toolErrorResult, runSnippetTool } from '../utils/tool-helpers.js';
+import { toolErrorResult, runSnippetTool, unknownDiscriminator } from '../utils/tool-helpers.js';
 
 // ---------- Schemas ----------
 
@@ -104,11 +104,17 @@ const clippingMaskSchema: JsonSchemaObject = {
       type: 'string',
       enum: [...CLIPPING_MASK_OPS],
       description:
-        'create: clip the active layer to the layer directly below it (that layer becomes the alpha source). ' +
+        'create: clip the active layer to the layer directly below it (that layer becomes the alpha source); no-ops (already_clipped:true) when the layer is already clipped. ' +
         'release: release the active layer from its clipping mask; no-ops (released:false) when the layer is not clipped.',
     },
   },
   required: ['op'],
+};
+
+// Both ops are param-free once the discriminator is stripped by the dispatcher.
+const clippingMaskOpArgsSchema: JsonSchemaObject = {
+  type: 'object',
+  properties: {},
 };
 
 // ---------- Factory ----------
@@ -223,12 +229,13 @@ export function createGroupTools(
       tool: {
         name: 'ps_clipping_mask',
         description:
-          'Clip or un-clip the active layer against the layer directly below it — choose with `op`. `create`: use the layer below as the alpha source; PS paints the active layer only where the layer below has pixels. Non-destructive — the upper layer is unchanged. Common for constraining a texture/photo to a shape, or masking an effect to a single underlying layer (the add_adjustment_layer tool already accepts clip_to_below for the adjustment-layer-specific case). Equivalent to Layer > Create Clipping Mask (Ctrl+Alt+G). `release`: the inverse — the layer returns to compositing against the whole canvas. Idempotent on a non-clipped layer (no-ops and returns released:false).',
+          'Clip or un-clip the active layer against the layer directly below it — choose with `op`. `create`: use the layer below as the alpha source; PS paints the active layer only where the layer below has pixels. Non-destructive — the upper layer is unchanged. Common for constraining a texture/photo to a shape, or masking an effect to a single underlying layer (the add_adjustment_layer tool already accepts clip_to_below for the adjustment-layer-specific case). Equivalent to Layer > Create Clipping Mask (Ctrl+Alt+G). `release`: the inverse — the layer returns to compositing against the whole canvas. Both ops are idempotent: create no-ops (already_clipped:true) on an already-clipped layer; release no-ops (released:false) on a non-clipped layer.',
         inputSchema: clippingMaskSchema,
         outputSchema: {
           type: 'object',
           properties: {
             clipped: { type: 'boolean' },
+            already_clipped: { type: 'boolean' },
             released: { type: 'boolean' },
             layerName: { type: 'string' },
             context: { type: 'object' },
@@ -236,7 +243,7 @@ export function createGroupTools(
         },
         annotations: {
           title: 'Clipping Mask',
-          idempotentHint: false,
+          idempotentHint: true,
         },
       },
       handler: async (args) => clippingMask(connection, snippetClient, args),
@@ -269,43 +276,48 @@ export function createGroupTools(
 
 // ---------- Handlers ----------
 
+// ps_clipping_mask → create / release.
 async function clippingMask(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
-  let op: (typeof CLIPPING_MASK_OPS)[number];
-  try {
-    op = validateArgs(clippingMaskSchema, rawArgs).op as (typeof CLIPPING_MASK_OPS)[number];
-  } catch (error) {
-    return toolErrorResult('Error in clipping mask op', error);
+  const op = rawArgs.op;
+  const { op: _omit, ...rest } = rawArgs;
+  switch (op) {
+    case 'create':
+      return runSnippetTool({
+        connection,
+        snippetClient,
+        rawArgs: rest,
+        schema: clippingMaskOpArgsSchema,
+        snippet: 'createClippingMask',
+        errorPrefix: 'Error creating clipping mask',
+        successText: (result) => {
+          const r = result as { already_clipped?: boolean; layerName?: string };
+          return r.already_clipped === true
+            ? `Layer "${r.layerName ?? ''}" is already clipped — nothing to do.`
+            : `Clipped layer "${r.layerName ?? ''}" to the layer below.`;
+        },
+      });
+    case 'release':
+      return runSnippetTool({
+        connection,
+        snippetClient,
+        rawArgs: rest,
+        schema: clippingMaskOpArgsSchema,
+        snippet: 'releaseClippingMask',
+        errorPrefix: 'Error releasing clipping mask',
+        successText: (result) => {
+          const r = result as { released?: boolean; layerName?: string };
+          return r.released === false
+            ? `Layer "${r.layerName ?? ''}" is not clipped — nothing to release.`
+            : `Released clipping mask on layer "${r.layerName ?? ''}".`;
+        },
+      });
+    default:
+      return unknownDiscriminator('clipping_mask op', op, CLIPPING_MASK_OPS);
   }
-  if (op === 'create') {
-    return runSnippetTool({
-      connection,
-      snippetClient,
-      rawArgs,
-      schema: clippingMaskSchema,
-      snippet: 'createClippingMask',
-      errorPrefix: 'Error creating clipping mask',
-      successText: (result) =>
-        `Clipped layer "${(result as { layerName?: string }).layerName ?? ''}" to the layer below.`,
-    });
-  }
-  return runSnippetTool({
-    connection,
-    snippetClient,
-    rawArgs,
-    schema: clippingMaskSchema,
-    snippet: 'releaseClippingMask',
-    errorPrefix: 'Error releasing clipping mask',
-    successText: (result) => {
-      const r = result as { released?: boolean; layerName?: string };
-      return r.released === false
-        ? `Layer "${r.layerName ?? ''}" is not clipped — nothing to release.`
-        : `Released clipping mask on layer "${r.layerName ?? ''}".`;
-    },
-  });
 }
 
 async function createGroup(

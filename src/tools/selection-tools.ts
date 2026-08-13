@@ -5,7 +5,7 @@ import type { SnippetClient } from '../api/snippet-client.js';
 import { runScript } from '../utils/run-script.js';
 import { TempDir } from '../utils/temp.js';
 import { validateArgs, type JsonSchemaObject, type JsonSchemaProperty } from '../utils/validate.js';
-import { toolErrorResult, runSnippetTool } from '../utils/tool-helpers.js';
+import { toolErrorResult, runSnippetTool, unknownDiscriminator } from '../utils/tool-helpers.js';
 import { type DetectionClient } from '../detection/detection-client.js';
 import { OnnxLandmarkDetectionClient } from '../detection/landmark-detection-client.js';
 import { resolveExpectedPlacement, PLACEMENT_SCHEMA } from '../perception/grounding-locate.js';
@@ -1029,22 +1029,8 @@ async function selectSky(
 }
 
 // ---------- Consolidated dispatchers (Phase 1, 2026-06-20) ----------
-
-function unknownDiscriminator(
-  kind: string,
-  value: unknown,
-  allowed: readonly string[]
-): ToolResult {
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: `Error: unknown ${kind} "${String(value)}". Allowed: ${allowed.join(', ')}.`,
-      },
-    ],
-    isError: true,
-  };
-}
+// unknownDiscriminator moved to tool-helpers.ts when ps_clipping_mask joined
+// the op-discriminated family from another module.
 
 // ps_select → per-mode selector. `mode` is stripped so the delegate
 // validates only its own params.

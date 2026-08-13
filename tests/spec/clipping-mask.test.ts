@@ -1,9 +1,9 @@
 /**
- * Snippet-vs-spec test for the Clipping Mask primitives
- * (2026-06-04 Bundle 5). Create pins the captured `groupEvent`
- * stringID (alias of `GrpL`). Release pins the `Ungr` charID —
- * there is NO `ungroupEvent` stringID alias; dispatching one fails
- * with `The command "<unknown>" is not currently available`.
+ * Snippet-vs-spec test for the Clipping Mask primitives.
+ * Create pins the captured `groupEvent` stringID (alias of `GrpL`).
+ * Release pins the `Ungr` charID — there is NO `ungroupEvent` stringID
+ * alias; dispatching one fails with `The command "<unknown>" is not
+ * currently available`.
  *
  * Spec: src/spec/ps27/layer-ops/create-clipping-mask.ts
  * Capture: JS-32-Clip-Mask.log
@@ -13,10 +13,16 @@ import { describe, it, expect } from 'vitest';
 import { goBuild, goCoreBinaryAvailable } from './_helpers.ts';
 
 describe.skipIf(!goCoreBinaryAvailable)('spec: layer-ops/create-clipping-mask', () => {
-  it('createClippingMask dispatches the groupEvent stringID', async () => {
+  it('createClippingMask dispatches the groupEvent stringID behind a grouped guard', async () => {
     const jsx = await goBuild('createClippingMask', {});
     expect(jsx).toContain("executeAction(sTID('groupEvent')");
     expect(jsx).toContain("clipRef.putEnumerated(cTID('Lyr '), cTID('Ordn'), cTID('Trgt'))");
+    // Idempotency guard, symmetric with release: dispatching groupEvent on
+    // an already-clipped layer does not toggle — PS disables the command
+    // and throws `not currently available` (live-verified PS 27.2.0) — so
+    // the snippet must check clip state and no-op (already_clipped) instead.
+    expect(jsx).toContain('doc.activeLayer.grouped');
+    expect(jsx).toContain('already_clipped');
     // Must not be confused with the LayerSet ungroupLayersEvent.
     expect(jsx).not.toContain('ungroupLayersEvent');
   });

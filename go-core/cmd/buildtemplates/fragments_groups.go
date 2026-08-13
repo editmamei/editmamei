@@ -67,6 +67,12 @@ func init() {
   `,
 
 		// createClippingMask. Slots: 1=helperFunctions, 2=getContextInfo.
+		// The .grouped guard makes create idempotent, symmetric with release
+		// below: dispatching groupEvent on an already-clipped layer does NOT
+		// toggle — it throws `The command "Create Clipping Mask" is not
+		// currently available` (PS disables the menu item; live-verified
+		// PS 27.2.0). already_clipped distinguishes the no-op from a fresh
+		// clip so callers can tell the states apart.
 		vault.ClipMask: `
     %s
     %s
@@ -76,6 +82,16 @@ func init() {
     }
     var doc = app.activeDocument;
     var clippedName = doc.activeLayer.name;
+    var alreadyClipped = false;
+    try { alreadyClipped = doc.activeLayer.grouped === true; } catch (e) {}
+    if (alreadyClipped) {
+      return {
+        clipped: true,
+        already_clipped: true,
+        layerName: clippedName,
+        context: getContextInfo()
+      };
+    }
     var clipDesc = new ActionDescriptor();
     var clipRef = new ActionReference();
     clipRef.putEnumerated(cTID('Lyr '), cTID('Ordn'), cTID('Trgt'));
