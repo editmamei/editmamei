@@ -475,3 +475,78 @@ describe('onPsVersionResolved', () => {
     expect(readSessionState({ dir })).toBeNull();
   });
 });
+
+describe('ps_version re-stamping at flush', () => {
+  it('stamps the resolved version onto calls recorded before detection landed', async () => {
+    let ps: string | null = null; // pre-ping
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { getPsVersion: () => ps });
+    c.recordCall({ tool: 'ps_select_layer', success: true, duration_ms: 1, error_class: null });
+    c.recordCall({ tool: 'ps_read_scene', success: true, duration_ms: 2, error_class: null });
+
+    ps = '27.1.0'; // the first ping identifies Photoshop
+    c.recordCall({ tool: 'ps_retouch', success: true, duration_ms: 3, error_class: null });
+    await c.flush();
+
+    // One flush, one dimension — the whole day no longer splits across two rows.
+    expect(rec.batches[0]!.map((e) => (e as { ps_version: string }).ps_version)).toEqual([
+      '27.1.0',
+      '27.1.0',
+      '27.1.0',
+    ]);
+  });
+
+  it('leaves unknown alone when the version never resolved', async () => {
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { getPsVersion: () => null });
+    c.recordCall({
+      tool: 'ps_ping',
+      success: false,
+      duration_ms: 1,
+      error_class: 'ps_not_running',
+    });
+    await c.flush();
+    expect((rec.batches[0]![0] as { ps_version: string }).ps_version).toBe('unknown');
+  });
+
+  it('does not overwrite a version already stamped on the event', async () => {
+    let ps: string | null = '27.1.0';
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { getPsVersion: () => ps });
+    c.recordCall({ tool: 'ps_select_layer', success: true, duration_ms: 1, error_class: null });
+    ps = '27.2.0'; // PS relaunched at a different version mid-session
+    await c.flush();
+    expect((rec.batches[0]![0] as { ps_version: string }).ps_version).toBe('27.1.0');
+  });
+
+  it('re-stamps the queue drained into the outbox at shutdown too', async () => {
+    let ps: string | null = null;
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { getPsVersion: () => ps });
+    c.recordCall({ tool: 'ps_select_layer', success: true, duration_ms: 1, error_class: null });
+    ps = '27.1.0';
+    await c.shutdown();
+
+    const persisted = readOutbox({ dir }) as Array<{ type: string; ps_version: string }>;
+    expect(persisted.find((e) => e.type === 'usage')?.ps_version).toBe('27.1.0');
+  });
+
+  // The outbox holds batches from a PREVIOUS process. Their `unknown` events belong to a
+  // Photoshop session this one knows nothing about, so the startup drain must ship them
+  // verbatim rather than stamping the current version onto someone else's history.
+  it('never re-stamps events the previous process already persisted', async () => {
+    const dir = freshOutboxDir();
+    const failing = recorder({ fail: true });
+    const c1 = makeClient(makeSettings(), failing, { getPsVersion: () => null, outboxDir: dir });
+    c1.recordCall({ tool: 'ps_select_layer', success: true, duration_ms: 1, error_class: null });
+    await c1.flush(); // send fails → persisted with ps_version 'unknown'
+    expect(readOutbox({ dir }).length).toBeGreaterThan(0);
+
+    const rec = recorder();
+    const c2 = makeClient(makeSettings(), rec, { getPsVersion: () => '27.1.0', outboxDir: dir });
+    await c2.flushOutboxOnStartup();
+
+    const sent = rec.batches[0]!.filter((e) => e.type === 'usage');
+    expect(sent.map((e) => (e as { ps_version: string }).ps_version)).toEqual(['unknown']);
+  });
+});
