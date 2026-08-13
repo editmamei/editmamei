@@ -4,8 +4,8 @@ import "editmamei-core/internal/vault"
 
 func init() {
 	addFragments(map[string]string{
-		// deleteGroup. Slots: 1=getContextInfo, 2=normNameHelper, 3=name(jsLit),
-		// 4=name(jsLit).
+		// deleteGroup. Slots: 1=getContextInfo, 2=normNameHelper,
+		// 3=notFoundMessageHelper, 4=name(jsLit), 5=name(jsLit).
 		vault.DeleteGroup: `
     %s
 
@@ -16,6 +16,7 @@ func init() {
 
     // Em-dash / en-dash tolerant comparison (Bug I) via normName — same
     // policy as deleteLayer / selectLayer / moveLayerToGroup.
+    %s
     %s
     var targetNorm = normName(%s);
     function findGroupByName(layers, depth) {
@@ -52,7 +53,7 @@ func init() {
 
     var target = findGroupByName(doc.layers);
     if (!target) {
-      throw new Error('Group not found: ' + %s);
+      throw new Error(__notFoundMessage('Group', %s, true));
     }
     var deletedName = target.name;
     var descendantCount = countDescendants(target);
@@ -225,8 +226,8 @@ func init() {
   `,
 
 		// moveLayerToGroup. Slots: 1=getContextInfo, 2=normNameHelper,
-		// 3=layerName(jsLit), 4=groupName(jsLit), 5=layerName(jsLit),
-		// 6=groupName(jsLit).
+		// 3=notFoundMessageHelper, 4=layerName(jsLit), 5=groupName(jsLit),
+		// 6=layerName(jsLit), 7=groupName(jsLit).
 		vault.MoveToGroup: `
     %s
 
@@ -241,8 +242,9 @@ func init() {
     // comment in this snippet body: the template literal evaluates it
     // regardless of comment context, the helper's leading newline
     // terminates the comment mid-line, and the trailing comment text
-    // then parses as code. The "snippet bodies parse as valid JS" guard
-    // in tests/unit/extendscript.test.ts is the regression pin.
+    // then parses as code. go-core/golden_test.go's fixture comparison is
+    // the regression pin (a parse-breaking body changes the emitted JSX).
+    %s
     %s
     var wantedLayerNorm = normName(%s);
     var wantedGroupNorm = normName(%s);
@@ -284,9 +286,9 @@ func init() {
     }
 
     var layer = findLayerByName(doc.layers);
-    if (!layer) throw new Error('Layer not found: ' + %s);
+    if (!layer) throw new Error(__notFoundMessage('Layer', %s, false));
     var group = findGroupByName(doc.layers);
-    if (!group) throw new Error('Group not found: ' + %s);
+    if (!group) throw new Error(__notFoundMessage('Group', %s, true));
     if (layer === group) throw new Error('Cannot move a group into itself');
 
     layer.move(group, ElementPlacement.INSIDE);
@@ -300,7 +302,8 @@ func init() {
   `,
 
 		// setGroupBlendMode. Slots: 1=getContextInfo, 2=normNameHelper,
-		// 3=groupName(jsLit), 4=groupName(jsLit), 5=blendMode(jsLit).
+		// 3=notFoundMessageHelper, 4=groupName(jsLit), 5=groupName(jsLit),
+		// 6=blendMode(jsLit).
 		vault.SetGroupMode: `
     %s
 
@@ -310,6 +313,7 @@ func init() {
     var doc = app.activeDocument;
 
     // Em-dash / en-dash tolerant comparison (Bug I) via normName.
+    %s
     %s
     var targetNorm = normName(%s);
     function findGroupByName(layers, depth) {
@@ -331,7 +335,7 @@ func init() {
     }
 
     var group = findGroupByName(doc.layers);
-    if (!group) throw new Error('Group not found: ' + %s);
+    if (!group) throw new Error(__notFoundMessage('Group', %s, true));
 
     var modeStr = %s;
     var modeEnum = null;
@@ -349,8 +353,9 @@ func init() {
     };
   `,
 
-		// ungroup. Slots: 1=getContextInfo, 2=normNameHelper, 3=groupName(jsLit),
-		// 4=groupName(jsLit). The result's groupName now reads back the
+		// ungroup. Slots: 1=getContextInfo, 2=normNameHelper,
+		// 3=notFoundMessageHelper, 4=groupName(jsLit), 5=groupName(jsLit).
+		// The result's groupName now reads back the
 		// RESOLVED group.name (captured before the dissolve, same pattern as
 		// childNames below — the LayerSet object goes invalid after
 		// ungroupLayersEvent) rather than echoing the REQUESTED name back —
@@ -367,6 +372,7 @@ func init() {
     var doc = app.activeDocument;
 
     // Em-dash / en-dash tolerant comparison (Bug I) via normName.
+    %s
     %s
     var targetNorm = normName(%s);
     function findGroupByName(layers, depth) {
@@ -388,7 +394,7 @@ func init() {
     }
 
     var group = findGroupByName(doc.layers);
-    if (!group) throw new Error('Group not found: ' + %s);
+    if (!group) throw new Error(__notFoundMessage('Group', %s, true));
 
     // Capture the RESOLVED name and the children's names BEFORE dissolving
     // (the LayerSet object becomes invalid afterwards).

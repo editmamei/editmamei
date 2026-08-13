@@ -25,7 +25,7 @@ func deleteLayer(name string, hasName bool) string {
 	var branch string
 	if hasName {
 		n := jsLit(name)
-		branch = fmt.Sprintf(tpl[vault.DelLayerNamed], normNameHelper(), n, n)
+		branch = fmt.Sprintf(tpl[vault.DelLayerNamed], normNameHelper(), notFoundMessageHelper(), n, n)
 	} else {
 		branch = tpl[vault.DelLayerActive]
 	}

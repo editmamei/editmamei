@@ -126,6 +126,7 @@ const (
 	BitsPerCh = "hbpc" // bitsPerChannelHelper
 	NormName  = "hnn"  // normNameHelper (dash/whitespace/case normalizer)
 	GPI       = "hgpi" // getPathInfo (path inventory: count + kind/subpath/anchor counts)
+	NotFound  = "hnf"  // notFoundMessageHelper (name-miss error that lists the available names)
 
 	// path-interchange family
 	PathCreate  = "pa1" // createPathFromSelection (DOM makeWorkPath; clears selection)

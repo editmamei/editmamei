@@ -61,6 +61,79 @@ function normName(s) {
 }
 `;
 
+/**
+ * Name-miss error builder — mirrors `vault.NotFound` in the go-core (the
+ * mirror guard pins the two bodies together). A bare "Layer not found: X" is a
+ * dead end for the caller; naming what IS there lets the next call succeed
+ * without a round trip through `ps_read_scene`.
+ *
+ * Use via `__notFoundMessage(label, requested, groupsOnly)` after interpolating
+ * this into the snippet body. Idempotent, like `normNameHelper`.
+ */
+export const notFoundMessageHelper = `
+function __notFoundMessage(label, requested, groupsOnly) {
+  var kept = [];
+  var total = 0;
+  var walkBroke = false;
+  function __nfEsc(s) {
+    var out = '';
+    for (var c = 0; c < s.length; c++) {
+      var code = s.charCodeAt(c);
+      if (code >= 32 && code <= 126 && code !== 92) {
+        out += s.charAt(c);
+      } else {
+        var hex = code.toString(16);
+        while (hex.length < 4) hex = '0' + hex;
+        out += '\\\\u' + hex;
+      }
+    }
+    return out;
+  }
+  function consider(layer) {
+    var nm = '';
+    try { nm = String(layer.name); } catch (eN) { walkBroke = true; return; }
+    total++;
+    if (kept.length >= 8) return;
+    nm = __nfEsc(nm);
+    if (nm.length > 40) {
+      nm = nm.substring(0, 40);
+      var cut = nm.lastIndexOf('\\\\u');
+      if (cut > 34) nm = nm.substring(0, cut);
+      nm = nm + '...';
+    }
+    kept.push(nm);
+  }
+  function walk(layers, depth) {
+    var n = 0;
+    try { n = layers.length; } catch (eL) { walkBroke = true; return; }
+    for (var i = 0; i < n; i++) {
+      var l = null;
+      try { l = layers[i]; } catch (eI) { walkBroke = true; continue; }
+      if (!l) continue;
+      var isGroup = false;
+      try { isGroup = (l instanceof LayerSet); } catch (eG) {}
+      if (isGroup || !groupsOnly) consider(l);
+      if (isGroup && depth < 32) {
+        try { walk(l.layers, depth + 1); } catch (eD) { walkBroke = true; }
+      }
+    }
+  }
+  try { walk(app.activeDocument.layers, 0); } catch (eW) { walkBroke = true; }
+  if (walkBroke && total === 0) {
+    return label + ' not found: ' + __nfEsc(String(requested));
+  }
+  var have;
+  if (total === 0) {
+    have = groupsOnly ? '(no groups)' : '(none)';
+  } else {
+    have = kept.join(', ');
+    if (total > kept.length) have += ' (+' + (total - kept.length) + ' more)';
+    if (walkBroke) have += ' (list may be incomplete)';
+  }
+  return label + ' not found: ' + __nfEsc(String(requested)) + '. Have: ' + have;
+}
+`;
+
 // `requirePixelLayer` (a helper for bake-style adjustments/filters) was
 // removed 2026-05-31 with the four destructive bake adjustment tools that
 // were its only callers. The filter family (apply_*_blur, apply_sharpen,

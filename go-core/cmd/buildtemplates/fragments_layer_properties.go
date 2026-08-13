@@ -361,9 +361,10 @@ func init() {
     };
   `,
 
-		// selectLayer. Slots: 1=normNameHelper, 2=getContextInfo, 3=name(jsLit),
-		// 4=name(jsLit).
+		// selectLayer. Slots: 1=normNameHelper, 2=getContextInfo,
+		// 3=notFoundMessageHelper, 4=name(jsLit), 5=name(jsLit).
 		vault.SelectLayer: `
+    %s
     %s
     %s
 
@@ -399,7 +400,7 @@ func init() {
 
     var found = findLayerByName(doc.layers);
     if (!found) {
-      throw new Error('Layer not found: ' + %s);
+      throw new Error(__notFoundMessage('Layer', %s, false));
     }
     doc.activeLayer = found;
 

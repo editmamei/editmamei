@@ -110,7 +110,13 @@ func renameLayer(newName string) string {
 // make it active. Changes WHAT is active, so it returns full getContextInfo().
 func selectLayer(name string) string {
 	n := jsLit(name)
-	return fmt.Sprintf(tpl[vault.SelectLayer], normNameHelper(), getContextInfo(), n, n)
+	return fmt.Sprintf(
+		tpl[vault.SelectLayer],
+		normNameHelper(),
+		getContextInfo(),
+		notFoundMessageHelper(),
+		n, n,
+	)
 }
 
 func rasterizeLayer() string {

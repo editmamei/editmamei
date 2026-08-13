@@ -13,6 +13,7 @@ import {
   selectionTypeHelpers,
   helperFunctions,
   normNameHelper,
+  notFoundMessageHelper,
 } from '@editmamei/api/extendscript/_helpers.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -32,7 +33,7 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
  * import _helpers.ts directly) run different helper code for the same
  * logical operation.
  *
- * Pairs covered (all 10 mirrored string-const exports in _helpers.ts, all
+ * Pairs covered (all 11 mirrored string-const exports in _helpers.ts, all
  * confirmed sourced from fragments_context.go):
  *   - vault.LayerCountRecursive <-> countLayersRecursiveHelper (__countLayersRecursive)
  *   - vault.ParentPath          <-> parentPathHelper (__parentPathOf / __ppWalk)
@@ -44,6 +45,7 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
  *   - vault.SelType             <-> selectionTypeHelpers
  *   - vault.HelperFns           <-> helperFunctions
  *   - vault.NormName            <-> normNameHelper
+ *   - vault.NotFound            <-> notFoundMessageHelper (__notFoundMessage)
  *
  * `bitsPerChannelHelper` and `layerResolveHelpers` were deleted from
  * _helpers.ts (zero references anywhere in src/, tests/, scripts/ as of
@@ -52,7 +54,7 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
  * guard. `duplicateForOp` is a function (not a string const) and is
  * TS_ONLY-allowlisted below — see that block for why.
  *
- * All ten vault keys currently live in fragments_context.go (confirmed by
+ * All eleven vault keys currently live in fragments_context.go (confirmed by
  * grepping go-core/cmd/buildtemplates for each key ahead of writing this
  * test) — if a future fragments_*.go split moves one, the loud extraction
  * failure below (not a silent vacuous pass) is what points at the fix.
@@ -77,7 +79,7 @@ function normalize(js: string): string {
  * Extracts the raw-string body of a `vault.<Key>: \`...\`` map entry from a
  * go-core fragments_*.go source file. These fragments are static JS with no
  * `%s`-style fmt.Sprintf interpolation slots (confirmed by inspection —
- * none of the ten bodies contain a `%` character), so the extracted text is
+ * none of the eleven bodies contain a `%` character), so the extracted text is
  * the literal snippet body with no substitution to undo. Throws (rather
  * than returning an empty/undefined match) so a broken extraction fails
  * loudly instead of letting the guard vacuously pass.
@@ -159,6 +161,12 @@ const pairs: {
     vaultKey: 'NormName',
     tsExportName: 'normNameHelper',
     tsHelper: normNameHelper,
+  },
+  {
+    pairName: 'NotFound <-> notFoundMessageHelper',
+    vaultKey: 'NotFound',
+    tsExportName: 'notFoundMessageHelper',
+    tsHelper: notFoundMessageHelper,
   },
   {
     // getContextInfo's TS export interpolates ${countLayersRecursiveHelper}

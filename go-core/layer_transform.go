@@ -21,7 +21,7 @@ func moveLayerToPosition(targetLayerName string, hasTarget bool, position, layer
 		ln := jsLit(layerToMoveName)
 		moveBlock = "layerToMove = findLayerByName(doc.layers, normName(" + ln + "));\n" +
 			"    if (!layerToMove) {\n" +
-			"      throw new Error('layer_to_move not found: ' + " + ln + ");\n" +
+			"      throw new Error(__notFoundMessage('layer_to_move', " + ln + ", false));\n" +
 			"    }"
 	}
 
@@ -31,9 +31,17 @@ func moveLayerToPosition(targetLayerName string, hasTarget bool, position, layer
 		tn := jsLit(targetLayerName)
 		targetBlock = "var targetLayer = findLayerByName(doc.layers, normName(" + tn + "));\n" +
 			"    if (!targetLayer) {\n" +
-			"      throw new Error('target_layer_name not found: ' + " + tn + ");\n" +
+			"      throw new Error(__notFoundMessage('target_layer_name', " + tn + ", false));\n" +
 			"    }"
 		relativeTo = "targetLayer.name"
+	}
+
+	// Only the by-name branches can miss, and this snippet's common shape is
+	// TOP/BOTTOM on the active layer — don't ship the helper body when nothing
+	// can call it.
+	notFound := ""
+	if hasLayerToMove || hasTarget {
+		notFound = notFoundMessageHelper()
 	}
 
 	return fmt.Sprintf(
@@ -41,6 +49,7 @@ func moveLayerToPosition(targetLayerName string, hasTarget bool, position, layer
 		getContextInfo(),
 		jsLit(position),
 		normNameHelper(),
+		notFound,
 		moveBlock,
 		targetBlock,
 		relativeTo,

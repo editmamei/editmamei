@@ -259,6 +259,43 @@ export class TelemetryClient {
     );
   }
 
+  /**
+   * Stamp the resolved PS version onto queued events that were built before the first ping
+   * identified Photoshop. Events carry their dimensions from `recordCall` time, but a batch
+   * does not leave until the flush timer fires (5 min) or 100 events accumulate — so a
+   * session that drives tools during startup splits across two `ps_version` dimensions, and
+   * every per-version breakdown of one user's day reads as two.
+   *
+   * Only `PS_VERSION_UNKNOWN` is overwritten: a real version already on an event is the one
+   * that was true when it was recorded, and re-stamping it would launder a genuine mid-session
+   * change. When the version is still unresolved, `unknown` is the honest answer and stays.
+   *
+   * **In-memory events only, before serialization.** The durable outbox holds batches from a
+   * PREVIOUS process, whose `unknown` events belong to a Photoshop session this one knows
+   * nothing about — `flushOutboxOnStartup` deliberately does not come through here. Mutates
+   * in place; the caller has already detached the batch from the queue.
+   *
+   * Scope is every queued event carrying a `ps_version` dimension — usage, and in principle
+   * session_start/diagnostic too (session_start flushes at boot before a ping can resolve,
+   * so its `unknown` genuinely means "not yet detected at boot" and in practice never waits
+   * long enough to be re-stamped).
+   */
+  private restampPsVersion(events: TelemetryEvent[]): TelemetryEvent[] {
+    const resolved = this.dims.getPsVersion();
+    if (!resolved) return events;
+    for (const event of events) {
+      // module_status is the one event with no ps_version dimension, and
+      // session_summary stamps its own dims at build time — it rides the
+      // same queue at shutdown but is deliberately out of re-stamp scope,
+      // so a future change that builds it earlier can't launder its version.
+      if (event.type === 'session_summary') continue;
+      if ('ps_version' in event && event.ps_version === PS_VERSION_UNKNOWN) {
+        event.ps_version = resolved;
+      }
+    }
+    return events;
+  }
+
   private enqueue(event: TelemetryEvent): void {
     this.queue.push(event);
     if (this.queue.length > MAX_QUEUE_SIZE) {
@@ -276,7 +313,9 @@ export class TelemetryClient {
    */
   async flush(): Promise<void> {
     if (!this.active || this.queue.length === 0) return;
-    const batch = this.queue.splice(0, this.maxBatchSize).filter(isContentSafe);
+    const batch = this.restampPsVersion(this.queue.splice(0, this.maxBatchSize)).filter(
+      isContentSafe
+    );
     if (batch.length === 0) return;
     try {
       await this.transport(this.endpoint, JSON.stringify({ events: batch }));
@@ -329,7 +368,10 @@ export class TelemetryClient {
       );
     }
     if (this.queue.length > 0) {
-      appendOutboxSync(this.queue.splice(0).filter(isContentSafe), this.outboxOpts);
+      appendOutboxSync(
+        this.restampPsVersion(this.queue.splice(0)).filter(isContentSafe),
+        this.outboxOpts
+      );
     }
     // Clean end — drop the marker so the startup path won't reconstruct a duplicate summary.
     clearSessionState(this.outboxOpts);

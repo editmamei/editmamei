@@ -6,7 +6,9 @@ import {
   parentPathHelper,
   hoistFromActiveGroupHelper,
   countLayersRecursiveHelper,
+  notFoundMessageHelper,
 } from '@editmamei/api/extendscript/_helpers.ts';
+import { classifyError } from '@editmamei/utils/session-log.ts';
 
 // ===========================================================================
 // This file preserves the direct-constant coverage of _helpers.ts ahead of
@@ -319,5 +321,172 @@ describe('countLayersRecursiveHelper (Phase 4 — layer-count-mislabel fix)', ()
     // returns.
     expect(getContextInfo).toContain('layerCount: doc.layers.length,');
     expect(getContextInfo).toContain('total_layer_count: __countLayersRecursive(doc.layers)');
+  });
+});
+
+// ===========================================================================
+// __notFoundMessage — BEHAVIORAL coverage. The helper is pure ES3 over
+// `app.activeDocument.layers` + `instanceof LayerSet`, so the real emitted
+// body runs here against a stubbed DOM: what these tests exercise is the
+// exact string the engine ships, not a hand-written imitation. The
+// classifier round-trips prove the engine-produced wording (not just a
+// hand-authored copy of it) lands in its intended error class.
+// ===========================================================================
+
+class FakeLayerSet {
+  name: string;
+  layers: unknown[];
+  constructor(name: string, layers: unknown[] = []) {
+    this.name = name;
+    this.layers = layers;
+  }
+}
+const flat = (name: string) => ({ name });
+const group = (name: string, layers: unknown[] = []) => new FakeLayerSet(name, layers);
+
+function runNotFound(
+  label: string,
+  requested: string,
+  groupsOnly: boolean,
+  appObj: unknown
+): string {
+  const fn = new Function(
+    'app',
+    'LayerSet',
+    'label',
+    'requested',
+    'groupsOnly',
+    `${notFoundMessageHelper}\nreturn __notFoundMessage(label, requested, groupsOnly);`
+  );
+  return fn(appObj, FakeLayerSet, label, requested, groupsOnly) as string;
+}
+const withLayers = (layers: unknown[]) => ({ activeDocument: { layers } });
+
+describe('__notFoundMessage (behavioral, real emitted body)', () => {
+  it('names what exists', () => {
+    const msg = runNotFound(
+      'Layer',
+      'Curves 1',
+      false,
+      withLayers([flat('Background'), flat('dodge-burn')])
+    );
+    expect(msg).toBe('Layer not found: Curves 1. Have: Background, dodge-burn');
+  });
+
+  it('caps the list at 8 and counts the remainder honestly', () => {
+    const layers = Array.from({ length: 12 }, (_, i) => flat(`L${i + 1}`));
+    const msg = runNotFound('Layer', 'X', false, withLayers(layers));
+    expect(msg).toContain('L8');
+    expect(msg).not.toContain('L9');
+    expect(msg).toContain('(+4 more)');
+  });
+
+  it('clips a long name to 40 characters', () => {
+    const long = 'A'.repeat(50);
+    const msg = runNotFound('Layer', 'X', false, withLayers([flat(long)]));
+    expect(msg).toContain('A'.repeat(40) + '...');
+    expect(msg).not.toContain('A'.repeat(41));
+  });
+
+  it('counts and lists layers nested deeper than one group level', () => {
+    // Regression pin for the depth-1 walk: the lookup recurses to depth 32,
+    // so a miss must not undercount what exists — an LLM told "(+1 more)"
+    // when its target sits three groups deep will re-create a layer that
+    // already exists.
+    const doc = withLayers([
+      flat('Background'),
+      group('Retouch', [group('Skin', [group('FreqSep', [flat('dodge-burn')])])]),
+    ]);
+    const msg = runNotFound('Layer', 'dodge–burn', false, doc);
+    expect(msg).toContain('dodge-burn');
+    expect(msg).not.toContain('more)');
+  });
+
+  it('groupsOnly lists only groups, including nested ones', () => {
+    const doc = withLayers([flat('a'), group('G1', [group('G2', [flat('b')])])]);
+    const msg = runNotFound('Group', 'edits', true, doc);
+    expect(msg).toBe('Group not found: edits. Have: G1, G2');
+  });
+
+  it('reports honest empties', () => {
+    expect(runNotFound('Layer', 'X', false, withLayers([]))).toContain('Have: (none)');
+    expect(runNotFound('Group', 'X', true, withLayers([flat('a')]))).toContain('Have: (no groups)');
+  });
+
+  // Raw non-ASCII flattens to '?' on the codepage-bound cscript stdout
+  // transport (measured live, PS 27.2.0: 背景テスト arrived as '?????'), so
+  // names escape non-ASCII as \uXXXX — lossless through any transport, and
+  // the list's reader is an LLM, which reads the escape fine.
+  it('escapes non-ASCII name characters as transport-safe \\uXXXX', () => {
+    const msg = runNotFound('Layer', 'sky', false, withLayers([flat('背景'), flat('Ebene 1')]));
+    expect(msg).toContain('\\u80cc\\u666f');
+    expect(msg).not.toContain('背景');
+    expect(msg).toContain('Ebene 1');
+  });
+
+  it('omits the Have: clause entirely when the walk broke before counting anything', () => {
+    const broken = {
+      activeDocument: {
+        get layers(): unknown[] {
+          throw new Error('proxy dead');
+        },
+      },
+    };
+    const msg = runNotFound('Layer', 'X', false, broken);
+    expect(msg).toBe('Layer not found: X');
+    expect(msg).not.toContain('Have:');
+  });
+
+  // The wording is load-bearing for telemetry — round-trip the REAL
+  // engine-produced strings (wrapped in their handler prefixes) through the
+  // classifier, including the adversarial layer name that motivated the
+  // tier hoist.
+  it('classifies as its not-found class even when user layer names carry input-error vocabulary', () => {
+    const doc = withLayers([flat('invalid crop guide'), flat('must be dodged')]);
+    const layerMiss = 'Error selecting layer: ' + runNotFound('Layer', 'Curves 1', false, doc);
+    expect(classifyError(layerMiss)).toBe('layer_not_found');
+    const groupMiss =
+      'Error moving layer to group: ' +
+      runNotFound('Group', 'edits', true, withLayers([group('invalid stuff')]));
+    expect(classifyError(groupMiss)).toBe('group_not_found');
+  });
+  it('marks a partially broken walk as incomplete instead of presenting a truncated list as authoritative', () => {
+    const layers = {
+      length: 3,
+      0: flat('Background'),
+      get 1(): unknown {
+        throw new Error('dead proxy');
+      },
+      2: flat('Sky'),
+    };
+    const msg = runNotFound('Layer', 'X', false, { activeDocument: { layers } });
+    expect(msg).toContain('Background');
+    expect(msg).toContain('Sky');
+    expect(msg).toContain('(list may be incomplete)');
+    expect(classifyError('Error selecting layer: ' + msg)).toBe('layer_not_found');
+  });
+
+  it('escapes backslash so the encoding is injective', () => {
+    // A layer literally named \u00e9 (six ASCII chars) must not collide with
+    // a layer actually named é.
+    const msg = runNotFound('Layer', 'X', false, withLayers([flat('\\u00e9'), flat('é')]));
+    expect(msg).toContain('\\u005cu00e9');
+    expect(msg).toContain(', \\u00e9');
+  });
+
+  it('clips to the last complete escape, never a dangling half escape', () => {
+    // 9 CJK characters escape to 54 chars; the 40-char cut lands mid-escape
+    // and must back off to a 6-char escape boundary.
+    const msg = runNotFound('Layer', 'X', false, withLayers([flat('背景テスト画像設定拡')]));
+    expect(msg).toMatch(/(?:\\u[0-9a-f]{4})+\.\.\./);
+    expect(msg).not.toMatch(/\\u[0-9a-f]{0,3}\.\.\./);
+  });
+
+  it('the helper body stays ES3 (Photoshop rejects modern syntax at runtime)', () => {
+    // new Function proves behavior under Node's parser, which accepts syntax
+    // ExtendScript's ES3 engine does not — pin the source shape too.
+    expect(notFoundMessageHelper).not.toMatch(/\b(const |let )/);
+    expect(notFoundMessageHelper).not.toContain('=>');
+    expect(notFoundMessageHelper).not.toMatch(/\.(map|forEach|filter|includes|trim)\(/);
   });
 });

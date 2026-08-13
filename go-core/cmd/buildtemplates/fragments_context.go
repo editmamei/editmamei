@@ -563,6 +563,100 @@ function normName(s) {
 }
 `,
 
+		// notFoundMessage helper — turns a name miss into an error the caller can
+		// act on, by naming what IS there. Without it "Layer not found: Curves 1"
+		// is a dead end: the client either guesses again or spends a round trip on
+		// ps_read_scene. No slots.
+		//
+		// The walk recurses to the SAME depth cap as the lookups that call it
+		// (findLayerByName/findGroupByName stop at depth 32), so the "+N more"
+		// count is honest: a layer three groups deep is counted even when the
+		// 8-name list is full. A walk that broke before counting anything emits
+		// no "Have:" clause at all rather than asserting "(none)" about a
+		// document it could not read. Runs ONLY on the failure path.
+		//
+		// Bounded on purpose. At most 8 names, each clipped to 40 characters, the
+		// rest counted as "(+N more)" — an unbounded list on a 300-layer document
+		// would bury the actual error. Characters outside printable ASCII — plus
+		// backslash, so the encoding is injective — are escaped as \uXXXX in both
+		// the requested name and the list: the Windows cscript stdout transport
+		// is codepage-bound and flattens raw non-ASCII to '?' (measured live,
+		// PS 27.2.0), while the escape survives any transport and the reader is
+		// an LLM, which reads \uXXXX fine. The clip backs off to the last
+		// complete escape so a truncated name never ends in a dangling half
+		// escape. A walk that partially failed appends "(list may be
+		// incomplete)" instead of presenting a truncated enumeration as
+		// authoritative; a walk that broke before counting anything emits no
+		// "Have:" clause at all. The list is for reading, not matching.
+		//
+		// The wording is load-bearing for telemetry. ERROR_CLASS_TABLE in
+		// src/utils/session-log.ts classifies these messages, so "Have:" and
+		// "(+N more)" must stay clear of every other class's pattern — see the
+		// tier-order note in that file before changing this text.
+		vault.NotFound: `
+function __notFoundMessage(label, requested, groupsOnly) {
+  var kept = [];
+  var total = 0;
+  var walkBroke = false;
+  function __nfEsc(s) {
+    var out = '';
+    for (var c = 0; c < s.length; c++) {
+      var code = s.charCodeAt(c);
+      if (code >= 32 && code <= 126 && code !== 92) {
+        out += s.charAt(c);
+      } else {
+        var hex = code.toString(16);
+        while (hex.length < 4) hex = '0' + hex;
+        out += '\\u' + hex;
+      }
+    }
+    return out;
+  }
+  function consider(layer) {
+    var nm = '';
+    try { nm = String(layer.name); } catch (eN) { walkBroke = true; return; }
+    total++;
+    if (kept.length >= 8) return;
+    nm = __nfEsc(nm);
+    if (nm.length > 40) {
+      nm = nm.substring(0, 40);
+      var cut = nm.lastIndexOf('\\u');
+      if (cut > 34) nm = nm.substring(0, cut);
+      nm = nm + '...';
+    }
+    kept.push(nm);
+  }
+  function walk(layers, depth) {
+    var n = 0;
+    try { n = layers.length; } catch (eL) { walkBroke = true; return; }
+    for (var i = 0; i < n; i++) {
+      var l = null;
+      try { l = layers[i]; } catch (eI) { walkBroke = true; continue; }
+      if (!l) continue;
+      var isGroup = false;
+      try { isGroup = (l instanceof LayerSet); } catch (eG) {}
+      if (isGroup || !groupsOnly) consider(l);
+      if (isGroup && depth < 32) {
+        try { walk(l.layers, depth + 1); } catch (eD) { walkBroke = true; }
+      }
+    }
+  }
+  try { walk(app.activeDocument.layers, 0); } catch (eW) { walkBroke = true; }
+  if (walkBroke && total === 0) {
+    return label + ' not found: ' + __nfEsc(String(requested));
+  }
+  var have;
+  if (total === 0) {
+    have = groupsOnly ? '(no groups)' : '(none)';
+  } else {
+    have = kept.join(', ');
+    if (total > kept.length) have += ' (+' + (total - kept.length) + ' more)';
+    if (walkBroke) have += ' (list may be incomplete)';
+  }
+  return label + ' not found: ' + __nfEsc(String(requested)) + '. Have: ' + have;
+}
+`,
+
 		// getPathInfo helper — path inventory (count + per-path kind/subpath/anchor
 		// counts). The path analog of getSelectionInfo; interpolated into the
 		// path-interchange snippets and called in their return. No param slots.

@@ -5,9 +5,9 @@ import "editmamei-core/internal/vault"
 func init() {
 	addFragments(map[string]string{
 		// moveLayerToPosition. Slots: 1=getContextInfo, 2=position(jsLit),
-		// 3=normNameHelper, 4=layerToMove block, 5=targetLayer block
-		// (ABOVE/BELOW), 6=relativeTo value. Blocks 4-6 are built by the
-		// emitter per the optional names.
+		// 3=normNameHelper, 4=notFoundMessageHelper, 5=layerToMove block,
+		// 6=targetLayer block (ABOVE/BELOW), 7=relativeTo value. Blocks 5-7 are
+		// built by the emitter per the optional names.
 		vault.MoveToPos: `
     %s
 
@@ -24,6 +24,7 @@ func init() {
     // reused for both the layer-to-move and target-layer lookups (like
     // moveLayerToGroup's layer/group pair), so the wanted name is passed
     // in pre-normalized by the caller rather than baked into a closure.
+    %s
     %s
     function findLayerByName(layers, wantedNorm, depth) {
       if (depth === undefined) depth = 0;

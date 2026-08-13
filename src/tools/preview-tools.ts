@@ -5,7 +5,11 @@ import type { SnippetClient } from '../api/snippet-client.js';
 // getContextInfo / normNameHelper are generic helpers (not snippet IP); they
 // stay in the shipped bundle via _helpers.js. Imported directly here (not via
 // the extendscript assembler, which the Go-sidecar seal excludes from build).
-import { getContextInfo, normNameHelper } from '../api/extendscript/_helpers.js';
+import {
+  getContextInfo,
+  normNameHelper,
+  notFoundMessageHelper,
+} from '../api/extendscript/_helpers.js';
 import { jsLit, jsNum } from '../utils/jsx.js';
 import { runScript } from '../utils/run-script.js';
 import { TempDir, userOwnedTempRoot } from '../utils/temp.js';
@@ -1082,6 +1086,7 @@ async function getLayerBoundsDiff(
       var doc = app.activeDocument;
 
       ${normNameHelper}
+      ${notFoundMessageHelper}
       // Em-dash / en-dash tolerant comparison (Bug I) via normName — the
       // LLM routinely swaps these silently; raw equality would miss.
       // Depth cap is defense-in-depth (see selectLayer's identical comment).
@@ -1102,7 +1107,7 @@ async function getLayerBoundsDiff(
         return null;
       }
       var lyr = findLayerByName(doc.layers);
-      if (!lyr) throw new Error('Layer not found: ' + ${jsLit(layer)});
+      if (!lyr) throw new Error(__notFoundMessage('Layer', ${jsLit(layer)}, false));
 
       var b = (lyr.boundsNoEffects !== undefined) ? lyr.boundsNoEffects : lyr.bounds;
       var aLeft = b[0].as('px');

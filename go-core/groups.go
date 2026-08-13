@@ -13,7 +13,13 @@ import (
 
 func deleteGroup(name string) string {
 	n := jsLit(name)
-	return fmt.Sprintf(tpl[vault.DeleteGroup], getContextInfo(), normNameHelper(), n, n)
+	return fmt.Sprintf(
+		tpl[vault.DeleteGroup],
+		getContextInfo(),
+		normNameHelper(),
+		notFoundMessageHelper(),
+		n, n,
+	)
 }
 
 func createClippingMask() string {
@@ -69,16 +75,29 @@ func moveLayerToGroup(layerName, groupName string) string {
 		tpl[vault.MoveToGroup],
 		getContextInfo(),
 		normNameHelper(),
+		notFoundMessageHelper(),
 		ln, gn, ln, gn,
 	)
 }
 
 func setGroupBlendMode(groupName, blendMode string) string {
 	gn := jsLit(groupName)
-	return fmt.Sprintf(tpl[vault.SetGroupMode], getContextInfo(), normNameHelper(), gn, gn, jsLit(blendMode))
+	return fmt.Sprintf(
+		tpl[vault.SetGroupMode],
+		getContextInfo(),
+		normNameHelper(),
+		notFoundMessageHelper(),
+		gn, gn, jsLit(blendMode),
+	)
 }
 
 func ungroup(groupName string) string {
 	gn := jsLit(groupName)
-	return fmt.Sprintf(tpl[vault.Ungroup], getContextInfo(), normNameHelper(), gn, gn)
+	return fmt.Sprintf(
+		tpl[vault.Ungroup],
+		getContextInfo(),
+		normNameHelper(),
+		notFoundMessageHelper(),
+		gn, gn,
+	)
 }
