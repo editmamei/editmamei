@@ -563,6 +563,58 @@ function normName(s) {
 }
 `,
 
+		// notFoundMessage helper — turns a name miss into an error the caller can
+		// act on, by naming what IS there. Without it "Layer not found: Curves 1"
+		// is a dead end: the client either guesses again or spends a round trip on
+		// ps_read_scene. No slots.
+		//
+		// Runs ONLY on the failure path, so the walk is allowed to be naive: top
+		// level plus one level into groups, which covers how documents are actually
+		// organized without paying for a full recursive descent on every miss.
+		//
+		// Bounded on purpose. At most 8 names, each clipped to 40 characters, the
+		// rest counted as "(+N more)" — an unbounded list on a 300-layer document
+		// would bury the actual error. Names are echoed verbatim (they may be
+		// non-ASCII; the list is for a human/LLM to read, not to match against).
+		//
+		// The wording is load-bearing for telemetry. ERROR_CLASS_TABLE in
+		// src/utils/session-log.ts classifies these messages, so "Have:" and
+		// "(+N more)" must stay clear of every other class's pattern — see the
+		// tier-order note in that file before changing this text.
+		vault.NotFound: `
+function __notFoundMessage(label, requested, groupsOnly) {
+  var kept = [];
+  var total = 0;
+  function consider(layer) {
+    total++;
+    if (kept.length >= 8) return;
+    var nm = String(layer.name);
+    if (nm.length > 40) nm = nm.substring(0, 40) + '...';
+    kept.push(nm);
+  }
+  function walk(layers, depth) {
+    for (var i = 0; i < layers.length; i++) {
+      var l = layers[i];
+      var isGroup = false;
+      try { isGroup = (l instanceof LayerSet); } catch (eG) {}
+      if (isGroup || !groupsOnly) consider(l);
+      if (isGroup && depth < 1) {
+        try { walk(l.layers, depth + 1); } catch (eD) {}
+      }
+    }
+  }
+  try { walk(app.activeDocument.layers, 0); } catch (eW) {}
+  var have;
+  if (total === 0) {
+    have = groupsOnly ? '(no groups)' : '(none)';
+  } else {
+    have = kept.join(', ');
+    if (total > kept.length) have += ' (+' + (total - kept.length) + ' more)';
+  }
+  return label + ' not found: ' + requested + '. Have: ' + have;
+}
+`,
+
 		// getPathInfo helper — path inventory (count + per-path kind/subpath/anchor
 		// counts). The path analog of getSelectionInfo; interpolated into the
 		// path-interchange snippets and called in their return. No param slots.

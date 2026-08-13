@@ -41,9 +41,10 @@ func init() {
     %s
   `,
 
-		// deleteLayer — named branch. Slots: 1=normNameHelper, 2=name(jsLit),
-		// 3=name(jsLit).
+		// deleteLayer — named branch. Slots: 1=normNameHelper,
+		// 2=notFoundMessageHelper, 3=name(jsLit), 4=name(jsLit).
 		vault.DelLayerNamed: `
+    %s
     %s
     var targetNorm = normName(%s);
     function findLayerByName(layers, depth) {
@@ -68,7 +69,7 @@ func init() {
 
     var target = findLayerByName(doc.layers);
     if (!target) {
-      throw new Error('Layer not found: ' + %s);
+      throw new Error(__notFoundMessage('Layer', %s, false));
     }
     var deletedName = target.name;
     target.remove();

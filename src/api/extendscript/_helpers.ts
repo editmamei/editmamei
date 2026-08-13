@@ -61,6 +61,49 @@ function normName(s) {
 }
 `;
 
+/**
+ * Name-miss error builder — mirrors `vault.NotFound` in the go-core (the
+ * mirror guard pins the two bodies together). A bare "Layer not found: X" is a
+ * dead end for the caller; naming what IS there lets the next call succeed
+ * without a round trip through `ps_read_scene`.
+ *
+ * Use via `__notFoundMessage(label, requested, groupsOnly)` after interpolating
+ * this into the snippet body. Idempotent, like `normNameHelper`.
+ */
+export const notFoundMessageHelper = `
+function __notFoundMessage(label, requested, groupsOnly) {
+  var kept = [];
+  var total = 0;
+  function consider(layer) {
+    total++;
+    if (kept.length >= 8) return;
+    var nm = String(layer.name);
+    if (nm.length > 40) nm = nm.substring(0, 40) + '...';
+    kept.push(nm);
+  }
+  function walk(layers, depth) {
+    for (var i = 0; i < layers.length; i++) {
+      var l = layers[i];
+      var isGroup = false;
+      try { isGroup = (l instanceof LayerSet); } catch (eG) {}
+      if (isGroup || !groupsOnly) consider(l);
+      if (isGroup && depth < 1) {
+        try { walk(l.layers, depth + 1); } catch (eD) {}
+      }
+    }
+  }
+  try { walk(app.activeDocument.layers, 0); } catch (eW) {}
+  var have;
+  if (total === 0) {
+    have = groupsOnly ? '(no groups)' : '(none)';
+  } else {
+    have = kept.join(', ');
+    if (total > kept.length) have += ' (+' + (total - kept.length) + ' more)';
+  }
+  return label + ' not found: ' + requested + '. Have: ' + have;
+}
+`;
+
 // `requirePixelLayer` (a helper for bake-style adjustments/filters) was
 // removed 2026-05-31 with the four destructive bake adjustment tools that
 // were its only callers. The filter family (apply_*_blur, apply_sharpen,

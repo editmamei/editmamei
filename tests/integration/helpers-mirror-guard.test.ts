@@ -13,6 +13,7 @@ import {
   selectionTypeHelpers,
   helperFunctions,
   normNameHelper,
+  notFoundMessageHelper,
 } from '@editmamei/api/extendscript/_helpers.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -44,6 +45,7 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
  *   - vault.SelType             <-> selectionTypeHelpers
  *   - vault.HelperFns           <-> helperFunctions
  *   - vault.NormName            <-> normNameHelper
+ *   - vault.NotFound            <-> notFoundMessageHelper (__notFoundMessage)
  *
  * `bitsPerChannelHelper` and `layerResolveHelpers` were deleted from
  * _helpers.ts (zero references anywhere in src/, tests/, scripts/ as of
@@ -159,6 +161,12 @@ const pairs: {
     vaultKey: 'NormName',
     tsExportName: 'normNameHelper',
     tsHelper: normNameHelper,
+  },
+  {
+    pairName: 'NotFound <-> notFoundMessageHelper',
+    vaultKey: 'NotFound',
+    tsExportName: 'notFoundMessageHelper',
+    tsHelper: notFoundMessageHelper,
   },
   {
     // getContextInfo's TS export interpolates ${countLayersRecursiveHelper}

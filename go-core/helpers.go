@@ -81,6 +81,14 @@ func normNameHelper() string {
 	return tpl[vault.NormName]
 }
 
+// notFoundMessageHelper returns __notFoundMessage — the name-miss error builder
+// that appends the available names, so a failed lookup tells the caller what to
+// ask for next instead of only what was wrong. Required by every snippet that
+// throws on a layer/group name miss.
+func notFoundMessageHelper() string {
+	return tpl[vault.NotFound]
+}
+
 // layerResolveHelpers returns the independent layer re-resolution helpers
 // (captureLayerIdentity/resolveLayerFresh) — required by every ps_set_layer
 // property setter so a write can be verified through a resolution path

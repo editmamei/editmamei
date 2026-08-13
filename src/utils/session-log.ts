@@ -177,11 +177,24 @@ export function generateSessionId(now: Date = new Date()): string {
  * clamps defensively, but conforming here keeps the wire token readable).
  *
  * Tier ordering (specific state before generic outcome):
- *   input errors → app/session state → target-not-found → layer-state
+ *   target-not-found → input errors → app/session state → layer-state
  *   preconditions → PS-native outcomes → generic "<op> failed:" wrapper.
  * The generic wrapper is LAST on purpose: "Select Subject failed: <PS
  * tail>" carries the diagnostic content in the tail, so the tail's class
  * (unavailable / timeout / general error) must win over the wrapper's.
+ *
+ * The target-not-found tier is FIRST among the real classes because those
+ * messages END IN USER DATA: the engine names the layer/group that was
+ * asked for and lists the ones that exist. A layer called "invalid crop
+ * guide" or "must be dodged" would otherwise be classified by whatever the
+ * user happened to name their layer — `invalid_argument`'s vocabulary is
+ * ordinary English, so this is reachable in a real document, and it fails
+ * toward a CONFIDENTLY wrong class rather than an honest `other`. Nothing
+ * in the later tiers announces a missing target, so hoisting costs nothing.
+ * Within the tier the patterns are narrow and quote the engine's own
+ * wording for the same reason: `/layer.*not found/` used to match "Error
+ * applying layer style: Font not found: Futura" and steal it from
+ * `font_not_found`.
  *
  * `ps_empty_error`'s phrase rule (the photoshop-api.ts empty-envelope
  * synthetics) is deliberately FIRST in the table: those messages narrate
@@ -205,6 +218,24 @@ export function generateSessionId(now: Date = new Date()): string {
 export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> = [
   // ── Empty-envelope synthetics (must precede every cause-word class) ──────
   { errorClass: 'ps_empty_error', pattern: /returned an empty error|failed with no message/i },
+  // ── Target not found (first — these messages end in user-chosen names) ───
+  {
+    errorClass: 'layer_not_found',
+    // The quoted alternative is the pre-Go-migration shape. Bounded to the
+    // quoted name rather than `.*` so it cannot span a whole message and
+    // swallow a more specific class from the tail.
+    pattern:
+      /\blayer not found|no layer named|(?:layer_to_move|target_layer_name) not found|layer "[^"]*" not found/i,
+  },
+  { errorClass: 'group_not_found', pattern: /group not found/i },
+  { errorClass: 'channel_not_found', pattern: /channel not found|channel named/i },
+  { errorClass: 'path_not_found', pattern: /no path named|no paths to|no work path/i },
+  { errorClass: 'font_not_found', pattern: /font not found/i },
+  {
+    errorClass: 'file_not_found',
+    pattern: /file not found|map not found|lut not found|could not open lut/i,
+  },
+  { errorClass: 'face_not_found', pattern: /no face mesh|no face detected/i },
   // ── Input errors ─────────────────────────────────────────────────────────
   {
     errorClass: 'schema_validation',
@@ -227,17 +258,6 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
     errorClass: 'no_selection',
     pattern: /no active selection|requires an active selection|make a selection/i,
   },
-  // ── Target not found ─────────────────────────────────────────────────────
-  { errorClass: 'layer_not_found', pattern: /layer.*not found|no layer named/i },
-  { errorClass: 'group_not_found', pattern: /group not found/i },
-  { errorClass: 'channel_not_found', pattern: /channel not found|channel named/i },
-  { errorClass: 'path_not_found', pattern: /no path named|no paths to|no work path/i },
-  { errorClass: 'font_not_found', pattern: /font not found/i },
-  {
-    errorClass: 'file_not_found',
-    pattern: /file not found|map not found|lut not found|could not open lut/i,
-  },
-  { errorClass: 'face_not_found', pattern: /no face mesh|no face detected/i },
   // ── Layer-state preconditions ────────────────────────────────────────────
   { errorClass: 'background_layer', pattern: /background layer/i },
   { errorClass: 'layer_locked', pattern: /is locked|fully locked|locked layer/i },

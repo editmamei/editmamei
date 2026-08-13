@@ -161,6 +161,54 @@ describe('classifyError', () => {
     expect(classifyError('target_layer_name not found: Base')).toBe('layer_not_found');
   });
 
+  // The engine appends the available names so the caller can recover without a
+  // round trip through ps_read_scene. Those names are USER data — the class must
+  // come from the engine's wording, never from what someone named a layer.
+  it('classifies a not-found error that lists the available names', () => {
+    expect(
+      classifyError('Layer not found: Curves 1. Have: Background, Curves 2, dodge-burn, sky-mask')
+    ).toBe('layer_not_found');
+    expect(
+      classifyError('Error selecting layer: Layer not found: sky. Have: Background (+11 more)')
+    ).toBe('layer_not_found');
+    expect(classifyError('Group not found: Effects. Have: (no groups)')).toBe('group_not_found');
+    expect(classifyError('Layer not found: x. Have: (none)')).toBe('layer_not_found');
+    expect(
+      classifyError('layer_to_move not found: Retouch. Have: Background, Sky Stack (+2 more)')
+    ).toBe('layer_not_found');
+    expect(classifyError('target_layer_name not found: Base. Have: Background, Overlay')).toBe(
+      'layer_not_found'
+    );
+  });
+
+  it('is not swayed by layer names that read like other error classes', () => {
+    expect(
+      classifyError('Layer not found: Curves 1. Have: invalid crop guide, must be dodged')
+    ).toBe('layer_not_found');
+    expect(
+      classifyError('Group not found: Effects. Have: unsupported fx, out of bounds marks')
+    ).toBe('group_not_found');
+    expect(classifyError('Layer not found: sky. Have: no active document, make a selection')).toBe(
+      'layer_not_found'
+    );
+    // A layer whose NAME is a timeout/modal cause word must not become that class.
+    expect(classifyError('Layer not found: sky. Have: modal dialog test, timed out backup')).toBe(
+      'layer_not_found'
+    );
+  });
+
+  // `/layer.*not found/` spanned the whole message, so any wrapper mentioning a
+  // layer stole the more specific class from the tail.
+  it('does not let a wrapper that mentions a layer steal a more specific not-found class', () => {
+    expect(classifyError('Error applying layer style: Font not found: Futura')).toBe(
+      'font_not_found'
+    );
+    expect(classifyError('Error setting layer: Displacement map not found: ripple.psd')).toBe(
+      'file_not_found'
+    );
+    expect(classifyError('Error saving layer mask: No path named cutline')).toBe('path_not_found');
+  });
+
   it('classifies app/session-state guards', () => {
     expect(
       classifyError(
