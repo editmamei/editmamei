@@ -191,6 +191,10 @@ export function generateSessionId(now: Date = new Date()): string {
  * ordinary English, so this is reachable in a real document, and it fails
  * toward a CONFIDENTLY wrong class rather than an honest `other`. Nothing
  * in the later tiers announces a missing target, so hoisting costs nothing.
+ * (One residual exception, accepted: the empty-envelope phrase rule above
+ * still precedes this tier, so a layer literally named "failed with no
+ * message" in the suffix would steer its miss to `ps_empty_error` — the
+ * synthetics' phrases are distinctive enough that this stays theoretical.)
  * Within the tier the patterns are narrow and quote the engine's own
  * wording for the same reason: `/layer.*not found/` used to match "Error
  * applying layer style: Font not found: Futura" and steal it from

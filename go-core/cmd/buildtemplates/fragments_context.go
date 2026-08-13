@@ -568,14 +568,21 @@ function normName(s) {
 		// is a dead end: the client either guesses again or spends a round trip on
 		// ps_read_scene. No slots.
 		//
-		// Runs ONLY on the failure path, so the walk is allowed to be naive: top
-		// level plus one level into groups, which covers how documents are actually
-		// organized without paying for a full recursive descent on every miss.
+		// The walk recurses to the SAME depth cap as the lookups that call it
+		// (findLayerByName/findGroupByName stop at depth 32), so the "+N more"
+		// count is honest: a layer three groups deep is counted even when the
+		// 8-name list is full. A walk that broke before counting anything emits
+		// no "Have:" clause at all rather than asserting "(none)" about a
+		// document it could not read. Runs ONLY on the failure path.
 		//
 		// Bounded on purpose. At most 8 names, each clipped to 40 characters, the
 		// rest counted as "(+N more)" — an unbounded list on a 300-layer document
-		// would bury the actual error. Names are echoed verbatim (they may be
-		// non-ASCII; the list is for a human/LLM to read, not to match against).
+		// would bury the actual error. Non-ASCII characters in names are escaped
+		// as \uXXXX: the Windows cscript stdout transport is codepage-bound and
+		// flattens raw non-ASCII to '?' (measured live, PS 27.2.0 — a document
+		// name of U+80CC U+666F arrived as '??'), while the escape survives any
+		// transport losslessly and the list's reader is an LLM, which reads
+		// \uXXXX fine. The list is for reading, not for matching against.
 		//
 		// The wording is load-bearing for telemetry. ERROR_CLASS_TABLE in
 		// src/utils/session-log.ts classifies these messages, so "Have:" and
@@ -589,21 +596,37 @@ function __notFoundMessage(label, requested, groupsOnly) {
     total++;
     if (kept.length >= 8) return;
     var nm = String(layer.name);
+    var esc = '';
+    for (var c = 0; c < nm.length; c++) {
+      var code = nm.charCodeAt(c);
+      if (code >= 32 && code <= 126) {
+        esc += nm.charAt(c);
+      } else {
+        var hex = code.toString(16);
+        while (hex.length < 4) hex = '0' + hex;
+        esc += '\\u' + hex;
+      }
+    }
+    nm = esc;
     if (nm.length > 40) nm = nm.substring(0, 40) + '...';
     kept.push(nm);
   }
+  var walkBroke = false;
   function walk(layers, depth) {
     for (var i = 0; i < layers.length; i++) {
       var l = layers[i];
       var isGroup = false;
       try { isGroup = (l instanceof LayerSet); } catch (eG) {}
       if (isGroup || !groupsOnly) consider(l);
-      if (isGroup && depth < 1) {
-        try { walk(l.layers, depth + 1); } catch (eD) {}
+      if (isGroup && depth < 32) {
+        try { walk(l.layers, depth + 1); } catch (eD) { walkBroke = true; }
       }
     }
   }
-  try { walk(app.activeDocument.layers, 0); } catch (eW) {}
+  try { walk(app.activeDocument.layers, 0); } catch (eW) { walkBroke = true; }
+  if (walkBroke && total === 0) {
+    return label + ' not found: ' + requested;
+  }
   var have;
   if (total === 0) {
     have = groupsOnly ? '(no groups)' : '(none)';

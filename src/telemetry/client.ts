@@ -279,7 +279,11 @@ export class TelemetryClient {
     const resolved = this.dims.getPsVersion();
     if (!resolved) return events;
     for (const event of events) {
-      // module_status is the one event with no ps_version dimension.
+      // module_status is the one event with no ps_version dimension, and
+      // session_summary stamps its own dims at build time — it rides the
+      // same queue at shutdown but is deliberately out of re-stamp scope,
+      // so a future change that builds it earlier can't launder its version.
+      if (event.type === 'session_summary') continue;
       if ('ps_version' in event && event.ps_version === PS_VERSION_UNKNOWN) {
         event.ps_version = resolved;
       }

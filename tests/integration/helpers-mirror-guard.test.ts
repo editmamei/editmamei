@@ -33,7 +33,7 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
  * import _helpers.ts directly) run different helper code for the same
  * logical operation.
  *
- * Pairs covered (all 10 mirrored string-const exports in _helpers.ts, all
+ * Pairs covered (all 11 mirrored string-const exports in _helpers.ts, all
  * confirmed sourced from fragments_context.go):
  *   - vault.LayerCountRecursive <-> countLayersRecursiveHelper (__countLayersRecursive)
  *   - vault.ParentPath          <-> parentPathHelper (__parentPathOf / __ppWalk)
@@ -54,7 +54,7 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
  * guard. `duplicateForOp` is a function (not a string const) and is
  * TS_ONLY-allowlisted below — see that block for why.
  *
- * All ten vault keys currently live in fragments_context.go (confirmed by
+ * All eleven vault keys currently live in fragments_context.go (confirmed by
  * grepping go-core/cmd/buildtemplates for each key ahead of writing this
  * test) — if a future fragments_*.go split moves one, the loud extraction
  * failure below (not a silent vacuous pass) is what points at the fix.

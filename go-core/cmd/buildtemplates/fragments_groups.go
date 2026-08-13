@@ -242,8 +242,8 @@ func init() {
     // comment in this snippet body: the template literal evaluates it
     // regardless of comment context, the helper's leading newline
     // terminates the comment mid-line, and the trailing comment text
-    // then parses as code. The "snippet bodies parse as valid JS" guard
-    // in tests/unit/extendscript.test.ts is the regression pin.
+    // then parses as code. go-core/golden_test.go's fixture comparison is
+    // the regression pin (a parse-breaking body changes the emitted JSX).
     %s
     %s
     var wantedLayerNorm = normName(%s);

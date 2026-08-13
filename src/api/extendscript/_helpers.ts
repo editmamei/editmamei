@@ -78,21 +78,37 @@ function __notFoundMessage(label, requested, groupsOnly) {
     total++;
     if (kept.length >= 8) return;
     var nm = String(layer.name);
+    var esc = '';
+    for (var c = 0; c < nm.length; c++) {
+      var code = nm.charCodeAt(c);
+      if (code >= 32 && code <= 126) {
+        esc += nm.charAt(c);
+      } else {
+        var hex = code.toString(16);
+        while (hex.length < 4) hex = '0' + hex;
+        esc += '\\\\u' + hex;
+      }
+    }
+    nm = esc;
     if (nm.length > 40) nm = nm.substring(0, 40) + '...';
     kept.push(nm);
   }
+  var walkBroke = false;
   function walk(layers, depth) {
     for (var i = 0; i < layers.length; i++) {
       var l = layers[i];
       var isGroup = false;
       try { isGroup = (l instanceof LayerSet); } catch (eG) {}
       if (isGroup || !groupsOnly) consider(l);
-      if (isGroup && depth < 1) {
-        try { walk(l.layers, depth + 1); } catch (eD) {}
+      if (isGroup && depth < 32) {
+        try { walk(l.layers, depth + 1); } catch (eD) { walkBroke = true; }
       }
     }
   }
-  try { walk(app.activeDocument.layers, 0); } catch (eW) {}
+  try { walk(app.activeDocument.layers, 0); } catch (eW) { walkBroke = true; }
+  if (walkBroke && total === 0) {
+    return label + ' not found: ' + requested;
+  }
   var have;
   if (total === 0) {
     have = groupsOnly ? '(no groups)' : '(none)';

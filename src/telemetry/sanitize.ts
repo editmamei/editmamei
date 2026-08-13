@@ -104,6 +104,13 @@ export function sanitizeMessage(input: string, maxLen: number = MAX_MESSAGE_LEN)
   }
   out = redactGenericUserDirs(out);
   out = basenamePaths(out);
+  // Name-miss errors enumerate OTHER layer/group/channel names off the
+  // user's canvas ("… not found: X. Have: a, b, c (+2 more)" and the
+  // channel-miss "(have: …)" idiom). Layer names are user content — client
+  // names, project names — so the diagnostic copy keeps the message shape
+  // but drops the inventory. The local session NDJSON keeps the full text.
+  out = out.replace(/\. Have: .*$/s, '. Have: [names redacted]');
+  out = out.replace(/\(have: [^)]*\)/gi, '(have: [names redacted])');
   // Any backslash left (the server rejects them) → forward slash.
   out = out.replace(/\\/g, '/');
   // The server rejects a value that starts with a separator.
