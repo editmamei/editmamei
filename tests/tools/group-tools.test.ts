@@ -13,18 +13,89 @@ describe('createGroupTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('returns 7 well-formed tools', () => {
+  it('returns 6 well-formed tools', () => {
     const tools = createGroupTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
     expect(tools.map((t) => t.tool.name).sort()).toEqual([
-      'ps_create_clipping_mask',
+      'ps_clipping_mask',
       'ps_create_group',
       'ps_delete_group',
       'ps_move_layer_to_group',
-      'ps_release_clipping_mask',
       'ps_set_group_blend_mode',
       'ps_ungroup',
     ]);
+  });
+
+  it('clipping_mask op=create dispatches the createClippingMask snippet', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_clipping_mask', { op: 'create' });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('createClippingMask');
+    expect(build.params).toEqual({});
+  });
+
+  it('clipping_mask op=release dispatches the releaseClippingMask snippet', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_clipping_mask', { op: 'release' });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('releaseClippingMask');
+    expect(build.params).toEqual({});
+  });
+
+  it('clipping_mask rejects an unknown op without building or executing, naming the allowed set', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_clipping_mask', { op: 'invert' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/Allowed: create, release/);
+    expect(snippetClient.allBuilds().length).toBe(0);
+    expect(conn.executions.length).toBe(0);
+  });
+
+  it('clipping_mask rejects a missing op the same way', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_clipping_mask', {});
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/Allowed: create, release/);
+    expect(snippetClient.allBuilds().length).toBe(0);
+    expect(conn.executions.length).toBe(0);
+  });
+
+  // The idempotent no-op branches are the user-visible half of the .grouped
+  // guards — pin each branch's success text against its result flag so a
+  // refactor of the flag names can't silently report a fresh clip/release
+  // for a call that was actually a no-op.
+  it('clipping_mask op=create reports the already-clipped no-op distinctly', async () => {
+    conn = makeConnection({
+      result: { clipped: true, already_clipped: true, layerName: 'Texture' },
+    });
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_clipping_mask', { op: 'create' });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toMatch(/already clipped — nothing to do/);
+    expect(textOf(result)).toContain('Texture');
+  });
+
+  it('clipping_mask op=create reports a fresh clip', async () => {
+    conn = makeConnection({ result: { clipped: true, layerName: 'Texture' } });
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_clipping_mask', { op: 'create' });
+    expect(textOf(result)).toMatch(/Clipped layer "Texture" to the layer below/);
+  });
+
+  it('clipping_mask op=release reports the not-clipped no-op distinctly', async () => {
+    conn = makeConnection({ result: { released: false, layerName: 'Sky' } });
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_clipping_mask', { op: 'release' });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toMatch(/not clipped — nothing to release/);
+    expect(textOf(result)).toContain('Sky');
+  });
+
+  it('clipping_mask op=release reports a real release', async () => {
+    conn = makeConnection({ result: { released: true, layerName: 'Sky' } });
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_clipping_mask', { op: 'release' });
+    expect(textOf(result)).toMatch(/Released clipping mask on layer "Sky"/);
   });
 
   it('create_group passes name and dispatches the createGroup snippet', async () => {

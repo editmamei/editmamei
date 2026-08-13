@@ -13,30 +13,30 @@
  * stringID alias for the same event is `groupEvent`; both resolve to the
  * same internal event in PS 27.x.
  *
- * **Coverage gap (2026-06-03 audit Group C, STEP 32 — HIGH).**
+ * **Tool surface.** The standalone primitive is `ps_clipping_mask`
+ * (op=create / op=release, community tier; the earlier
+ * `ps_create_clipping_mask` / `ps_release_clipping_mask` pair was
+ * consolidated into it). Snippets: `vault.ClipMask` / `vault.ReleaseClip`
+ * in `go-core/cmd/buildtemplates/fragments_groups.go`. Separately,
+ * `ps_add_adjustment_layer` keeps its inline `clip_to_below: true` path
+ * (`vault.AdjLOuter` in `fragments_adjustments.go`).
  *
- * **There is no `ps_create_clipping_mask` tool yet.** The only
- * clipping behavior in the codebase is the optional `clip_to_below: true`
- * parameter on `ps_add_adjustment_layer`, implemented inline at
- * `go-core/cmd/buildtemplates/fragments_adjustments.go` (`vault.AdjLOuter`). It uses `sTID("groupEvent")` —
- * the stringID alias — which resolves identically to `cTID("GrpL")` in
- * modern PS.
- *
- * **The audit recommends adding `ps_create_clipping_mask` (and
- * the inverse `ps_release_clipping_mask`) as tier-`'dev'` tools.**
  * The descriptor shape pinned by this spec — `GrpL` charID OR
  * `groupEvent` stringID + null-keyed reference `Lyr/Ordn/Trgt` — is the
  * canonical form, verified against the menu capture.
  *
  * **Event ID aliasing.** `app.typeIDToStringID(app.charIDToTypeID("GrpL"))
- * === "groupEvent"` in PS 27.x — the two forms are paired aliases. The
- * inline path in `addAdjustmentLayer` uses the stringID; a future
- * standalone tool should either match (stringID) or pick one form and
- * pin it with a `.not.toContain` regression test to prevent a refactor
- * from flipping to a fictional event ID.
+ * === "groupEvent"` in PS 27.x — the two forms are paired aliases. Both
+ * the inline path in `addAdjustmentLayer` and the standalone create
+ * snippet use the stringID form; `tests/spec/clipping-mask.test.ts` pins
+ * the choices so a refactor cannot flip to a fictional event ID.
  *
- * The release / inverse operation is `Ungr` charID / `ungroupEvent`
- * stringID — same alias pattern.
+ * The release / inverse operation is the `Ungr` charID, whose stringID
+ * is `"ungroup"` (`typeIDToStringID(charIDToTypeID("Ungr")) === "ungroup"`,
+ * PS 27.2.0). The alias pattern does NOT extrapolate: there is no
+ * `ungroupEvent` stringID, and dispatching `sTID("ungroupEvent")` fails
+ * with `The command "<unknown>" is not currently available`. Use the
+ * charID form for the release event.
  */
 
 import type { AmEventSpec } from '../../types.js';
@@ -46,9 +46,11 @@ export const createClippingMaskSpec: AmEventSpec = {
   id: 'layer-ops/create-clipping-mask',
   displayName: 'Create clipping mask',
   category: 'layer-ops',
-  emittedBy: ['ps_create_clipping_mask (community — shipped; handler in src/tools/group-tools.ts)'],
+  emittedBy: [
+    'ps_clipping_mask op=create/release (community; handler in src/tools/group-tools.ts)',
+  ],
   snippetRef:
-    'go-core/cmd/buildtemplates/fragments_adjustments.go (vault.AdjLOuter — INLINE inside addAdjustmentLayer when clip_to_below=true; no standalone tool yet)',
+    'go-core/cmd/buildtemplates/fragments_groups.go (vault.ClipMask / vault.ReleaseClip); plus the INLINE clip_to_below=true path in go-core/cmd/buildtemplates/fragments_adjustments.go (vault.AdjLOuter)',
   groundTruth: {
     capturedAt: '2026-06-03',
     psVersion: '27.7.0',
@@ -57,15 +59,16 @@ export const createClippingMaskSpec: AmEventSpec = {
     menuPath: 'Layer > Create Clipping Mask (Ctrl+Alt+G)',
   },
   knownGotchas: [
-    "COVERAGE GAP (HIGH) — there is no standalone `ps_create_clipping_mask` tool. The only clipping behavior in the codebase is the inline `clip_to_below: true` branch of `ps_add_adjustment_layer` in `go-core/cmd/buildtemplates/fragments_adjustments.go` (`vault.AdjLOuter`). The 2026-06-03 audit (Group C, STEP 32) recommends adding `ps_create_clipping_mask` and `ps_release_clipping_mask` as tier-`'dev'` tools.",
+    'The standalone surface is `ps_clipping_mask` (op=create / op=release) — the original create/release tool pair was consolidated into one op-discriminated tool. `ps_add_adjustment_layer` keeps its separate inline `clip_to_below: true` branch (`vault.AdjLOuter` in `fragments_adjustments.go`), which also dispatches `sTID("groupEvent")`.',
     'Event ID has two paired aliases: `GrpL` (charID — emitted by the PS menu capture) and `groupEvent` (stringID — used by the inline implementation in `addAdjustmentLayer`). Both resolve to the same internal event in modern PS. Verified: `app.typeIDToStringID(app.charIDToTypeID("GrpL")) === "groupEvent"` in PS 27.x.',
-    "Inverse operation (release clipping mask) is `Ungr` charID / `ungroupEvent` stringID — same alias pattern. NOT the same as the layer-section `ungroupLayersEvent` used by `ps_ungroup`. Three distinct stringIDs: `groupEvent` (clip to below), `ungroupEvent` (release clipping mask), `ungroupLayersEvent` (dissolve a layer group). Don't confuse them.",
+    'Inverse operation (release clipping mask) is the `Ungr` charID, stringID `"ungroup"`. There is NO `ungroupEvent` stringID — the GrpL↔groupEvent alias pattern does not extrapolate, and `sTID("ungroupEvent")` fails at dispatch with `The command "<unknown>" is not currently available` (verified live, PS 27.2.0 Windows). Also NOT the same as the layer-section `ungroupLayersEvent` used by `ps_ungroup`. Three distinct events: `groupEvent` (clip to below), `Ungr`/"ungroup" (release clipping mask), `ungroupLayersEvent` (dissolve a layer group).',
     'The clipping mask is conceptually "use the layer below as the alpha source for this layer." It requires the layer below to exist; PS silently no-ops if the active layer is at the bottom of the document.',
-    'When adding the future standalone tool, pin both the `GrpL` ↔ `groupEvent` alias and the `Ungr` ↔ `ungroupEvent` alias with `.not.toContain` regression guards on legacy / fictional event IDs (see docs/engineering/am-descriptor-conventions.md "Forum-lore event IDs — verify before shipping").',
+    'Pin the event IDs with `.not.toContain` regression guards on legacy / fictional forms (see docs/engineering/am-descriptor-conventions.md "Forum-lore event IDs — verify before shipping"). `ungroupEvent` is exactly this class of error — an alias asserted by extrapolation that does not exist — and tests/spec/clipping-mask.test.ts guards `.not.toContain("ungroupEvent")`.',
+    'Dispatching the create event on an ALREADY-clipped layer does not toggle — PS disables the command and the dispatch throws `The command "Create Clipping Mask" is not currently available` (verified live, PS 27.2.0 Windows). The standalone create snippet therefore guards on `.grouped === true` and no-ops (already_clipped:true), symmetric with the release guard.',
   ],
   versionNotes: [
     'Capture from PS 27.7.0 Windows; the GrpL/groupEvent alias has been stable since at least PS 21.',
-    'Snippet uses the stringID form (`sTID("groupEvent")`) at the inline site; menu capture uses the charID form (`cTID("GrpL")`). Either is acceptable — pick one and pin it.',
+    'Snippets use the stringID form (`sTID("groupEvent")`) at both the inline and standalone create sites; the release site uses the charID form (`cTID("Ungr")`, which has no usable stringID alias). Menu captures emit the charID forms. The choices are pinned by tests/spec/clipping-mask.test.ts.',
   ],
   events: [
     {

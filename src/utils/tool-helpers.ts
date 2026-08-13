@@ -87,6 +87,29 @@ export function toolErrorResult(prefix: string, error: unknown): ToolResult {
 }
 
 /**
+ * Uniform rejection for an op-discriminated tool's unknown discriminator.
+ * Every consolidated dispatcher (`ps_select`, `ps_modify_selection`,
+ * `ps_selection_channel`, `ps_layer_mask`, `ps_clipping_mask`) returns this
+ * same shape so an LLM recovering from the error sees one consistent
+ * phrasing across the whole surface.
+ */
+export function unknownDiscriminator(
+  kind: string,
+  value: unknown,
+  allowed: readonly string[]
+): ToolResult {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: `Error: unknown ${kind} "${String(value)}". Allowed: ${allowed.join(', ')}.`,
+      },
+    ],
+    isError: true,
+  };
+}
+
+/**
  * Spec for a plain snippet-backed tool handler. Only handlers that match the
  * stereotype exactly should collapse onto this: one text content block, and
  * `structuredContent` = the snippet result cast to a record. Anything else

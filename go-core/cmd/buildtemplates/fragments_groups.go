@@ -67,6 +67,12 @@ func init() {
   `,
 
 		// createClippingMask. Slots: 1=helperFunctions, 2=getContextInfo.
+		// The .grouped guard makes create idempotent, symmetric with release
+		// below: dispatching groupEvent on an already-clipped layer does NOT
+		// toggle — it throws `The command "Create Clipping Mask" is not
+		// currently available` (PS disables the menu item; live-verified
+		// PS 27.2.0). already_clipped distinguishes the no-op from a fresh
+		// clip so callers can tell the states apart.
 		vault.ClipMask: `
     %s
     %s
@@ -76,6 +82,16 @@ func init() {
     }
     var doc = app.activeDocument;
     var clippedName = doc.activeLayer.name;
+    var alreadyClipped = false;
+    try { alreadyClipped = doc.activeLayer.grouped === true; } catch (e) {}
+    if (alreadyClipped) {
+      return {
+        clipped: true,
+        already_clipped: true,
+        layerName: clippedName,
+        context: getContextInfo()
+      };
+    }
     var clipDesc = new ActionDescriptor();
     var clipRef = new ActionReference();
     clipRef.putEnumerated(cTID('Lyr '), cTID('Ordn'), cTID('Trgt'));
@@ -90,6 +106,13 @@ func init() {
   `,
 
 		// releaseClippingMask. Slots: 1=helperFunctions, 2=getContextInfo.
+		// The event is the 'Ungr' charID (stringID "ungroup"). There is no
+		// 'ungroupEvent' stringID — the GrpL↔groupEvent alias pattern does not
+		// extrapolate, and dispatching it fails with `The command "<unknown>"
+		// is not currently available`. The .grouped guard keeps the documented
+		// idempotent no-op: raw 'Ungr' on a non-clipped layer throws -25920
+		// instead of no-oping. LayerSets read .grouped as null (PS cannot clip
+		// a group), so they take the no-op path.
 		vault.ReleaseClip: `
     %s
     %s
@@ -99,11 +122,20 @@ func init() {
     }
     var doc = app.activeDocument;
     var releasedName = doc.activeLayer.name;
+    var wasClipped = false;
+    try { wasClipped = doc.activeLayer.grouped === true; } catch (e) {}
+    if (!wasClipped) {
+      return {
+        released: false,
+        layerName: releasedName,
+        context: getContextInfo()
+      };
+    }
     var releaseDesc = new ActionDescriptor();
     var releaseRef = new ActionReference();
     releaseRef.putEnumerated(cTID('Lyr '), cTID('Ordn'), cTID('Trgt'));
     releaseDesc.putReference(cTID('null'), releaseRef);
-    executeAction(sTID('ungroupEvent'), releaseDesc, DialogModes.NO);
+    executeAction(cTID('Ungr'), releaseDesc, DialogModes.NO);
 
     return {
       released: true,

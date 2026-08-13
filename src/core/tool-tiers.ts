@@ -82,8 +82,7 @@ export const TOOL_TIERS: Record<string, Tier> = {
   ps_set_group_blend_mode: 'community',
   ps_ungroup: 'community',
   ps_delete_group: 'community',
-  ps_create_clipping_mask: 'community',
-  ps_release_clipping_mask: 'dev',
+  ps_clipping_mask: 'community',
 
   // history-tools (get_history → ps_inspect)
   ps_undo: 'community',

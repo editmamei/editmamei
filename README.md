@@ -88,7 +88,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 | **Filters** | Community | `apply_filter` |
 | **Retouch** | Community | `retouch` |
 | **Layers** | Community | `create_layer` · `delete_layer` · `fill_layer` · `add_fill_layer` · `select_layer` · `move_layer_to_position` · `duplicate_layer` · `copy_to_new_layer` · `convert_to_smart_object` · `rasterize_layer` · `set_layer` · `merge` · `bake_layer` · `add_layer_style` · `transform_layer` · `shape` · `create_group` · `move_layer_to_group` · `set_group_blend_mode` · `ungroup` · `delete_group` |
-| **Masks & paths** | Community | `layer_mask` · `create_clipping_mask` · `path` · `vector_mask` · `apply_image` · `calculations` |
+| **Masks & paths** | Community | `layer_mask` · `clipping_mask` · `path` · `vector_mask` · `apply_image` · `calculations` |
 | **Type** | Community | `create_text_layer` · `set_text` |
 | **Perception** | Community | `detect` · `read_scene` · `select_by_reference` |
 | **AI selection** | Community | `select_subject` · `select_sky` |
