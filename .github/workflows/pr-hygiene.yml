@@ -70,12 +70,22 @@ jobs:
     # Dependabot PR bodies embed upstream release notes verbatim, which can
     # legitimately quote another project's attribution trailer; majors are
     # pinned (dependabot.yml) and CI still gates the change itself. Same
-    # reasoning as qa-review.yml's dependabot exemption.
-    if: github.actor != 'dependabot[bot]'
+    # reasoning as qa-review.yml's dependabot exemption. Keyed on the PR
+    # AUTHOR, not `github.actor`: under pull_request_target, `github.actor` is
+    # whoever triggered THIS event, so a maintainer editing or reopening a
+    # dependabot PR would trigger as themselves and the exemption would
+    # evaporate — a required check going red with no bypass. qa-review.yml
+    # keys its own dependabot exemption on the PR author for the same reason.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
       # Deliberately the BASE ref (dev) — this is the default checkout under
       # pull_request_target and must stay that way. See the header comment.
+      # persist-credentials: false is defence-in-depth: nothing in this job
+      # needs to authenticate as anything afterward, so don't leave a token
+      # sitting in the workspace for a later step to find.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v7
         with:

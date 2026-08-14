@@ -51,9 +51,25 @@ const POSITIVE: Array<[name: string, title: string, body: string]> = [
   ['a Copilot co-author trailer', '', 'Co-Authored-By: GitHub Copilot <copilot@github.com>'],
   ['a Cursor co-author trailer', '', 'Co-Authored-By: Cursor <noreply@cursor.sh>'],
   ['a Devin co-author trailer', '', 'Co-Authored-By: Devin AI <devin@cognition.ai>'],
-  ['a Codex co-author trailer', '', 'Co-Authored-By: OpenAI Codex <codex@openai.com>'],
   ['a Gemini co-author trailer', '', 'Co-Authored-By: Gemini <gemini-bot@google.com>'],
   ['an aider co-author trailer', '', 'Co-Authored-By: aider (aider) <aider@aider.chat>'],
+  // codex and openai/gpt each pinned alone: the combined-form row this
+  // replaced ("OpenAI Codex <codex@openai.com>") names all three at once, so
+  // deleting any one of them from VENDORS would leave it green — the other
+  // two would still carry the row.
+  ['a Codex co-author trailer, alone', '', 'Co-Authored-By: Codex <bot@example.com>'],
+  ['an OpenAI co-author trailer, alone', '', 'Co-Authored-By: OpenAI <bot@example.com>'],
+  ['a bare gpt co-author trailer', '', 'Co-Authored-By: GPT-4 <bot@example.com>'],
+  // Only the loose second alternative (claude.ai/<anything containing
+  // session|chat|share>) catches these — the keyword isn't the segment
+  // immediately after the domain, so the tighter first alternative misses
+  // both on its own.
+  ['a claude.ai URL with chat deep in the path', '', 'See https://claude.ai/project/abc/chat'],
+  [
+    'a claude.ai URL with /session/ deep in the path',
+    '',
+    'See https://claude.ai/workspace/session/9f8e',
+  ],
 ];
 
 const NEGATIVE: Array<[name: string, title: string, body: string]> = [
@@ -76,6 +92,17 @@ const NEGATIVE: Array<[name: string, title: string, body: string]> = [
     'the CLAUDE.md rule sentence itself (no vendor follows the colon)',
     '',
     '`Co-Authored-By:` trailers naming a model, "Generated with" lines, and assistant session URLs.',
+  ],
+  ['a human co-author trailer', '', 'Co-Authored-By: Jane Doe <jane@example.com>'],
+  [
+    'an Anthropic docs link (not a session URL)',
+    '',
+    'See https://docs.claude.com/en/docs/agents for the API reference.',
+  ],
+  [
+    'a sentence using "generated" as part of a longer word',
+    '',
+    'Confirmed by running the fixture: it was regenerated with the build script.',
   ],
 ];
 
@@ -105,5 +132,18 @@ describe('check-pr-hygiene: findViolations', () => {
       'line one\r\nCo-Authored-By: Claude <noreply@anthropic.com>\r\n'
     );
     expect(findings.some((f) => f.line === 2)).toBe(true);
+  });
+
+  it('flags a violation in the title, not just the body — deleting the title scan would miss this', () => {
+    const findings = findViolations('Co-Authored-By: Claude <noreply@anthropic.com>', '');
+    expect(findings).toContainEqual({
+      source: 'title',
+      line: 1,
+      kind: 'a machine co-author trailer',
+    });
+  });
+
+  it('returns no findings for a null-body PR (title/body both undefined)', () => {
+    expect(findViolations(undefined, undefined)).toEqual([]);
   });
 });

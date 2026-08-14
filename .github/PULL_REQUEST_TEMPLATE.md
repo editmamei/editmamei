@@ -8,7 +8,9 @@ message to fix later. Use a Conventional Commits title
 reading it a year from now with no context beyond this repository: state the
 problem and why this approach solves it. The diff already shows what changed,
 so leave out process narration ("addressed review comments", "all checks
-green") and machine-generated attribution trailers.
+green"), machine-generated attribution trailers, and assistant session or
+share links (e.g. a pasted claude.ai/share URL) — a bot checks the title and
+body for these on every push.
 
 Commits on your branch can be as messy as you like — they don't survive the
 squash.

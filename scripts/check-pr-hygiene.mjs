@@ -28,15 +28,24 @@ const PATTERNS = [
     // alike: the bracket that wraps a linked tool name is optional, the verb
     // and the vendor are not.
     kind: 'a generated-with / created-by attribution',
-    re: new RegExp(`\\b(?:generated|created|written|authored)\\s+(?:with|by)\\s*\\[?\\s*(?:${VENDORS})\\b`, 'i'),
+    re: new RegExp(
+      `\\b(?:generated|created|written|authored)\\s+(?:with|by)` + `\\s*\\[?\\s*(?:${VENDORS})\\b`,
+      'i'
+    ),
   },
   {
     // Two forms: the domain immediately followed by a known path segment
     // (chat/share/session/s, on either claude.ai or claude.com), and the
     // looser claude.ai/<anything containing session|chat|share> for paths
-    // that don't put the keyword right after the domain.
+    // that don't put the keyword right after the domain. A `new RegExp`
+    // string, not a `/.../ ` literal, so the two forms can be wrapped onto
+    // separate lines instead of one line past the repo's print width.
     kind: 'an assistant session URL',
-    re: /(?:claude\.ai|claude\.com)\/(?:chat|share|session|s)\/|claude\.ai\/\S*(?:session|chat|share)/i,
+    re: new RegExp(
+      '(?:claude\\.ai|claude\\.com)/(?:chat|share|session|s)/' +
+        '|claude\\.ai/\\S*(?:session|chat|share)',
+      'i'
+    ),
   },
   {
     kind: 'a claude-session trailer',
@@ -45,8 +54,11 @@ const PATTERNS = [
   {
     // Reuses VENDORS rather than hardcoding anthropic.com, so a Devin/Cursor/
     // etc. noreply address is covered the same way without a second list.
+    // Both `\S*` are bounded to `{0,64}` — an address is short, and an
+    // unbounded `\S*` on both sides of the alternation is a polynomial
+    // backtracking hotspot against a long non-matching run of non-whitespace.
     kind: 'an assistant noreply address',
-    re: new RegExp(`noreply@\\S*(?:${VENDORS})\\S*`, 'i'),
+    re: new RegExp(`noreply@\\S{0,64}(?:${VENDORS})\\S{0,64}`, 'i'),
   },
 ];
 
@@ -84,7 +96,8 @@ function main() {
     // `source`/`line` are a location, not content, so the whole message is
     // built only from values this script chose.
     console.log(
-      `::error title=PR hygiene::Found ${kind} in the PR ${source}, line ${line}. Paraphrase instead of quoting it — see CONTRIBUTING.md or the pull request template.`
+      `::error title=PR hygiene::Found ${kind} in the PR ${source}, line ${line}. ` +
+        `Paraphrase instead of quoting it — see CONTRIBUTING.md or the pull request template.`
     );
   }
 
