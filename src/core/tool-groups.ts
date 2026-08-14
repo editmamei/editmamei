@@ -93,7 +93,7 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
     id: 'select_ai',
     label: 'AI selection',
     purpose:
-      'Sensei/CV-backed subject & sky selection — region/subject-scale (community) plus subject-instance and named-object targeting (Pro).',
+      'Sensei/CV-backed selection: select_subject and select_sky (community), plus subject-instance selection and named-object selection (Pro).',
   },
   adjust: {
     id: 'adjust',
@@ -206,8 +206,10 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_add_adjustment_layer: 'adjust',
   ps_apply_adjustment: 'adjust',
 
-  // filters
+  // filters — consolidated into ps_filter (2026-08-09); the pre-merge name
+  // stays registered as a deprecated alias for one release.
   ps_filter: 'filter',
+  ps_apply_filter: 'filter',
   ps_apply_camera_raw: 'filter',
 
   // retouch

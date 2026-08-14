@@ -75,8 +75,10 @@ export const TOOL_TIERS: Record<string, Tier> = {
 
   // filter-tools — consolidated into one op-discriminated tool: apply (type-
   // discriminated) plus the Smart Filter management ops merged in from the
-  // former standalone Smart-Filter tool (2026-08-09).
+  // former standalone Smart-Filter tool (2026-08-09). The pre-merge name stays
+  // registered as a deprecated alias for one release.
   ps_filter: 'community',
+  ps_apply_filter: 'community',
 
   // group-tools — consolidated into one op-discriminated tool (2026-08-13).
   // The five old names stay registered as deprecated aliases for one release.
@@ -106,7 +108,6 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // layer-properties-tools — set_* → ps_set_layer; merge_visible/stamp/flatten → ps_merge
   ps_convert_to_smart_object: 'community',
   ps_rasterize_layer: 'community',
-
   ps_set_layer: 'community',
   ps_duplicate_layer: 'community',
   ps_copy_to_new_layer: 'community',

@@ -75,7 +75,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**82 tools across 16 capability groups** (59 Community, 23 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
+**82 tools across 16 capability groups** (59 Community, 23 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. `tools/list` reports eight more than the table below: the names superseded by `filter`, `group`, and `text` (`apply_filter`, `create_group`, `move_layer_to_group`, `set_group_blend_mode`, `ungroup`, `delete_group`, `create_text_layer`, `set_text`) stay registered as deprecated aliases for one release, so existing calls keep working.
 
 | Group | Edition | Tools |
 | --- | --- | --- |

@@ -11,6 +11,7 @@ import {
   runSnippetTool,
   applyToActiveLayerProp,
   asSmartFilterProp,
+  unknownDiscriminator,
 } from '../utils/tool-helpers.js';
 import { LAYER_BLEND_MODES } from '../utils/blend-modes.js';
 import { runSmartFilterOp } from './smart-object-tools.js';
@@ -1122,6 +1123,9 @@ const FILTER_INPUT_SCHEMA: JsonSchemaObject = {
   },
 };
 
+const FILTER_DESCRIPTION =
+  "Apply a Photoshop filter (op=apply, the default) to a DUPLICATE of the active layer by default — the original is preserved, undo by deleting the copy. Pass apply_to_active_layer:true to bake into the original instead. Choose the filter with `type` (see the `type` field for its params); pass as_smart_filter:true on a Smart Object to apply it as a re-editable SMART FILTER instead of rasterizing. This same tool also reads and manages that re-editable Smart Filter stack: op=list (every filter's index/name/type/enabled/opacity/blend), op=set_visibility (toggle one off/on), op=set_blend (restyle opacity/blend_mode), op=remove (delete one). Management ops need a 1-based `index` from op=list first — index 1 is the first-applied filter, at the bottom of the stack. Covers blur, sharpen, noise, high_pass, pixelate, distort, displace, and oil_paint.";
+
 export function createFilterTools(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
@@ -1134,12 +1138,29 @@ export function createFilterTools(
     {
       tool: {
         name: 'ps_filter',
-        description:
-          "Apply a Photoshop filter (op=apply, the default) to a DUPLICATE of the active layer by default — the original is preserved, undo by deleting the copy. Pass apply_to_active_layer:true to bake into the original instead. Choose the filter with `type` (see the `type` field for its params); pass as_smart_filter:true on a Smart Object to apply it as a re-editable SMART FILTER instead of rasterizing. This same tool also reads and manages that re-editable Smart Filter stack: op=list (every filter's index/name/type/enabled/opacity/blend), op=set_visibility (toggle one off/on), op=set_blend (restyle opacity/blend_mode), op=remove (delete one). Management ops need a 1-based `index` from op=list first — index 1 is the first-applied filter, at the bottom of the stack. Covers blur, sharpen, noise, high_pass, pixelate, distort, displace, and oil_paint.",
+        description: FILTER_DESCRIPTION,
         inputSchema: FILTER_INPUT_SCHEMA,
         outputSchema: FILTER_OUTPUT_SCHEMA,
         annotations: {
           title: 'Filter',
+          destructiveHint: true,
+          idempotentHint: false,
+        },
+      },
+      handler: async (args) => runFilterTool(connection, snippetClient, client, args),
+    },
+    {
+      // ps_apply_filter was this tool's name before the Smart-Filter merge
+      // renamed it to ps_filter (2026-08-09). Registered as a deprecated alias
+      // on the same schema and the same handler so an existing caller keeps
+      // working for one release.
+      tool: {
+        name: 'ps_apply_filter',
+        description: `DEPRECATED — use ps_filter instead (kept for one release for backward compatibility, identical behaviour). ${FILTER_DESCRIPTION}`,
+        inputSchema: FILTER_INPUT_SCHEMA,
+        outputSchema: FILTER_OUTPUT_SCHEMA,
+        annotations: {
+          title: 'Apply Filter',
           destructiveHint: true,
           idempotentHint: false,
         },
@@ -1162,6 +1183,13 @@ async function runFilterTool(
 ): Promise<ToolResult> {
   const op = (rawArgs.op as string | undefined) ?? 'apply';
   if (op !== 'apply') {
+    // Reject an unknown op HERE rather than letting runSmartFilterOp's own
+    // validation do it: that one only knows the four management ops, so a
+    // typo'd "aply" would come back with an allowed-set missing 'apply' —
+    // the very op the caller meant.
+    if (!(FILTER_OPS as readonly string[]).includes(op)) {
+      return unknownDiscriminator('filter op', op, FILTER_OPS);
+    }
     return runSmartFilterOp(connection, snippetClient, rawArgs);
   }
   if (rawArgs.type === undefined) {

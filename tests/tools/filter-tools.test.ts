@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createFilterTools } from '@editmamei/tools/filter-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
-import { assertToolShape, callTool } from '../fixtures/tool-helpers.ts';
+import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { FakeDetectionClient, CANNED, EXPORT_RESULT } from '../fixtures/fake-detection-client.ts';
 
@@ -27,10 +27,10 @@ describe('createFilterTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('exposes one consolidated ps_filter tool, well-formed', () => {
+  it('exposes ps_filter plus the deprecated ps_apply_filter alias, both well-formed', () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
-    expect(tools.map((t) => t.tool.name)).toEqual(['ps_filter']);
+    expect(tools.map((t) => t.tool.name)).toEqual(['ps_filter', 'ps_apply_filter']);
   });
 
   it('the type field enumerates all eighteen filters', () => {
@@ -104,6 +104,47 @@ describe('createFilterTools', () => {
     const result = await callTool(tools, 'ps_filter', { op: 'apply' });
     expect(result.isError).toBe(true);
     expect(conn.executions.length).toBe(0);
+  });
+
+  // A typo'd op must name every valid op, including 'apply' — the management
+  // ops' own validator only knows the four it handles, so delegating the
+  // rejection to it would hide the op the caller almost certainly meant.
+  it('an unknown op names apply among the allowed values, without dispatching', async () => {
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_filter', { op: 'aply', type: 'gaussian_blur' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/Allowed: apply, list, set_visibility, set_blend, remove/);
+    expect(snippetClient.allBuilds().length).toBe(0);
+    expect(conn.executions.length).toBe(0);
+  });
+
+  // ps_apply_filter is the pre-merge name, kept as a deprecated alias for one
+  // release. It routes to the identical handler, so old and new calls must
+  // build the identical snippet + params — this is what makes "existing calls
+  // are unaffected" true rather than aspirational.
+  it('the deprecated ps_apply_filter builds the identical snippet + params as ps_filter', async () => {
+    const cases: Array<Record<string, unknown>> = [
+      { type: 'gaussian_blur', radius: 8 },
+      { type: 'sharpen', amount: 120, radius: 1.4, threshold: 2 },
+      { op: 'apply', type: 'high_pass', radius: 24, as_smart_filter: true },
+      { op: 'set_visibility', index: 2, enabled: false },
+    ];
+
+    for (const args of cases) {
+      const oldClient = makeSnippetClient();
+      const newClient = makeSnippetClient();
+      const oldTools = createFilterTools(conn.asConnection(), oldClient);
+      const newTools = createFilterTools(conn.asConnection(), newClient);
+
+      await callTool(oldTools, 'ps_apply_filter', args);
+      await callTool(newTools, 'ps_filter', args);
+
+      const label = JSON.stringify(args);
+      const oldBuild = oldClient.lastBuild();
+      const newBuild = newClient.lastBuild();
+      expect(oldBuild.name, label).toBe(newBuild.name);
+      expect(oldBuild.params, label).toEqual(newBuild.params);
+    }
   });
 
   // 2026-06-20 — apply_displace (capture). Map path travels in
