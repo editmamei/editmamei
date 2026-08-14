@@ -6,8 +6,10 @@
  *  - `tool-groups.ts` → how the flat tool surface is ORGANIZED.
  *
  * A group is NOT a tier. A single group can contain tools of different tiers
- * (e.g. `select` is community, `select_ai` is pro — kept separate for the
- * Pro-module boundary, but a group *may* mix tiers).
+ * (e.g. `select_ai` mixes tiers: select_subject/select_sky are community,
+ * select_subject_instance/select_object are pro — grouped together because
+ * they're all AI-backed selection, gated separately for the Pro-module
+ * boundary).
  *
  * **What consumes this.** `ps_list_capabilities` surfaces the taxonomy
  * live (each group's purpose + the tools registered in it) as a compact
@@ -68,13 +70,13 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   inspect: {
     id: 'inspect',
     label: 'Inspect',
-    purpose: 'Read document/layer/selection/history state and render previews.',
+    purpose: 'Read document/layer/selection/history/smart-object state and render previews.',
   },
   verify: {
     id: 'verify',
     label: 'Verify',
     purpose:
-      'Measurement primitives — histogram, region compare, bounds diff — to check work instead of eyeballing.',
+      'Measurement primitives — histogram, region compare, bounds diff, selection preview — to check work instead of eyeballing.',
   },
   document: {
     id: 'document',
@@ -85,12 +87,13 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   select: {
     id: 'select',
     label: 'Selection',
-    purpose: 'Manual selections, selection edits, and alpha-channel save/load.',
+    purpose: 'Manual selections, selection edits, and alpha-channel save/load/duplicate/delete.',
   },
   select_ai: {
     id: 'select_ai',
     label: 'AI selection',
-    purpose: 'Sensei/CV-backed subject & sky selection (Pro).',
+    purpose:
+      'Sensei/CV-backed selection: select_subject and select_sky (community), plus subject-instance selection and named-object selection (Pro).',
   },
   adjust: {
     id: 'adjust',
@@ -101,12 +104,13 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   filter: {
     id: 'filter',
     label: 'Filters',
-    purpose: 'Blur/sharpen/noise/stylize filters (auto-duplicate-first by default).',
+    purpose:
+      'Blur/sharpen/noise/stylize filters (auto-duplicate-first by default) and the Camera Raw develop surface, plus managing the re-editable Smart Filter stack on a Smart Object.',
   },
   retouch: {
     id: 'retouch',
     label: 'Retouch',
-    purpose: 'Content-aware fill/patch/move and brush strokes.',
+    purpose: 'Content-aware fill, patch, and move.',
   },
   layers: {
     id: 'layers',
@@ -116,7 +120,8 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   masks: {
     id: 'masks',
     label: 'Masks & paths',
-    purpose: 'Layer masks, clipping masks, vector masks, and work paths.',
+    purpose:
+      'Layer masks, clipping masks, vector masks, work paths, and channel compositing (apply image / calculations).',
   },
   type: {
     id: 'type',
@@ -131,8 +136,9 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   },
   face: {
     id: 'face',
-    label: 'Face mesh (Pro)',
-    purpose: 'Face-landmark perception and mesh-aimed feature selection / contour strokes (Pro).',
+    label: 'Face mesh',
+    purpose:
+      'Face-landmark perception and mesh-aimed feature selection / contour strokes. Pro in shipped builds.',
   },
   templates: {
     id: 'templates',
@@ -200,7 +206,9 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_add_adjustment_layer: 'adjust',
   ps_apply_adjustment: 'adjust',
 
-  // filters
+  // filters — consolidated into ps_filter (2026-08-09); the pre-merge name
+  // stays registered as a deprecated alias for one release.
+  ps_filter: 'filter',
   ps_apply_filter: 'filter',
   ps_apply_camera_raw: 'filter',
 
@@ -229,11 +237,16 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_warp_layer_along: 'layers',
   ps_warp_layer_region: 'layers',
   ps_warp_layer_to: 'layers',
+  // group lifecycle/membership — consolidated into ps_group (2026-08-13); the
+  // five names below stay registered as deprecated aliases for one release.
+  ps_group: 'layers',
   ps_create_group: 'layers',
   ps_move_layer_to_group: 'layers',
   ps_set_group_blend_mode: 'layers',
   ps_ungroup: 'layers',
   ps_delete_group: 'layers',
+  // vector shape layers — creates a new vector layer
+  ps_shape: 'layers',
 
   // masks & paths
   ps_layer_mask: 'masks',
@@ -243,10 +256,10 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   // channel-compose (Apply Image / Calculations) — channel math feeding blends + masks
   ps_apply_image: 'masks',
   ps_calculations: 'masks',
-  // vector shape layers (dev) — creates a new vector layer
-  ps_shape: 'layers',
 
-  // type
+  // type — consolidated into ps_text (2026-08-13); the two names below stay
+  // registered as deprecated aliases for one release.
+  ps_text: 'type',
   ps_create_text_layer: 'type',
   ps_set_text: 'type',
 

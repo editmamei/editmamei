@@ -303,6 +303,10 @@ const selectEllipseSchema: JsonSchemaObject = {
   // left/top/right/bottom OR placement — enforced in the handler.
 };
 
+// Shared by ps_select's deprecated mode=grow/similar AND ps_modify_selection's
+// op=grow/similar (moved here 2026-08-10 — both require an active selection,
+// which is ps_modify_selection's contract, not ps_select's). Both paths build
+// the identical `growSelection` snippet from these same params.
 const growSelectionSchema: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -505,6 +509,10 @@ const deleteChannelSchema: JsonSchemaObject = {
 
 // ---------- Consolidated schemas (Phase 1, 2026-06-20) ----------
 
+// 'grow'/'similar' are DEPRECATED (2026-08-10) — moved to
+// ps_modify_selection's `op`, since both require an existing selection
+// (ps_modify_selection's contract) rather than creating one. Kept here for
+// one release for backward compatibility — see the `select()` dispatcher.
 const SELECT_MODES = [
   'all',
   'none',
@@ -537,8 +545,8 @@ const SELECT_INPUT_SCHEMA: JsonSchemaObject = {
         'color_range: target red/green/blue (+fuzziness) — "select all the red / skin". ' +
         'luminance_range: luminance highlights|shadows|midtones (+fuzziness, lower_limit, upper_limit) — glow/dodge-burn foundation. ' +
         'magic_wand: click x/y (+tolerance, contiguous, anti_alias, sample_all_layers). ' +
-        'grow: expand the CURRENT selection to adjacent similar-colour pixels (+tolerance, anti_alias). ' +
-        'similar: expand the CURRENT selection to ALL similar-colour pixels document-wide (+tolerance, anti_alias). ' +
+        'grow: DEPRECATED here — use ps_modify_selection(op=grow) instead (kept for one release for backward compatibility, identical behaviour). Expands the CURRENT selection to adjacent similar-colour pixels (+tolerance, anti_alias). ' +
+        'similar: DEPRECATED here — use ps_modify_selection(op=similar) instead (kept for one release for backward compatibility, identical behaviour). Expands the CURRENT selection to ALL similar-colour pixels document-wide (+tolerance, anti_alias). ' +
         'skin_tones: select skin-coloured pixels (+fuzziness; use_faces=true adds face-aware refinement). ' +
         'out_of_gamut: select colours outside the printable CMYK gamut (no params). ' +
         'polygon: points [{x,y},...] in ABSOLUTE document pixels (min 3, auto-closes) — covers polygonal/freehand lasso. Coordinate-driven: you must know the pixel positions (use ps_inspect / ps_get_preview to aim, or ps_path create_from_placement → load_as_selection for a grounded outline). ' +
@@ -571,12 +579,16 @@ const MODIFY_SELECTION_OPS = [
   'border',
   'smooth',
   'transform',
+  'grow',
+  'similar',
 ] as const;
 
 // ps_modify_selection merges feather + refine_edge + the four geometric
-// edge ops (expand/contract/border/smooth). `radius`/`feather` (refine_edge),
-// `radius_px` (feather), and `amount` (geometric ops) are distinct fields so
-// there are no collisions.
+// edge ops (expand/contract/border/smooth) + grow/similar (colour-similarity
+// growth — moved here from ps_select 2026-08-10, see growSelectionSchema).
+// `radius`/`feather` (refine_edge), `radius_px` (feather), `amount`
+// (geometric ops), and `tolerance`/`anti_alias` (grow/similar) are distinct
+// fields so there are no collisions.
 const MODIFY_SELECTION_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -589,13 +601,16 @@ const MODIFY_SELECTION_INPUT_SCHEMA: JsonSchemaObject = {
         'expand: grow the selection outward by `amount` px. contract: shrink it inward by `amount` px. ' +
         'border: replace the selection with a `amount`-px-wide band straddling its edge. ' +
         'smooth: round off the selection corners with a `amount`-px radius. ' +
+        'grow: expand the selection to adjacent similar-colour pixels (+tolerance, anti_alias). ' +
+        'similar: expand the selection to ALL similar-colour pixels document-wide (+tolerance, anti_alias). ' +
         'transform: relatively scale (scale_x_percent / scale_y_percent), rotate (rotate_degrees) and/or translate (offset_x / offset_y) the marching ants — not pixels. ' +
-        'expand/contract/border/smooth all require an active selection and take `amount`; expand/contract/smooth also take at_canvas_bounds.',
+        'expand/contract/border/smooth all require an active selection and take `amount`; expand/contract/smooth also take at_canvas_bounds. grow/similar also require an active selection.',
     },
     ...featherSelectionSchema.properties,
     ...refineEdgeSchema.properties,
     ...modifyEdgeSchema.properties,
     ...transformSelectionSchema.properties,
+    ...growSelectionSchema.properties,
   },
   required: ['op'],
 };
@@ -702,7 +717,7 @@ export function createSelectionTools(
       tool: {
         name: 'ps_select',
         description:
-          'Create or modify a selection — choose with `mode`. `all` selects the canvas; `none` deselects; `inverse` inverts the current selection (e.g. select the subject, then inverse to act on the background). `rectangle` (left/top/right/bottom, optional feather_px to avoid hard block-edges in smooth sky). `ellipse` (left/top/right/bottom bounding box + anti_alias — circles/ovals). `color_range` (target red/green/blue + fuzziness — "select all the red / skin tones"). `luminance_range` (highlights/shadows/midtones — foundation for glow / dodge-burn). `magic_wand` (click x/y + tolerance, contiguous). `grow` / `similar` expand the CURRENT selection to similar-colour pixels (adjacent vs document-wide; both honour `tolerance`). rectangle/ellipse/magic_wand also accept a grounded `placement` (NAME a region/point instead of guessing pixels — resolved + gate-verified). The geometric/color/wand modes take selection_type (replace|add|subtract|intersect) to combine with an existing selection and return a rich selection_info bundle — verify it (or ps_get_selection_preview) before committing to a mask.',
+          'Create a NEW selection — choose with `mode`. (To edit the CURRENT selection instead — including growing it by colour similarity — use ps_modify_selection.) `all` selects the canvas; `none` deselects; `inverse` inverts the current selection (e.g. select the subject, then inverse to act on the background). `rectangle` (left/top/right/bottom, optional feather_px to avoid hard block-edges in smooth sky). `ellipse` (left/top/right/bottom bounding box + anti_alias — circles/ovals). `color_range` (target red/green/blue + fuzziness — "select all the red / skin tones"). `luminance_range` (highlights/shadows/midtones — foundation for glow / dodge-burn). `magic_wand` (click x/y + tolerance, contiguous). `grow` / `similar` are DEPRECATED here (they act on the CURRENT selection, not a new one) — use ps_modify_selection(op=grow|similar) instead; kept for one release for backward compatibility, identical behaviour. rectangle/ellipse/magic_wand also accept a grounded `placement` (NAME a region/point instead of guessing pixels — resolved + gate-verified). The geometric/color/wand modes take selection_type (replace|add|subtract|intersect) to combine with an existing selection and return a rich selection_info bundle — verify it (or ps_get_selection_preview) before committing to a mask.',
         inputSchema: SELECT_INPUT_SCHEMA,
         outputSchema: {
           type: 'object',
@@ -742,7 +757,7 @@ export function createSelectionTools(
       tool: {
         name: 'ps_modify_selection',
         description:
-          "Modify the CURRENT selection — choose with `op`. `feather` softens by radius_px (use when a selection was made hard, e.g. after select all/inverse, before applying an adjustment). `refine_edge` runs Select-and-Mask's global sliders headlessly (smooth, feather, contrast, shift_edge, edge-detection radius, decontaminate) to clean halos and soft/fuzzy edges (hair) after a rough color-range / magic-wand / subject selection. `expand` / `contract` grow / shrink the selection by `amount` px. `border` replaces the selection with an `amount`-px band around its edge. `smooth` rounds the corners with an `amount`-px radius. `transform` relatively scales (scale_x_percent / scale_y_percent), rotates (rotate_degrees) and/or translates (offset_x / offset_y) the marching ants — pixels are untouched. All require an active selection and return selection_info.",
+          "Modify the CURRENT selection — choose with `op`. (To create a NEW selection instead, use ps_select.) `feather` softens by radius_px (use when a selection was made hard, e.g. after select all/inverse, before applying an adjustment). `refine_edge` runs Select-and-Mask's global sliders headlessly (smooth, feather, contrast, shift_edge, edge-detection radius, decontaminate) to clean halos and soft/fuzzy edges (hair) after a rough color-range / magic-wand / subject selection. `expand` / `contract` grow / shrink the selection by `amount` px. `border` replaces the selection with an `amount`-px band around its edge. `smooth` rounds the corners with an `amount`-px radius. `grow` / `similar` expand the selection to similar-colour pixels by `tolerance` (+anti_alias) — `grow` to adjacent pixels only, `similar` document-wide. `transform` relatively scales (scale_x_percent / scale_y_percent), rotates (rotate_degrees) and/or translates (offset_x / offset_y) the marching ants — pixels are untouched. All require an active selection and return selection_info.",
         inputSchema: MODIFY_SELECTION_INPUT_SCHEMA,
         outputSchema: {
           type: 'object',
@@ -751,6 +766,8 @@ export function createSelectionTools(
             refined: { type: 'boolean' },
             modified: { type: 'boolean' },
             transformed: { type: 'boolean' },
+            selected: { type: 'boolean', description: 'op=grow/similar: true on success.' },
+            method: { type: 'string', description: 'op=grow/similar: "grow" or "similar".' },
             mode: { type: 'string' },
             amount_px: { type: 'number' },
             scale_x_percent: { type: 'number' },
@@ -765,6 +782,8 @@ export function createSelectionTools(
             contrast: { type: 'number' },
             shift_edge: { type: 'number' },
             decontaminate: { type: 'boolean' },
+            tolerance: { type: 'number', description: 'op=grow/similar: tolerance used.' },
+            anti_alias: { type: 'boolean', description: 'op=grow/similar: anti_alias used.' },
             output: { type: 'string' },
             selection_info: selectionInfoFragment,
           },
@@ -1059,6 +1078,9 @@ async function select(
       return selectLuminanceRange(connection, snippetClient, rest);
     case 'magic_wand':
       return magicWand(connection, snippetClient, detClient, rest);
+    // DEPRECATED here (2026-08-10) — grow/similar moved to ps_modify_selection's
+    // `op`. Kept accepting these mode values for one release so existing callers
+    // don't break; identical dispatch, same growSelection snippet + params.
     case 'grow':
       return growSelection(connection, snippetClient, 'grow', rest);
     case 'similar':
@@ -1074,7 +1096,8 @@ async function select(
   }
 }
 
-// ps_modify_selection → feather / refine_edge.
+// ps_modify_selection → feather / refine_edge / expand / contract / border /
+// smooth / transform / grow / similar.
 async function modifySelection(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
@@ -1094,6 +1117,10 @@ async function modifySelection(
       return modifySelectionEdge(connection, snippetClient, op, rest);
     case 'transform':
       return transformSelection(connection, snippetClient, rest);
+    case 'grow':
+      return growSelection(connection, snippetClient, 'grow', rest);
+    case 'similar':
+      return growSelection(connection, snippetClient, 'similar', rest);
     default:
       return unknownDiscriminator('modify_selection op', op, MODIFY_SELECTION_OPS);
   }
@@ -1327,6 +1354,9 @@ async function selectEllipse(
   }
 }
 
+// Backs both ps_modify_selection(op=grow|similar) — the current home — and
+// ps_select(mode=grow|similar) — the deprecated alias. Same snippet, same
+// params either way; see growSelectionSchema for why the move is safe.
 async function growSelection(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,

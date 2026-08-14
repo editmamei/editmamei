@@ -1,16 +1,22 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createFilterTools } from '@editmamei/tools/filter-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
-import { assertToolShape, callTool } from '../fixtures/tool-helpers.ts';
+import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { FakeDetectionClient, CANNED, EXPORT_RESULT } from '../fixtures/fake-detection-client.ts';
 
 // 2026-06-20 — Phase 1 tool-surface consolidation. The thirteen
-// photoshop_apply_<filter> tools collapsed into ONE ps_apply_filter with
+// photoshop_apply_<filter> tools collapsed into ONE filter-apply tool with
 // a `type` discriminator. The
 // per-type schemas + handlers are unchanged; the consolidated handler strips
 // `type` and delegates, so these tests still pin the TS→snippet param-forwarding
 // contract — now reached via type:'<filter>'.
+//
+// 2026-08-09 — that tool (then named differently) merged with the former
+// standalone Smart-Filter tool into ps_filter (op-discriminated): op=apply
+// (default) is this same type dispatch, byte-identical for a caller that
+// never sets `op`; op=list/set_visibility/set_blend/remove moved to
+// tests/tools/smart-object-tools.test.ts, unchanged in behavior.
 
 describe('createFilterTools', () => {
   let conn: FakePhotoshopConnection;
@@ -21,17 +27,16 @@ describe('createFilterTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('exposes one consolidated apply_filter tool, well-formed', () => {
+  it('exposes ps_filter plus the deprecated ps_apply_filter alias, both well-formed', () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
-    expect(tools.map((t) => t.tool.name)).toEqual(['ps_apply_filter']);
+    expect(tools.map((t) => t.tool.name)).toEqual(['ps_filter', 'ps_apply_filter']);
   });
 
   it('the type field enumerates all eighteen filters', () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
     const schema = tools[0].tool.inputSchema as unknown as {
       properties: { type: { enum: string[] } };
-      required: string[];
     };
     expect(schema.properties.type.enum).toEqual([
       'gaussian_blur',
@@ -53,21 +58,100 @@ describe('createFilterTools', () => {
       'displace',
       'oil_paint',
     ]);
-    expect(schema.required).toContain('type');
+  });
+
+  // `type` used to be unconditionally required — the merge with the Smart-Filter
+  // management ops makes it conditional (only when op=apply), which JSON Schema
+  // can't express, so nothing at the top level is unconditionally required anymore.
+  it('op enumerates apply/list/set_visibility/set_blend/remove, defaulting to apply', () => {
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    const schema = tools[0].tool.inputSchema as unknown as {
+      properties: { op: { enum: string[]; default?: string } };
+      required?: string[];
+    };
+    expect(schema.properties.op.enum).toEqual([
+      'apply',
+      'list',
+      'set_visibility',
+      'set_blend',
+      'remove',
+    ]);
+    expect(schema.properties.op.default).toBe('apply');
+    expect(schema.required ?? []).not.toContain('type');
+  });
+
+  // Backward compatibility (2026-08-09 merge): a pre-merge caller never sent
+  // `op`, so an absent `op` must still hit the `type` dispatch exactly as
+  // before — this is the hard requirement the merge cannot regress.
+  it('omitting op defaults to apply and routes to the type dispatch', async () => {
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_filter', { type: 'gaussian_blur', radius: 5 });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('applyGaussianBlur');
+    expect(build.params.radius).toBe(5);
+    expect(build.params.applyToActiveLayer).toBe(false);
   });
 
   it('an unknown filter type returns an error without dispatching a snippet', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    const result = await callTool(tools, 'ps_apply_filter', { type: 'bogus' });
+    const result = await callTool(tools, 'ps_filter', { type: 'bogus' });
     expect(result.isError).toBe(true);
     expect(conn.executions.length).toBe(0);
+  });
+
+  it('op=apply without a type errors with a clear message', async () => {
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_filter', { op: 'apply' });
+    expect(result.isError).toBe(true);
+    expect(conn.executions.length).toBe(0);
+  });
+
+  // A typo'd op must name every valid op, including 'apply' — the management
+  // ops' own validator only knows the four it handles, so delegating the
+  // rejection to it would hide the op the caller almost certainly meant.
+  it('an unknown op names apply among the allowed values, without dispatching', async () => {
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_filter', { op: 'aply', type: 'gaussian_blur' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/Allowed: apply, list, set_visibility, set_blend, remove/);
+    expect(snippetClient.allBuilds().length).toBe(0);
+    expect(conn.executions.length).toBe(0);
+  });
+
+  // ps_apply_filter is the pre-merge name, kept as a deprecated alias for one
+  // release. It routes to the identical handler, so old and new calls must
+  // build the identical snippet + params — this is what makes "existing calls
+  // are unaffected" true rather than aspirational.
+  it('the deprecated ps_apply_filter builds the identical snippet + params as ps_filter', async () => {
+    const cases: Array<Record<string, unknown>> = [
+      { type: 'gaussian_blur', radius: 8 },
+      { type: 'sharpen', amount: 120, radius: 1.4, threshold: 2 },
+      { op: 'apply', type: 'high_pass', radius: 24, as_smart_filter: true },
+      { op: 'set_visibility', index: 2, enabled: false },
+    ];
+
+    for (const args of cases) {
+      const oldClient = makeSnippetClient();
+      const newClient = makeSnippetClient();
+      const oldTools = createFilterTools(conn.asConnection(), oldClient);
+      const newTools = createFilterTools(conn.asConnection(), newClient);
+
+      await callTool(oldTools, 'ps_apply_filter', args);
+      await callTool(newTools, 'ps_filter', args);
+
+      const label = JSON.stringify(args);
+      const oldBuild = oldClient.lastBuild();
+      const newBuild = newClient.lastBuild();
+      expect(oldBuild.name, label).toBe(newBuild.name);
+      expect(oldBuild.params, label).toEqual(newBuild.params);
+    }
   });
 
   // 2026-06-20 — apply_displace (capture). Map path travels in
   // the descriptor (putPath DspF), so it forwards as a param.
   it('type=displace forwards map path + scale + enum params', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'displace',
       map_path: 'C:/maps/disp.psd',
       horizontal_scale: 10,
@@ -85,7 +169,7 @@ describe('createFilterTools', () => {
 
   it('type=gaussian_blur passes the radius param', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'gaussian_blur', radius: 12 });
+    await callTool(tools, 'ps_filter', { type: 'gaussian_blur', radius: 12 });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyGaussianBlur');
     expect(build.params.radius).toBe(12);
@@ -93,7 +177,7 @@ describe('createFilterTools', () => {
 
   it('type=sharpen passes amount, radius, and threshold params', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'sharpen',
       amount: 100,
       radius: 1.5,
@@ -108,7 +192,7 @@ describe('createFilterTools', () => {
 
   it('type=motion_blur passes angle and radius params', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'motion_blur', angle: 45, radius: 20 });
+    await callTool(tools, 'ps_filter', { type: 'motion_blur', angle: 45, radius: 20 });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyMotionBlur');
     expect(build.params.angle).toBe(45);
@@ -117,7 +201,7 @@ describe('createFilterTools', () => {
 
   it('type=noise passes amount param', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'noise', amount: 10 });
+    await callTool(tools, 'ps_filter', { type: 'noise', amount: 10 });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyAddNoise');
     expect(build.params.amount).toBe(10);
@@ -126,7 +210,7 @@ describe('createFilterTools', () => {
   // 2026-06-20 — radial_blur. Maps spin/zoom + quality + normalized center to RdlB.
   it('type=radial_blur passes amount, method, quality, and center params', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'radial_blur',
       amount: 23,
       method: 'zoom',
@@ -154,7 +238,7 @@ describe('createFilterTools', () => {
     });
     const sc2 = makeSnippetClient();
     const tools = createFilterTools(conn2.asConnection(), sc2, new FakeDetectionClient(CANNED));
-    const res = await callTool(tools, 'ps_apply_filter', {
+    const res = await callTool(tools, 'ps_filter', {
       type: 'radial_blur',
       amount: 20,
       center_x: 0.9, // should be overridden by the placement
@@ -185,7 +269,7 @@ describe('createFilterTools', () => {
     });
     const sc2 = makeSnippetClient();
     const tools = createFilterTools(conn2.asConnection(), sc2, new FakeDetectionClient(CANNED));
-    const res = await callTool(tools, 'ps_apply_filter', {
+    const res = await callTool(tools, 'ps_filter', {
       type: 'radial_blur',
       center_placement: {
         anchors: [
@@ -202,7 +286,7 @@ describe('createFilterTools', () => {
   // 2026-06-20 — pixelate (two modes ClrH / Msc).
   it('type=pixelate color_halftone passes radius + channel angles', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'pixelate',
       mode: 'color_halftone',
       max_radius: 9,
@@ -221,7 +305,7 @@ describe('createFilterTools', () => {
 
   it('type=pixelate mosaic passes cell_size', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'pixelate',
       mode: 'mosaic',
       cell_size: 12,
@@ -235,7 +319,7 @@ describe('createFilterTools', () => {
   // 2026-06-29 — pixelate family extension (capture).
   it('type=pixelate crystallize passes cell_size', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'pixelate',
       mode: 'crystallize',
       cell_size: 25,
@@ -248,7 +332,7 @@ describe('createFilterTools', () => {
 
   it('type=pixelate pointillize passes cell_size', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'pixelate',
       mode: 'pointillize',
       cell_size: 7,
@@ -261,7 +345,7 @@ describe('createFilterTools', () => {
 
   it('type=pixelate facet dispatches with no extra params', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'pixelate', mode: 'facet' });
+    await callTool(tools, 'ps_filter', { type: 'pixelate', mode: 'facet' });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyPixelate');
     expect(build.params.mode).toBe('facet');
@@ -271,7 +355,7 @@ describe('createFilterTools', () => {
 
   it('type=pixelate fragment dispatches with no extra params', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'pixelate', mode: 'fragment' });
+    await callTool(tools, 'ps_filter', { type: 'pixelate', mode: 'fragment' });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyPixelate');
     expect(build.params.mode).toBe('fragment');
@@ -281,7 +365,7 @@ describe('createFilterTools', () => {
   // 2026-06-20 — distort (four modes).
   it('type=distort twirl passes the angle', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'distort', mode: 'twirl', angle: 232 });
+    await callTool(tools, 'ps_filter', { type: 'distort', mode: 'twirl', angle: 232 });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyDistort');
     expect(build.params.mode).toBe('twirl');
@@ -290,7 +374,7 @@ describe('createFilterTools', () => {
 
   it('type=distort wave maps its rich param set to camelCase', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'distort',
       mode: 'wave',
       wave_type: 'sine',
@@ -312,7 +396,7 @@ describe('createFilterTools', () => {
   // 2026-06-29 — distort family extension (capture).
   it('type=distort pinch passes the amount', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'distort', mode: 'pinch', amount: 60 });
+    await callTool(tools, 'ps_filter', { type: 'distort', mode: 'pinch', amount: 60 });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyDistort');
     expect(build.params.mode).toBe('pinch');
@@ -321,7 +405,7 @@ describe('createFilterTools', () => {
 
   it('type=distort spherize passes the amount', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'distort', mode: 'spherize', amount: -40 });
+    await callTool(tools, 'ps_filter', { type: 'distort', mode: 'spherize', amount: -40 });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyDistort');
     expect(build.params.mode).toBe('spherize');
@@ -330,7 +414,7 @@ describe('createFilterTools', () => {
 
   it('type=distort zigzag passes amount + ridges', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'distort',
       mode: 'zigzag',
       amount: 25,
@@ -346,7 +430,7 @@ describe('createFilterTools', () => {
   // 2026-06-29 — stylize family (new tool).
   it('type=stylize emboss passes angle/height/amount', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'stylize',
       mode: 'emboss',
       angle: 120,
@@ -363,7 +447,7 @@ describe('createFilterTools', () => {
 
   it('type=stylize wind maps wind_method/wind_direction to method/direction', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'stylize',
       mode: 'wind',
       wind_method: 'blast',
@@ -378,7 +462,7 @@ describe('createFilterTools', () => {
 
   it('type=stylize trace_contour passes level + edge', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'stylize',
       mode: 'trace_contour',
       level: 200,
@@ -392,7 +476,7 @@ describe('createFilterTools', () => {
 
   it('type=stylize tiles passes number + offset', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'stylize',
       mode: 'tiles',
       number: 12,
@@ -406,7 +490,7 @@ describe('createFilterTools', () => {
 
   it('type=stylize find_edges dispatches parameterless', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'stylize', mode: 'find_edges' });
+    await callTool(tools, 'ps_filter', { type: 'stylize', mode: 'find_edges' });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyStylize');
     expect(build.params.mode).toBe('find_edges');
@@ -415,7 +499,7 @@ describe('createFilterTools', () => {
   // 2026-06-29 — render family (new tool).
   it('type=render clouds dispatches parameterless', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'render', mode: 'clouds' });
+    await callTool(tools, 'ps_filter', { type: 'render', mode: 'clouds' });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyRender');
     expect(build.params.mode).toBe('clouds');
@@ -423,7 +507,7 @@ describe('createFilterTools', () => {
 
   it('type=render fibers maps fiber_strength to strength + passes variance/seed', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'render',
       mode: 'fibers',
       variance: 20,
@@ -440,7 +524,7 @@ describe('createFilterTools', () => {
   // 2026-06-29 — other/denoise/blur families (new tools).
   it('type=other maximum passes radius + preserve', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'other',
       mode: 'maximum',
       radius: 5,
@@ -455,7 +539,7 @@ describe('createFilterTools', () => {
 
   it('type=other offset passes horizontal + vertical', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'other',
       mode: 'offset',
       horizontal: 40,
@@ -469,7 +553,7 @@ describe('createFilterTools', () => {
 
   it('type=denoise dust_and_scratches passes radius + threshold', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'denoise',
       mode: 'dust_and_scratches',
       radius: 4,
@@ -483,7 +567,7 @@ describe('createFilterTools', () => {
 
   it('type=denoise despeckle dispatches parameterless', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'denoise', mode: 'despeckle' });
+    await callTool(tools, 'ps_filter', { type: 'denoise', mode: 'despeckle' });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyDenoise');
     expect(build.params.mode).toBe('despeckle');
@@ -491,7 +575,7 @@ describe('createFilterTools', () => {
 
   it('type=blur surface_blur passes radius + threshold', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'blur',
       mode: 'surface_blur',
       radius: 18,
@@ -505,7 +589,7 @@ describe('createFilterTools', () => {
 
   it('type=blur average dispatches parameterless', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', { type: 'blur', mode: 'average' });
+    await callTool(tools, 'ps_filter', { type: 'blur', mode: 'average' });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('applyBlurAdv');
     expect(build.params.mode).toBe('average');
@@ -514,7 +598,7 @@ describe('createFilterTools', () => {
   // 2026-06-20 — oil_paint (7 sliders).
   it('type=oil_paint maps its sliders to camelCase params', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_apply_filter', {
+    await callTool(tools, 'ps_filter', {
       type: 'oil_paint',
       stylization: 4,
       cleanliness: 2.3,
@@ -568,7 +652,7 @@ describe('createFilterTools', () => {
     for (const { type, args, snippetName } of filterCases) {
       it(`type=${type} defaults to duplicate-first (applyToActiveLayer=false)`, async () => {
         const tools = createFilterTools(conn.asConnection(), snippetClient);
-        await callTool(tools, 'ps_apply_filter', { type, ...args });
+        await callTool(tools, 'ps_filter', { type, ...args });
         const build = snippetClient.lastBuild();
         expect(build.name).toBe(snippetName);
         expect(build.params.applyToActiveLayer).toBe(false);
@@ -576,7 +660,7 @@ describe('createFilterTools', () => {
 
       it(`type=${type} with apply_to_active_layer=true passes applyToActiveLayer=true`, async () => {
         const tools = createFilterTools(conn.asConnection(), snippetClient);
-        await callTool(tools, 'ps_apply_filter', {
+        await callTool(tools, 'ps_filter', {
           type,
           ...args,
           apply_to_active_layer: true,
@@ -614,7 +698,7 @@ describe('createFilterTools', () => {
   describe('lens_blur', () => {
     it('passes radius and iris_shape to the snippet', async () => {
       const tools = createFilterTools(conn.asConnection(), snippetClient);
-      await callTool(tools, 'ps_apply_filter', {
+      await callTool(tools, 'ps_filter', {
         type: 'lens_blur',
         radius: 25,
         iris_shape: 'octagon',
@@ -638,7 +722,7 @@ describe('createFilterTools', () => {
 
     it('defaults sensible values when params omitted', async () => {
       const tools = createFilterTools(conn.asConnection(), snippetClient);
-      await callTool(tools, 'ps_apply_filter', { type: 'lens_blur' });
+      await callTool(tools, 'ps_filter', { type: 'lens_blur' });
       const build = snippetClient.lastBuild();
       expect(build.name).toBe('applyLensBlur');
       expect(conn.executions.length).toBe(1);
@@ -648,7 +732,7 @@ describe('createFilterTools', () => {
   describe('smart_sharpen', () => {
     it('passes amount, radius, and shadow/highlight params to the snippet', async () => {
       const tools = createFilterTools(conn.asConnection(), snippetClient);
-      await callTool(tools, 'ps_apply_filter', {
+      await callTool(tools, 'ps_filter', {
         type: 'smart_sharpen',
         amount: 250,
         radius: 2.5,
@@ -670,7 +754,7 @@ describe('createFilterTools', () => {
 
     it('motionBlur remove_mode passes motion_angle to the snippet', async () => {
       const tools = createFilterTools(conn.asConnection(), snippetClient);
-      await callTool(tools, 'ps_apply_filter', {
+      await callTool(tools, 'ps_filter', {
         type: 'smart_sharpen',
         amount: 100,
         radius: 1.5,
@@ -685,7 +769,7 @@ describe('createFilterTools', () => {
 
     it('non-motion remove_mode does not pass motionAngle', async () => {
       const tools = createFilterTools(conn.asConnection(), snippetClient);
-      await callTool(tools, 'ps_apply_filter', {
+      await callTool(tools, 'ps_filter', {
         type: 'smart_sharpen',
         amount: 100,
         radius: 1.5,
@@ -703,7 +787,7 @@ describe('createFilterTools', () => {
   describe('reduce_noise', () => {
     it('passes strength and preserve_details to the snippet', async () => {
       const tools = createFilterTools(conn.asConnection(), snippetClient);
-      await callTool(tools, 'ps_apply_filter', {
+      await callTool(tools, 'ps_filter', {
         type: 'reduce_noise',
         strength: 8,
         preserve_details: 65,
@@ -716,7 +800,7 @@ describe('createFilterTools', () => {
 
     it('passes color_noise and sharpen_details to the snippet', async () => {
       const tools = createFilterTools(conn.asConnection(), snippetClient);
-      await callTool(tools, 'ps_apply_filter', {
+      await callTool(tools, 'ps_filter', {
         type: 'reduce_noise',
         color_noise: 60,
         sharpen_details: 35,
@@ -729,7 +813,7 @@ describe('createFilterTools', () => {
 
     it('passes remove_jpeg_artifact flag to the snippet', async () => {
       const tools = createFilterTools(conn.asConnection(), snippetClient);
-      await callTool(tools, 'ps_apply_filter', {
+      await callTool(tools, 'ps_filter', {
         type: 'reduce_noise',
         remove_jpeg_artifact: true,
       });
@@ -740,7 +824,7 @@ describe('createFilterTools', () => {
 
     it('passes per_channel=true and per-channel values to the snippet', async () => {
       const tools = createFilterTools(conn.asConnection(), snippetClient);
-      await callTool(tools, 'ps_apply_filter', {
+      await callTool(tools, 'ps_filter', {
         type: 'reduce_noise',
         strength: 5,
         per_channel: true,
@@ -761,7 +845,7 @@ describe('createFilterTools', () => {
 
     it('default-args case dispatches with strength param', async () => {
       const tools = createFilterTools(conn.asConnection(), snippetClient);
-      await callTool(tools, 'ps_apply_filter', { type: 'reduce_noise', strength: 5 });
+      await callTool(tools, 'ps_filter', { type: 'reduce_noise', strength: 5 });
       const build = snippetClient.lastBuild();
       expect(build.name).toBe('applyReduceNoise');
       expect(build.params.strength).toBe(5);
@@ -771,10 +855,74 @@ describe('createFilterTools', () => {
   describe('high_pass', () => {
     it('passes radius to the snippet', async () => {
       const tools = createFilterTools(conn.asConnection(), snippetClient);
-      await callTool(tools, 'ps_apply_filter', { type: 'high_pass', radius: 3.5 });
+      await callTool(tools, 'ps_filter', { type: 'high_pass', radius: 3.5 });
       const build = snippetClient.lastBuild();
       expect(build.name).toBe('applyHighPass');
       expect(build.params.radius).toBe(3.5);
     });
+  });
+
+  // ===========================================================================
+  // as_smart_filter forwarding. Every filter type declares the opt-in
+  // (asSmartFilterProp, shared across all 18 schemas) and must forward it — or
+  // its absence — to the snippet unmodified. Table-driven over the tool's OWN
+  // schema enum (not a hand-copied list) so a new filter type auto-joins this
+  // coverage instead of silently going unchecked.
+  // ===========================================================================
+  describe('as_smart_filter forwarding', () => {
+    // Minimal valid params per type — just enough to satisfy that type's
+    // required fields (per the per-type schemas above), nothing more.
+    const requiredParamsByType: Record<string, Record<string, unknown>> = {
+      gaussian_blur: { radius: 10 },
+      motion_blur: { angle: 10, radius: 10 },
+      lens_blur: {},
+      radial_blur: {},
+      sharpen: { amount: 50, radius: 2 },
+      smart_sharpen: {},
+      noise: { amount: 10 },
+      reduce_noise: {},
+      high_pass: { radius: 10 },
+      pixelate: { mode: 'mosaic' },
+      distort: { mode: 'twirl' },
+      stylize: { mode: 'emboss' },
+      render: { mode: 'clouds' },
+      other: { mode: 'offset' },
+      denoise: { mode: 'despeckle' },
+      blur: { mode: 'average' },
+      displace: { map_path: 'C:/maps/disp.psd' },
+      oil_paint: {},
+    };
+
+    const schemaTools = createFilterTools(makeConnection().asConnection(), makeSnippetClient());
+    const filterTypeSchema = schemaTools[0].tool.inputSchema as unknown as {
+      properties: { type: { enum: string[] } };
+    };
+    const types = filterTypeSchema.properties.type.enum;
+
+    it('the params table above covers every type the tool accepts (so a new type fails loudly, not silently)', () => {
+      expect(Object.keys(requiredParamsByType).sort()).toEqual([...types].sort());
+    });
+
+    for (const type of types) {
+      it(`type=${type} forwards as_smart_filter:true`, async () => {
+        const tools = createFilterTools(conn.asConnection(), snippetClient);
+        await callTool(tools, 'ps_filter', {
+          type,
+          ...requiredParamsByType[type],
+          as_smart_filter: true,
+        });
+        expect(snippetClient.lastBuild().params.asSmartFilter).toBe(true);
+      });
+
+      it(`type=${type} omitting as_smart_filter forwards false/absent`, async () => {
+        const tools = createFilterTools(conn.asConnection(), snippetClient);
+        await callTool(tools, 'ps_filter', {
+          type,
+          ...requiredParamsByType[type],
+        });
+        const asSmartFilter = snippetClient.lastBuild().params.asSmartFilter;
+        expect(asSmartFilter === false || asSmartFilter === undefined).toBe(true);
+      });
+    }
   });
 });

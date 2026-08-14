@@ -30,7 +30,10 @@ const deleteLayerSchema: JsonSchemaObject = {
 // either direction so we allow ± the same bound.
 const PS_TEXT_COORD_MAX = 300_000;
 
-const createTextLayerSchema: JsonSchemaObject = {
+// Exported for ps_text (text-tools.ts) — its op=create shares this schema
+// and the createTextLayer handler below, so the deprecated ps_create_text_layer
+// and ps_text(op=create) are the identical code path, not just matching tests.
+export const createTextLayerSchema: JsonSchemaObject = {
   type: 'object',
   properties: {
     text: {
@@ -221,7 +224,7 @@ export function createLayerTools(
       tool: {
         name: 'ps_create_layer',
         description:
-          'Create a new empty raster layer above the currently active layer. Non-destructive. Use ps_create_text_layer for text, ps_add_adjustment_layer for adjustments.',
+          'Create a new empty raster layer above the currently active layer. Non-destructive. Use ps_text (op=create) for text, ps_add_adjustment_layer for adjustments.',
         inputSchema: createLayerSchema,
         outputSchema: {
           type: 'object',
@@ -270,7 +273,7 @@ export function createLayerTools(
       tool: {
         name: 'ps_create_text_layer',
         description:
-          'Create a new text layer with the given content, position, and font size. The text is editable (vector). Use ps_set_text (property=font / color) afterwards to style.',
+          'DEPRECATED — use ps_text(op=create) instead (kept for one release for backward compatibility, identical behaviour). Create a new text layer with the given content, position, and font size. The text is editable (vector). Use ps_text (op=set_font / set_color / set_alignment) afterwards to style.',
         inputSchema: createTextLayerSchema,
         outputSchema: {
           type: 'object',
@@ -427,7 +430,8 @@ async function deleteLayer(
   });
 }
 
-async function createTextLayer(
+// Exported for ps_text(op=create) — see the schema export above.
+export async function createTextLayer(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
   rawArgs: Record<string, unknown>

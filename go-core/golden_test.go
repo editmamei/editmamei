@@ -175,26 +175,33 @@ func TestGaussianBlurGolden(t *testing.T) {
 		key string
 		got string
 	}{
-		{"applyGaussianBlur(2,false)", applyGaussianBlur(2, false)},
-		{"applyGaussianBlur(5.5,true)", applyGaussianBlur(5.5, true)},
-		{"applyUnsharpMask(80,1.2,3,false)", applyUnsharpMask(80, 1.2, 3, false)},
-		{"applyUnsharpMask(85,1.8,3,true)", applyUnsharpMask(85, 1.8, 3, true)},
-		{`applyAddNoise(14,"GAUSSIAN",true,false)`, applyAddNoise(14, "GAUSSIAN", true, false)},
-		{"applyMotionBlur(45,20,false)", applyMotionBlur(45, 20, false)},
+		{"applyGaussianBlur(2,false)", applyGaussianBlur(2, false, false)},
+		// asSmartFilter=true — one DOM-method filter (measured live to apply
+		// correctly to an un-rasterized Smart Object, see fragments_prologue.go)
+		// and one Action-Manager filter (below, next to applyHighPass), pinning
+		// that the smart-filter path (FiltRastSO/FiltKindSO) is reachable
+		// through both filter families.
+		{"applyGaussianBlur(2,false,true)", applyGaussianBlur(2, false, true)},
+		{"applyGaussianBlur(5.5,true)", applyGaussianBlur(5.5, true, false)},
+		{"applyUnsharpMask(80,1.2,3,false)", applyUnsharpMask(80, 1.2, 3, false, false)},
+		{"applyUnsharpMask(85,1.8,3,true)", applyUnsharpMask(85, 1.8, 3, true, false)},
+		{`applyAddNoise(14,"GAUSSIAN",true,false)`, applyAddNoise(14, "GAUSSIAN", true, false, false)},
+		{"applyMotionBlur(45,20,false)", applyMotionBlur(45, 20, false, false)},
 		{`applyLensBlur(15,"hexagon",5,45,10,200,8,"uniform",false,"none",0,false)`,
-			applyLensBlur(15, "hexagon", 5, 45, 10, 200, 8, "uniform", false, "none", 0, false, false)},
+			applyLensBlur(15, "hexagon", 5, 45, 10, 200, 8, "uniform", false, "none", 0, false, false, false)},
 		{`applyLensBlur(20,"octagon",0,0,0,255,12,"gaussian",true,"none",5,true,true)`,
-			applyLensBlur(20, "octagon", 0, 0, 0, 255, 12, "gaussian", true, "none", 5, true, true)},
+			applyLensBlur(20, "octagon", 0, 0, 0, 255, 12, "gaussian", true, "none", 5, true, true, false)},
 		{`applySmartSharpen(100,1.5,10,"gaussianBlur",0,20,50,30,10,50,30)`,
-			applySmartSharpen(100, 1.5, 10, "gaussianBlur", 0, 20, 50, 30, 10, 50, 30, false)},
+			applySmartSharpen(100, 1.5, 10, "gaussianBlur", 0, 20, 50, 30, 10, 50, 30, false, false)},
 		{`applySmartSharpen(150,2,15,"motionBlur",45,0,50,30,0,50,30,true)`,
-			applySmartSharpen(150, 2, 15, "motionBlur", 45, 0, 50, 30, 0, 50, 30, true)},
+			applySmartSharpen(150, 2, 15, "motionBlur", 45, 0, 50, 30, 0, 50, 30, true, false)},
 		{"applyReduceNoise(5,50,45,25,false,false,5,50,5,50,5,50)",
-			applyReduceNoise(5, 50, 45, 25, false, false, 5, 50, 5, 50, 5, 50, false)},
+			applyReduceNoise(5, 50, 45, 25, false, false, 5, 50, 5, 50, 5, 50, false, false)},
 		{"applyReduceNoise(8,60,50,30,true,true,6,40,6,40,9,30,true)",
-			applyReduceNoise(8, 60, 50, 30, true, true, 6, 40, 6, 40, 9, 30, true)},
-		{"applyHighPass(10)", applyHighPass(10, false)},
-		{"applyHighPass(24,true)", applyHighPass(24, true)},
+			applyReduceNoise(8, 60, 50, 30, true, true, 6, 40, 6, 40, 9, 30, true, false)},
+		{"applyHighPass(10)", applyHighPass(10, false, false)},
+		{"applyHighPass(24,true)", applyHighPass(24, true, false)},
+		{"applyHighPass(10,false,true)", applyHighPass(10, false, true)},
 		{"applyShadowsHighlights(35,50,30,0,50,30,20,0)",
 			applyShadowsHighlights(35, 50, 30, 0, 50, 30, 20, 0, 0.01, 0.01, false)},
 		{"applyShadowsHighlights(50,60,40,25,55,35,30,10,0.02,0.05,true)",

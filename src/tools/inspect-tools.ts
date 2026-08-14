@@ -7,16 +7,18 @@ import { getMetadata, getMetadataSchema } from './metadata-tools.js';
 import { getHistory } from './history-tools.js';
 import { getLayerTree } from './layer-tools.js';
 import { getSelectionInfoHandler } from './selection-tools.js';
+import { getSmartObjectInfoHandler } from './smart-object-tools.js';
 
 /**
- * ps_inspect — consolidates the four read-only state readers
- * (`get_metadata`, `get_layer_tree`, `get_history`, `get_selection_info`)
- * into one `what`-discriminated tool (Phase 1b, 2026-06-26).
+ * ps_inspect — consolidates the five read-only state readers
+ * (`get_metadata`, `get_layer_tree`, `get_history`, `get_selection_info`,
+ * `get_smart_object_info`) into one `what`-discriminated tool (Phase 1b,
+ * 2026-06-26; `smart_object` added 2026-08-08).
  *
  * Same merge pattern as the Phase-1 consolidations: the discriminator is
  * stripped and the call delegates to the UNCHANGED per-reader handler, which
  * keeps its own snippet, output shape, and (for metadata) its own
- * validation. Only `metadata` carries params (`sections`); the other three
+ * validation. Only `metadata` carries params (`sections`); the other four
  * are param-free, so the union input schema is just `what` + `sections`.
  *
  * Deliberately NOT merged here (kept as named, prominent tools): the
@@ -27,7 +29,13 @@ import { getSelectionInfoHandler } from './selection-tools.js';
  * anti-steering (§4).
  */
 
-const INSPECT_WHATS = ['metadata', 'layer_tree', 'history', 'selection_info'] as const;
+const INSPECT_WHATS = [
+  'metadata',
+  'layer_tree',
+  'history',
+  'selection_info',
+  'smart_object',
+] as const;
 
 const INSPECT_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
@@ -40,7 +48,8 @@ const INSPECT_INPUT_SCHEMA: JsonSchemaObject = {
         'metadata: document/IPTC/camera-EXIF/GPS/ACR develop settings + active context (optionally subset with `sections`; sections=["context"] is the cheap orientation probe). ' +
         'layer_tree: the full recursive layer tree (name/kind/visibility/opacity/blend/clipping/bounds) — use whenever you need what is inside a group. ' +
         'history: all history states + the current cursor, for deciding how far to undo. ' +
-        'selection_info: current selection bounds/coverage/edge-complexity without modifying anything.',
+        'selection_info: current selection bounds/coverage/edge-complexity without modifying anything. ' +
+        'smart_object: whether the ACTIVE layer is a Smart Object and, if so, whether its source is embedded or linked to a file on disk, plus how many Smart Filters it carries.',
     },
     // metadata-only param; ignored for the other targets.
     ...getMetadataSchema.properties,
@@ -57,7 +66,7 @@ export function createInspectTools(
       tool: {
         name: 'ps_inspect',
         description:
-          'Read-only document inspection — choose with `what` (metadata / layer_tree / history / selection_info). This is the assess/orientation surface: call it at the start of a workflow and whenever you need fresh state. For metadata, pass `sections` to subset (e.g. ["context"] for a cheap probe). For an IMAGE-based check use ps_get_preview; for NUMERIC verification use ps_get_histogram / ps_compare_regions / ps_get_layer_bounds_diff (these stay separate, named tools on purpose). Read-only and idempotent.',
+          'Read-only document inspection — choose with `what` (metadata / layer_tree / history / selection_info / smart_object). This is the assess/orientation surface: call it at the start of a workflow and whenever you need fresh state. For metadata, pass `sections` to subset (e.g. ["context"] for a cheap probe). For an IMAGE-based check use ps_get_preview; for NUMERIC verification use ps_get_histogram / ps_compare_regions / ps_get_layer_bounds_diff (these stay separate, named tools on purpose). Read-only and idempotent.',
         inputSchema: INSPECT_INPUT_SCHEMA,
         outputSchema: {
           type: 'object',
@@ -84,6 +93,18 @@ export function createInspectTools(
             states: { type: 'array' },
             // selection_info
             selection_info: { type: 'object' },
+            // smart_object
+            is_smart_object: { type: 'boolean' },
+            linked: { type: 'boolean' },
+            // null for an embedded Smart Object (the common case) — only a
+            // LINKED one carries a file_reference/document_id/placed value.
+            file_reference: { type: ['string', 'null'] },
+            document_id: { type: ['string', 'null'] },
+            placed: { type: ['string', 'null'] },
+            smart_filter_count: { type: 'number' },
+            layer_name: { type: 'string' },
+            layer_kind: { type: 'string' },
+            bounds: { type: 'array' },
           },
         },
         annotations: {
@@ -117,6 +138,8 @@ async function inspect(
       return getHistory(connection, snippetClient);
     case 'selection_info':
       return getSelectionInfoHandler(connection, snippetClient);
+    case 'smart_object':
+      return getSmartObjectInfoHandler(connection, snippetClient);
     default:
       return {
         content: [

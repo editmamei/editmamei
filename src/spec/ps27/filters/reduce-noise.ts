@@ -72,7 +72,7 @@ export const reduceNoiseSpec: AmEventSpec = {
   id: 'filters/reduce-noise',
   displayName: 'Reduce Noise filter',
   category: 'filters',
-  emittedBy: ['ps_apply_filter (type=reduce_noise)'],
+  emittedBy: ['ps_filter (type=reduce_noise)'],
   snippetRef:
     'go-core/cmd/buildtemplates/fragments_filters.go (vault.RedNoise — verified by this Windows capture)',
   groundTruth: {

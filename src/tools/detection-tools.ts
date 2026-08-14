@@ -297,7 +297,7 @@ export function createDetectionTools(
       tool: {
         name: 'ps_detect',
         description:
-          'Locate faces and/or COCO-80 objects (person, dog, car, chair, sofa, …) in the active document using LOCAL on-device computer vision — the image is never sent anywhere. Returns labeled bounding boxes in DOCUMENT-pixel space plus an annotated preview for visual confirmation. Use this to gain semantic scene awareness ("there are 2 people and a dog") and real coordinates before any spatially-targeted edit — far more reliable than estimating positions from a preview. `target` selects faces / objects / both. Read-only: renders a throwaway duplicate, never modifies the working document. Boxes are [x1, y1, x2, y2]. Validate surprising results against the annotated image before acting on them.',
+          'The cheap, narrow read: labeled bounding boxes only — faces and/or COCO-80 objects (person, dog, car, chair, sofa, …) in DOCUMENT-pixel space, plus an annotated preview for visual confirmation. LOCAL on-device computer vision; the image is never sent anywhere. Use this for real coordinates before a spatially-targeted edit when boxes are all you need — far more reliable than estimating positions from a preview. For the full scene model (regions, horizon, tonal zones, composition, and a menu of selectable named regions), use ps_read_scene instead. `target` selects faces / objects / both. Read-only: renders a throwaway duplicate, never modifies the working document. Boxes are [x1, y1, x2, y2]. Validate surprising results against the annotated image before acting on them.',
         inputSchema: detectSchema,
         outputSchema: {
           type: 'object',

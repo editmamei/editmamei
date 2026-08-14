@@ -75,7 +75,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**87 tools across 16 capability groups** (64 Community, 23 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
+**82 tools across 16 capability groups** (59 Community, 23 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. `tools/list` reports eight more than the table below: the names superseded by `filter`, `group`, and `text` (`apply_filter`, `create_group`, `move_layer_to_group`, `set_group_blend_mode`, `ungroup`, `delete_group`, `create_text_layer`, `set_text`) stay registered as deprecated aliases for one release, so existing calls keep working.
 
 | Group | Edition | Tools |
 | --- | --- | --- |
@@ -85,11 +85,11 @@ These are the choices that shape the surface, and the reason an AI assistant can
 | **Document & canvas** | Community | `create_document` · `open_document` · `close_document` · `save_psd` · `export` · `place_image` · `resize_image` · `crop_document` · `convert_image_mode` · `transform_canvas` · `guides` |
 | **Selection** | Community | `select` · `modify_selection` · `selection_channel` |
 | **Adjustments** | Community | `add_adjustment_layer` · `apply_adjustment` |
-| **Filters** | Community | `apply_filter` |
+| **Filters** | Community | `filter` |
 | **Retouch** | Community | `retouch` |
-| **Layers** | Community | `create_layer` · `delete_layer` · `fill_layer` · `add_fill_layer` · `select_layer` · `move_layer_to_position` · `duplicate_layer` · `copy_to_new_layer` · `convert_to_smart_object` · `rasterize_layer` · `set_layer` · `merge` · `bake_layer` · `add_layer_style` · `transform_layer` · `shape` · `create_group` · `move_layer_to_group` · `set_group_blend_mode` · `ungroup` · `delete_group` |
+| **Layers** | Community | `create_layer` · `delete_layer` · `fill_layer` · `add_fill_layer` · `select_layer` · `move_layer_to_position` · `duplicate_layer` · `copy_to_new_layer` · `convert_to_smart_object` · `rasterize_layer` · `set_layer` · `merge` · `bake_layer` · `add_layer_style` · `transform_layer` · `shape` · `group` |
 | **Masks & paths** | Community | `layer_mask` · `clipping_mask` · `path` · `vector_mask` · `apply_image` · `calculations` |
-| **Type** | Community | `create_text_layer` · `set_text` |
+| **Type** | Community | `text` |
 | **Perception** | Community | `detect` · `read_scene` · `select_by_reference` |
 | **AI selection** | Community | `select_subject` · `select_sky` |
 | **AI selection** | Pro | `select_subject_instance` · `select_object` |

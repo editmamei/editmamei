@@ -623,7 +623,7 @@ export function createSceneTools(
       tool: {
         name: 'ps_read_scene',
         description:
-          'Build a structured SCENE MODEL of the active document using LOCAL on-device vision + classical CV — the "look before you select" read. Returns detected subjects (with the main one flagged) and faces in document pixels, a coarse sky/ground region map, the horizon line (y + placement + confidence), tonal zones (shadow/midtone/highlight bands + coverage), and composition geometry (which thirds cell the subject sits in, balance, headroom), plus an annotated preview. The image never leaves the machine. Read-only: renders a throwaway duplicate. Run this first to SEE the menu of selectable named regions, then select them by name with ps_select_by_reference instead of guessing a rectangle. Perception is cached per document state, so repeated reads are cheap.',
+          'The full scene model — run this before a spatially-targeted edit, not the cheaper ps_detect: detected subjects (with the main one flagged) and faces in document pixels, a coarse sky/ground region map, the horizon line (y + placement + confidence), tonal zones (shadow/midtone/highlight bands + coverage), composition geometry (which thirds cell the subject sits in, balance, headroom), plus an annotated preview and the menu of selectable named regions. Built using LOCAL on-device vision + classical CV; the image never leaves the machine. Select regions by name with ps_select_by_reference instead of guessing a rectangle. Read-only: renders a throwaway duplicate. Perception is cached per document state, so repeated reads are cheap.',
         inputSchema: sceneSchema,
         outputSchema: {
           type: 'object',

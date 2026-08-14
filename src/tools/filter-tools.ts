@@ -6,7 +6,15 @@ import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { type DetectionClient } from '../detection/detection-client.js';
 import { OnnxLandmarkDetectionClient } from '../detection/landmark-detection-client.js';
 import { resolveGatedPlacement, PLACEMENT_SCHEMA } from '../perception/grounding-locate.js';
-import { toolErrorResult, runSnippetTool, applyToActiveLayerProp } from '../utils/tool-helpers.js';
+import {
+  toolErrorResult,
+  runSnippetTool,
+  applyToActiveLayerProp,
+  asSmartFilterProp,
+  unknownDiscriminator,
+} from '../utils/tool-helpers.js';
+import { LAYER_BLEND_MODES } from '../utils/blend-modes.js';
+import { runSmartFilterOp } from './smart-object-tools.js';
 
 // Every filter tool auto-duplicates the active
 // layer before applying the destructive op. The original layer is
@@ -25,6 +33,7 @@ const gaussianBlurSchema: JsonSchemaObject = {
       maximum: 250,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['radius'],
 };
@@ -52,6 +61,7 @@ const sharpenSchema: JsonSchemaObject = {
       default: 0,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['amount', 'radius'],
 };
@@ -77,6 +87,7 @@ const noiseSchema: JsonSchemaObject = {
       default: false,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['amount'],
 };
@@ -97,6 +108,7 @@ const motionBlurSchema: JsonSchemaObject = {
       maximum: 999,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['angle', 'radius'],
 };
@@ -194,6 +206,7 @@ const lensBlurSchema: JsonSchemaObject = {
       default: false,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
 };
 
@@ -285,6 +298,7 @@ const smartSharpenSchema: JsonSchemaObject = {
       default: 30,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
 };
 
@@ -381,6 +395,7 @@ const reduceNoiseSchema: JsonSchemaObject = {
       default: 50,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
 };
 
@@ -396,6 +411,7 @@ const highPassSchema: JsonSchemaObject = {
       default: 10,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['radius'],
 };
@@ -443,6 +459,7 @@ const radialBlurSchema: JsonSchemaObject = {
         'Grounded alternative to center_x/center_y: NAME the blur center (a `placement` resolving to a POINT — an object centroid, an extremum, a grid intersection). The resolved document-pixel point is normalized to the 0-1 center for you and WINS over center_x/center_y. The blur runs ONLY if the objective gate PASSES.',
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
 };
 
@@ -499,6 +516,7 @@ const pixelateSchema: JsonSchemaObject = {
       default: 10,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -615,6 +633,7 @@ const distortSchema: JsonSchemaObject = {
       default: 12345,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -691,6 +710,7 @@ const stylizeSchema: JsonSchemaObject = {
       default: 10,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -726,6 +746,7 @@ const renderSchema: JsonSchemaObject = {
       default: 12345,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -763,6 +784,7 @@ const otherSchema: JsonSchemaObject = {
       default: 0,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -793,6 +815,7 @@ const denoiseSchema: JsonSchemaObject = {
       default: 10,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -823,6 +846,7 @@ const blurAdvSchema: JsonSchemaObject = {
       default: 20,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['mode'],
 };
@@ -878,6 +902,7 @@ const oilPaintSchema: JsonSchemaObject = {
       default: true,
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
 };
 
@@ -917,18 +942,45 @@ const displaceSchema: JsonSchemaObject = {
       default: 'repeat_edge',
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
   },
   required: ['map_path'],
 };
 
+// Union of the op=apply output fields and the op=list/set_visibility/set_blend/
+// remove output fields (the former standalone Smart-Filter tool's outputSchema)
+// — one merged shape for the consolidated tool.
 const FILTER_OUTPUT_SCHEMA = {
   type: 'object' as const,
   properties: {
+    // apply
     applied: { type: 'boolean' as const },
     filter: { type: 'string' as const },
     target_was_copy: { type: 'boolean' as const },
     target_layer_name: { type: 'string' as const },
     original_layer_name: { type: 'string' as const },
+    // list
+    is_smart_object: { type: 'boolean' as const },
+    count: { type: 'number' as const },
+    filters: { type: 'array' as const },
+    // set_visibility
+    visibility_set: { type: 'boolean' as const },
+    requested_enabled: { type: 'boolean' as const },
+    enabled: { type: 'boolean' as const },
+    // set_blend — no "did it work" flag: the snippet throws if the change did
+    // not take, so these ARE the confirmation.
+    opacity: { type: 'number' as const },
+    blend_mode: { type: 'string' as const },
+    // remove
+    removed: { type: 'boolean' as const },
+    removed_filter_name: { type: 'string' as const },
+    removed_filter_type: { type: 'string' as const },
+    remaining_count: { type: 'number' as const },
+    // shared across the management ops
+    index: { type: 'number' as const },
+    filter_name: { type: 'string' as const },
+    filter_type: { type: 'string' as const },
+    layer_name: { type: 'string' as const },
     context: { type: 'object' as const },
   },
 };
@@ -954,9 +1006,16 @@ const FILTER_TYPES = [
   'oil_paint',
 ] as const;
 
-// Single discriminated input schema for the consolidated ps_apply_filter
-// tool. Built by merging every per-type schema's properties so the LLM sees the
-// full parameter surface; the `type` field documents which params each filter
+// op values for the consolidated ps_filter tool. 'apply' is the default (and
+// the only op that existed before the smart-object-tools merge), so an
+// existing caller that never sets `op` keeps hitting the `type` dispatch below
+// byte-for-byte. The other four read/manage the re-editable Smart Filter stack
+// that `apply as_smart_filter=true` creates.
+const FILTER_OPS = ['apply', 'list', 'set_visibility', 'set_blend', 'remove'] as const;
+
+// Single discriminated input schema for the consolidated ps_filter tool. Built
+// by merging every per-type schema's properties so the LLM sees the full
+// parameter surface; the `type` field documents which params each filter
 // uses, and the handler re-validates the args against the EXACT per-type schema
 // (correct ranges + required fields). Shared param names (radius/amount/angle)
 // carry generic descriptions here because their range depends on `type` — the
@@ -964,11 +1023,24 @@ const FILTER_TYPES = [
 const FILTER_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
+    op: {
+      type: 'string',
+      enum: [...FILTER_OPS],
+      default: 'apply',
+      description:
+        'apply (default): apply a NEW filter — set `type` (+ its own params). ' +
+        'list: read every re-editable Smart Filter on the active Smart Object (index, name, type, enabled, opacity, blend mode). ' +
+        'set_visibility: turn one Smart Filter on/off without losing its settings (needs `index` + `enabled`). ' +
+        "set_blend: restyle one Smart Filter's `opacity` and/or `blend_mode` (needs `index` + at least one of them). " +
+        'remove: delete one Smart Filter from the stack (needs `index`). ' +
+        'The four management ops act on the Smart Filter stack that apply as_smart_filter=true creates; indices are ' +
+        '1-based and come from op=list, where 1 is the first-applied filter (bottom of the stack).',
+    },
     type: {
       type: 'string',
       enum: [...FILTER_TYPES],
       description:
-        'Which filter to apply. Each type uses its own parameters: ' +
+        'Which filter to apply. Required when op=apply (the default); ignored otherwise. Each type uses its own parameters: ' +
         'gaussian_blur(radius); motion_blur(angle, radius); lens_blur(radius, iris_shape, …); ' +
         'radial_blur(amount, method spin|zoom, quality, center_x, center_y); ' +
         'sharpen=Unsharp Mask(amount, radius, threshold); smart_sharpen(amount, radius, remove_mode, …); ' +
@@ -1015,9 +1087,44 @@ const FILTER_INPUT_SCHEMA: JsonSchemaObject = {
       description: 'Angle in degrees. Used by motion_blur (−360–360) and distort/twirl (−999–999).',
     },
     apply_to_active_layer: applyToActiveLayerProp('the filter'),
+    as_smart_filter: asSmartFilterProp(),
+    // op=list/set_visibility/set_blend/remove params, copied verbatim from the
+    // former standalone Smart-Filter tool (src/tools/smart-object-tools.ts).
+    index: {
+      // integer, not number: the Go side narrows this with int(), so a
+      // fractional 1.5 would silently become filter 1 rather than being refused.
+      // maximum is a backstop, not a real limit: no Smart Object gets anywhere
+      // near this many filters, and it keeps an out-of-range float64 from
+      // reaching Go's int() narrowing, which is implementation-defined there.
+      type: 'integer',
+      description:
+        "1-based index of the filter to act on, as reported by op=list. 1 is the FIRST-APPLIED filter (bottom of the Smart Filters stack in the Layers panel). Required for every op except 'list'.",
+      minimum: 1,
+      maximum: 1000,
+    },
+    enabled: {
+      type: 'boolean',
+      description:
+        'set_visibility only: true shows the filter, false hides it. The filter stays in the stack either way and keeps all its settings.',
+    },
+    opacity: {
+      type: 'number',
+      description:
+        'set_blend only: filter opacity 0-100. Omit to leave the current opacity untouched.',
+      minimum: 0,
+      maximum: 100,
+    },
+    blend_mode: {
+      type: 'string',
+      enum: [...LAYER_BLEND_MODES],
+      description:
+        'set_blend only: how the filter result composites against the unfiltered layer. Same names as ps_set_layer. Omit to leave the current mode untouched.',
+    },
   },
-  required: ['type'],
 };
+
+const FILTER_DESCRIPTION =
+  "Apply a Photoshop filter (op=apply, the default) to a DUPLICATE of the active layer by default — the original is preserved, undo by deleting the copy. Pass apply_to_active_layer:true to bake into the original instead. Choose the filter with `type` (see the `type` field for its params); pass as_smart_filter:true on a Smart Object to apply it as a re-editable SMART FILTER instead of rasterizing. This same tool also reads and manages that re-editable Smart Filter stack: op=list (every filter's index/name/type/enabled/opacity/blend), op=set_visibility (toggle one off/on), op=set_blend (restyle opacity/blend_mode), op=remove (delete one). Management ops need a 1-based `index` from op=list first — index 1 is the first-applied filter, at the bottom of the stack. Covers blur, sharpen, noise, high_pass, pixelate, distort, displace, and oil_paint.";
 
 export function createFilterTools(
   connection: PhotoshopConnection,
@@ -1030,9 +1137,26 @@ export function createFilterTools(
   return [
     {
       tool: {
+        name: 'ps_filter',
+        description: FILTER_DESCRIPTION,
+        inputSchema: FILTER_INPUT_SCHEMA,
+        outputSchema: FILTER_OUTPUT_SCHEMA,
+        annotations: {
+          title: 'Filter',
+          destructiveHint: true,
+          idempotentHint: false,
+        },
+      },
+      handler: async (args) => runFilterTool(connection, snippetClient, client, args),
+    },
+    {
+      // ps_apply_filter was this tool's name before the Smart-Filter merge
+      // renamed it to ps_filter (2026-08-09). Registered as a deprecated alias
+      // on the same schema and the same handler so an existing caller keeps
+      // working for one release.
+      tool: {
         name: 'ps_apply_filter',
-        description:
-          'Apply a Photoshop filter to a DUPLICATE of the active layer by default (auto-duplicate-first — the original is preserved, undo by deleting the copy). Pass `apply_to_active_layer: true` to bake into the original. Auto-rasterizes text/smart-object layers. Choose the filter with `type`; each type takes its own parameters (see the `type` field). Covers blur (gaussian_blur/motion_blur/lens_blur/radial_blur), sharpen (`sharpen`=Unsharp Mask, `smart_sharpen`), noise (`noise`=Add Noise, `reduce_noise`), high_pass, pixelate, distort, displace, and oil_paint.',
+        description: `DEPRECATED — use ps_filter instead (kept for one release for backward compatibility, identical behaviour). ${FILTER_DESCRIPTION}`,
         inputSchema: FILTER_INPUT_SCHEMA,
         outputSchema: FILTER_OUTPUT_SCHEMA,
         annotations: {
@@ -1041,13 +1165,46 @@ export function createFilterTools(
           idempotentHint: false,
         },
       },
-      handler: async (args) => applyFilter(connection, snippetClient, client, args),
+      handler: async (args) => runFilterTool(connection, snippetClient, client, args),
     },
   ];
 }
 
-// Dispatch the consolidated tool to the per-filter handler. `type` is stripped
-// so the delegate validates only its own params against its per-type schema.
+// Top-level dispatch for the consolidated tool. `op` defaults to 'apply' when
+// absent, so a pre-merge caller that never set `op` (every caller before this
+// merge) still hits the `type` dispatch below byte-for-byte. The other four
+// ops delegate to the former standalone Smart-Filter tool's op handlers in
+// smart-object-tools.ts, unchanged.
+async function runFilterTool(
+  connection: PhotoshopConnection,
+  snippetClient: SnippetClient,
+  detClient: DetectionClient,
+  rawArgs: Record<string, unknown>
+): Promise<ToolResult> {
+  const op = (rawArgs.op as string | undefined) ?? 'apply';
+  if (op !== 'apply') {
+    // Reject an unknown op HERE rather than letting runSmartFilterOp's own
+    // validation do it: that one only knows the four management ops, so a
+    // typo'd "aply" would come back with an allowed-set missing 'apply' —
+    // the very op the caller meant.
+    if (!(FILTER_OPS as readonly string[]).includes(op)) {
+      return unknownDiscriminator('filter op', op, FILTER_OPS);
+    }
+    return runSmartFilterOp(connection, snippetClient, rawArgs);
+  }
+  if (rawArgs.type === undefined) {
+    return toolErrorResult(
+      'Error in ps_filter',
+      new Error(
+        'op=apply needs a `type` (which filter to apply) — see the `type` field for the full list.'
+      )
+    );
+  }
+  return applyFilter(connection, snippetClient, detClient, rawArgs);
+}
+
+// Dispatch op=apply to the per-filter handler. `type`/`op` are stripped so the
+// delegate validates only its own params against its per-type schema.
 async function applyFilter(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
@@ -1055,7 +1212,7 @@ async function applyFilter(
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
   const type = rawArgs.type;
-  const { type: _omit, ...rest } = rawArgs;
+  const { type: _omitType, op: _omitOp, ...rest } = rawArgs;
   switch (type) {
     case 'gaussian_blur':
       return applyGaussianBlur(connection, snippetClient, rest);
@@ -1121,6 +1278,7 @@ async function applyGaussianBlur(
     params: (args) => ({
       radius: args.radius as number,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1149,6 +1307,7 @@ async function applySharpen(
       radius: args.radius as number,
       threshold: args.threshold as number,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1177,6 +1336,7 @@ async function applyNoise(
       distribution: args.distribution as string,
       monochromatic: args.monochromatic as boolean,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1207,6 +1367,7 @@ async function applyMotionBlur(
       angle: args.angle as number,
       radius: args.radius as number,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1244,6 +1405,7 @@ async function applyLensBlur(
       focalDistance: (args.focal_distance as number) ?? 0,
       invertDepth: (args.invert_depth as boolean) ?? false,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1283,6 +1445,7 @@ async function applySmartSharpen(
       highlightTonalWidth: (args.highlight_tonal_width as number) ?? 50,
       highlightRadius: (args.highlight_radius as number) ?? 30,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1323,6 +1486,7 @@ async function applyReduceNoise(
       blueStrength: (args.blue_strength as number) ?? 5,
       bluePreserveDetails: (args.blue_preserve_details as number) ?? 50,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1352,6 +1516,7 @@ async function applyHighPass(
     params: (args) => ({
       radius: args.radius as number,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1391,6 +1556,7 @@ async function applyRadialBlur(
       grounded = { x: Math.round(loc.geom.point.x), y: Math.round(loc.geom.point.y) };
     }
     const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+    const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
     const script = await snippetClient.build('applyRadialBlur', {
       amount,
@@ -1399,6 +1565,7 @@ async function applyRadialBlur(
       centerX,
       centerY,
       applyToActiveLayer,
+      asSmartFilter,
     });
     const result = await runScript(connection, script);
 
@@ -1446,8 +1613,9 @@ async function applyPixelate(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'mosaic' || mode === 'crystallize' || mode === 'pointillize') {
         params.cellSize = (args.cell_size as number) ?? 10;
       } else if (mode === 'color_halftone') {
@@ -1485,8 +1653,9 @@ async function applyDistort(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'twirl') {
         params.angle = (args.angle as number) ?? 90;
       } else if (mode === 'pinch') {
@@ -1540,8 +1709,9 @@ async function applyStylize(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'emboss') {
         params.angle = (args.angle as number) ?? 135;
         params.height = (args.height as number) ?? 3;
@@ -1584,8 +1754,9 @@ async function applyRender(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'fibers') {
         params.variance = (args.variance as number) ?? 16;
         params.strength = (args.fiber_strength as number) ?? 4;
@@ -1619,8 +1790,9 @@ async function applyOther(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'maximum' || mode === 'minimum') {
         params.radius = (args.radius as number) ?? 3;
         params.preserve = (args.preserve as string) ?? 'roundness';
@@ -1655,8 +1827,9 @@ async function applyDenoise(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'median') {
         params.radius = (args.radius as number) ?? 4;
       } else if (mode === 'dust_and_scratches') {
@@ -1691,8 +1864,9 @@ async function applyBlurAdv(
     params: (args) => {
       const mode = args.mode as string;
       const applyToActiveLayer = (args.apply_to_active_layer as boolean) ?? false;
+      const asSmartFilter = (args.as_smart_filter as boolean) ?? false;
 
-      const params: Record<string, unknown> = { mode, applyToActiveLayer };
+      const params: Record<string, unknown> = { mode, applyToActiveLayer, asSmartFilter };
       if (mode === 'surface_blur') {
         params.radius = (args.radius as number) ?? 15;
         params.threshold = (args.threshold as number) ?? 20;
@@ -1733,6 +1907,7 @@ async function applyOilPaint(
       shine: (args.shine as number) ?? 1.3,
       lightingOn: (args.lighting_on as boolean) ?? true,
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };
@@ -1763,6 +1938,7 @@ async function applyDisplace(
       displacementMap: (args.displacement_map as string) ?? 'stretch_to_fit',
       undefinedAreas: (args.undefined_areas as string) ?? 'repeat_edge',
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
+      asSmartFilter: (args.as_smart_filter as boolean) ?? false,
     }),
     successText: (result, args) => {
       const r = result as { target_was_copy?: boolean; target_layer_name?: string };

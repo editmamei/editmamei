@@ -51,7 +51,7 @@ export function createHistoryTools(
       tool: {
         name: 'ps_undo',
         description:
-          'Step backward in the document history (equivalent to Ctrl/Cmd+Z). WHEN TO REACH FOR THIS: after an experimental destructive bake (ps_merge mode=visible/flatten, ps_apply_filter type=*_blur/sharpen/noise) produced a wrong result; after a play_action whose scope you mispredicted; or to revert an entire branch of exploration. Non-destructive workflows (adjustment layers + masks) rarely need this — just tweak/delete the offending layer instead. Reversible via ps_redo as long as no new edit has been made since. Returns current history state, remaining steps, and document context.',
+          'Step backward in the document history (equivalent to Ctrl/Cmd+Z). WHEN TO REACH FOR THIS: after an experimental destructive bake (ps_merge mode=visible/flatten, ps_filter op=apply type=*_blur/sharpen/noise) produced a wrong result; after a play_action whose scope you mispredicted; or to revert an entire branch of exploration. Non-destructive workflows (adjustment layers + masks) rarely need this — just tweak/delete the offending layer instead. Reversible via ps_redo as long as no new edit has been made since. Returns current history state, remaining steps, and document context.',
         inputSchema: undoSchema,
         outputSchema: HISTORY_STEP_RESULT_SCHEMA,
         annotations: {

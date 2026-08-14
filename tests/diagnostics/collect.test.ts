@@ -72,7 +72,7 @@ beforeEach(() => {
     ts: '2026-06-27T18:00:02.000Z',
     session_id: 'sess1',
     seq: 2,
-    tool: 'ps_apply_filter',
+    tool: 'ps_filter',
     args: { type: 'gaussian_blur', secret: SECRET_ARG_VALUE },
     success: false,
     duration_ms: 30000,
@@ -128,7 +128,7 @@ describe('collectDiagnostics — privacy contract', () => {
       );
       expect(call).not.toHaveProperty('args');
     }
-    const fail = session.calls.find((c) => c.tool === 'ps_apply_filter');
+    const fail = session.calls.find((c) => c.tool === 'ps_filter');
     expect(fail?.success).toBe(false);
     expect(fail?.error_class).toBe('timeout');
   });

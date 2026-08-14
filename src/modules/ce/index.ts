@@ -90,6 +90,12 @@ const ceFactories = [
   // Shape layers — ps_shape (vector rectangle/ellipse/line, coordinate-baking).
   // Aiming goes through the grounded `placement` path.
   createShapeTools,
+  // Smart filters (2026-08-08) — reading and managing the re-editable filter
+  // stack on a Smart Object merged into ps_filter
+  // (op=list/set_visibility/set_blend/remove, 2026-08-09) rather than
+  // registering as its own tool; createFilterTools above covers it, and
+  // src/tools/smart-object-tools.ts now only exports handlers ps_filter and
+  // ps_inspect what=smart_object call into.
   // ps_resolve_placement (the spatial-grounding locator) is registered by the
   // Pro module. The grounding ENGINE (src/perception/grounding-*) stays
   // CE-host-shipped: the community tools above import it directly for their

@@ -5,11 +5,12 @@ import { assertToolShape, callTool } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 
 /**
- * ps_inspect consolidates the four read-only state readers
- * (metadata / layer_tree / history / selection_info) behind a `what`
- * discriminator (Phase 1b, 2026-06-26). The metadata behaviour below is the
- * former get_metadata coverage, now driven through what='metadata'; the other
- * three branches assert each dispatches its own go-core snippet.
+ * ps_inspect consolidates the five read-only state readers
+ * (metadata / layer_tree / history / selection_info / smart_object) behind a
+ * `what` discriminator (Phase 1b, 2026-06-26; smart_object added
+ * 2026-08-08). The metadata behaviour below is the former get_metadata
+ * coverage, now driven through what='metadata'; the other four branches
+ * assert each dispatches its own go-core snippet.
  */
 describe('createInspectTools', () => {
   let conn: FakePhotoshopConnection;
@@ -39,7 +40,7 @@ describe('createInspectTools', () => {
     expect(result.isError).toBe(true);
   });
 
-  // ---- what: layer_tree / history / selection_info dispatch ----
+  // ---- what: layer_tree / history / selection_info / smart_object dispatch ----
 
   it("what='layer_tree' dispatches the getLayerTree snippet", async () => {
     const tools = createInspectTools(conn.asConnection(), snippetClient);
@@ -61,6 +62,18 @@ describe('createInspectTools', () => {
     expect(snippetClient.lastBuild().name).toBe('getSelectionState');
     const structured = (result as { structuredContent: Record<string, unknown> }).structuredContent;
     expect(structured.selection_info).toBeDefined();
+  });
+
+  it("what='smart_object' dispatches the getSmartObjectInfo snippet", async () => {
+    conn = makeConnection({
+      result: { is_smart_object: false, layer_name: 'Background', layer_kind: 'LayerKind.NORMAL' },
+    });
+    snippetClient = makeSnippetClient();
+    const tools = createInspectTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_inspect', { what: 'smart_object' });
+    expect(snippetClient.lastBuild().name).toBe('getSmartObjectInfo');
+    const structured = (result as { structuredContent: Record<string, unknown> }).structuredContent;
+    expect(structured.is_smart_object).toBeDefined();
   });
 
   // ---- what: metadata (former get_metadata coverage) ----

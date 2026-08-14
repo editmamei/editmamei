@@ -160,7 +160,7 @@ Professional stacks follow a fixed rendering order — bottom layers process fir
 
 Why this order matters: sharpening halos amplify color fringing if color layers sit above the sharpening layer. Tone should be neutral before color is tuned — otherwise color corrections fight a shifting baseline. The order is causal, not aesthetic.
 
-Create groups bottom-to-top with `ps_create_group` — each new group lands above the active layer as a SIBLING, even if a group is currently active (the tool hoists it out from inside that group by default; pass `into_active_group:true` only if you deliberately want the new group nested inside the active one). If you realize mid-edit that a group is out of order, use `ps_move_layer_to_position` to correct it before adding more layers. Photoshop's layer color labels (settable in the layer panel) are a professional convention for group orientation — suggest red for Retouching, yellow for Tone, green for Color, blue for Effects when handing off files.
+Create groups bottom-to-top with `ps_group` (op=create) — each new group lands above the active layer as a SIBLING, even if a group is currently active (the tool hoists it out from inside that group by default; pass `into_active_group:true` only if you deliberately want the new group nested inside the active one). If you realize mid-edit that a group is out of order, use `ps_move_layer_to_position` to correct it before adding more layers. Photoshop's layer color labels (settable in the layer panel) are a professional convention for group orientation — suggest red for Retouching, yellow for Tone, green for Color, blue for Effects when handing off files.
 
 # Dodge & Burn — the 50% gray method
 

@@ -37,7 +37,7 @@ export const lensBlurSpec: AmEventSpec = {
   id: 'filters/lens-blur',
   displayName: 'Lens Blur filter',
   category: 'filters',
-  emittedBy: ['ps_apply_filter (type=lens_blur)'],
+  emittedBy: ['ps_filter (type=lens_blur)'],
   snippetRef:
     'go-core/cmd/buildtemplates/fragments_filters.go (vault.LensBlur — forum-lore, slated for full rewrite)',
   groundTruth: {

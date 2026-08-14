@@ -56,6 +56,13 @@ func jsNum(v float64) string {
 	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
+// jsInt renders a JSX-safe integer literal. Kept separate from jsNum so an
+// index or count can never pick up float formatting ("1e+06") on the way into a
+// snippet; ints carry no non-finite case, so no coercion is needed.
+func jsInt(v int) string {
+	return strconv.Itoa(v)
+}
+
 // jsBool renders a JSX-safe boolean literal. The TS jsBool also coerced the
 // string forms 'true'/'false'; here params arrive already typed as bool, so a
 // direct render matches that path.
