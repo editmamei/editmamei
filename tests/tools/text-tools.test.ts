@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createTextTools } from '@editmamei/tools/text-tools.ts';
+import { createTextTools, TEXT_OP_SCHEMAS } from '@editmamei/tools/text-tools.ts';
 import { createLayerTools } from '@editmamei/tools/layer-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
@@ -226,5 +226,58 @@ describe('createTextTools', () => {
     expect(oldBuild.name).toBe(newBuild.name);
     expect(oldBuild.name).toBe('createTextLayer');
     expect(oldBuild.params).toEqual(newBuild.params);
+  });
+
+  // The equivalence above passes x/y/font_size explicitly, so a defaulting
+  // divergence between the two routes would still look identical. Call each
+  // with the bare minimum and let the defaults do the talking.
+  it('ps_text op=create with only text defaults identically to ps_create_text_layer with only text', async () => {
+    const oldClient = makeSnippetClient();
+    const newClient = makeSnippetClient();
+    const oldTools = createLayerTools(conn.asConnection(), oldClient);
+    const newTools = createTextTools(conn.asConnection(), newClient);
+
+    await callTool(oldTools, 'ps_create_text_layer', { text: 'Hero grade' });
+    await callTool(newTools, 'ps_text', { op: 'create', text: 'Hero grade' });
+
+    const oldBuild = oldClient.lastBuild();
+    const newBuild = newClient.lastBuild();
+    expect(newBuild.name).toBe(oldBuild.name);
+    expect(newBuild.params).toEqual(oldBuild.params);
+    // Pin the defaults themselves, so "identical" can't quietly become
+    // "identically wrong" if one route's defaults drift.
+    expect(newBuild.params).toEqual({ text: 'Hero grade', x: 100, y: 100, fontSize: 24 });
+  });
+
+  it('ps_text missing op errors with the unknown-discriminator message and dispatches nothing', async () => {
+    const tools = createTextTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_text', { text: 'Hero grade' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(
+      /Allowed: create, set_content, set_font, set_color, set_alignment/
+    );
+    expect(snippetClient.allBuilds().length).toBe(0);
+    expect(conn.executions.length).toBe(0);
+  });
+
+  // The merged schema is what the caller reads in tools/list; the per-op
+  // schema is what the delegate validates against. A param present only in
+  // the latter is invisible and un-passable. Driven off the per-op schemas'
+  // own property keys so a rename there fails here instead of silently
+  // dropping the param out of the advertised surface.
+  it('the ps_text schema advertises every property the five delegate schemas validate', () => {
+    const tools = createTextTools(conn.asConnection(), snippetClient);
+    const merged = tools.find((t) => t.tool.name === 'ps_text')!.tool.inputSchema as unknown as {
+      properties: Record<string, unknown>;
+    };
+    const advertised = Object.keys(merged.properties);
+    for (const [op, schema] of Object.entries(TEXT_OP_SCHEMAS)) {
+      for (const prop of Object.keys(schema.properties ?? {})) {
+        expect(
+          advertised,
+          `ps_text op=${op} validates "${prop}", which the merged schema hides`
+        ).toContain(prop);
+      }
+    }
   });
 });

@@ -104,6 +104,18 @@ const SET_TEXT_INPUT_SCHEMA: JsonSchemaObject = {
 
 const TEXT_OPS = ['create', 'set_content', 'set_font', 'set_color', 'set_alignment'] as const;
 
+// The schema each op re-validates against once the discriminator is stripped.
+// Exported so a test can assert TEXT_INPUT_SCHEMA below is a superset of all
+// five: a param that only the delegate's schema knows about is a param the
+// caller cannot see in tools/list.
+export const TEXT_OP_SCHEMAS: Record<(typeof TEXT_OPS)[number], JsonSchemaObject> = {
+  create: createTextLayerSchema,
+  set_content: updateTextContentSchema,
+  set_font: setTextFontSchema,
+  set_color: setTextColorSchema,
+  set_alignment: setTextAlignmentSchema,
+};
+
 // Consolidated input schema for ps_text (2026-08-13). Flattens BOTH the
 // former create/set tool boundary AND ps_set_text's old `property`
 // sub-discriminator into one enum — a two-level op+property discriminator is
@@ -138,7 +150,8 @@ const TEXT_INPUT_SCHEMA: JsonSchemaObject = {
     font_size: {
       type: 'number',
       description:
-        'Font size in points. create: initial size (default 24). set_font: new size (optional — omit to leave the current size unchanged).',
+        "Font size in points, up to 1296 — Photoshop's own ceiling for the Character panel. create: initial size (default 24). set_font: new size (optional — omit to leave the current size unchanged).",
+      default: 24,
       minimum: 1,
       maximum: 1296,
     },

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createGroupTools } from '@editmamei/tools/group-tools.ts';
+import { createGroupTools, GROUP_OP_SCHEMAS } from '@editmamei/tools/group-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
@@ -428,6 +428,59 @@ describe('createGroupTools', () => {
       const newBuild = newClient.lastBuild();
       expect(oldBuild.name, op).toBe(newBuild.name);
       expect(oldBuild.params, op).toEqual(newBuild.params);
+    }
+  });
+
+  // The equivalence above passes every optional param explicitly, which hides
+  // a defaulting divergence: if one route applied `into_active_group` and the
+  // other didn't, both would still agree. Call each route with the bare
+  // minimum and let the defaults do the talking.
+  it('ps_group op=create with only a name defaults identically to ps_create_group with only a name', async () => {
+    const oldClient = makeSnippetClient();
+    const newClient = makeSnippetClient();
+    const oldTools = createGroupTools(conn.asConnection(), oldClient);
+    const newTools = createGroupTools(conn.asConnection(), newClient);
+
+    await callTool(oldTools, 'ps_create_group', { name: 'edits' });
+    await callTool(newTools, 'ps_group', { op: 'create', name: 'edits' });
+
+    const oldBuild = oldClient.lastBuild();
+    const newBuild = newClient.lastBuild();
+    expect(oldBuild.name).toBe('createGroup');
+    expect(newBuild.name).toBe(oldBuild.name);
+    expect(newBuild.params).toEqual(oldBuild.params);
+    // Pin the defaults themselves, so "identical" can't quietly become
+    // "identically wrong" if the hoist default flips on one route.
+    expect(newBuild.params).toEqual({ name: 'edits', into_active_group: false });
+  });
+
+  it('ps_group missing op errors with the unknown-discriminator message and dispatches nothing', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_group', { name: 'edits' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/Allowed: create, delete, ungroup, add_layer, set_blend_mode/);
+    expect(snippetClient.allBuilds().length).toBe(0);
+    expect(conn.executions.length).toBe(0);
+  });
+
+  // The merged schema is what the caller reads in tools/list; the per-op
+  // schema is what the handler validates against. A param present only in the
+  // latter is invisible and un-passable. Driven off the per-op schemas' own
+  // property keys so a rename there fails here instead of silently dropping
+  // the param out of the advertised surface.
+  it('the ps_group schema advertises every property the five per-op schemas validate', () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const merged = tools.find((t) => t.tool.name === 'ps_group')!.tool.inputSchema as unknown as {
+      properties: Record<string, unknown>;
+    };
+    const advertised = Object.keys(merged.properties);
+    for (const [op, schema] of Object.entries(GROUP_OP_SCHEMAS)) {
+      for (const prop of Object.keys(schema.properties ?? {})) {
+        expect(
+          advertised,
+          `ps_group op=${op} validates "${prop}", which the merged schema hides`
+        ).toContain(prop);
+      }
     }
   });
 });

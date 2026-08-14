@@ -119,6 +119,19 @@ const clippingMaskOpArgsSchema: JsonSchemaObject = {
 
 const GROUP_OPS = ['create', 'delete', 'ungroup', 'add_layer', 'set_blend_mode'] as const;
 
+// The schema each op re-validates against once the discriminator is stripped.
+// Exported so a test can assert GROUP_INPUT_SCHEMA below is a superset of all
+// five: a param that only the per-op schema knows about is a param the caller
+// cannot see in tools/list, and the call fails validation on a field nothing
+// advertised.
+export const GROUP_OP_SCHEMAS: Record<(typeof GROUP_OPS)[number], JsonSchemaObject> = {
+  create: createGroupSchema,
+  delete: deleteGroupSchema,
+  ungroup: ungroupSchema,
+  add_layer: moveLayerToGroupSchema,
+  set_blend_mode: setGroupBlendModeSchema,
+};
+
 // Consolidated input schema for ps_group (2026-08-13). Merges the five
 // per-op schemas above (createGroupSchema, deleteGroupSchema, ungroupSchema,
 // moveLayerToGroupSchema, setGroupBlendModeSchema); `name` means "the group
@@ -149,7 +162,7 @@ const GROUP_INPUT_SCHEMA: JsonSchemaObject = {
     confirm: {
       type: 'boolean',
       description:
-        'delete/ungroup only. Must be true — guards against accidental loss of a group and (for delete) everything it contains.',
+        'REQUIRED for op=delete and op=ungroup, ignored by the other ops. Must be true — guards against accidental loss of a group and (for delete) everything it contains.',
     },
     ...moveLayerToGroupSchema.properties,
     blend_mode: setGroupBlendModeSchema.properties!.blend_mode,
