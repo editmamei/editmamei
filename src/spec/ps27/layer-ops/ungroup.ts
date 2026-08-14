@@ -27,7 +27,7 @@ export const ungroupSpec: AmEventSpec = {
   id: 'layer-ops/ungroup',
   displayName: 'Ungroup layers',
   category: 'layer-ops',
-  emittedBy: ['ps_ungroup'],
+  emittedBy: ['ps_group (op=ungroup)'],
   snippetRef: 'go-core/cmd/buildtemplates/fragments_groups.go (vault.Ungroup — ungroupLayersEvent)',
   groundTruth: {
     capturedAt: '2026-06-03',

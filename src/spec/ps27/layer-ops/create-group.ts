@@ -44,7 +44,7 @@ export const createGroupSpec: AmEventSpec = {
   id: 'layer-ops/create-group',
   displayName: 'Create layer group',
   category: 'layer-ops',
-  emittedBy: ['ps_create_group'],
+  emittedBy: ['ps_group (op=create)'],
   snippetRef:
     'go-core/cmd/buildtemplates/fragments_groups.go (vault.CreateGroup — Mk → layerSection)',
   groundTruth: {

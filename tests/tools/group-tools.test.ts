@@ -13,13 +13,14 @@ describe('createGroupTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('returns 6 well-formed tools', () => {
+  it('returns 7 well-formed tools', () => {
     const tools = createGroupTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
     expect(tools.map((t) => t.tool.name).sort()).toEqual([
       'ps_clipping_mask',
       'ps_create_group',
       'ps_delete_group',
+      'ps_group',
       'ps_move_layer_to_group',
       'ps_set_group_blend_mode',
       'ps_ungroup',
@@ -276,5 +277,157 @@ describe('createGroupTools', () => {
     await callTool(tools, 'ps_delete_group', { name: 'g', confirm: true });
     // 5 tools * 1 script each = 5 executions
     expect(conn.executions.length).toBe(5);
+  });
+
+  // ===========================================================================
+  // ps_group (2026-08-13) — the five names above consolidated into one
+  // op-discriminated tool. Each op dispatches the exact same handler function
+  // (and therefore the exact same snippet) the deprecated standalone tool
+  // calls, so behavior-preservation is proven both by direct dispatch tests
+  // here and by the equivalence tests below (old route vs new route, same
+  // args in, same snippet + params out).
+  // ===========================================================================
+
+  it('group op=create dispatches the createGroup snippet', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_group', { op: 'create', name: 'edits', layers: ['Sky'] });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('createGroup');
+    expect(build.params.name).toBe('edits');
+    expect(build.params.layerNames).toEqual(['Sky']);
+  });
+
+  it('group op=add_layer dispatches the moveLayerToGroup snippet', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_group', {
+      op: 'add_layer',
+      layer_name: 'Curves 1',
+      group_name: 'edits',
+    });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('moveLayerToGroup');
+    expect(build.params.layerName).toBe('Curves 1');
+    expect(build.params.groupName).toBe('edits');
+  });
+
+  it('group op=set_blend_mode dispatches the setGroupBlendMode snippet', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_group', {
+      op: 'set_blend_mode',
+      name: 'edits',
+      blend_mode: 'NORMAL',
+    });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('setGroupBlendMode');
+    expect(build.params.groupName).toBe('edits');
+    expect(build.params.blendMode).toBe('NORMAL');
+  });
+
+  it('group op=ungroup refuses without confirm:true', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_group', {
+      op: 'ungroup',
+      name: 'edits',
+      confirm: false,
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/confirm:true/);
+    expect(conn.executions.length).toBe(0);
+  });
+
+  it('group op=ungroup with confirm:true dispatches the ungroup snippet', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_group', { op: 'ungroup', name: 'edits', confirm: true });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('ungroup');
+    expect(build.params.groupName).toBe('edits');
+  });
+
+  it('group op=delete refuses without confirm:true', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_group', {
+      op: 'delete',
+      name: 'edits',
+      confirm: false,
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/confirm:true/);
+    expect(conn.executions.length).toBe(0);
+  });
+
+  it('group op=delete with confirm:true dispatches the deleteGroup snippet', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_group', { op: 'delete', name: 'edits', confirm: true });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('deleteGroup');
+    expect(build.params.name).toBe('edits');
+  });
+
+  it('group rejects an unknown op without building or executing, naming the allowed set', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_group', { op: 'rename' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/Allowed: create, delete, ungroup, add_layer, set_blend_mode/);
+    expect(snippetClient.allBuilds().length).toBe(0);
+    expect(conn.executions.length).toBe(0);
+  });
+
+  // The important equivalence: the five deprecated standalone tools and
+  // ps_group's op dispatch must produce identical behavior. Both routes call
+  // the same handler function, so this pins that fact rather than just
+  // hoping the two code paths stay in sync.
+  it('each deprecated standalone tool builds the identical snippet + params as the matching ps_group op', async () => {
+    const cases: Array<{
+      oldName: string;
+      oldArgs: Record<string, unknown>;
+      op: string;
+      newArgs: Record<string, unknown>;
+    }> = [
+      {
+        oldName: 'ps_create_group',
+        oldArgs: { name: 'Hero grade', layers: ['Sky', 'Foreground'], into_active_group: true },
+        op: 'create',
+        newArgs: { name: 'Hero grade', layers: ['Sky', 'Foreground'], into_active_group: true },
+      },
+      {
+        oldName: 'ps_delete_group',
+        oldArgs: { name: 'edits', confirm: true },
+        op: 'delete',
+        newArgs: { name: 'edits', confirm: true },
+      },
+      {
+        oldName: 'ps_ungroup',
+        oldArgs: { name: 'edits', confirm: true },
+        op: 'ungroup',
+        newArgs: { name: 'edits', confirm: true },
+      },
+      {
+        oldName: 'ps_move_layer_to_group',
+        oldArgs: { layer_name: 'Curves 1', group_name: 'edits' },
+        op: 'add_layer',
+        newArgs: { layer_name: 'Curves 1', group_name: 'edits' },
+      },
+      {
+        oldName: 'ps_set_group_blend_mode',
+        oldArgs: { name: 'edits', blend_mode: 'MULTIPLY' },
+        op: 'set_blend_mode',
+        newArgs: { name: 'edits', blend_mode: 'MULTIPLY' },
+      },
+    ];
+
+    for (const { oldName, oldArgs, op, newArgs } of cases) {
+      const oldClient = makeSnippetClient();
+      const newClient = makeSnippetClient();
+      const oldTools = createGroupTools(conn.asConnection(), oldClient);
+      const newTools = createGroupTools(conn.asConnection(), newClient);
+
+      await callTool(oldTools, oldName, oldArgs);
+      await callTool(newTools, 'ps_group', { op, ...newArgs });
+
+      const oldBuild = oldClient.lastBuild();
+      const newBuild = newClient.lastBuild();
+      expect(oldBuild.name, op).toBe(newBuild.name);
+      expect(oldBuild.params, op).toEqual(newBuild.params);
+    }
   });
 });
