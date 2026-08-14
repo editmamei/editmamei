@@ -156,6 +156,13 @@ describe.skipIf(!bundlesBuilt)('CE bundle composition', () => {
     //    (the CE-loads-Pro-module broker pattern, scene-model-v2). Those are name
     //    strings for runtime delegation, NOT Pro implementation — the Pro source
     //    stays in the pruned `*-pro.js` files. Harmless, like the metadata refs above.
+    //  - `core/server.js` — the raw-develop advisory tracker names
+    //    `ps_apply_camera_raw` twice: a `this.toolRegistry.get(...)` existence
+    //    check (is a camera-raw develop tool registered in this session?) and a
+    //    `name === ...` check on the tool that just ran. Both read the live
+    //    registry to decide whether to set or clear the pending flag — runtime
+    //    delegation / entitlement checks, not Pro implementation. Same
+    //    reference-not-implementation rationale as scene-tools above.
     //  - `perception/grounding-locate.js` + `tools/{brush,image,layer-transform,
     //    selection,shape}-tools.js` — these CE-shipped files carry
     //    `'ps_resolve_placement'` in their `placement`-param DESCRIPTIONS: a
@@ -170,6 +177,8 @@ describe.skipIf(!bundlesBuilt)('CE bundle composition', () => {
         norm === 'core/tool-tiers.js' ||
         norm === 'core/tool-groups.js' ||
         norm === 'tools/scene-tools.js' ||
+        // ps_apply_camera_raw registry/dispatch check, not implementation (see above).
+        norm === 'core/server.js' ||
         // ps_resolve_placement reference-not-implementation (see above).
         norm === 'perception/grounding-locate.js' ||
         norm === 'tools/brush-tools.js' ||
