@@ -78,7 +78,9 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // former standalone Smart-Filter tool (2026-08-09).
   ps_filter: 'community',
 
-  // group-tools
+  // group-tools — consolidated into one op-discriminated tool (2026-08-13).
+  // The five old names stay registered as deprecated aliases for one release.
+  ps_group: 'community',
   ps_create_group: 'community',
   ps_move_layer_to_group: 'community',
   ps_set_group_blend_mode: 'community',
@@ -115,6 +117,7 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // layer-tools
   ps_create_layer: 'community',
   ps_delete_layer: 'community',
+  // deprecated alias for ps_text(op=create) — see the text-tools section below
   ps_create_text_layer: 'community',
   ps_fill_layer: 'community',
   ps_add_fill_layer: 'community',
@@ -259,7 +262,11 @@ export const TOOL_TIERS: Record<string, Tier> = {
   ps_template_recall: 'pro',
   ps_template_delete: 'pro',
 
-  // text-tools — consolidated into one property-discriminated tool
+  // text-tools — consolidated into one op-discriminated tool (2026-08-13),
+  // flattening ps_set_text's old property sub-discriminator into the same
+  // enum as create. ps_set_text (and ps_create_text_layer, layer-tools
+  // section above) stay registered as deprecated aliases for one release.
+  ps_text: 'community',
   ps_set_text: 'community',
 };
 

@@ -148,16 +148,15 @@ schemas in this session, consult \`tools/list\`.
   locally. Reach for these to get REAL coordinates rather than
   estimating from the preview — they're the antidote to spatial
   guessing.
-- **Text** — \`ps_create_text_layer\`, then \`ps_set_text\`
-  (property font / color / alignment / content; font resolves family
-  names to PostScript).
+- **Text** — \`ps_text\` (op create, then set_font / set_color /
+  set_alignment / set_content; font resolves family names to
+  PostScript).
 - **Image** — \`ps_place_image\` (links external files as smart
   objects), \`ps_resize_image\`, \`ps_crop_document\`,
   \`ps_convert_image_mode\`, open / close / save_psd, and
   \`ps_export\` (format jpeg/png).
-- **Groups** — \`ps_create_group\`,
-  \`ps_move_layer_to_group\`, \`ps_set_group_blend_mode\`,
-  \`ps_ungroup\`, \`ps_delete_group\`.
+- **Groups** — \`ps_group\` (op create / delete / ungroup /
+  add_layer / set_blend_mode).
 - **Verification** — see below; this is the most underused part of
   the surface.
 - **Templates** — when template tools are present in \`tools/list\`,
