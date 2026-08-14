@@ -10,6 +10,57 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-08-14
+
+### Added
+
+- **Filters applied to a Smart Object can now be changed after the fact.** A Smart Filter can be
+  listed, hidden, re-blended and removed without rasterizing the layer or starting the edit again.
+  - `ps_filter` gains `op: list | set_visibility | set_blend | remove` alongside the default
+    `op: apply`, and `as_smart_filter` applies a filter to a Smart Object non-destructively.
+  - `ps_inspect` gains `what=smart_object` for reading a layer's Smart Object state.
+  - Removing a filter renumbers the ones above it, so re-read the list before the next call that
+    takes an index.
+
+- **A clipped layer can be unclipped.** Releasing a clipping mask now ships; previously a layer
+  could be clipped with no way to reverse it except the Photoshop menu or an undo.
+  - `ps_clipping_mask` takes `op: create | release`. Both do nothing rather than fail when the
+    layer is already in the requested state.
+  - Releasing a layer in the middle of a clipping chain also releases the layers above it, which
+    is Photoshop's own behaviour.
+
+- **A failed layer lookup names the layers that exist.** Asking for a layer by a name that is not
+  in the document now answers with the available names instead of only reporting the miss.
+
+### Changed
+
+- **Editmamei now requires Node 22 or newer.** Node 20 reached end of life on 2026-04-30, so it is
+  no longer a supported runtime; installing on Node 20 will fail the engine check.
+  - Dependency major versions are pinned, so routine updates stay on minor and patch releases.
+
+- **Filters, layer groups and text each work through one tool instead of several.** Related
+  operations sit behind a single name with an `op` argument, so there is one obvious tool per
+  subject rather than several with similar names.
+  - `ps_filter`, `ps_group` and `ps_text` are the names to use. The previous names still work for
+    this release and will be removed in the next one.
+  - `grow` and `similar` move to `ps_modify_selection`, which is where the rest of the
+    change-an-existing-selection modes live; both are still accepted on `ps_select` for this
+    release.
+
+- **Editing a raw-sourced photo starts with a develop pass.** Opening a raw file now steers the
+  first tonal step through Camera Raw rather than a layer adjustment, which is where raw files
+  hold their latitude.
+
+### Fixed
+
+- **Error messages more often say what actually went wrong.** Failures raised by the scripting
+  engine are matched against the wording Photoshop really emits, so more of them arrive as a
+  specific cause instead of a generic failure.
+
+- **Startup and connection checks no longer report a success they did not confirm.** The
+  Photoshop version and reachability probes report only what they verified, and concurrent probes
+  share one round trip instead of racing.
+
 ## [1.0.3] — 2026-08-08
 
 ### Fixed
