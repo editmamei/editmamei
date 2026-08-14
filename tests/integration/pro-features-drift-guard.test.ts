@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { TOOL_TIERS } from '@editmamei/core/tool-tiers.js';
+import { HYDRATED_OVERLAY } from '../helpers/overlay-tree.ts';
 
 // docs/ is user-facing and edition-labeled, so it gets the same drift guard the
 // wiki used to have. This used to be wiki-tier-drift-guard.test.ts, checked
@@ -27,10 +28,6 @@ const DOCS_DIR = join(ROOT, 'docs');
 const PRO_FEATURES = join(DOCS_DIR, 'pro-features.md');
 
 const PS_NAME = /\bps_[a-z0-9_]+\b/g;
-
-// Same overlay detection as tool-tiers.test.ts: Pro sources exist only in the
-// hydrated commercial tree, where docs/ is not the published user docs.
-const HYDRATED_OVERLAY = existsSync(join(ROOT, 'src', 'modules', 'pro', 'index.ts'));
 
 // ps_*-shaped identifiers that are legitimately not tools: settings keys the
 // privacy doc documents. Anything added here needs the same justification.
@@ -72,29 +69,39 @@ describe('docs tier drift guard', () => {
     }
   );
 
-  it('pro-features.md lists each tool under the section matching its tier', () => {
-    const source = readFileSync(PRO_FEATURES, 'utf8');
-    const offenders: string[] = [];
-    const seen = { community: 0, pro: 0 };
-    let expected: 'community' | 'pro' | null = null;
-    for (const line of source.split('\n')) {
-      if (/^## Community\b/.test(line)) expected = 'community';
-      else if (/^## What Pro adds\b/.test(line)) expected = 'pro';
-      else if (/^## /.test(line)) expected = null;
-      if (!expected) continue;
-      for (const name of line.match(PS_NAME) ?? []) {
-        if (NON_TOOL_PS_NAMES.has(name)) continue;
-        seen[expected] += 1;
-        if (TOOL_TIERS[name] !== expected) {
-          offenders.push(`${name} listed under the ${expected} section but is ${TOOL_TIERS[name]}`);
+  // Tree-agnostic by design — pro-features.md is published from here and
+  // travels into the overlay intact, so the section/tier split is checked in
+  // both. The one case that would throw rather than fail is the file not being
+  // there at all, and only the overlay can legitimately be missing it; here its
+  // absence is itself the regression, so the read stays unguarded.
+  it.skipIf(HYDRATED_OVERLAY && !existsSync(PRO_FEATURES))(
+    'pro-features.md lists each tool under the section matching its tier',
+    () => {
+      const source = readFileSync(PRO_FEATURES, 'utf8');
+      const offenders: string[] = [];
+      const seen = { community: 0, pro: 0 };
+      let expected: 'community' | 'pro' | null = null;
+      for (const line of source.split('\n')) {
+        if (/^## Community\b/.test(line)) expected = 'community';
+        else if (/^## What Pro adds\b/.test(line)) expected = 'pro';
+        else if (/^## /.test(line)) expected = null;
+        if (!expected) continue;
+        for (const name of line.match(PS_NAME) ?? []) {
+          if (NON_TOOL_PS_NAMES.has(name)) continue;
+          seen[expected] += 1;
+          if (TOOL_TIERS[name] !== expected) {
+            offenders.push(
+              `${name} listed under the ${expected} section but is ${TOOL_TIERS[name]}`
+            );
+          }
         }
       }
+      expect(offenders).toEqual([]);
+      // Anti-vacuous-pass guard: renaming either canonical heading would leave
+      // `expected` forever null and this test checking nothing. Each section
+      // must have been entered and contributed at least one tool.
+      expect(seen.community).toBeGreaterThan(0);
+      expect(seen.pro).toBeGreaterThan(0);
     }
-    expect(offenders).toEqual([]);
-    // Anti-vacuous-pass guard: renaming either canonical heading would leave
-    // `expected` forever null and this test checking nothing. Each section
-    // must have been entered and contributed at least one tool.
-    expect(seen.community).toBeGreaterThan(0);
-    expect(seen.pro).toBeGreaterThan(0);
-  });
+  );
 });
