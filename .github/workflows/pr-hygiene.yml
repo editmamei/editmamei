@@ -1,0 +1,101 @@
+# The pull request title and body become the squash commit message, so this job
+# is the last point at which something can be kept out of public history.
+#
+# The rule this enforces already existed in prose — the pull request template
+# asks for no machine attribution — and prose alone did not hold: an agent added
+# an attribution trailer and a session URL to a PR body anyway. Only the parts
+# that can be matched literally are checked here; the patterns themselves live in
+# scripts/check-pr-hygiene.mjs, with a unit test at
+# tests/scripts/check-pr-hygiene.test.ts. Judgement calls (is this business
+# detail? does this narrate Pro internals?) stay with CLAUDE.md and review,
+# because a regex would either miss them or cry wolf.
+#
+# A pull request that legitimately needs to discuss one of these banned forms —
+# explaining this very check, for instance — must paraphrase it rather than
+# quote it. There is deliberately no bypass.
+#
+# Branch commits are not scanned directly, but that is not a loophole: this
+# repository's squash-merge setting defaults the commit message to the PR title
+# and description, so what ships is exactly what this job checked, regardless of
+# how the branch got there. A co-author trailer composed from branch-commit
+# *authorship* instead of PR text is a different problem — the Authorship
+# section in CLAUDE.md and the CLA check cover that one, not this job. And this
+# job is not the last word either: the squash dialog stays editable at merge
+# time, so the final safety net is the person clicking merge.
+#
+# `pull_request_target`, not `pull_request`, for gate provenance: a
+# `pull_request` workflow reads its own YAML — and everything it calls — from
+# the PR's own branch, so a PR could edit this file or the script it runs to
+# weaken the very check gating it. Under `pull_request_target` the workflow
+# definition, the checkout, and the script all come from the base ref (dev)
+# by default, so nothing the PR contributes decides what "clean" means. The
+# title and body being scanned come from the event payload via `env:`, not from
+# checked-out files, so no PR content is ever read from disk or executed —
+# that split (base-provenance for the check, payload-only for the input) is
+# what makes `pull_request_target` safe here, the same reasoning cla.yml and
+# qa-review.yml use. CRITICAL: never add a `ref:` override that checks out the
+# PR head, and never execute anything from the PR branch in this job.
+#
+# The reported check name is the JOB name below ("message hygiene"), not the
+# workflow name. The other half of gating lives in the `dev` ruleset's required
+# status checks, which will need to list "message hygiene" once this lands —
+# this file cannot enforce that, and the ruleset is deliberately NOT touched by
+# this change. If the job name here ever changes, update the ruleset in the
+# same breath or gating silently lapses.
+
+name: PR hygiene
+
+on:
+  pull_request_target:
+    # `edited` matters as much as `synchronize`: the title and body are what is
+    # being checked, and they change without the branch moving.
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  # Only enough to check out the base ref for the script itself; nothing is
+  # written anywhere.
+  contents: read
+
+# One evaluation per pull request at a time, newest wins. This is a required
+# check, so a superseded run finishing after a fresh one should not linger.
+concurrency:
+  group: pr-hygiene-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  message:
+    name: message hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Dependabot PR bodies embed upstream release notes verbatim, which can
+    # legitimately quote another project's attribution trailer; majors are
+    # pinned (dependabot.yml) and CI still gates the change itself. Same
+    # reasoning as qa-review.yml's dependabot exemption. Keyed on the PR
+    # AUTHOR, not `github.actor`: under pull_request_target, `github.actor` is
+    # whoever triggered THIS event, so a maintainer editing or reopening a
+    # dependabot PR would trigger as themselves and the exemption would
+    # evaporate — a required check going red with no bypass. qa-review.yml
+    # keys its own dependabot exemption on the PR author for the same reason.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    steps:
+      # Deliberately the BASE ref (dev) — this is the default checkout under
+      # pull_request_target and must stay that way. See the header comment.
+      # persist-credentials: false is defence-in-depth: nothing in this job
+      # needs to authenticate as anything afterward, so don't leave a token
+      # sitting in the workspace for a later step to find.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Reject machine attribution in the title and body
+        # Passed through the environment rather than interpolated into the
+        # script body. A pull request title is attacker-controlled text, and
+        # `${{ }}` inside `run:` would splice it straight into the shell.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node scripts/check-pr-hygiene.mjs

@@ -5,6 +5,12 @@
     "lib": ["ES2022"],
     "moduleResolution": "bundler",
     "strict": true,
+    // check-pr-hygiene.mjs is plain Node with no build step (the workflow that
+    // calls it runs it directly, unbuilt), so its test import needs allowJs
+    // rather than a declaration file. checkJs stays off — the .mjs itself is
+    // still outside typecheck's actual coverage, only the test that imports it
+    // is checked.
+    "allowJs": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,

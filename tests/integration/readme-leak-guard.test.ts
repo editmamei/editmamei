@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { OVERVIEW_MARKDOWN } from '@editmamei/tools/overview-tools.ts';
+import { HYDRATED_OVERLAY } from '../helpers/overlay-tree.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -232,8 +233,20 @@ describe('skills/ leak guard', () => {
  * in the npm tarball and is read directly by users and by anyone
  * auditing the public repo on GitHub. Same invariant as the README: no
  * 'dev' / 'none'-tier tool name may appear in any docs markdown file.
+ *
+ * Only in this repo, though: in the commercial overlay (where this file
+ * runs hydrated, detected the same way tool-tiers.test.ts gates its Pro
+ * checks), docs/ is internal planning material that legitimately names
+ * dev-tier tools and ships nowhere. The scan is gated to the tree whose
+ * docs/ is the published surface; CI here enforces it on every change.
+ *
+ * Note the polarity, which is inverted from every other use of this
+ * marker: elsewhere a true marker turns EXTRA Pro checks on (a wrong
+ * answer costs coverage in a tree that has its own), here it turns a
+ * published-surface guard off. That direction fails open, which is why
+ * overlay-detection-guard.test.ts cross-checks the marker unconditionally.
  */
-describe('docs/ leak guard', () => {
+describe.skipIf(HYDRATED_OVERLAY)('docs/ leak guard', () => {
   const docsDir = join(REPO_ROOT, 'docs');
   const docFiles = listFilesRecursive(docsDir).filter((p) => /\.md$/i.test(p));
 
