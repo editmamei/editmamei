@@ -55,6 +55,10 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // Downloads for bug reports. Ships in both editions so users on the .mcpb
   // can self-serve a report.
   ps_report_problem: 'community',
+  // Reads and clears a modal dialog blocking Photoshop, from outside the
+  // scripting transport. Windows-only so far, unverified on macOS, so it stays
+  // 'dev' until both halves exist and it has been run in anger.
+  ps_dialog: 'dev',
 
   // action-tools
   ps_list_actions: 'pro',

@@ -167,6 +167,10 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_list_capabilities: 'core',
   // anonymized diagnostic-bundle writer for bug reports (meta tool)
   ps_report_problem: 'core',
+  // sees/clears a modal blocking Photoshop; the one tool that still works
+  // when the scripting transport is blocked, so it belongs with the ambient
+  // meta-tools rather than any editing group
+  ps_dialog: 'core',
 
   // inspect (read-only state + previews — never gates)
   ps_inspect: 'inspect',

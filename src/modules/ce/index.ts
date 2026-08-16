@@ -29,6 +29,7 @@ import { createPreviewTools } from '../../tools/preview-tools.js';
 import { createInspectTools } from '../../tools/inspect-tools.js';
 import { createOverviewTools } from '../../tools/overview-tools.js';
 import { createDiagnosticsTools } from '../../tools/diagnostics-tools.js';
+import { createDialogTools } from '../../tools/dialog-tools.js';
 import { createRetouchTools } from '../../tools/retouch-tools.js';
 import { createBrushTools } from '../../tools/brush-tools.js';
 import { createTransformCanvasTools } from '../../tools/transform-canvas-tools.js';
@@ -66,6 +67,10 @@ const ceFactories = [
   // ps_report_problem — writes an anonymized diagnostic bundle to Downloads
   // for bug reports. Meta tool; does not touch Photoshop.
   createDiagnosticsTools,
+  // ps_dialog — reads/clears a modal blocking Photoshop from outside the
+  // scripting transport. Registered like any CE tool; tier 'dev' keeps it out
+  // of shipped editions until the macOS half exists.
+  createDialogTools,
   createRetouchTools,
   createBrushTools,
   // Canvas + guide tools (warp_layer is Pro, registered by the Pro module).
