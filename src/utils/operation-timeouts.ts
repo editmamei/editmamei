@@ -44,6 +44,20 @@ export const SELECT_SUBJECT_TIMEOUT_MS = 120_000;
 /** `ps_select_sky` (Adobe Sensei) — pre-existing inline literal, centralized. */
 export const SELECT_SKY_TIMEOUT_MS = 120_000;
 
+/**
+ * `ps_select_focus_area` (Focus Area). Measured 3.4s on a 4000x6000 frame,
+ * 2026-08-15; the ceiling matches the other native-AI selections because the
+ * first call in a session pays a one-off model load.
+ */
+export const SELECT_FOCUS_AREA_TIMEOUT_MS = 120_000;
+
+/**
+ * `ps_replace_sky` (Sky Replacement). Measured 7.5s on a 3789x2682 frame,
+ * 2026-08-15 — it composites several layers, so it runs longer than a plain
+ * selection even when warm.
+ */
+export const SKY_REPLACEMENT_TIMEOUT_MS = 120_000;
+
 /** `ps_get_preview` with annotations — pre-existing inline literal, centralized. */
 export const ANNOTATED_PREVIEW_TIMEOUT_MS = 90_000;
 

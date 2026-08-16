@@ -9,7 +9,11 @@ import { toolErrorResult, runSnippetTool, unknownDiscriminator } from '../utils/
 import { type DetectionClient } from '../detection/detection-client.js';
 import { OnnxLandmarkDetectionClient } from '../detection/landmark-detection-client.js';
 import { resolveExpectedPlacement, PLACEMENT_SCHEMA } from '../perception/grounding-locate.js';
-import { SELECT_SUBJECT_TIMEOUT_MS, SELECT_SKY_TIMEOUT_MS } from '../utils/operation-timeouts.js';
+import {
+  SELECT_SUBJECT_TIMEOUT_MS,
+  SELECT_SKY_TIMEOUT_MS,
+  SELECT_FOCUS_AREA_TIMEOUT_MS,
+} from '../utils/operation-timeouts.js';
 
 // ---------- Shared schema fragments ----------
 //
@@ -970,6 +974,46 @@ export function createSelectionTools(
       },
       handler: async (args) => selectSky(connection, snippetClient, args),
     },
+    // ps_select_focus_area — dev tier. Standalone on purpose: a parameter
+    // cannot be tiered, so it ships as its own gated tool and folds into
+    // ps_select as mode=focus_area at promotion (the ps_smart_filter → ps_filter
+    // precedent). Delete this entry in the same commit as the fold.
+    {
+      tool: {
+        name: 'ps_select_focus_area',
+        description:
+          'Run Photoshop\'s "Focus Area" — select what the lens rendered SHARP, by depth of field rather than by subject or colour. Use it when the thing you want is defined by focus and not by what it is: lifting a subject off a bokeh background, masking the in-focus plane of a macro shot, or grabbing a shallow-depth foreground that Select Subject splits badly. Takes NO coordinates. in_focus_radius widens (higher) or narrows (lower) what counts as sharp; soft_mask=true gives feathered edges instead of a hard boundary. Needs an ordinary pixel layer active — an adjustment or empty layer gives it nothing to measure. ALWAYS read the returned selection_info: a uniformly sharp image (or too high an in_focus_radius) selects the WHOLE canvas and still reports success, so area_percent near 100 means the result is useless rather than correct.',
+        inputSchema: selectFocusAreaSchema,
+        outputSchema: {
+          type: 'object',
+          properties: {
+            selected: { type: 'boolean' },
+            method: { type: 'string' },
+            strategy_used: { type: 'string' },
+            in_focus_radius: { type: 'number' },
+            soft_mask: { type: 'boolean' },
+            active_layer_temporarily_changed: {
+              type: 'boolean',
+              description:
+                'True if the active layer was not an ordinary pixel layer and detection was temporarily retargeted to the bottom layer. The original active layer is restored before return.',
+            },
+            whole_canvas_selected: {
+              type: 'boolean',
+              description:
+                'True when the result covers essentially the entire canvas — usually a non-result (radius too high, or nothing photographic to analyse) rather than a correct answer. Check this before committing to a mask.',
+            },
+            warning: { type: ['string', 'null'] },
+            selection_type: { type: 'string' },
+            selection_info: selectionInfoFragment,
+          },
+        },
+        annotations: {
+          title: 'Select Focus Area',
+          idempotentHint: true,
+        },
+      },
+      handler: async (args) => selectFocusArea(connection, snippetClient, args),
+    },
   ];
 }
 
@@ -1002,6 +1046,53 @@ const selectSkySchema: JsonSchemaObject = {
     selection_type: selectionTypeFragment,
   },
 };
+
+// Focus Area takes no coordinates and no sample_all_layers — the descriptor has
+// no such field, so the PS 2026 active-layer workaround that selectSubject /
+// selectSky carry does not apply here and is deliberately absent.
+const selectFocusAreaSchema: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    in_focus_radius: {
+      type: 'number',
+      description:
+        'How much blur still counts as "in focus", in pixels. Higher pulls more of the soft transition zone into the selection; lower keeps only the crisply resolved plane. 4.07 is the Photoshop dialog default and a sane starting point. The useful band is narrow — measured live, a radius of 40 selected 100% of the canvas — so move in small steps and CHECK selection_info.area_percent: a value near 100 means the radius is too high and the selection is worthless, even though the call reports success.',
+      default: 4.07,
+      minimum: 0.1,
+      maximum: 15,
+    },
+    soft_mask: {
+      type: 'boolean',
+      description:
+        'False (default) yields a hard-edged selection — every pixel fully in or fully out, which is what you want before ps_modify_selection feathering. True lets Photoshop feather the focus falloff itself, useful when the subject edge is genuinely gradual (hair, fur, motion).',
+      default: false,
+    },
+    selection_type: selectionTypeFragment,
+  },
+};
+
+async function selectFocusArea(
+  connection: PhotoshopConnection,
+  snippetClient: SnippetClient,
+  rawArgs: Record<string, unknown>
+): Promise<ToolResult> {
+  return runSnippetTool({
+    connection,
+    snippetClient,
+    rawArgs,
+    schema: selectFocusAreaSchema,
+    snippet: 'selectFocusArea',
+    errorPrefix: 'Error running Focus Area selection',
+    timeoutMs: SELECT_FOCUS_AREA_TIMEOUT_MS,
+    params: (args) => ({
+      inFocusRadius: (args.in_focus_radius as number) ?? 4.07,
+      softMask: (args.soft_mask as boolean) ?? false,
+      selectionType: normalizeSelectionType(args.selection_type),
+    }),
+    successText: (_result, args) =>
+      `Focus Area selection (${normalizeSelectionType(args.selection_type)}) complete`,
+  });
+}
 
 async function selectSubject(
   connection: PhotoshopConnection,

@@ -231,6 +231,16 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // Named-object selection via local MobileSAM: COCO object → CE detector box →
   // SAM organic mask → selection.
   ps_select_object: 'pro',
+  // Native-AI additions (2026-08-15). Both are Adobe's own inference, so both
+  // are CE-destined on the usual line — but they ship at 'dev' until the user
+  // promotes. ps_select_focus_area is standalone only because a parameter
+  // cannot be tiered; it folds into ps_select as mode=focus_area at promotion.
+  //
+  // The point-prompt selector (AM deepSelect) is deliberately ABSENT: its only
+  // input is a coordinate and we have no precision aiming to give it in any
+  // tier, so it stays unbuilt until the coordinate-ID work lands.
+  ps_select_focus_area: 'dev',
+  ps_replace_sky: 'dev',
   ps_modify_selection: 'community',
   // get_selection_info → ps_inspect
   ps_get_selection_preview: 'community',

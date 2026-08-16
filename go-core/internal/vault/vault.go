@@ -124,6 +124,24 @@ const (
 	ChanDup    = "s20" // duplicateChannel (DOM alpha-channel duplicate)
 	ChanDel    = "s21" // deleteChannel (DOM channel.remove; alpha-only guard)
 
+	// Native-AI family — Adobe's own inference exposed directly; we ship no
+	// weights for any of it. selectSubject/selectSky sit at pro1/pro2 for
+	// historical reasons (they predate the move to CE). Note focusMask is NOT
+	// Sensei: it is a blur-estimation algorithm from PS CC 2014, grouped here
+	// only because it is likewise Adobe's own inference rather than ours.
+	//
+	// Verification status, PS 27.2.0 / Windows, 2026-08-15:
+	//   SelFocus — this body run end-to-end against live PS across three
+	//              parameter variants; both params confirmed to affect output.
+	//   SkyRepl  — the raw DESCRIPTOR was replay-verified, but this generated
+	//              body has NOT completed a live success path. The retest used a
+	//              subject with only a narrow strip of sky, where detection is
+	//              marginal and results are not reproducible; that is a bad test,
+	//              not evidence of a defect. Re-run on a sky-dominant image
+	//              before concluding anything. Success path unproven until then.
+	SelFocus = "ai1" // focusMask (AM focusMask; depth-of-field selection, no coords)
+	SkyRepl  = "ai2" // skyReplacement (AM skyReplacement; sky group + lighting layers)
+
 	// more shared helpers
 	HelperFns = "hfn"  // helperFunctions (cTID/sTID)
 	BitsPerCh = "hbpc" // bitsPerChannelHelper

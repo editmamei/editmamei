@@ -115,6 +115,11 @@ var arityNeedsParams = []string{
 	"transformLayerMatrix",
 	"warpLayer",
 	"warpMesh",
+	// Requires skyPath by design — a Sky Replacement with no sky asset is
+	// meaningless, and an empty path would reach ExtendScript as a File("")
+	// that fails opaquely. Actively arity-checked instead by golden_test.go,
+	// which builds it fully populated (both lighting modes) and asserts no `%!`.
+	"replaceSky",
 }
 
 func TestNoSlotArityMismatch(t *testing.T) {
