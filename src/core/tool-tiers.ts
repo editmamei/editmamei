@@ -61,6 +61,10 @@ export const TOOL_TIERS: Record<string, Tier> = {
   ps_play_action: 'pro',
   ps_execute_script: 'pro',
 
+  // batch-tools — new, unverified against a real run; stays 'dev' (excluded
+  // from every shipped edition) until it is live-tested and promoted.
+  ps_batch: 'dev',
+
   // adjustment-tools — bakes consolidated into ps_apply_adjustment
   ps_add_adjustment_layer: 'community',
   ps_apply_adjustment: 'community',

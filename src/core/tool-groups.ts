@@ -290,6 +290,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_list_actions: 'automation',
   ps_play_action: 'automation',
   ps_execute_script: 'automation',
+  ps_batch: 'automation',
 };
 
 /**
