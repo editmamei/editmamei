@@ -63,10 +63,9 @@ import (
 // UPDATE_GOLDEN is what actually verifies anything.
 //
 // updateGolden MERGES rather than replaces: testdata/golden.json also holds
-// entries this file's `cases` table doesn't cover — the pro-tier action
-// pair owned by golden_pro_test.go (`-tags pro` only, so this file can't
-// even see those cases without the tag) plus some older entries no test
-// currently reads. Every key already in the file that ISN'T one of this
+// entries this file's `cases` table doesn't cover — older entries no test
+// currently reads, and any fixture owned by a suite that does not compile in
+// this tree. Every key already in the file that ISN'T one of this
 // run's case keys is carried over byte-for-byte in its existing position;
 // only keys present in `cases` get their value replaced with the current
 // emitter output (and a case key not yet in the file is appended). A naive
