@@ -148,7 +148,7 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   automation: {
     id: 'automation',
     label: 'Automation (Pro)',
-    purpose: 'Play recorded Actions and the ExtendScript escape hatch (Pro).',
+    purpose: 'Batch files, play recorded Actions, and the ExtendScript escape hatch (Pro).',
   },
 };
 
