@@ -130,15 +130,27 @@ const (
 	// Sensei: it is a blur-estimation algorithm from PS CC 2014, grouped here
 	// only because it is likewise Adobe's own inference rather than ours.
 	//
-	// Verification status, PS 27.2.0 / Windows, 2026-08-15:
-	//   SelFocus — this body run end-to-end against live PS across three
-	//              parameter variants; both params confirmed to affect output.
-	//   SkyRepl  — the raw DESCRIPTOR was replay-verified, but this generated
-	//              body has NOT completed a live success path. The retest used a
-	//              subject with only a narrow strip of sky, where detection is
-	//              marginal and results are not reproducible; that is a bad test,
-	//              not evidence of a defect. Re-run on a sky-dominant image
-	//              before concluding anything. Success path unproven until then.
+	// Verification status, PS 27.2.0 / Windows. Delete this block at the tier
+	// flip; it is here because both tools sit at dev and the gaps below are the
+	// promotion gate.
+	//   SelFocus — run end-to-end against live PS. 08-15: three parameter
+	//              variants, both params confirmed to affect output. 08-16,
+	//              after the retarget/deselect/restore work: a Curves adjustment
+	//              layer returned the same 51.4% selection as the Background,
+	//              and an unmeasurable layer produced the honest "selected
+	//              nothing" error instead of a stale one. NOT yet run with a
+	//              pre-existing selection in replace mode, which is the one path
+	//              the unconditional stash newly touches.
+	//   SkyRepl  — composited correctly against live PS on a sky-dominant image
+	//              (08-16): the group and its four layers materialised and the
+	//              supplied sky rendered. Caveat: that run used the build BEFORE
+	//              the lighting-mode parameter was removed. The current body
+	//              differs only by hardcoding a field Photoshop demonstrably
+	//              ignores — 'Scrn' and 'Mltp' produced byte-identical renders —
+	//              so the descriptor is functionally the same, but this exact
+	//              body has not itself composited a sky.
+	// Both: verified on Windows only. A macOS descriptor capture is owed before
+	// promotion — Windows-lenient shapes have been macOS-strict-rejected before.
 	SelFocus = "ai1" // focusMask (AM focusMask; depth-of-field selection, no coords)
 	SkyRepl  = "ai2" // skyReplacement (AM skyReplacement; sky group + lighting layers)
 

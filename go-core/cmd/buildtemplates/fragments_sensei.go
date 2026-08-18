@@ -239,6 +239,12 @@ func init() {
     // likely a stale selection being misread, i.e. the exact bug the deselect
     // below fixes, not a measurement of this event. Treat the 08-15 numbers as
     // contaminated and do not cite them as behaviour.
+    // What DOES justify the retarget is the post-fix run, 2026-08-16, taken
+    // after the deselect below existed and so free of that contamination: with
+    // a Curves adjustment layer active, this fragment returned the same 51.4%%
+    // selection as the Background layer, reporting
+    // active_layer_temporarily_changed = true. Without the retarget the same
+    // call does not produce that. That is the measurement to trust here.
     // So: retarget the bottom layer, typically the source photo, whenever the
     // active layer is not an ordinary raster layer. Same shape as
     // selectSubject's PS-2026 workaround, but triggered by layer KIND rather

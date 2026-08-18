@@ -5,11 +5,13 @@
  * They cannot catch a descriptor that Photoshop rejects, so they are necessary
  * and NOT sufficient.
  *
- * Live status, 2026-08-15 (PS 27.2.0 / Windows): the raw descriptor was
- * replayed successfully, which is where the load-bearing behaviour comes from —
- * an arbitrary `sky_file` path drives the composite even when the preset GUID
- * identifies nothing installed. The generated snippet's success path has NOT
- * been confirmed live. Tool ships at dev tier.
+ * Live status (PS 27.2.0 / Windows): the generated snippet composited a sky
+ * end-to-end on 2026-08-16 — the group and its four layers materialised and the
+ * supplied image rendered. The load-bearing behaviour comes from the 08-15
+ * descriptor replay: an arbitrary `sky_file` path drives the composite even when
+ * the preset GUID identifies nothing installed. Caveat carried in vault.go — the
+ * successful run predates removing the lighting-mode parameter, which only
+ * hardcodes a field Photoshop ignores. Tool ships at dev tier.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';

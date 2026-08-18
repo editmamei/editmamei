@@ -1056,7 +1056,7 @@ const selectFocusAreaSchema: JsonSchemaObject = {
     in_focus_radius: {
       type: 'number',
       description:
-        'How much blur still counts as "in focus", in pixels. Higher pulls more of the soft transition zone into the selection; lower keeps only the crisply resolved plane. 4.07 is the Photoshop dialog default and a sane starting point. The useful band is narrow — measured live, a radius of 40 selected 100% of the canvas — so move in small steps and CHECK selection_info.area_percent: a value near 100 means the radius is too high and the selection is worthless, even though the call reports success.',
+        'How much blur still counts as "in focus", in pixels. Higher pulls more of the soft transition zone into the selection; lower keeps only the crisply resolved plane. 4.07 is the Photoshop dialog default and a sane starting point. The useful band is narrow, and a radius well above the default selects the entire frame — so move in small steps and CHECK the returned area_percent and whole_canvas_selected: a selection covering essentially everything means the radius is too high and the result is worthless, even though the call reports success.',
       default: 4.07,
       minimum: 0.1,
       maximum: 15,
