@@ -40,6 +40,7 @@ import { createPathTools } from '../../tools/path-tools.js';
 import { createVectorMaskTools } from '../../tools/vector-mask-tools.js';
 import { createChannelComposeTools } from '../../tools/channel-compose-tools.js';
 import { createShapeTools } from '../../tools/shape-tools.js';
+import { createSkyTools } from '../../tools/sky-tools.js';
 
 // CE-tier factories; each takes (connection, snippetClient).
 const ceFactories = [
@@ -90,6 +91,10 @@ const ceFactories = [
   // Shape layers — ps_shape (vector rectangle/ellipse/line, coordinate-baking).
   // Aiming goes through the grounded `placement` path.
   createShapeTools,
+  // Sky Replacement — ps_replace_sky (Sensei composite; emits a layer group,
+  // not a selection). Takes no coordinates, which is why it ships while the
+  // point-prompt selector waits on the coordinate work.
+  createSkyTools,
   // Smart filters (2026-08-08) — reading and managing the re-editable filter
   // stack on a Smart Object merged into ps_filter
   // (op=list/set_visibility/set_blend/remove, 2026-08-09) rather than
