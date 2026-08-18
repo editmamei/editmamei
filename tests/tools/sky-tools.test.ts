@@ -87,7 +87,7 @@ describe('createSkyTools', () => {
     expect(params.harmonizationOpacity).toBe(35);
     expect(params.foregroundLightingOpacity).toBe(78);
     expect(params.edgeLightingOpacity).toBe(70);
-    expect(params.edgeLightingOpacity).toBe(70);
+    expect(params.skyName).toBe('Custom Sky');
   });
 
   it('forwards every tuning parameter when supplied', async () => {

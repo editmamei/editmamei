@@ -30,6 +30,33 @@ func TestSetTextAlignmentRejectsInvalid(t *testing.T) {
 	}
 }
 
+// Focus Area's two load-bearing behaviours are ExtendScript-side, so the golden
+// fixture is the only thing that would catch their removal — and a fixture diff
+// does not say WHY it changed. Assert the intent directly.
+func TestSelectFocusAreaGuardsTheCallerSelection(t *testing.T) {
+	jsx, err := build("selectFocusArea", map[string]any{"selectionType": "add"})
+	if err != nil {
+		t.Fatalf("build(selectFocusArea) failed: %v", err)
+	}
+	desel := strings.Index(jsx, "doc.selection.deselect()")
+	call := strings.Index(jsx, "executeAction(stringIDToTypeID('focusMask')")
+	if desel < 0 || call < 0 {
+		t.Fatalf("missing deselect (%d) or focusMask call (%d)", desel, call)
+	}
+	// focusMask leaves a prior selection untouched when it finds nothing, so the
+	// probe would report the caller's OLD selection as this call's result.
+	if desel > call {
+		t.Fatal("the selection must be cleared BEFORE focusMask, or the post-condition probe can report a stale selection as the result")
+	}
+	// Having deselected, every failure exit owes the caller their selection back.
+	if !strings.Contains(jsx, "__restoreAndDiscard") {
+		t.Fatal("no restore-on-failure helper: a thrown Focus Area would leave the document with no selection at all")
+	}
+	if strings.Contains(jsx, "savedCh.remove()") {
+		t.Fatal("a failure path discards the stash without restoring from it first")
+	}
+}
+
 // replaceSky once interpolated a lighting-mode charID RAW into
 // charIDToTypeID('%s'). That slot is GONE — Photoshop ignores the field, so the
 // fragment hardcodes the captured value and the emitter takes no such argument

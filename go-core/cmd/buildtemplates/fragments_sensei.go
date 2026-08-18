@@ -201,11 +201,23 @@ func init() {
     // Without this deselect the post-condition probe finds the caller's OLD
     // selection and reports it as the result, which is a confident wrong answer
     // rather than the honest "selected nothing" error. saveSelectionToTempChannel
-    // has already stashed it for the add/subtract/intersect paths, so nothing is
-    // lost. (The same hazard exists in selectSubject/selectSky, which stash but
-    // do not deselect — deliberately NOT changed here: they are shipped
-    // community tools and warrant their own live verification.)
+    // has stashed it for the add/subtract/intersect paths, so every failure exit
+    // below must RESTORE from that stash before discarding it — deselecting
+    // makes this fragment responsible for putting the caller's selection back,
+    // which the siblings are not. (The same probe hazard exists in
+    // selectSubject/selectSky, which stash but do not deselect — deliberately
+    // NOT changed here: they are shipped community tools and warrant their own
+    // live verification.)
     try { doc.selection.deselect(); } catch (eDesel) {}
+
+    // Put the caller's selection back on a failure path, then drop the stash.
+    // Without the load, a thrown Focus Area leaves the document with NO
+    // selection at all — worse than the state it was called in.
+    function __restoreAndDiscard(ch) {
+      if (!ch) { return; }
+      try { doc.selection.load(ch, SelectionType.REPLACE); } catch (eLoad) {}
+      try { ch.remove(); } catch (eRm) {}
+    }
 
     // focusMask analyses the ACTIVE LAYER, and it does NOT fail when that layer
     // has nothing to measure — it silently returns a whole-canvas selection with
@@ -216,10 +228,20 @@ func init() {
     // pixel layer. Same shape as selectSubject's PS-2026 workaround, but
     // triggered by layer KIND rather than a sampleAllLayers flag, because the
     // focusMask descriptor has no such field.
+    // NOTE this retargets for ANY non-NORMAL kind, which is broader than
+    // strictly necessary — a Smart Object does carry measurable pixels. The
+    // wide net is deliberate until each kind is verified live; the tradeoff is
+    // reported honestly via active_layer_temporarily_changed so a caller can
+    // see the analysed layer was not the one it selected.
+    // The kind read is guarded: a LayerSet exposes no kind property, and a
+    // throw here would escape every try below — after the deselect and after
+    // the temp channel was created — leaving no selection and an orphan channel.
     var origActive = doc.activeLayer;
     var changedActive = false;
-    if (doc.layers.length > 1 &&
-        String(origActive.kind) !== String(LayerKind.NORMAL)) {
+    var activeKind = null;
+    try { activeKind = String(origActive.kind); } catch (eKind) {}
+    if (doc.layers.length > 1 && activeKind !== null &&
+        activeKind !== String(LayerKind.NORMAL)) {
       try {
         doc.activeLayer = doc.layers[doc.layers.length - 1];
         changedActive = true;
@@ -244,7 +266,7 @@ func init() {
       executeAction(stringIDToTypeID('focusMask'), fmDesc, DialogModes.NO);
     } catch (eAm) {
       if (changedActive) { try { doc.activeLayer = origActive; } catch (eR) {} }
-      if (savedCh) { try { savedCh.remove(); } catch (e) {} }
+      __restoreAndDiscard(savedCh);
       // Early-exit contract — see selectionTypeHelpers docstring.
       restoreCompositeChannel(doc);
       var msg = String(eAm.message || eAm);
@@ -288,12 +310,12 @@ func init() {
       probeRef.putEnumerated(charIDToTypeID('Dcmn'), charIDToTypeID('Ordn'), charIDToTypeID('Trgt'));
       hasSelection = executeActionGet(probeRef).hasKey(charIDToTypeID('fsel'));
     } catch (eProbe) {
-      if (savedCh) { try { savedCh.remove(); } catch (e) {} }
+      __restoreAndDiscard(savedCh);
       restoreCompositeChannel(doc);
       throw new Error('Focus Area completed but its result could not be read: ' + String(eProbe.message || eProbe));
     }
     if (!hasSelection) {
-      if (savedCh) { try { savedCh.remove(); } catch (e) {} }
+      __restoreAndDiscard(savedCh);
       restoreCompositeChannel(doc);
       throw new Error(
         'Focus Area completed but selected nothing. The image likely has no focus boundary — ' +
@@ -332,9 +354,10 @@ func init() {
 	// layer, an edge-lighting group, a foreground-lighting layer and a
 	// foreground-color curves layer. Masks live as LAYER masks on those layers;
 	// doc.channels is untouched (verified 2026-08-15).
-	// Slot order: getContextInfo, skyPath, skyName, skyId, shiftEdge,
+	// Slot order (11): getContextInfo, skyPath, skyName, skyId, shiftEdge,
 	// borderSmoothness, brightness, temperature, harmonizationOpacity,
-	// foregroundLightingOpacity, lightingModeCharID, edgeLightingOpacity.
+	// foregroundLightingOpacity, edgeLightingOpacity. No lighting-mode slot —
+	// see the hardcoded 'Scrn' below.
 	fragments[vault.SkyRepl] = `
     %s
 
