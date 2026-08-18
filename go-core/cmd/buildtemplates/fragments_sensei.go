@@ -193,7 +193,14 @@ func init() {
     var inFocusRadius = %s;
     var softMask = %s;
 
-    var savedCh = (selType === 'replace') ? null : saveSelectionToTempChannel(doc);
+    // Stashed UNCONDITIONALLY, including for selection_type='replace'. Replace
+    // means the prior selection is expendable on SUCCESS; it does not mean the
+    // caller should be left with nothing when Focus Area FAILS. Because this
+    // fragment deselects below, a failed replace-mode call without a stash would
+    // destroy a selection it never got to replace. combineWithSavedSelection
+    // discards the channel unchanged in replace mode, so the success path is
+    // unaffected — the cost is one alpha round-trip.
+    var savedCh = saveSelectionToTempChannel(doc);
 
     // Clear any existing selection BEFORE calling focusMask. Confirmed live
     // 2026-08-16: on a layer with nothing to measure, focusMask succeeds and
@@ -233,6 +240,11 @@ func init() {
     // wide net is deliberate until each kind is verified live; the tradeoff is
     // reported honestly via active_layer_temporarily_changed so a caller can
     // see the analysed layer was not the one it selected.
+    // It is also NARROWER than it looks: an EMPTY raster layer is LayerKind
+    // NORMAL and is therefore NOT rescued here, even though it was one of the
+    // two cases that motivated this. That one is caught downstream instead —
+    // the deselect plus the fsel probe turn it into an honest "selected
+    // nothing" error rather than a whole-canvas non-result.
     // The kind read is guarded: a LayerSet exposes no kind property, and a
     // throw here would escape every try below — after the deselect and after
     // the temp channel was created — leaving no selection and an orphan channel.
