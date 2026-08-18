@@ -226,25 +226,34 @@ func init() {
       try { ch.remove(); } catch (eRm) {}
     }
 
-    // focusMask analyses the ACTIVE LAYER, and it does NOT fail when that layer
-    // has nothing to measure — it silently returns a whole-canvas selection with
-    // a success flag (confirmed live 2026-08-15: a Curves adjustment layer and
-    // an empty pixel layer each yielded 100%% of canvas where the Background
-    // yielded the correct 51.4%%). So retarget the bottom layer, which is
-    // typically the source photo, whenever the active layer is not an ordinary
-    // pixel layer. Same shape as selectSubject's PS-2026 workaround, but
-    // triggered by layer KIND rather than a sampleAllLayers flag, because the
-    // focusMask descriptor has no such field.
+    // focusMask analyses the ACTIVE LAYER and does NOT fail when that layer has
+    // nothing to measure. What it does instead is not fully pinned, and the two
+    // live observations must be read in order:
+    //   2026-08-15, before this fragment deselected: a Curves adjustment layer
+    //     and an empty raster layer each REPORTED 100%% of canvas where the
+    //     Background reported the correct 51.4%%.
+    //   2026-08-16, raw event, no prior selection: focusMask on a layer with
+    //     nothing to measure produced NO selection at all.
+    // Those disagree because the first set was measured with a prior selection
+    // active, which focusMask leaves untouched — so "100%% of canvas" was very
+    // likely a stale selection being misread, i.e. the exact bug the deselect
+    // below fixes, not a measurement of this event. Treat the 08-15 numbers as
+    // contaminated and do not cite them as behaviour.
+    // So: retarget the bottom layer, typically the source photo, whenever the
+    // active layer is not an ordinary raster layer. Same shape as
+    // selectSubject's PS-2026 workaround, but triggered by layer KIND rather
+    // than a sampleAllLayers flag, because focusMask's descriptor has no such
+    // field.
     // NOTE this retargets for ANY non-NORMAL kind, which is broader than
     // strictly necessary — a Smart Object does carry measurable pixels. The
     // wide net is deliberate until each kind is verified live; the tradeoff is
     // reported honestly via active_layer_temporarily_changed so a caller can
     // see the analysed layer was not the one it selected.
     // It is also NARROWER than it looks: an EMPTY raster layer is LayerKind
-    // NORMAL and is therefore NOT rescued here, even though it was one of the
-    // two cases that motivated this. That one is caught downstream instead —
-    // the deselect plus the fsel probe turn it into an honest "selected
-    // nothing" error rather than a whole-canvas non-result.
+    // NORMAL and so is NOT rescued here. That case falls to the post-condition
+    // instead, which surfaces it as either the "selected nothing" error or
+    // whole_canvas_selected — do not claim which, for the same reason the AM
+    // error branch refuses to.
     // The kind read is guarded: a LayerSet exposes no kind property, and a
     // throw here would escape every try below — after the deselect and after
     // the temp channel was created — leaving no selection and an orphan channel.
