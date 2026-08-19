@@ -577,14 +577,16 @@ function normName(s) {
 		//
 		// Bounded on purpose. At most 8 names, each clipped to 40 characters, the
 		// rest counted as "(+N more)" — an unbounded list on a 300-layer document
-		// would bury the actual error. Characters outside printable ASCII — plus
-		// backslash, so the encoding is injective — are escaped as \uXXXX in both
-		// the requested name and the list: the Windows cscript stdout transport
-		// is codepage-bound and flattens raw non-ASCII to '?' (measured live,
-		// PS 27.2.0), while the escape survives any transport and the reader is
-		// an LLM, which reads \uXXXX fine. The clip backs off to the last
-		// complete escape so a truncated name never ends in a dangling half
-		// escape. A walk that partially failed appends "(list may be
+		// would bury the actual error. Control characters — plus backslash, so
+		// the encoding is injective — are escaped as \uXXXX in both the requested
+		// name and the list. Non-ASCII is NOT escaped here any more: the result
+		// envelope escapes it on the way out (see __mcpJsonEncode in
+		// src/api/photoshop-api.ts), so the true name survives the codepage-bound
+		// cscript transport by itself. Escaping it a second time here would hand
+		// the caller an escape sequence as if it were the layer's name, and the
+		// retry built from it would miss for the same reason the first attempt
+		// did. The clip backs off to the last complete escape so a truncated name
+		// never ends in a dangling half escape. A walk that partially failed appends "(list may be
 		// incomplete)" instead of presenting a truncated enumeration as
 		// authoritative; a walk that broke before counting anything emits no
 		// "Have:" clause at all. The list is for reading, not matching.
@@ -602,12 +604,13 @@ function __notFoundMessage(label, requested, groupsOnly) {
     var out = '';
     for (var c = 0; c < s.length; c++) {
       var code = s.charCodeAt(c);
-      if (code >= 32 && code <= 126 && code !== 92) {
-        out += s.charAt(c);
-      } else {
+      // Control characters and backslash only — see the Go comment above.
+      if (code < 32 || code === 127 || code === 92) {
         var hex = code.toString(16);
         while (hex.length < 4) hex = '0' + hex;
         out += '\\u' + hex;
+      } else {
+        out += s.charAt(c);
       }
     }
     return out;

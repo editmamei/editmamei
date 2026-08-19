@@ -413,14 +413,18 @@ describe('__notFoundMessage (behavioral, real emitted body)', () => {
     expect(runNotFound('Group', 'X', true, withLayers([flat('a')]))).toContain('Have: (no groups)');
   });
 
-  // Raw non-ASCII flattens to '?' on the codepage-bound cscript stdout
-  // transport (measured live, PS 27.2.0: 背景テスト arrived as '?????'), so
-  // names escape non-ASCII as \uXXXX — lossless through any transport, and
-  // the list's reader is an LLM, which reads the escape fine.
-  it('escapes non-ASCII name characters as transport-safe \\uXXXX', () => {
+  // Non-ASCII names are reported VERBATIM. They used to be escaped here,
+  // because raw non-ASCII flattens to '?' on the codepage-bound cscript stdout
+  // transport (measured live, PS 27.2.0: 背景テスト arrived as '?????'). The
+  // result envelope now escapes on the way out, so the name survives on its
+  // own — and escaping it a second time here would be worse than the original
+  // bug: the caller reads the escape as the layer's actual name, retries with
+  // it, and misses again. The name in this message has to be the name you can
+  // send back.
+  it('reports non-ASCII names verbatim, not as escapes the caller would echo', () => {
     const msg = runNotFound('Layer', 'sky', false, withLayers([flat('背景'), flat('Ebene 1')]));
-    expect(msg).toContain('\\u80cc\\u666f');
-    expect(msg).not.toContain('背景');
+    expect(msg).toContain('背景');
+    expect(msg).not.toContain('\\u80cc');
     expect(msg).toContain('Ebene 1');
   });
 
@@ -468,16 +472,20 @@ describe('__notFoundMessage (behavioral, real emitted body)', () => {
 
   it('escapes backslash so the encoding is injective', () => {
     // A layer literally named \u00e9 (six ASCII chars) must not collide with
-    // a layer actually named é.
+    // a layer actually named é. Non-ASCII is no longer escaped, so the real
+    // one now appears verbatim -- the backslash escape is what keeps the two
+    // distinguishable, and that is the property this pins.
     const msg = runNotFound('Layer', 'X', false, withLayers([flat('\\u00e9'), flat('é')]));
     expect(msg).toContain('\\u005cu00e9');
-    expect(msg).toContain(', \\u00e9');
+    expect(msg).toContain(', é');
+    expect(msg).not.toContain(', \\u00e9');
   });
 
   it('clips to the last complete escape, never a dangling half escape', () => {
-    // 9 CJK characters escape to 54 chars; the 40-char cut lands mid-escape
-    // and must back off to a 6-char escape boundary.
-    const msg = runNotFound('Layer', 'X', false, withLayers([flat('背景テスト画像設定拡')]));
+    // Backslash is now the only escape that inflates a name, so it drives the
+    // clip: 9 backslashes escape to 54 chars, the 40-char cut lands mid-escape,
+    // and it must back off to a 6-char escape boundary.
+    const msg = runNotFound('Layer', 'X', false, withLayers([flat('\\'.repeat(9))]));
     expect(msg).toMatch(/(?:\\u[0-9a-f]{4})+\.\.\./);
     expect(msg).not.toMatch(/\\u[0-9a-f]{0,3}\.\.\./);
   });

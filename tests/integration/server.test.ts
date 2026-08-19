@@ -945,9 +945,26 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
     expect(res.isError).toBeUndefined();
     expect(res.structuredContent.connected).toBe(false);
     expect(telemetry.recordCall).toHaveBeenCalledTimes(1);
-    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
+    // Asserted whole, not with toMatchObject. The partial match this used to
+    // make is why a failure row shipped carrying error_class null: the field
+    // sat right there in the object the assertion walked past. A failure with
+    // no class folds to '' server-side — the value that means success there.
+    expect(telemetry.recordCall.mock.calls[0][0]).toEqual({
       tool: 'ps_ping',
       success: false,
+      duration_ms: expect.any(Number),
+      error_class: 'ps_not_running',
+    });
+    // The downgrade is a failure, so it feeds the opt-in diagnostic too. This
+    // was previously gated on the registry's raw success flag — still true
+    // here — so nothing was ever emitted for it. Asserted whole for the same
+    // reason as above: error_message is the field this path newly synthesizes,
+    // and a partial match would not see it.
+    expect(telemetry.recordDiagnostic).toHaveBeenCalledTimes(1);
+    expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
+      tool: 'ps_ping',
+      error_class: 'ps_not_running',
+      error_message: 'ps_ping did not reach Photoshop',
     });
   });
 
@@ -967,7 +984,17 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
 
     expect(res.structuredContent.connected).toBe(true);
     expect(telemetry.recordCall).toHaveBeenCalledTimes(1);
-    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ tool: 'ps_ping', success: true });
+    // error_class asserted explicitly: the classification expression has a
+    // success branch too, and without pinning it here an edit that dropped the
+    // guard would stamp ps_not_running onto every successful row unnoticed.
+    expect(telemetry.recordCall.mock.calls[0][0]).toEqual({
+      tool: 'ps_ping',
+      success: true,
+      duration_ms: expect.any(Number),
+      error_class: null,
+    });
+    // A success feeds no diagnostic.
+    expect(telemetry.recordDiagnostic).not.toHaveBeenCalled();
   });
 
   // F11 — the build()-failure-but-alive fallback (pingState's build failed, a
@@ -1030,6 +1057,56 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
     expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
       tool: 'ps_ping',
       success: false,
+    });
+    // A real error is present, so it classifies normally — the ps_not_running
+    // fallback is reserved for the downgrade, which this is not.
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ error_class: 'other' });
+  });
+
+  // The diagnostic gate keys off the telemetry-facing success signal rather
+  // than the registry's raw flag. That is what lets a downgraded ping produce
+  // a diagnostic at all — but it must not change what an ORDINARY failing tool
+  // reports, and in particular must never attach the ping's synthesized
+  // message to some other tool's failure.
+  it('keeps an ordinary failing tool on its own error message and class', async () => {
+    const server = new EditmameiServer() as unknown as {
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      telemetry: PingTelemetryServer['telemetry'];
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+    server.toolRegistry.register('ps_delete_layer', {
+      tool: {
+        name: 'ps_delete_layer',
+        description: 'test override',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('Error deleting layer: Layer not found: Sky. Have: Background');
+      },
+    });
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_delete_layer', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
+      tool: 'ps_delete_layer',
+      success: false,
+      error_class: 'layer_not_found',
+    });
+    expect(telemetry.recordDiagnostic).toHaveBeenCalledTimes(1);
+    expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
+      tool: 'ps_delete_layer',
+      error_class: 'layer_not_found',
+      error_message: 'Error deleting layer: Layer not found: Sky. Have: Background',
     });
   });
 });

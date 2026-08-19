@@ -88,6 +88,65 @@ func TestJsLitBreakOutAttempts(t *testing.T) {
 	}
 }
 
+// jsLit must emit pure printable ASCII. The .jsx it feeds is written UTF-8
+// with no BOM and no #encoding directive, so ExtendScript decodes it by the
+// platform codepage: a raw 'ü' arrives mojibake and every comparison against
+// it misses — which is what made deleting a German Photoshop's own
+// 'Farbfüllung 1' fail. \uXXXX survives any codepage and the parser restores
+// the exact character, so the round-trip assertion in assertInertLiteral is
+// what proves the escape is lossless.
+func TestJsLitEscapesNonASCII(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Farbfüllung 1", "\"Farbf\\u00fcllung 1\""},
+		{"Ebene 1", "\"Ebene 1\""}, // benign control: untouched
+		{"中", "\"\\u4e2d\""},
+		{"\U0001F3A8", "\"\\ud83c\\udfa8\""}, // astral → surrogate pair
+	}
+	for _, c := range cases {
+		if got := jsLit(c.in); got != c.want {
+			t.Errorf("jsLit(%q) = %s, want %s", c.in, got, c.want)
+		}
+		assertInertLiteral(t, c.in)
+	}
+}
+
+// Belt and braces on the property the fix actually depends on: whatever the
+// input, nothing outside printable ASCII may survive into the emitted literal.
+func TestJsLitOutputIsAlwaysPrintableASCII(t *testing.T) {
+	for _, in := range []string{
+		"Farbfüllung 1", "é中\U0001F600", "a\u2028b", "naïve — dash", "\u007f",
+	} {
+		out := jsLit(in)
+		for i := 0; i < len(out); i++ {
+			if out[i] < ' ' || out[i] > '~' {
+				t.Fatalf("jsLit(%q) = %q: byte %d (%#x) is outside printable ASCII", in, out, i, out[i])
+			}
+		}
+	}
+}
+
+// Boundary cases for the ASCII escape, kept separate so each one names what it
+// is guarding. DEL and the separators are the characters most likely to
+// diverge from the TypeScript twin; the quote/backslash case proves the escape
+// runs AFTER the JSON encoder and cannot double-process what it already did.
+func TestJsLitEscapeBoundaries(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"DEL", "\u007f", "\"\\u007f\""},
+		{"line separator", "\u2028", "\"\\u2028\""},
+		{"paragraph separator", "\u2029", "\"\\u2029\""},
+		{"highest code point", "\U0010FFFF", "\"\\udbff\\udfff\""},
+		{"tilde stays raw", "~", "\"~\""},
+		{"space stays raw", " ", "\" \""},
+		{"already-escaped quote and backslash", "a\"b\\c", "\"a\\\"b\\\\c\""},
+	}
+	for _, c := range cases {
+		if got := jsLit(c.in); got != c.want {
+			t.Errorf("%s: jsLit(%q) = %s, want %s", c.name, c.in, got, c.want)
+		}
+		assertInertLiteral(t, c.in)
+	}
+}
+
 // jsLit must NOT HTML-escape <, >, & — it mirrors JS JSON.stringify, which
 // leaves them literal (the Go default would escape them and diverge from the
 // TS output). Pin that explicitly.

@@ -288,18 +288,41 @@ export class EditmameiServer {
         // never false → true.
         const telemetrySuccess =
           entry.tool === 'ps_ping' && this.lastPingReachedPs === false ? false : entry.success;
-        const errorClass = classifyError(entry.error);
+        // A downgraded ping carries no error to classify — the handler returned
+        // a normal "not connected" payload, so entry.error is undefined and
+        // classifyError gives null. Recording that verbatim writes a failure row
+        // with no class, and the aggregate schema folds a null class to '' — the
+        // value it uses to mean success. The row then says a call failed for no
+        // reason anybody can name.
+        //
+        // Only the ping downgrade may claim ps_not_running: it is the one path
+        // that knows Photoshop did not answer. Any other classless failure —
+        // reachable if a handler ever returns isError with no text block — gets
+        // 'other', which is honest. What must never happen again is null on a
+        // failure, so the ternary has no branch that produces one.
+        const isPingDowngrade =
+          entry.tool === 'ps_ping' && !telemetrySuccess && entry.error === undefined;
+        const errorClass =
+          classifyError(entry.error) ??
+          (telemetrySuccess ? null : isPingDowngrade ? 'ps_not_running' : 'other');
         this.telemetry.recordCall({
           tool: entry.tool,
           success: telemetrySuccess,
           duration_ms: entry.duration_ms,
           error_class: errorClass,
         });
-        if (!entry.success && entry.error) {
+        // Gate on the signal telemetry actually recorded, not the registry's raw
+        // flag. Keying these two branches off different notions of failure is
+        // what let the unclassified row through in the first place.
+        if (!telemetrySuccess) {
           this.telemetry.recordDiagnostic({
             tool: entry.tool,
             error_class: errorClass ?? 'other',
-            error_message: entry.error,
+            error_message:
+              entry.error ??
+              (isPingDowngrade
+                ? 'ps_ping did not reach Photoshop'
+                : 'tool reported failure with no message'),
           });
         }
       },

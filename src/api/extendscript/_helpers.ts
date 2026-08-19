@@ -69,6 +69,14 @@ function normName(s) {
  *
  * Use via `__notFoundMessage(label, requested, groupsOnly)` after interpolating
  * this into the snippet body. Idempotent, like `normNameHelper`.
+ *
+ * `__nfEsc` escapes control characters and backslash — the latter so the
+ * encoding stays injective. It deliberately does NOT escape non-ASCII any
+ * more: the result envelope escapes on the way out (`__mcpJsonEncode` in
+ * photoshop-api.ts), so the true name already survives the codepage-bound
+ * cscript transport. Escaping it a second time here would hand the caller an
+ * escape sequence as though it were the layer's name, and the retry built from
+ * it would miss for the same reason the first attempt did.
  */
 export const notFoundMessageHelper = `
 function __notFoundMessage(label, requested, groupsOnly) {
@@ -79,12 +87,13 @@ function __notFoundMessage(label, requested, groupsOnly) {
     var out = '';
     for (var c = 0; c < s.length; c++) {
       var code = s.charCodeAt(c);
-      if (code >= 32 && code <= 126 && code !== 92) {
-        out += s.charAt(c);
-      } else {
+      // Control characters and backslash only — see the doc comment above.
+      if (code < 32 || code === 127 || code === 92) {
         var hex = code.toString(16);
         while (hex.length < 4) hex = '0' + hex;
         out += '\\\\u' + hex;
+      } else {
+        out += s.charAt(c);
       }
     }
     return out;

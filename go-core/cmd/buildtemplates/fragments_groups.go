@@ -228,6 +228,13 @@ func init() {
 		// moveLayerToGroup. Slots: 1=getContextInfo, 2=normNameHelper,
 		// 3=notFoundMessageHelper, 4=layerName(jsLit), 5=groupName(jsLit),
 		// 6=layerName(jsLit), 7=groupName(jsLit).
+		//
+		// The LAYER argument resolves to an art layer only, the same rule
+		// deleteLayer enforces and for the same reason: the caller named a
+		// layer, and silently relocating an entire subtree because a group
+		// happened to share that name is not what was asked. The pre-existing
+		// `layer === group` guard below caught only the move-into-itself case.
+		// findGroupByName is unaffected — its argument genuinely is a group.
 		vault.MoveToGroup: `
     %s
 
@@ -249,14 +256,18 @@ func init() {
     var wantedLayerNorm = normName(%s);
     var wantedGroupNorm = normName(%s);
 
+    var layerNameWasGroup = null;
     function findLayerByName(layers, depth) {
       if (depth === undefined) depth = 0;
       if (depth > 32) return null;
       for (var i = 0; i < layers.length; i++) {
         var l = layers[i];
-        if (normName(l.name) === wantedLayerNorm) return l;
         var isGroup = false;
         try { isGroup = (l instanceof LayerSet); } catch (e) {}
+        // Art layers only, same rule as deleteLayer (see Go comment).
+        var nameMatches = (normName(l.name) === wantedLayerNorm);
+        if (nameMatches && !isGroup) return l;
+        if (nameMatches && isGroup && layerNameWasGroup === null) layerNameWasGroup = l.name;
         if (isGroup) {
           try {
             var found = findLayerByName(l.layers, depth + 1);
@@ -286,7 +297,12 @@ func init() {
     }
 
     var layer = findLayerByName(doc.layers);
-    if (!layer) throw new Error(__notFoundMessage('Layer', %s, false));
+    if (!layer) {
+      if (layerNameWasGroup !== null) {
+        throw new Error('Cannot move "' + layerNameWasGroup + '": that name is a group, not an art layer (layer kind mismatch). Moving a whole group is not what naming a layer asks for.');
+      }
+      throw new Error(__notFoundMessage('Layer', %s, false));
+    }
     var group = findGroupByName(doc.layers);
     if (!group) throw new Error(__notFoundMessage('Group', %s, true));
     if (layer === group) throw new Error('Cannot move a group into itself');

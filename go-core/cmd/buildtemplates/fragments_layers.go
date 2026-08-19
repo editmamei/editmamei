@@ -43,20 +43,37 @@ func init() {
 
 		// deleteLayer — named branch. Slots: 1=normNameHelper,
 		// 2=notFoundMessageHelper, 3=name(jsLit), 4=name(jsLit).
+		//
+		// The name must resolve to an ART LAYER, never a group. remove() on a
+		// LayerSet takes the whole subtree with it and still reports a plain
+		// success, so one over-matched name silently destroys layers the caller
+		// never named — and every later delete aimed at one of those children
+		// then fails as "not found". That is how this surfaced: a real session
+		// with 10 of 22 deletes failing. Deleting a group is ps_delete_group's
+		// job, which the tool description already says. groupNameMatch
+		// remembers the first group whose name matched so the error can say so
+		// rather than claim the name does not exist; its wording carries the
+		// "layer kind" phrase ERROR_CLASS_TABLE (src/utils/session-log.ts)
+		// classifies on, and that table hoists the phrase above the tiers whose
+		// patterns a user-chosen group name could otherwise match.
 		vault.DelLayerNamed: `
     %s
     %s
     var targetNorm = normName(%s);
+    var groupNameMatch = null;
     function findLayerByName(layers, depth) {
       if (depth === undefined) depth = 0;
       if (depth > 32) return null;
       for (var i = 0; i < layers.length; i++) {
         var l = layers[i];
-        // Em-dash / en-dash tolerant comparison (Bug I). The LLM
-        // routinely swaps these silently — raw equality would miss.
-        if (normName(l.name) === targetNorm) return l;
         var isGroup = false;
         try { isGroup = (l instanceof LayerSet); } catch (e) {}
+        // Em-dash / en-dash tolerant comparison (Bug I). The LLM
+        // routinely swaps these silently — raw equality would miss.
+        var nameMatches = (normName(l.name) === targetNorm);
+        // Art layers only — a group is never a delete target (see Go comment).
+        if (nameMatches && !isGroup) return l;
+        if (nameMatches && isGroup && groupNameMatch === null) groupNameMatch = l.name;
         if (isGroup) {
           try {
             var found = findLayerByName(l.layers, depth + 1);
@@ -69,6 +86,12 @@ func init() {
 
     var target = findLayerByName(doc.layers);
     if (!target) {
+      if (groupNameMatch !== null) {
+        // "layer kind" is load-bearing: ERROR_CLASS_TABLE in
+        // src/utils/session-log.ts classifies on it, and this is a
+        // wrong_layer_kind, not a layer_not_found — the name exists.
+        throw new Error('Cannot delete "' + groupNameMatch + '": that name is a group, not an art layer (layer kind mismatch). Use ps_delete_group to delete a group and its contents.');
+      }
       throw new Error(__notFoundMessage('Layer', %s, false));
     }
     var deletedName = target.name;
