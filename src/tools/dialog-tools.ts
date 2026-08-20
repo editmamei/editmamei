@@ -20,9 +20,10 @@ import type { SnippetClient } from '../api/snippet-client.js';
 import {
   GoDialogProbe,
   describeReport,
-  resolvePhotoshopPids,
+  resolvePhotoshopTarget,
   type DialogProbe,
   type DialogReport,
+  type DialogTarget,
 } from '../platform/dialog-probe.js';
 
 const dialogSchema = {
@@ -51,7 +52,7 @@ const dialogSchema = {
 /** Injectable probe seam — production uses the Go-backed one; tests pass a fake. */
 export interface DialogToolDeps {
   probe?: DialogProbe;
-  pids?: () => Promise<number[]>;
+  target?: () => Promise<DialogTarget>;
 }
 
 function toResult(report: DialogReport): ToolResult {
@@ -71,7 +72,7 @@ export function createDialogTools(
   deps: DialogToolDeps = {}
 ): ToolDefinition[] {
   const probe = deps.probe ?? new GoDialogProbe();
-  const pidsOf = deps.pids ?? resolvePhotoshopPids;
+  const targetOf = deps.target ?? resolvePhotoshopTarget;
 
   return [
     {
@@ -81,7 +82,7 @@ export function createDialogTools(
           'See and clear a modal dialog that is blocking Photoshop. Call this when another tool fails with a timeout, or reports that Photoshop is busy or unreachable — a dialog waiting for a click is a common cause, and it makes EVERY other tool fail until it is dismissed. ' +
           "action='inspect' returns the dialog's title, message and buttons, plus a `stakes` classification. " +
           "action='click' presses one button by id, and is refused unless the dialog still matches the `token` you inspected. " +
-          'Read `stakes` before clicking: "running" means an operation is in progress and the only button cancels it; "data_loss" means a button on this dialog discards or overwrites work, so ASK THE USER which to press; "informational" means there is only one button and nothing to decide; "decision" means the choice depends on what the user wanted. Windows only for now — reports "unsupported" elsewhere.',
+          'Read `stakes` before clicking: "running" means an operation is in progress and the only button cancels it; "data_loss" means a button on this dialog discards or overwrites work, so ASK THE USER which to press; "informational" means there is only one button and nothing to decide; "decision" means the choice depends on what the user wanted. Windows and macOS; other platforms report "unsupported". On macOS this needs Accessibility permission for whichever app runs this server — without it the probe reports "unknown" with reason "accessibility-not-granted" rather than claiming there is no dialog.',
         inputSchema: dialogSchema,
         outputSchema: {
           type: 'object',
@@ -105,13 +106,13 @@ export function createDialogTools(
       },
       handler: async (args: Record<string, unknown>): Promise<ToolResult> => {
         const action = (args.action as string | undefined) ?? 'inspect';
-        const pids = await pidsOf();
-        if (pids.length === 0) {
+        const target = await targetOf();
+        if (target.pids.length === 0 && target.appName === '') {
           return toResult({ status: 'unknown', reason: 'photoshop-not-running' });
         }
 
         if (action === 'inspect') {
-          return toResult(await probe.probe(pids));
+          return toResult(await probe.probe(target));
         }
 
         const token = args.token;
@@ -127,7 +128,7 @@ export function createDialogTools(
             "ps_dialog action='click' requires `button_id` — an integer `id` from the `buttons` array of the inspect call that produced this token."
           );
         }
-        return toResult(await probe.click(pids, token, buttonId));
+        return toResult(await probe.click(target, token, buttonId));
       },
     },
   ];

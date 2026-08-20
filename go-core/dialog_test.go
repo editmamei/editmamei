@@ -27,11 +27,11 @@ func TestCleanCaptionStripsBothAcceleratorMarkers(t *testing.T) {
 // running operation.
 func TestClassifyStakesProgressBeatsSingleButton(t *testing.T) {
 	buttons := []Button{{ID: 6001, Caption: "Cancel"}}
-	if got := classifyStakes(buttons, 0, true); got != StakesRunning {
+	if got := classifyStakes(buttons, 0, true, idSchemeWin32); got != StakesRunning {
 		t.Fatalf("progress dialog classified %q, want %q — this would cancel a running operation", got, StakesRunning)
 	}
 	// Same shape without the progress bar IS informational.
-	if got := classifyStakes(buttons, 0, false); got != StakesInformational {
+	if got := classifyStakes(buttons, 0, false, idSchemeWin32); got != StakesInformational {
 		t.Errorf("one-button dialog classified %q, want %q", got, StakesInformational)
 	}
 }
@@ -84,7 +84,7 @@ func TestClassifyStakes(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyStakes(tc.buttons, tc.other, false); got != tc.want {
+			if got := classifyStakes(tc.buttons, tc.other, false, idSchemeWin32); got != tc.want {
 				t.Errorf("classifyStakes = %q, want %q", got, tc.want)
 			}
 		})
@@ -134,7 +134,7 @@ func TestNormalizeAppliesCapsAndIndexes(t *testing.T) {
 		Text:    string(long),
 		Buttons: []Button{{ID: 1, Caption: "&OK"}, {ID: 2, Caption: "&Cancel"}},
 	}
-	normalizeReport(&r, 42, 0xFEED)
+	normalizeReport(&r, 42, 0xFEED, idSchemeWin32)
 
 	if r.Title != "Adobe Photoshop" {
 		t.Errorf("title = %q, want accelerator stripped", r.Title)
@@ -162,7 +162,7 @@ func TestNormalizeCapsButtonCount(t *testing.T) {
 		many = append(many, Button{ID: int32(i), Caption: "b"})
 	}
 	r := Report{Buttons: many}
-	normalizeReport(&r, 1, 1)
+	normalizeReport(&r, 1, 1, idSchemeWin32)
 	if len(r.Buttons) != maxButtons {
 		t.Errorf("buttons = %d, want capped at %d", len(r.Buttons), maxButtons)
 	}

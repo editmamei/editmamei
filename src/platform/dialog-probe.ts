@@ -50,9 +50,20 @@ export interface DialogReport {
   probeMs?: number;
 }
 
+/**
+ * How the probe addresses Photoshop. The two platforms need different halves
+ * and neither needs both: Windows enumerates windows by PID, macOS asks System
+ * Events for a process by name and has no PID addressing at all.
+ */
+export interface DialogTarget {
+  pids: readonly number[];
+  /** Process name as System Events knows it, e.g. "Adobe Photoshop 2026". */
+  appName: string;
+}
+
 export interface DialogProbe {
-  probe(pids: readonly number[]): Promise<DialogReport>;
-  click(pids: readonly number[], token: string, buttonId: number): Promise<DialogReport>;
+  probe(target: DialogTarget): Promise<DialogReport>;
+  click(target: DialogTarget, token: string, buttonId: number): Promise<DialogReport>;
 }
 
 /** Test seam so the tool layer can be exercised without a Photoshop or a binary. */
@@ -78,17 +89,27 @@ function parseReport(stdout: string): DialogReport {
 export class GoDialogProbe implements DialogProbe {
   private readonly logger = new Logger('DialogProbe');
 
-  probe(pids: readonly number[]): Promise<DialogReport> {
-    return this.invoke(['dialog', '--action', 'probe', '--pid', pids.join(',')]);
+  probe(target: DialogTarget): Promise<DialogReport> {
+    return this.invoke([
+      'dialog',
+      '--action',
+      'probe',
+      '--pid',
+      target.pids.join(','),
+      '--app-name',
+      target.appName,
+    ]);
   }
 
-  click(pids: readonly number[], token: string, buttonId: number): Promise<DialogReport> {
+  click(target: DialogTarget, token: string, buttonId: number): Promise<DialogReport> {
     return this.invoke([
       'dialog',
       '--action',
       'click',
       '--pid',
-      pids.join(','),
+      target.pids.join(','),
+      '--app-name',
+      target.appName,
       '--token',
       token,
       '--button-id',
@@ -97,8 +118,13 @@ export class GoDialogProbe implements DialogProbe {
   }
 
   private async invoke(args: string[]): Promise<DialogReport> {
-    if (args.includes('--pid') && args[args.indexOf('--pid') + 1] === '') {
-      return { status: 'unknown', reason: 'no-photoshop-pid' };
+    // Neither addressing form alone is required, but having NEITHER means no
+    // backend can locate Photoshop. Checking both is what stopped macOS from
+    // failing on the Windows-only PID check before it ever reached its backend.
+    const pidArg = args[args.indexOf('--pid') + 1];
+    const nameArg = args[args.indexOf('--app-name') + 1];
+    if (pidArg === '' && nameArg === '') {
+      return { status: 'unknown', reason: 'no-photoshop-target' };
     }
     try {
       const { stdout, exitCode } = await probeOps.run(probeOps.resolveBinary(), args, {
@@ -132,7 +158,7 @@ export class GoDialogProbe implements DialogProbe {
  * Returns every match because more than one Photoshop.exe can exist; the probe
  * checks them all.
  */
-export async function resolvePhotoshopPids(): Promise<number[]> {
+export async function resolvePhotoshopTarget(): Promise<DialogTarget> {
   try {
     if (process.platform === 'win32') {
       const { stdout } = await probeOps.run(
@@ -140,19 +166,58 @@ export async function resolvePhotoshopPids(): Promise<number[]> {
         ['/FI', 'IMAGENAME eq Photoshop.exe', '/FO', 'CSV', '/NH'],
         { timeout: 4000, diagLabel: 'tasklist Photoshop.exe' }
       );
-      return [...stdout.matchAll(/^"[^"]*","(\d+)"/gm)].map((m) => Number(m[1]));
+      const pids = [...stdout.matchAll(/^"[^"]*","(\d+)"/gm)].map((m) => Number(m[1]));
+      // Windows addresses by PID; the name is unused there.
+      return { pids, appName: '' };
     }
-    const { stdout } = await probeOps.run('pgrep', ['-x', 'Adobe Photoshop'], {
+
+    // One `ps` pass yields both halves on macOS.
+    //
+    // NOT `pgrep -x 'Adobe Photoshop'`: -x demands an exact match and the real
+    // process is version-suffixed ("Adobe Photoshop 2026"), so the exact form
+    // matches nothing on an actual install. It also could not supply the name,
+    // which is the only thing System Events can address.
+    const { stdout } = await probeOps.run('ps', ['-axo', 'pid=,comm='], {
       timeout: 4000,
-      diagLabel: 'pgrep Adobe Photoshop',
+      diagLabel: 'ps Adobe Photoshop',
     });
-    return stdout
-      .split('\n')
-      .map((line) => Number(line.trim()))
-      .filter((n) => Number.isInteger(n) && n > 0);
+
+    return parsePsOutput(stdout);
   } catch {
-    return [];
+    return { pids: [], appName: '' };
   }
+}
+
+/**
+ * Pull the Photoshop PIDs and the System Events process name out of
+ * `ps -axo pid=,comm=`.
+ *
+ * Exported and pure so it is testable on any platform — the parsing is where
+ * the mistakes live, and gating its tests behind `process.platform === 'darwin'`
+ * would leave them unrun everywhere this is usually developed.
+ */
+export function parsePsOutput(stdout: string): DialogTarget {
+  const pids: number[] = [];
+  let appName = '';
+  for (const line of stdout.split('\n')) {
+    const m = /^\s*(\d+)\s+(.+)$/.exec(line);
+    if (!m) continue;
+    const execPath = m[2].trim();
+    const base = execPath.slice(execPath.lastIndexOf('/') + 1);
+    if (!base.startsWith('Adobe Photoshop')) continue;
+    // Photoshop ships sidecar processes that live under the same app bundle
+    // and whose names also begin "Adobe Photoshop". Only the main executable
+    // carries the name System Events can address.
+    if (/Helper|CEF|Crash|Updater|Installer/i.test(execPath)) continue;
+    pids.push(Number(m[1]));
+    if (!appName) appName = base;
+  }
+  return { pids, appName };
+}
+
+/** @deprecated Use resolvePhotoshopTarget — macOS needs the name, not the PID. */
+export async function resolvePhotoshopPids(): Promise<number[]> {
+  return [...(await resolvePhotoshopTarget()).pids];
 }
 
 /**

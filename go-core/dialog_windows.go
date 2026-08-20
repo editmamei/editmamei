@@ -245,7 +245,8 @@ func findReadableDialog(candidates []uintptr) (Report, uintptr, int) {
 	return best, bestHwnd, depth
 }
 
-func probeModal(pids []int, started time.Time) Report {
+func probeModal(target probeTarget, started time.Time) Report {
+	pids := target.PIDs
 	if len(pids) == 0 {
 		return unknown("no-pid")
 	}
@@ -270,12 +271,12 @@ func probeModal(pids []int, started time.Time) Report {
 
 	if popup != 0 {
 		r.Depth = depth
-		normalizeReport(&r, pids[0], popup)
+		normalizeReport(&r, pids[0], popup, idSchemeWin32)
 	} else {
 		// Blocked, but nothing readable. Report it as blocked anyway —
 		// blocked-but-unreadable is a real state and must not read as fine.
 		r = Report{Status: StatusDialog, Reason: "main-window-disabled-no-readable-dialog", Depth: 1}
-		normalizeReport(&r, pids[0], mainHwnd)
+		normalizeReport(&r, pids[0], mainHwnd, idSchemeWin32)
 	}
 	r.ProbeMs = time.Since(started).Milliseconds()
 	return r
@@ -288,8 +289,9 @@ func probeModal(pids []int, started time.Time) Report {
 // dialog destroys the window while leaving Photoshop's modal loop waiting on
 // it, which wedges the scripting bridge until Photoshop is restarted. The
 // window must be allowed to close itself in response to a real button press.
-func clickButton(pids []int, token string, buttonID int32, started time.Time) Report {
-	current := probeModal(pids, started)
+func clickButton(target probeTarget, token string, buttonID int32, started time.Time) Report {
+	pids := target.PIDs
+	current := probeModal(target, started)
 	if current.Status != StatusDialog {
 		return Report{Status: StatusStale, Reason: "no-dialog-to-click", ProbeMs: time.Since(started).Milliseconds()}
 	}
@@ -305,14 +307,14 @@ func clickButton(pids []int, token string, buttonID int32, started time.Time) Re
 		return Report{Status: StatusStale, Reason: "dialog-vanished"}
 	}
 
-	var target uintptr
+	var targetBtn uintptr
 	for _, c := range childWindows(popup) {
 		if winVisible(c) && winClass(c) == "Button" && winCtrlID(c) == buttonID {
-			target = c
+			targetBtn = c
 			break
 		}
 	}
-	if target == 0 {
+	if targetBtn == 0 {
 		return Report{Status: StatusStale, Reason: "button-not-found"}
 	}
 
@@ -320,11 +322,11 @@ func clickButton(pids []int, token string, buttonID int32, started time.Time) Re
 	// thread blocks this process indefinitely, turning the recovery mechanism
 	// into a second hang.
 	var out uintptr
-	procSendMessageTimeoutW.Call(target, bmClick, 0, 0, smtoAbortIfHung, 2000,
+	procSendMessageTimeoutW.Call(targetBtn, bmClick, 0, 0, smtoAbortIfHung, 2000,
 		uintptr(unsafe.Pointer(&out)))
 
 	time.Sleep(150 * time.Millisecond) // let the dialog tear down
-	after := probeModal(pids, started)
+	after := probeModal(target, started)
 	switch {
 	case after.Status == StatusClear:
 		return Report{Status: StatusCleared, ProbeMs: time.Since(started).Milliseconds()}

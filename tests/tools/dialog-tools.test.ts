@@ -16,7 +16,10 @@ function build(probe: Partial<DialogProbe>, pids: number[] = [1234]) {
   };
   const [def] = createDialogTools(connection, snippet, {
     probe: full,
-    pids: async () => pids,
+    // Both halves are empty when Photoshop is absent, which is what the
+    // resolver actually returns — a name without a process is not a state
+    // that occurs, and pretending it is would hide the not-running case.
+    target: async () => ({ pids, appName: pids.length > 0 ? 'Adobe Photoshop 2026' : '' }),
   });
   return { def, full };
 }
@@ -52,7 +55,7 @@ describe('ps_dialog', () => {
     const { def } = build({ probe });
     const out = parse(await def.handler({ action: 'inspect' }));
 
-    expect(probe).toHaveBeenCalledWith([1234]);
+    expect(probe).toHaveBeenCalledWith({ pids: [1234], appName: 'Adobe Photoshop 2026' });
     expect(out.status).toBe('dialog');
     expect(out.buttons?.map((b) => b.caption)).toEqual(['Continue', 'Stop']);
     expect(out.summary).toContain('Feather');
@@ -97,7 +100,11 @@ describe('ps_dialog', () => {
       await def.handler({ action: 'click', token: 'd1:1234:ABC:deadbeef', button_id: 11 })
     );
 
-    expect(click).toHaveBeenCalledWith([1234], 'd1:1234:ABC:deadbeef', 11);
+    expect(click).toHaveBeenCalledWith(
+      { pids: [1234], appName: 'Adobe Photoshop 2026' },
+      'd1:1234:ABC:deadbeef',
+      11
+    );
     expect(out.status).toBe('cleared');
   });
 

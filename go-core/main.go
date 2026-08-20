@@ -8,8 +8,12 @@
 // Protocol (Phase 0, per-call spawn):
 //
 //	editmamei-core build <snippet-name>     # params JSON on stdin, JSX on stdout
-//	editmamei-core dialog --action probe --pid N[,N]
-//	editmamei-core dialog --action click --pid N[,N] --token T --button-id I
+//	editmamei-core dialog --action probe --pid N[,N] --app-name "Adobe Photoshop 2026"
+//	editmamei-core dialog --action click --pid N[,N] --app-name "…" --token T --button-id I
+//
+// Both addressing forms are passed on every call because the backends differ:
+// Windows enumerates windows by PID, macOS asks System Events for a process by
+// name and has no use for a PID at all.
 //
 // Errors go to stderr with a non-zero exit; the TS SnippetClient turns that
 // into a thrown Error. This is snippet *generation* failing, and is separate
@@ -37,23 +41,28 @@ func runDialog(args []string) {
 	fs := flag.NewFlagSet("dialog", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	action := fs.String("action", "probe", "probe | click")
-	pidList := fs.String("pid", "", "comma-separated Photoshop PIDs")
+	pidList := fs.String("pid", "", "comma-separated Photoshop PIDs (Windows addressing)")
+	appName := fs.String("app-name", "", "Photoshop process name (macOS addressing)")
 	token := fs.String("token", "", "dialog identity token from a prior probe (click only)")
-	buttonID := fs.Int("button-id", -1, "control id of the button to click (click only)")
+	buttonID := fs.Int("button-id", -1, "button address from a prior probe: control id on Windows, index on macOS (click only)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
 
-	pids := parsePIDs(*pidList)
+	// Both halves are always passed; each backend uses the one it can address
+	// with. Neither is validated here — a backend that cannot work with what it
+	// got reports `unknown` with a reason, which is an answer, whereas exiting
+	// non-zero would read as "the probe is broken".
+	target := probeTarget{PIDs: parsePIDs(*pidList), AppName: *appName}
 	switch *action {
 	case "probe":
-		emit(probeModal(pids, started))
+		emit(probeModal(target, started))
 	case "click":
 		if *token == "" || *buttonID < 0 {
 			fmt.Fprintln(os.Stderr, "dialog --action click requires --token and --button-id")
 			os.Exit(2)
 		}
-		emit(clickButton(pids, *token, int32(*buttonID), started))
+		emit(clickButton(target, *token, int32(*buttonID), started))
 	default:
 		fmt.Fprintf(os.Stderr, "dialog: unknown --action %q (want probe or click)\n", *action)
 		os.Exit(2)

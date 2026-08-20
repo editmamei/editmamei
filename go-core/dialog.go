@@ -73,6 +73,32 @@ const (
 	StakesDecision    = "decision"     // anything else: a caller must choose
 )
 
+// idScheme says what a Button.ID means on the backend that produced it, which
+// is NOT the same across platforms and cannot be inferred from the value.
+//
+// Windows hands back a real control ID, where a few values carry fixed meaning
+// (IDYES/IDNO). macOS has no such thing: System Events addresses a button by
+// its position in the button list, so the ID field carries an index. An index
+// of 6 is the seventh button and means nothing else — reading it as IDYES is
+// how a macOS dialog with enough buttons would be misclassified as destructive.
+type idScheme int
+
+const (
+	// idSchemeWin32 — ID is a Windows control ID; a few values are semantic.
+	idSchemeWin32 idScheme = iota
+	// idSchemeIndex — ID is a positional index and carries no meaning at all.
+	idSchemeIndex
+)
+
+// probeTarget is how a backend addresses Photoshop. The two platforms need
+// different halves of it and neither needs both: Windows enumerates windows by
+// PID, macOS asks System Events for a process by name (§4.2 of the design —
+// there is no PID in the AppleScript at all).
+type probeTarget struct {
+	PIDs    []int
+	AppName string
+}
+
 // Truncation caps. A dialog is a human-sized thing; anything past these is a
 // bug in the enumeration, not content worth carrying.
 const (
@@ -108,11 +134,18 @@ func clamp(s string, n int) string {
 // interactive control, which is bit-for-bit the informational signature — so
 // without this ordering, auto-clearing an informational dialog would cancel a
 // running operation.
-func classifyStakes(buttons []Button, otherControls int, hasProgress bool) string {
+// The data-loss check is Windows-only because it is the only backend whose IDs
+// carry meaning. On macOS a save/discard prompt currently classifies as
+// `decision`, which is a COARSER answer, not a wrong one — a caller still has
+// to choose a button, it just is not warned that the choice is destructive.
+// Closing that gap needs a structural signal from real macOS dialogs, and
+// inventing one from the design would repeat the mistake the Windows spike
+// caught. Revisit against captured evidence.
+func classifyStakes(buttons []Button, otherControls int, hasProgress bool, ids idScheme) string {
 	if hasProgress {
 		return StakesRunning
 	}
-	if impliesDataLoss(buttons) {
+	if ids == idSchemeWin32 && impliesDataLoss(buttons) {
 		return StakesDataLoss
 	}
 	if len(buttons) == 1 && otherControls == 0 {
@@ -149,6 +182,12 @@ func impliesDataLoss(buttons []Button) bool {
 // The content hash is what makes handle recycling detectable: Windows reuses
 // HWND values, so hwnd alone would let a click land on a different dialog that
 // happened to inherit the handle.
+//
+// macOS has no handle to recycle, so its backend passes the container's
+// position in the window list instead. That keeps two same-titled dialogs at
+// different depths distinguishable, and the content hash still carries the
+// "did this dialog change underneath the caller" check that the click gate
+// depends on.
 func makeToken(pid int, hwnd uintptr, title string, buttons []Button) string {
 	h := sha256.New()
 	h.Write([]byte(title))
@@ -161,7 +200,7 @@ func makeToken(pid int, hwnd uintptr, title string, buttons []Button) string {
 
 // normalize finalizes a report gathered by a backend: cleans captions, applies
 // caps, computes the stakes class and the token. Backends collect; this decides.
-func normalizeReport(r *Report, pid int, hwnd uintptr) {
+func normalizeReport(r *Report, pid int, hwnd uintptr, ids idScheme) {
 	r.Title = clamp(cleanCaption(r.Title), maxTitle)
 	r.Text = clamp(strings.Join(strings.Fields(r.Text), " "), maxText)
 
@@ -176,7 +215,7 @@ func normalizeReport(r *Report, pid int, hwnd uintptr) {
 	}
 	r.Buttons = cleaned
 
-	r.Stakes = classifyStakes(r.Buttons, r.OtherControls, r.HasProgress)
+	r.Stakes = classifyStakes(r.Buttons, r.OtherControls, r.HasProgress, ids)
 	r.OwnerPID = pid
 	if r.Token == "" {
 		r.Token = makeToken(pid, hwnd, r.Title, r.Buttons)
