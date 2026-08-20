@@ -58,6 +58,52 @@ describe('jsLit', () => {
     expect(JSON.parse(out)).toBe(input);
   });
 
+  it('escapes non-ASCII so the emitted literal is pure ASCII', () => {
+    // The .jsx is written UTF-8 with no BOM and no #encoding directive, so
+    // ExtendScript decodes it by the platform codepage. A raw 'ü' arrives
+    // mojibake and a name comparison against it misses — which is what made
+    // deleting a German Photoshop's own 'Farbfüllung 1' fail. Pure-ASCII
+    // output is codepage-immune, and the parser restores the character.
+    const out = jsLit('Farbfüllung 1');
+    expect(out).toBe('"Farbf\\u00fcllung 1"');
+    expect(out).toMatch(/^[ -~]*$/);
+    expect(JSON.parse(out)).toBe('Farbfüllung 1');
+  });
+
+  it('escapes astral characters as a surrogate pair', () => {
+    const out = jsLit('🎨');
+    expect(out).toBe('"\\ud83c\\udfa8"');
+    expect(out).toMatch(/^[ -~]*$/);
+    expect(JSON.parse(out)).toBe('🎨');
+  });
+
+  it('leaves printable ASCII untouched', () => {
+    expect(jsLit('Layer 1')).toBe('"Layer 1"');
+  });
+
+  // These cases are duplicated verbatim in go-core/jsx_test.go
+  // (TestJsLitEscapeBoundaries). The two jsLit implementations emit literals
+  // into the same scripts on different code paths, so they must agree
+  // character for character — a divergence stays invisible until a non-ASCII
+  // name reaches one emitter and not the other. Change one table, change both.
+  it.each([
+    ['DEL', '\u007f', '"\\u007f"'],
+    ['line separator', '\u2028', '"\\u2028"'],
+    ['paragraph separator', '\u2029', '"\\u2029"'],
+    ['highest code point', '\u{10FFFF}', '"\\udbff\\udfff"'],
+    ['tilde stays raw', '~', '"~"'],
+    ['space stays raw', ' ', '" "'],
+    ['already-escaped quote and backslash', 'a"b\\c', '"a\\"b\\\\c"'],
+  ])('escape boundary: %s', (_name, input, want) => {
+    expect(jsLit(input)).toBe(want);
+  });
+
+  it('never emits a character outside printable ASCII, whatever the input', () => {
+    for (const input of ['Farbfüllung 1', 'é中😀', 'naïve — dash', '\u2028', '\u{10FFFF}', '']) {
+      expect(jsLit(input)).toMatch(/^[ -~]*$/);
+    }
+  });
+
   it('handles NUL bytes via the standard JSON escape', () => {
     const out = jsLit('a\x00b');
     expect(JSON.parse(out)).toBe('a\x00b');

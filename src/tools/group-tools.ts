@@ -52,7 +52,8 @@ const moveLayerToGroupSchema: JsonSchemaObject = {
   properties: {
     layer_name: {
       type: 'string',
-      description: 'Name of the layer to move (recursive search).',
+      description:
+        'Name of the layer to move (recursive search). A layer is preferred over a group of the same name; a group is moved only when no layer matches, which is how one group is nested inside another.',
     },
     group_name: {
       type: 'string',

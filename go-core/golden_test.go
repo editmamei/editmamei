@@ -268,6 +268,11 @@ func TestGaussianBlurGolden(t *testing.T) {
 		{`newLayer("Dodge")`, newLayer("Dodge", true)},
 		{"deleteLayer()", deleteLayer("", false)},
 		{`deleteLayer("Old Curves")`, deleteLayer("Old Curves", true)},
+		// Non-ASCII name: pins the jsLit escaping end to end through a real
+		// emitter, not just in the helper's own unit test. Photoshop names
+		// layers itself in the UI language, so this is the ordinary case on a
+		// German install, not an exotic one.
+		{`deleteLayer("Farbfuellung 1" with u-umlaut)`, deleteLayer("Farbfüllung 1", true)},
 		{"fillLayer(18,32,64)", fillLayer(18, 32, 64)},
 		{"duplicateLayer()", duplicateLayer("", false)},
 		{`duplicateLayer("Backup")`, duplicateLayer("Backup", true)},

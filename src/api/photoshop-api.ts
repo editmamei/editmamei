@@ -143,6 +143,21 @@ class ExtendScriptPhotoshopAPI implements PhotoshopAPI {
   // numbers, booleans, null/undefined, arrays, and plain objects. Cycles
   // and very deep nesting are capped via __depth to avoid stack overflow
   // on pathological inputs.
+  //
+  // Everything outside printable ASCII is escaped as a JSON u-escape, not
+  // just the control range. The Windows cscript stdout transport is
+  // codepage-bound and flattens raw non-ASCII to '?' (measured live,
+  // PS 27.2.0), so a layer Photoshop named itself in a non-English UI —
+  // 'Farbfuellung 1' spelled with the u-umlaut — used to reach the caller as
+  // 'Farbf?llung 1'. Naming that layer back at us then missed, because '?'
+  // is not what the layer is called. The escape is valid JSON, survives the
+  // transport, and JSON.parse restores the exact character, so the round trip
+  // is lossless rather than merely legible. Every outcome the script itself
+  // produces routes through here, errors included, so this covers messages as
+  // well as values. It does NOT cover the Windows shim's own COM failures
+  // (windows-runner.ts echoes Err.Description straight to stdout), nor raw
+  // non-ASCII sitting in a snippet's own source text — that arrives by a
+  // different path and is not addressed here.
   function __mcpJsonEncode(v, __depth) {
     if (__depth === undefined) __depth = 0;
     if (__depth > 32) return '"<<truncated:max-depth>>"';
@@ -160,7 +175,7 @@ class ExtendScriptPhotoshopAPI implements PhotoshopAPI {
         else if (c === '\\t') s += '\\\\t';
         else if (c === '\\b') s += '\\\\b';
         else if (c === '\\f') s += '\\\\f';
-        else if (cc < 32) {
+        else if (cc < 32 || cc > 126) {
           var hex = cc.toString(16);
           while (hex.length < 4) hex = '0' + hex;
           s += '\\\\u' + hex;
