@@ -147,8 +147,8 @@ class ExtendScriptPhotoshopAPI implements PhotoshopAPI {
   // Everything outside printable ASCII is escaped as a JSON u-escape, not
   // just the control range. The Windows cscript stdout transport is
   // codepage-bound and flattens raw non-ASCII to '?' (measured live,
-  // PS 27.2.0), so a layer Photoshop named itself — 'Farbfuellung 1' spelled
-  // with the u-umlaut, on a German install — used to reach the caller as
+  // PS 27.2.0), so a layer Photoshop named itself in a non-English UI —
+  // 'Farbfuellung 1' spelled with the u-umlaut — used to reach the caller as
   // 'Farbf?llung 1'. Naming that layer back at us then missed, because '?'
   // is not what the layer is called. The escape is valid JSON, survives the
   // transport, and JSON.parse restores the exact character, so the round trip

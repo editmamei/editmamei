@@ -83,6 +83,79 @@ describe('ExtendScriptPhotoshopAPI.executeScript wrapping', () => {
     expect(wrapped.trim().endsWith('})();')).toBe(true);
   });
 
+  // The outbound half of the non-ASCII round trip. The Windows cscript stdout
+  // transport is codepage-bound and flattens raw non-ASCII to '?', so a layer
+  // Photoshop named itself in a non-English UI reached the caller with the
+  // wrong name and could not be addressed by it. __mcpJsonEncode escapes every
+  // character outside printable ASCII, which is valid JSON and survives the
+  // transport intact.
+  //
+  // Evaluated in Node rather than asserted as source text: the encoder is
+  // ExtendScript embedded in a template literal, so a string assertion would
+  // pass against an encoder that no longer runs. Extracting and calling it is
+  // what proves the behaviour. Same approach as runNotFound in
+  // tests/unit/extendscript-helpers.test.ts.
+  describe('__mcpJsonEncode non-ASCII escaping', () => {
+    async function loadEncoder(): Promise<(v: unknown) => string> {
+      const conn = makeConnection();
+      const factory = new PhotoshopAPIFactory(conn.asConnection());
+      const api = await factory.createAPI();
+      await api.executeScript('return 1;');
+      const wrapper = conn.lastScript();
+
+      const start = wrapper.indexOf('function __mcpJsonEncode');
+      expect(start).toBeGreaterThan(-1);
+      // Walk braces to the matching close so the extraction survives edits to
+      // the function body.
+      let depth = 0;
+      let end = -1;
+      for (let i = wrapper.indexOf('{', start); i < wrapper.length; i++) {
+        if (wrapper[i] === '{') depth++;
+        else if (wrapper[i] === '}') {
+          depth--;
+          if (depth === 0) {
+            end = i + 1;
+            break;
+          }
+        }
+      }
+      expect(end).toBeGreaterThan(start);
+      const source = wrapper.slice(start, end);
+      return new Function(`${source}\nreturn __mcpJsonEncode;`)() as (v: unknown) => string;
+    }
+
+    it('escapes non-ASCII and round-trips losslessly through JSON.parse', async () => {
+      const encode = await loadEncoder();
+      for (const value of ['Farbfüllung 1', 'Kopie', '背景テスト', 'naïve', '🎨']) {
+        const encoded = encode(value);
+        expect(encoded).toMatch(/^[ -~]*$/);
+        expect(JSON.parse(encoded)).toBe(value);
+      }
+    });
+
+    it('escapes non-ASCII nested inside a result object, not just bare strings', async () => {
+      const encode = await loadEncoder();
+      const encoded = encode({ layerName: 'Farbfüllung 1', nested: ['Kopie'] });
+      expect(encoded).toMatch(/^[ -~]*$/);
+      expect(JSON.parse(encoded)).toEqual({ layerName: 'Farbfüllung 1', nested: ['Kopie'] });
+    });
+
+    it('leaves printable ASCII and the standard escapes alone', async () => {
+      const encode = await loadEncoder();
+      expect(encode('Layer 1')).toBe('"Layer 1"');
+      expect(JSON.parse(encode('a"b\\c'))).toBe('a"b\\c');
+      expect(JSON.parse(encode('tab\there'))).toBe('tab\there');
+    });
+
+    it('escapes the line/paragraph separators that break a JS eval', async () => {
+      const encode = await loadEncoder();
+      for (const value of ['a\u2028b', 'a\u2029b', 'del\u007fhere']) {
+        expect(encode(value)).toMatch(/^[ -~]*$/);
+        expect(JSON.parse(encode(value))).toBe(value);
+      }
+    });
+  });
+
   it('reports both outcomes through a tagged envelope, not an in-band prefix', async () => {
     // The wrapper and decodeScriptResult are two halves of one contract. If the
     // wrapper stops tagging its output, the decoder hands the raw envelope back

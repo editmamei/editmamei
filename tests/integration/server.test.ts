@@ -1109,6 +1109,74 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       error_message: 'Error deleting layer: Layer not found: Sky. Have: Background',
     });
   });
+
+  // The exact input that produced the original defect, and the only one that
+  // exercises the fallback: a handler returning isError with NO text content
+  // block leaves tool-registry.ts with success=false and error UNDEFINED, so
+  // classifyError yields null and the fallback ternary decides the class.
+  //
+  // Without this, the `entry.tool === 'ps_ping'` conjunct in isPingDowngrade
+  // gates nothing — delete it and every other test still passes, while every
+  // tool's classless failure gets relabelled a Photoshop-connectivity problem
+  // under the wrong tool name.
+  it('classifies a classless non-ping failure as other, never as ps_not_running', async () => {
+    const server = new EditmameiServer() as unknown as {
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      telemetry: PingTelemetryServer['telemetry'];
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — isError with no text content block',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      // No { type: 'text' } block, so the registry cannot recover a message.
+      handler: async () => ({ isError: true, content: [] }),
+    });
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_export', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toEqual({
+      tool: 'ps_export',
+      success: false,
+      duration_ms: expect.any(Number),
+      error_class: 'other',
+    });
+    expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
+      tool: 'ps_export',
+      error_class: 'other',
+      error_message: 'tool reported failure with no message',
+    });
+  });
+
+  // The ping's own classless failure, which IS the downgrade the fallback was
+  // added for. Pinning both sides is what makes the tool-name conjunct load
+  // bearing rather than decorative.
+  it('classifies the ping downgrade as ps_not_running', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    server.session.connection = makeConnection({ throwOnExecute: new Error('boom') });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
+      tool: 'ps_ping',
+      error_class: 'ps_not_running',
+    });
+  });
 });
 
 // ===========================================================================

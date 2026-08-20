@@ -10,9 +10,8 @@ import (
 // Photoshop's remove() on a LayerSet takes the whole subtree with it and still
 // reports a plain success, so an over-matched name silently destroys layers
 // the caller never named — and every later delete aimed at one of those
-// children then fails as "not found", which is how this surfaced in the wild
-// (a real session, 10 of 22 deletes failing). Deleting a group is
-// ps_delete_group's job, which the tool description already says.
+// children then fails as "not found", which makes the cause look like the
+// symptom. Deleting a group is ps_delete_group's job.
 //
 // testdata/golden.json is deliberately NOT the pin for this: it is a drift
 // snapshot, not a correctness gate — remove the guard and the golden
@@ -44,18 +43,34 @@ func TestDeleteLayerNamedRefusesGroups(t *testing.T) {
 	}
 }
 
-// The same over-match existed in move-layer-to-group: it resolved the LAYER
-// argument without excluding groups, so naming a layer could relocate an
-// entire subtree. The pre-existing `layer === group` guard only caught the
-// move-into-itself case.
-func TestMoveLayerToGroupRefusesGroupsAsTheLayer(t *testing.T) {
+// move-layer-to-group had the same over-match — it resolved the LAYER argument
+// without preferring art layers, so tree order decided which of two same-named
+// candidates moved, and naming a layer could relocate an entire subtree.
+//
+// The fix here is a PREFERENCE, not a refusal, and the difference matters:
+// nesting a group inside a group is legitimate and this is the only tool that
+// does it, so refusing groups outright (what deleteLayer correctly does) would
+// delete a capability to fix an ambiguity. An art layer wins; a group is used
+// only when no layer matches.
+func TestMoveLayerToGroupPrefersArtLayersButStillNests(t *testing.T) {
 	snippet := moveLayerToGroup("Sky", "Edits")
 
 	if !contains(snippet, "nameMatches && !isGroup") {
-		t.Error("move-to-group no longer filters groups out of the layer match")
+		t.Error("move-to-group no longer prefers art layers for the layer argument")
 	}
-	if !contains(snippet, "is a group, not an art layer") {
-		t.Error("move-to-group no longer explains that the layer name resolved to a group")
+	if !contains(snippet, "groupFallback") {
+		t.Error("move-to-group no longer keeps a group fallback")
+	}
+	if !contains(snippet, "if (!layer) layer = groupFallback;") {
+		t.Error("move-to-group no longer falls back to a group, so nesting is broken")
+	}
+	// Refusing outright is deleteLayer's rule, not this one.
+	if contains(snippet, "is a group, not an art layer") {
+		t.Error("move-to-group must not refuse a group — that removes group nesting")
+	}
+	// The move-into-itself guard is only reachable because of the fallback.
+	if !contains(snippet, "Cannot move a group into itself") {
+		t.Error("move-to-group lost its move-into-itself guard")
 	}
 	// findGroupByName must still match groups — that argument IS a group.
 	if !contains(snippet, "wantedGroupNorm") {

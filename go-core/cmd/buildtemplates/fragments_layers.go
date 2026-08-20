@@ -48,9 +48,8 @@ func init() {
 		// LayerSet takes the whole subtree with it and still reports a plain
 		// success, so one over-matched name silently destroys layers the caller
 		// never named — and every later delete aimed at one of those children
-		// then fails as "not found". That is how this surfaced: a real session
-		// with 10 of 22 deletes failing. Deleting a group is ps_delete_group's
-		// job, which the tool description already says. groupNameMatch
+		// then fails as "not found", which makes the cause look like the
+		// symptom. Deleting a group is ps_delete_group's job. groupNameMatch
 		// remembers the first group whose name matched so the error can say so
 		// rather than claim the name does not exist; its wording carries the
 		// "layer kind" phrase ERROR_CLASS_TABLE (src/utils/session-log.ts)
