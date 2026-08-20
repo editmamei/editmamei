@@ -34,10 +34,8 @@ const osascriptTimeout = 6 * time.Second
 // The record protocol this file's scripts emit, and the parser for it, live in
 // dialog_axparse.go — untagged on purpose so they are testable off a Mac.
 
-// tccDenied is the osascript error for "Accessibility is not granted". It is
-// the one error with a specific, actionable meaning for the user, so it gets
-// its own reason string rather than being folded into a generic failure.
-const tccDenied = "-1743"
+// Failure classification lives in dialog_axparse.go with the rest of the
+// untagged, testable half.
 
 // probeScript reads the blocking dialog, if any.
 //
@@ -73,8 +71,8 @@ tell application "System Events"
 
 	-- Locate the dialog container: sheet on any window first, then a
 	-- standalone AXDialog window. Depth counts every candidate found.
-	set container to missing value
-	set containerIndex to 0
+	set dlgRef to missing value
+	set dlgIndex to 0
 	set depthCount to 0
 	set wi to 0
 	repeat with w in wins
@@ -82,9 +80,9 @@ tell application "System Events"
 		try
 			if (exists sheet 1 of w) then
 				set depthCount to depthCount + 1
-				if container is missing value then
-					set container to sheet 1 of w
-					set containerIndex to wi
+				if dlgRef is missing value then
+					set dlgRef to sheet 1 of w
+					set dlgIndex to wi
 				end if
 			end if
 		end try
@@ -95,21 +93,21 @@ tell application "System Events"
 		try
 			if (subrole of w) is "AXDialog" then
 				set depthCount to depthCount + 1
-				if container is missing value then
-					set container to w
-					set containerIndex to wi
+				if dlgRef is missing value then
+					set dlgRef to w
+					set dlgIndex to wi
 				end if
 			end if
 		end try
 	end repeat
 
-	if container is missing value then return "STATUS" & FS & "clear"
+	if dlgRef is missing value then return "STATUS" & FS & "clear"
 
 	set outLines to {}
 
 	set theTitle to ""
 	try
-		set theTitle to (name of container) as text
+		set theTitle to (name of dlgRef) as text
 	end try
 	set end of outLines to "TITLE" & FS & theTitle
 
@@ -117,7 +115,7 @@ tell application "System Events"
 	set theText to ""
 	try
 		set txts to {}
-		repeat with t in (static texts of container)
+		repeat with t in (static texts of dlgRef)
 			try
 				set end of txts to (value of t) as text
 			on error
@@ -135,39 +133,39 @@ tell application "System Events"
 	-- from being treated as a harmless one-button notice.
 	set hasProg to "0"
 	try
-		if (count of progress indicators of container) > 0 then set hasProg to "1"
+		if (count of progress indicators of dlgRef) > 0 then set hasProg to "1"
 	end try
 	set end of outLines to "PROGRESS" & FS & hasProg
 
 	set otherCount to 0
 	try
-		set otherCount to otherCount + (count of text fields of container)
+		set otherCount to otherCount + (count of text fields of dlgRef)
 	end try
 	try
-		set otherCount to otherCount + (count of checkboxes of container)
+		set otherCount to otherCount + (count of checkboxes of dlgRef)
 	end try
 	try
-		set otherCount to otherCount + (count of pop up buttons of container)
+		set otherCount to otherCount + (count of pop up buttons of dlgRef)
 	end try
 	try
-		set otherCount to otherCount + (count of radio buttons of container)
+		set otherCount to otherCount + (count of radio buttons of dlgRef)
 	end try
 	try
-		set otherCount to otherCount + (count of sliders of container)
+		set otherCount to otherCount + (count of sliders of dlgRef)
 	end try
 	set end of outLines to "OTHER" & FS & otherCount
 
 	set end of outLines to "DEPTH" & FS & depthCount
-	set end of outLines to "HANDLE" & FS & containerIndex
+	set end of outLines to "HANDLE" & FS & dlgIndex
 
 	-- Buttons, in list order. The index IS the address — button names are
 	-- localized and unstable, so nothing else may be used to click.
 	set defaultName to ""
 	try
-		set defaultName to (name of (value of attribute "AXDefaultButton" of container)) as text
+		set defaultName to (name of (value of attribute "AXDefaultButton" of dlgRef)) as text
 	end try
 	try
-		set btns to buttons of container
+		set btns to buttons of dlgRef
 		repeat with bi from 1 to count of btns
 			set b to item bi of btns
 			set bName to ""
@@ -197,29 +195,29 @@ tell application "System Events"
 	set wins to windows of psProc
 	if (count of wins) is 0 then return "nowindow"
 
-	set container to missing value
+	set dlgRef to missing value
 	repeat with w in wins
 		try
 			if (exists sheet 1 of w) then
-				set container to sheet 1 of w
+				set dlgRef to sheet 1 of w
 				exit repeat
 			end if
 		end try
 	end repeat
-	if container is missing value then
+	if dlgRef is missing value then
 		repeat with w in wins
 			try
 				if (subrole of w) is "AXDialog" then
-					set container to w
+					set dlgRef to w
 					exit repeat
 				end if
 			end try
 		end repeat
 	end if
-	if container is missing value then return "nodialog"
+	if dlgRef is missing value then return "nodialog"
 
 	try
-		set btns to buttons of container
+		set btns to buttons of dlgRef
 		if (count of btns) < %INDEX% then return "noindex"
 		click (item %INDEX% of btns)
 		return "clicked"
@@ -249,13 +247,7 @@ func runOsascript(script string) (string, bool, string) {
 		if errors.As(err, &ee) {
 			stderr = string(ee.Stderr)
 		}
-		if strings.Contains(stderr, tccDenied) {
-			return "", false, "accessibility-not-granted"
-		}
-		if strings.TrimSpace(stderr) == "" {
-			return "", false, "osascript-failed"
-		}
-		return "", false, "osascript-error"
+		return "", false, classifyOsascriptFailure(stderr)
 	}
 	return strings.TrimSpace(string(out)), true, ""
 }

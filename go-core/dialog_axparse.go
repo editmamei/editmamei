@@ -104,6 +104,34 @@ func parseProbeOutput(out string, pid int) (Report, bool) {
 	return r, true
 }
 
+// macOS gates this behind TWO separate permissions that fail with different
+// codes. The design named only -1743 (Apple Events authorization); a live run
+// on 2026-08-19 hit -25211, assistive access, which is the one that actually
+// governs reading UI elements — Automation alone gets you far enough to name a
+// process and no further.
+//
+// Both are fixed by the same user action, so both map to one reason. Both have
+// to be recognized, or the specific "turn on Accessibility" message degrades to
+// a generic failure exactly when it would have helped.
+var tccDeniedCodes = []string{"-1743", "-25211"}
+
+// classifyOsascriptFailure turns osascript's stderr into a probe reason.
+//
+// Every branch yields a reason for an `unknown` report — a permission problem
+// must never be able to surface as `clear`, which would assert there is no
+// dialog on a machine where we are not allowed to look.
+func classifyOsascriptFailure(stderr string) string {
+	for _, code := range tccDeniedCodes {
+		if strings.Contains(stderr, code) {
+			return "accessibility-not-granted"
+		}
+	}
+	if strings.TrimSpace(stderr) == "" {
+		return "osascript-failed"
+	}
+	return "osascript-error"
+}
+
 // escapeForAppleScript makes a value safe to embed in a double-quoted
 // AppleScript string literal. The app name comes from Photoshop detection
 // rather than from a user, but it is still interpolated into executable script

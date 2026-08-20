@@ -195,6 +195,24 @@ func TestParseProbeSkipsMalformedButtons(t *testing.T) {
 	}
 }
 
+// Both permission codes are real and were observed, not assumed: -25211 came
+// back from a live run that -1743 alone would have misreported as a generic
+// osascript failure.
+func TestClassifyOsascriptFailureRecognizesBothPermissionCodes(t *testing.T) {
+	tests := map[string]string{
+		"System Events got an error: osascript is not allowed assistive access. (-25211)": "accessibility-not-granted",
+		"execution error: Not authorized to send Apple events (-1743)":                    "accessibility-not-granted",
+		"":                             "osascript-failed",
+		"   \n":                        "osascript-failed",
+		"some other AppleScript error": "osascript-error",
+	}
+	for stderr, want := range tests {
+		if got := classifyOsascriptFailure(stderr); got != want {
+			t.Errorf("classify(%q) = %q, want %q", stderr, got, want)
+		}
+	}
+}
+
 func TestEscapeForAppleScript(t *testing.T) {
 	tests := map[string]string{
 		`Adobe Photoshop 2026`:      `Adobe Photoshop 2026`,
