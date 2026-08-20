@@ -20,25 +20,25 @@ func TestDeleteLayerNamedRefusesGroups(t *testing.T) {
 	snippet := deleteLayer("Old Curves", true)
 
 	// The match must be conditioned on the candidate NOT being a group.
-	if !contains(snippet, "nameMatches && !isGroup") {
+	if !strings.Contains(snippet, "nameMatches && !isGroup") {
 		t.Error("named delete no longer filters groups out of the match")
 	}
 	// A group whose name matched is remembered so the error can say so rather
 	// than claiming the name does not exist.
-	if !contains(snippet, "groupNameMatch") {
+	if !strings.Contains(snippet, "groupNameMatch") {
 		t.Error("named delete no longer tracks a group-name match for the error")
 	}
-	if !contains(snippet, "is a group, not an art layer") {
+	if !strings.Contains(snippet, "is a group, not an art layer") {
 		t.Error("named delete no longer explains that the name resolved to a group")
 	}
 	// The phrase ERROR_CLASS_TABLE keys on (src/utils/session-log.ts). Losing
 	// it silently reclassifies the failure.
-	if !contains(snippet, "layer kind mismatch") {
+	if !strings.Contains(snippet, "layer kind mismatch") {
 		t.Error("group refusal lost the 'layer kind mismatch' phrase the error classifier keys on")
 	}
 
 	// The active-layer branch takes no name and must be unaffected.
-	if contains(deleteLayer("", false), "groupNameMatch") {
+	if strings.Contains(deleteLayer("", false), "groupNameMatch") {
 		t.Error("the active-layer delete branch should not carry name-resolution code")
 	}
 }
@@ -55,29 +55,25 @@ func TestDeleteLayerNamedRefusesGroups(t *testing.T) {
 func TestMoveLayerToGroupPrefersArtLayersButStillNests(t *testing.T) {
 	snippet := moveLayerToGroup("Sky", "Edits")
 
-	if !contains(snippet, "nameMatches && !isGroup") {
+	if !strings.Contains(snippet, "nameMatches && !isGroup") {
 		t.Error("move-to-group no longer prefers art layers for the layer argument")
 	}
-	if !contains(snippet, "groupFallback") {
+	if !strings.Contains(snippet, "groupFallback") {
 		t.Error("move-to-group no longer keeps a group fallback")
 	}
-	if !contains(snippet, "if (!layer) layer = groupFallback;") {
+	if !strings.Contains(snippet, "if (!layer) layer = groupFallback;") {
 		t.Error("move-to-group no longer falls back to a group, so nesting is broken")
 	}
 	// Refusing outright is deleteLayer's rule, not this one.
-	if contains(snippet, "is a group, not an art layer") {
+	if strings.Contains(snippet, "is a group, not an art layer") {
 		t.Error("move-to-group must not refuse a group — that removes group nesting")
 	}
 	// The move-into-itself guard is only reachable because of the fallback.
-	if !contains(snippet, "Cannot move a group into itself") {
+	if !strings.Contains(snippet, "Cannot move a group into itself") {
 		t.Error("move-to-group lost its move-into-itself guard")
 	}
 	// findGroupByName must still match groups — that argument IS a group.
-	if !contains(snippet, "wantedGroupNorm") {
+	if !strings.Contains(snippet, "wantedGroupNorm") {
 		t.Error("move-to-group lost its group lookup")
 	}
-}
-
-func contains(haystack, needle string) bool {
-	return strings.Contains(haystack, needle)
 }

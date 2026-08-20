@@ -481,6 +481,25 @@ describe('__notFoundMessage (behavioral, real emitted body)', () => {
     expect(msg).not.toContain(', \\u00e9');
   });
 
+  it('never leaves a lone surrogate when the clip lands inside an astral character', () => {
+    // Non-ASCII is no longer escaped, so the 40-unit cut counts raw UTF-16 and
+    // can split an emoji in half. A lone surrogate is not a crash, but it is a
+    // malformed name in a list whose whole purpose is to be read and reused.
+    const name = 'x'.repeat(39) + '🎨' + 'y'.repeat(10);
+    const msg = runNotFound('Layer', 'X', false, withLayers([flat(name)]));
+    for (let i = 0; i < msg.length; i++) {
+      const code = msg.charCodeAt(i);
+      if (code >= 0xd800 && code <= 0xdbff) {
+        const next = msg.charCodeAt(i + 1);
+        expect(next >= 0xdc00 && next <= 0xdfff).toBe(true);
+      }
+      if (code >= 0xdc00 && code <= 0xdfff) {
+        const prev = msg.charCodeAt(i - 1);
+        expect(prev >= 0xd800 && prev <= 0xdbff).toBe(true);
+      }
+    }
+  });
+
   it('clips to the last complete escape, never a dangling half escape', () => {
     // Backslash is now the only escape that inflates a name, so it drives the
     // clip: 9 backslashes escape to 54 chars, the 40-char cut lands mid-escape,

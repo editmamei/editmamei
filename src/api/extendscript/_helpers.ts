@@ -108,6 +108,11 @@ function __notFoundMessage(label, requested, groupsOnly) {
       nm = nm.substring(0, 40);
       var cut = nm.lastIndexOf('\\\\u');
       if (cut > 34) nm = nm.substring(0, cut);
+      // Non-ASCII is no longer escaped, so the cut counts raw UTF-16 units and
+      // can land between the halves of a surrogate pair. Drop a trailing high
+      // surrogate rather than emit a lone one.
+      var lastCode = nm.length > 0 ? nm.charCodeAt(nm.length - 1) : 0;
+      if (lastCode >= 0xD800 && lastCode <= 0xDBFF) nm = nm.substring(0, nm.length - 1);
       nm = nm + '...';
     }
     kept.push(nm);

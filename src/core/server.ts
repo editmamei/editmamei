@@ -318,8 +318,11 @@ export class EditmameiServer {
           this.telemetry.recordDiagnostic({
             tool: entry.tool,
             error_class: errorClass ?? 'other',
+            // `||`, not `??`: a handler can return an isError result whose text
+            // block is the empty string, which `??` would pass through and
+            // leave the failure just as unnamed as a missing one.
             error_message:
-              entry.error ??
+              entry.error ||
               (isPingDowngrade
                 ? 'ps_ping did not reach Photoshop'
                 : 'tool reported failure with no message'),

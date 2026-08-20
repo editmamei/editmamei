@@ -21,15 +21,15 @@ earlier versions are preserved in the archived wiki repository's
   a layer, the group and everything inside it was removed and the call reported success. It now
   declines and says the name is a group; use `ps_delete_group` to delete one deliberately.
 
-- **`ps_move_layer_to_group` no longer moves a whole group** when its `layer_name` matches a group,
-  for the same reason.
+- **`ps_group(op=add_layer)` and `ps_move_layer_to_group` now prefer a layer over a same-named
+  group** when resolving `layer_name`, instead of letting the layer order decide which one moves.
+  A group is still moved when nothing else matches the name, so nesting one group inside another
+  works as before.
 
 - **A layer-not-found error now spells the missing name the way you would send it back.**
   Non-ASCII characters in the "Have:" list were shown as escape sequences, which could not be used
   verbatim in the retry.
 
-- Photoshop-availability checks that fail now record why they failed rather than leaving the
-  reason blank.
 
 ## [1.1.0] — 2026-08-14
 
