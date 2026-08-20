@@ -30,7 +30,6 @@ earlier versions are preserved in the archived wiki repository's
   Non-ASCII characters in the "Have:" list were shown as escape sequences, which could not be used
   verbatim in the retry.
 
-
 ## [1.1.0] — 2026-08-14
 
 ### Added

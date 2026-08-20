@@ -273,7 +273,7 @@ export function createGroupTools(
       tool: {
         name: 'ps_move_layer_to_group',
         description:
-          'DEPRECATED — use ps_group(op=add_layer) instead (kept for one release for backward compatibility, identical behaviour). Move a named layer into a named group. The layer is placed at the top of the group stack. Both layer_name and group_name are looked up recursively; when a layer and a group share the name given as layer_name, the layer wins, and a group is used only if no layer matches (so nesting a group inside a group still works). Throws if either is not found, or if the layer IS the group itself.',
+          'DEPRECATED — use ps_group(op=add_layer) instead (kept for one release for backward compatibility, identical behaviour). Move a named layer into a named group. The layer is placed at the top of the group stack. Both layer_name and group_name are looked up recursively. Throws if either is not found, or if the layer IS the group itself.',
         inputSchema: moveLayerToGroupSchema,
         outputSchema: {
           type: 'object',

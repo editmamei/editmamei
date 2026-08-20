@@ -586,10 +586,12 @@ function normName(s) {
 		// the caller an escape sequence as if it were the layer's name, and the
 		// retry built from it would miss for the same reason the first attempt
 		// did. The clip backs off to the last complete escape so a truncated name
-		// never ends in a dangling half escape. A walk that partially failed appends "(list may be
-		// incomplete)" instead of presenting a truncated enumeration as
-		// authoritative; a walk that broke before counting anything emits no
-		// "Have:" clause at all. The list is for reading, not matching.
+		// never ends in a dangling half escape, and drops a trailing high
+		// surrogate so it never ends in half an astral character either. A walk
+		// that partially failed appends "(list may be incomplete)" instead of
+		// presenting a truncated enumeration as authoritative; a walk that broke
+		// before counting anything emits no "Have:" clause at all. The list is
+		// for reading, not matching.
 		//
 		// The wording is load-bearing for telemetry. ERROR_CLASS_TABLE in
 		// src/utils/session-log.ts classifies these messages, so "Have:" and
