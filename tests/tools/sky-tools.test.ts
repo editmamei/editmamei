@@ -78,6 +78,12 @@ describe('createSkyTools', () => {
     expect(build.params.skyPath).toBe(SKY);
   });
 
+  it('forwards a 120s timeout to the executor', async () => {
+    const tools = createSkyTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_replace_sky', { sky_file: SKY });
+    expect(conn.lastTimeout()).toBe(120000);
+  });
+
   it('applies the captured Photoshop defaults when only sky_file is given', async () => {
     const tools = createSkyTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_replace_sky', { sky_file: SKY });

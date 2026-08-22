@@ -55,6 +55,31 @@ func TestSelectFocusAreaGuardsTheCallerSelection(t *testing.T) {
 	if strings.Contains(jsx, "savedCh.remove()") {
 		t.Fatal("a failure path discards the stash without restoring from it first")
 	}
+	// The three failure exits ahead of combineWithSavedSelection (the AM call
+	// itself, the post-condition probe, and "selected nothing") must EACH
+	// restore, so a new early throw without one goes uncaught by a mere
+	// Contains check.
+	if n := strings.Count(jsx, "__restoreAndDiscard"); n < 3 {
+		t.Fatalf("expected at least 3 restore-on-failure calls (one per failure exit), got %d", n)
+	}
+	// The stash is UNCONDITIONAL — taken even in replace mode, unlike the
+	// sibling selectSubject/selectSky fragments, which skip it when
+	// selectionType is 'replace'. Guard against "aligning" this fragment with
+	// those two.
+	if !strings.Contains(jsx, "var savedCh = saveSelectionToTempChannel(doc);") {
+		t.Fatal("selectFocusArea must stash the caller's selection unconditionally, not mode-gated like selectSubject/selectSky")
+	}
+	if strings.Contains(jsx, "(selType === 'replace') ? null : saveSelectionToTempChannel(doc)") {
+		t.Fatal("the stash regressed to the mode-gated form used by selectSubject/selectSky")
+	}
+
+	jsxReplace, err := build("selectFocusArea", map[string]any{"selectionType": "replace"})
+	if err != nil {
+		t.Fatalf("build(selectFocusArea, replace) failed: %v", err)
+	}
+	if !strings.Contains(jsxReplace, "var savedCh = saveSelectionToTempChannel(doc);") {
+		t.Fatal("selectFocusArea must stash the caller's selection even in replace mode")
+	}
 }
 
 // replaceSky once interpolated a lighting-mode charID RAW into

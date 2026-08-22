@@ -215,7 +215,14 @@ func init() {
     // selectSubject/selectSky, which stash but do not deselect — deliberately
     // NOT changed here: they are shipped community tools and warrant their own
     // live verification.)
-    try { doc.selection.deselect(); } catch (eDesel) {}
+    // Gated on savedCh: Photoshop 2024+ raises an UNCATCHABLE error 1302 from
+    // empty-selection selection access, and the catch below cannot stop it.
+    // savedCh is exactly the "a selection existed" predicate
+    // (saveSelectionToTempChannel returns null when there was none), so there
+    // is nothing to deselect when it's null either way.
+    if (savedCh) {
+      try { doc.selection.deselect(); } catch (eDesel) {}
+    }
 
     // Put the caller's selection back on a failure path, then drop the stash.
     // Without the load, a thrown Focus Area leaves the document with NO
@@ -351,14 +358,24 @@ func init() {
       );
     }
 
-    combineWithSavedSelection(doc, savedCh, selType);
-
-    var info = getSelectionInfo();
+    // whole_canvas_selected/warning diagnose the DETECTION step (focusMask),
+    // per the tool's schema and description — not the final, possibly-combined
+    // selection. Measure it BEFORE combineWithSavedSelection: folding in
+    // whatever the caller already had selected can turn a genuine detection
+    // failure (raw result = whole canvas) into an apparent success once a
+    // subtract collapses it toward empty, or turn a fine detection into an
+    // apparent whole-canvas failure once a union with an already-large prior
+    // selection pushes it over the threshold. In selection_type='replace'
+    // there is nothing to combine, so this is identical to measuring after —
+    // replace-mode behaviour is unchanged.
+    var rawInfo = getSelectionInfo();
     // A whole-canvas result is technically a selection but almost never a
     // useful one: it means either the radius was too high or the analysed layer
     // had no focus information. Surface it as an explicit flag rather than
     // leaving the caller to infer it from area_percent.
-    var wholeCanvas = !!(info && info.area_percent >= 99.5);
+    var wholeCanvas = !!(rawInfo && rawInfo.area_percent >= 99.5);
+
+    combineWithSavedSelection(doc, savedCh, selType);
 
     return {
       selected: true,
@@ -372,7 +389,7 @@ func init() {
         ? 'Focus Area selected the ENTIRE canvas, which is usually a non-result. Lower in_focus_radius, or check that the layer being analysed actually contains photographic pixels.'
         : null,
       selection_type: selType,
-      selection_info: info
+      selection_info: getSelectionInfo()
     };
   `
 

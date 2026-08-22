@@ -813,6 +813,12 @@ describe('createSelectionTools', () => {
     expect(snippetClient.lastBuild().name).toBe('selectFocusArea');
   });
 
+  it('select_focus_area forwards a 120s timeout to the executor', async () => {
+    const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_select_focus_area', {});
+    expect(conn.lastTimeout()).toBe(120000);
+  });
+
   it('select_focus_area defaults to the PS dialog radius and a hard edge', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_focus_area', {});
