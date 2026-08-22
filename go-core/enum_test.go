@@ -84,6 +84,23 @@ func TestSelectFocusAreaGuardsTheCallerSelection(t *testing.T) {
 	if !strings.Contains(jsx, "var wholeCanvas = !!(rawInfo && rawInfo.area_percent >= 99.5);") {
 		t.Fatal("whole_canvas_selected must be derived from rawInfo, not from a separate post-combine measurement")
 	}
+	// The reuse branch skips getSelectionInfo, and with it the
+	// restoreCompositeChannel in that helper's finally. combineWithSavedSelection
+	// removes the stash channel on this path, and a channel remove() does not
+	// reliably leave the composite active, so the branch must restore it itself
+	// or the NEXT tool call inherits a non-composite channel.
+	if !strings.Contains(jsx, "if (selType === 'replace' || !savedCh) {\n      restoreCompositeChannel(doc);\n      finalInfo = rawInfo;") {
+		t.Fatal("the selection_info reuse branch must restore the composite channel, since it skips getSelectionInfo's own restore")
+	}
+	// The reuse condition mirrors combineWithSavedSelection's early return. The
+	// invariant is duplicated across two files, so pin it here: if the helper
+	// ever stops no-opping under this condition, reusing rawInfo would report a
+	// selection that is no longer on the document.
+	// combineWithSavedSelection is inlined into this same script, so both halves
+	// of the mirrored condition are pinned from one string.
+	if !strings.Contains(jsx, "if (selection_type === 'replace' || !savedChannel) {") {
+		t.Fatal("combineWithSavedSelection's early-return condition changed; selectFocusArea's finalInfo reuse mirrors it and must be revisited")
+	}
 	// The deselect must stay gated on savedCh: PS 2024+ raises an uncatchable
 	// error 1302 from empty-selection access, which an unconditional deselect
 	// would hit whenever the caller had nothing selected to begin with.

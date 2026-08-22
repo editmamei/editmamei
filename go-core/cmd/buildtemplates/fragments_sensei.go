@@ -393,7 +393,20 @@ func init() {
     // condition, mirrored here), so rawInfo already IS the final selection in
     // that case — re-running getSelectionInfo would pay its channel-store and
     // histogram cost twice for an identical answer.
-    var finalInfo = (selType === 'replace' || !savedCh) ? rawInfo : getSelectionInfo();
+    //
+    // It still removes the stash channel on that path, and a channel remove()
+    // does not reliably leave the composite channel active (see
+    // restoreCompositeChannel). getSelectionInfo restores it in its own
+    // finally, so the branch that skips that call must restore it here or the
+    // fragment can return with a non-composite channel active and break the
+    // NEXT tool call.
+    var finalInfo;
+    if (selType === 'replace' || !savedCh) {
+      restoreCompositeChannel(doc);
+      finalInfo = rawInfo;
+    } else {
+      finalInfo = getSelectionInfo();
+    }
 
     return {
       selected: true,
