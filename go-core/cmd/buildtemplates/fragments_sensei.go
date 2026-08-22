@@ -368,7 +368,18 @@ func init() {
     // selection pushes it over the threshold. In selection_type='replace'
     // there is nothing to combine, so this is identical to measuring after —
     // replace-mode behaviour is unchanged.
-    var rawInfo = getSelectionInfo();
+    // getSelectionInfo reads doc.selection.bounds outside its own try/finally
+    // (see its definition), so a throw there would otherwise escape this
+    // fragment uncaught. Guard it the same way the probe above it is: restore
+    // the stash, then rethrow.
+    var rawInfo;
+    try {
+      rawInfo = getSelectionInfo();
+    } catch (eRawInfo) {
+      __restoreAndDiscard(savedCh);
+      restoreCompositeChannel(doc);
+      throw new Error('Focus Area completed but its raw detection could not be measured: ' + String(eRawInfo.message || eRawInfo));
+    }
     // A whole-canvas result is technically a selection but almost never a
     // useful one: it means either the radius was too high or the analysed layer
     // had no focus information. Surface it as an explicit flag rather than
@@ -376,6 +387,13 @@ func init() {
     var wholeCanvas = !!(rawInfo && rawInfo.area_percent >= 99.5);
 
     combineWithSavedSelection(doc, savedCh, selType);
+
+    // combineWithSavedSelection is a no-op on the selection itself in replace
+    // mode or when there was nothing saved (see its own early-return
+    // condition, mirrored here), so rawInfo already IS the final selection in
+    // that case — re-running getSelectionInfo would pay its channel-store and
+    // histogram cost twice for an identical answer.
+    var finalInfo = (selType === 'replace' || !savedCh) ? rawInfo : getSelectionInfo();
 
     return {
       selected: true,
@@ -386,10 +404,10 @@ func init() {
       active_layer_temporarily_changed: changedActive,
       whole_canvas_selected: wholeCanvas,
       warning: wholeCanvas
-        ? 'Focus Area selected the ENTIRE canvas, which is usually a non-result. Lower in_focus_radius, or check that the layer being analysed actually contains photographic pixels.'
+        ? 'Focus Area\'s detection covered the ENTIRE canvas before any selection_type combine, which is usually a non-result. Lower in_focus_radius, or check that the layer being analysed actually contains photographic pixels.'
         : null,
       selection_type: selType,
-      selection_info: getSelectionInfo()
+      selection_info: finalInfo
     };
   `
 

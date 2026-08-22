@@ -55,12 +55,40 @@ func TestSelectFocusAreaGuardsTheCallerSelection(t *testing.T) {
 	if strings.Contains(jsx, "savedCh.remove()") {
 		t.Fatal("a failure path discards the stash without restoring from it first")
 	}
-	// The three failure exits ahead of combineWithSavedSelection (the AM call
-	// itself, the post-condition probe, and "selected nothing") must EACH
-	// restore, so a new early throw without one goes uncaught by a mere
-	// Contains check.
-	if n := strings.Count(jsx, "__restoreAndDiscard"); n < 3 {
-		t.Fatalf("expected at least 3 restore-on-failure calls (one per failure exit), got %d", n)
+	// The four failure exits ahead of combineWithSavedSelection (the AM call
+	// itself, the post-condition probe, "selected nothing", and the rawInfo
+	// measurement) must EACH restore, so a new early throw without one goes
+	// uncaught by a mere Contains check. Count the CALL form, not the bare
+	// name: the bare name also matches __restoreAndDiscard's own function
+	// definition, so it under-counts a deleted call site by one and never
+	// drops below the definition's floor of 1.
+	if n := strings.Count(jsx, "__restoreAndDiscard(savedCh)"); n < 4 {
+		t.Fatalf("expected at least 4 __restoreAndDiscard(savedCh) calls — the AM call failure, the post-condition probe failure, the \"selected nothing\" exit, and the rawInfo measurement failure — got %d", n)
+	}
+	// rawInfo (whole_canvas_selected's source) must be measured BEFORE
+	// combineWithSavedSelection folds in the caller's prior selection, or the
+	// flag stops describing Focus Area's raw detection and starts describing
+	// whatever selection_type left behind instead.
+	rawInfoIdx := strings.Index(jsx, "rawInfo = getSelectionInfo();")
+	combineIdx := strings.Index(jsx, "combineWithSavedSelection(doc, savedCh, selType);")
+	if rawInfoIdx < 0 || combineIdx < 0 {
+		t.Fatalf("missing rawInfo measurement (%d) or combine call (%d)", rawInfoIdx, combineIdx)
+	}
+	if rawInfoIdx > combineIdx {
+		t.Fatal("rawInfo must be measured BEFORE combineWithSavedSelection, or whole_canvas_selected reports the post-combine selection instead of the raw detection")
+	}
+	// whole_canvas_selected must derive from that same rawInfo measurement,
+	// not a second post-combine getSelectionInfo() call — which would
+	// reintroduce the exact contamination the ordering check above guards
+	// against.
+	if !strings.Contains(jsx, "var wholeCanvas = !!(rawInfo && rawInfo.area_percent >= 99.5);") {
+		t.Fatal("whole_canvas_selected must be derived from rawInfo, not from a separate post-combine measurement")
+	}
+	// The deselect must stay gated on savedCh: PS 2024+ raises an uncatchable
+	// error 1302 from empty-selection access, which an unconditional deselect
+	// would hit whenever the caller had nothing selected to begin with.
+	if !strings.Contains(jsx, "if (savedCh) {\n      try { doc.selection.deselect(); } catch (eDesel) {}\n    }") {
+		t.Fatal("the deselect must be gated on savedCh, or a caller with no prior selection hits PS's uncatchable error 1302")
 	}
 	// The stash is UNCONDITIONAL — taken even in replace mode, unlike the
 	// sibling selectSubject/selectSky fragments, which skip it when

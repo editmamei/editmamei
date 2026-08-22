@@ -982,7 +982,7 @@ export function createSelectionTools(
       tool: {
         name: 'ps_select_focus_area',
         description:
-          'Run Photoshop\'s "Focus Area" — select what the lens rendered SHARP, by depth of field rather than by subject or colour. Use it when the thing you want is defined by focus and not by what it is: lifting a subject off a bokeh background, masking the in-focus plane of a macro shot, or grabbing a shallow-depth foreground that Select Subject splits badly. Takes NO coordinates. in_focus_radius widens (higher) or narrows (lower) what counts as sharp; soft_mask=true gives feathered edges instead of a hard boundary. Analyses the ACTIVE layer, so target the photographic pixels you mean. If the active layer is not a raster layer at all (adjustment, smart object, text, shape), detection is retargeted to the bottom layer and active_layer_temporarily_changed comes back true — check it, because the analysed layer was then NOT the one you selected. An EMPTY raster layer cannot be told apart by kind, so it is not retargeted; it surfaces instead as an error or as whole_canvas_selected. ALWAYS read the returned selection_info: a uniformly sharp image (or too high an in_focus_radius) selects the WHOLE canvas and still reports success, so area_percent near 100 means the result is useless rather than correct.',
+          "Run Photoshop's \"Focus Area\" — select what the lens rendered SHARP, by depth of field rather than by subject or colour. Use it when the thing you want is defined by focus and not by what it is: lifting a subject off a bokeh background, masking the in-focus plane of a macro shot, or grabbing a shallow-depth foreground that Select Subject splits badly. Takes NO coordinates. in_focus_radius widens (higher) or narrows (lower) what counts as sharp; soft_mask=true gives feathered edges instead of a hard boundary. Analyses the ACTIVE layer, so target the photographic pixels you mean. If the active layer is not a raster layer at all (adjustment, smart object, text, shape), detection is retargeted to the bottom layer and active_layer_temporarily_changed comes back true — check it, because the analysed layer was then NOT the one you selected. An EMPTY raster layer cannot be told apart by kind, so it is not retargeted; it surfaces instead as an error or as whole_canvas_selected. whole_canvas_selected and warning diagnose Focus Area's RAW detection, measured BEFORE any selection_type combine — a uniformly sharp image (or too high an in_focus_radius) trips them even when combining then folds the result down to something small. Check whole_canvas_selected first; selection_info separately reports the FINAL, post-combine selection and can disagree with it by design (e.g. selection_type='subtract' against an existing selection), so read selection_info for what actually got selected, not as a substitute for whole_canvas_selected.",
         inputSchema: selectFocusAreaSchema,
         outputSchema: {
           type: 'object',
@@ -1000,9 +1000,13 @@ export function createSelectionTools(
             whole_canvas_selected: {
               type: 'boolean',
               description:
-                'True when the result covers essentially the entire canvas — usually a non-result (radius too high, or nothing photographic to analyse) rather than a correct answer. Check this before committing to a mask.',
+                "True when Focus Area's RAW detection covered essentially the entire canvas — usually a non-result (radius too high, or nothing photographic to analyse). Measured BEFORE combining with any prior selection, so it describes the detection step, not the final selection: selection_info reports the FINAL, post-combine result and the two can legitimately disagree, e.g. selection_type='subtract' against an existing selection can leave this true while selection_info.area_percent is well under 100.",
             },
-            warning: { type: ['string', 'null'] },
+            warning: {
+              type: ['string', 'null'],
+              description:
+                'Set when whole_canvas_selected is true. Also describes the RAW detection, not the final post-combine selection.',
+            },
             selection_type: { type: 'string' },
             selection_info: selectionInfoFragment,
           },
