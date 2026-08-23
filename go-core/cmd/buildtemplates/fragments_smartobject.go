@@ -44,7 +44,7 @@ func init() {
     var layer = app.activeDocument.activeLayer;
 
     // Blend modes: ONE table, used in both directions, so ps_filter speaks
-    // the same vocabulary as ps_set_layer / ps_set_group_blend_mode instead of
+    // the same vocabulary as ps_set_layer / ps_group(op=set_blend_mode) instead of
     // making the caller learn a second set of names for the same modes. Keys are
     // the ExtendScript BlendMode enum names (the canonical surface vocabulary,
     // src/utils/blend-modes.ts); values are the Action-Manager stringIDs the

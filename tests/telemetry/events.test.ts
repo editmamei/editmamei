@@ -168,7 +168,7 @@ describe('normalizeErrorClass — server-token safety', () => {
   // or invalid_argument instead. These cases are the pin for that ordering.
   it('classifies the group-is-not-a-layer refusal regardless of the group name', () => {
     const refusal = (name: string) =>
-      `Error deleting layer: Cannot delete "${name}": that name is a group, not an art layer (layer kind mismatch). Use ps_delete_group to delete a group and its contents.`;
+      `Error deleting layer: Cannot delete "${name}": that name is a group, not an art layer (layer kind mismatch). Use ps_group(op=delete) to delete a group and its contents.`;
     for (const name of [
       'Old Curves',
       'Validation', // would otherwise hit schema_validation
