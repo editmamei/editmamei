@@ -99,11 +99,15 @@ describe('createGroupTools', () => {
 
   it('group op=create dispatches the createGroup snippet', async () => {
     const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_group', { op: 'create', name: 'edits', layers: ['Sky'] });
+    await callTool(tools, 'ps_group', {
+      op: 'create',
+      name: 'edits',
+      layers: ['Sky', 'Foreground', 'Subject'],
+    });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('createGroup');
     expect(build.params.name).toBe('edits');
-    expect(build.params.layerNames).toEqual(['Sky']);
+    expect(build.params.layerNames).toEqual(['Sky', 'Foreground', 'Subject']);
   });
 
   // ===========================================================================

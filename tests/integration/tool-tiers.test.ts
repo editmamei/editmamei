@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EditmameiServer } from '@editmamei/core/server.ts';
 import { TOOL_TIERS, isToolAllowedInEdition, tierOf } from '@editmamei/core/tool-tiers.ts';
+import { TOOL_GROUPS } from '@editmamei/core/tool-groups.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
 
 // Every `new EditmameiServer()` below builds its own SessionLog with no `dir`
@@ -101,12 +102,18 @@ describe('TOOL_TIERS classification table', () => {
   // The allowance must not outlive the rows it covers. A name left in the set
   // after its tier row is gone is a permanent, invisible hole in the orphan
   // check — this runs in every checkout, including ones that skip the check
-  // above.
-  it('every transition-orphan allowance still names a live TOOL_TIERS entry', () => {
+  // above. Also pins the `tool-groups.ts` counterpart: `groupOf()` throws at
+  // boot on an unknown name exactly like `tierOf()` does, so a tier row kept
+  // without its group row would be just as fatal a boot failure.
+  it('every transition-orphan allowance still names a live TOOL_TIERS and TOOL_GROUPS entry', () => {
     for (const name of TRANSITION_ORPHANS) {
       expect(
         Object.keys(TOOL_TIERS),
         `${name} is allowed as a transition orphan but has no tier row`
+      ).toContain(name);
+      expect(
+        Object.keys(TOOL_GROUPS),
+        `${name} is allowed as a transition orphan but has no group row`
       ).toContain(name);
     }
   });
