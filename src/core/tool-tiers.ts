@@ -61,9 +61,11 @@ export const TOOL_TIERS: Record<string, Tier> = {
   ps_play_action: 'pro',
   ps_execute_script: 'pro',
 
-  // batch-tools — new, unverified against a real run; stays 'dev' (excluded
-  // from every shipped edition) until it is live-tested and promoted.
-  ps_batch: 'dev',
+  // batch-tools — runs a recipe over many files as ONE Photoshop batch rather
+  // than a round trip per file, so the per-call overhead is paid once for the
+  // whole set. Factory lives in batch-tools-pro.ts, registered by the Pro
+  // module, stripped from CE.
+  ps_batch: 'pro',
 
   // adjustment-tools — bakes consolidated into ps_apply_adjustment
   ps_add_adjustment_layer: 'community',
