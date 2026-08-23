@@ -210,10 +210,8 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_add_adjustment_layer: 'adjust',
   ps_apply_adjustment: 'adjust',
 
-  // filters — consolidated into ps_filter (2026-08-09); the pre-merge name
-  // stays registered as a deprecated alias for one release.
+  // filters
   ps_filter: 'filter',
-  ps_apply_filter: 'filter',
   ps_apply_camera_raw: 'filter',
 
   // retouch
@@ -237,18 +235,15 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_add_layer_style: 'layers',
   ps_transform_layer: 'layers',
   ps_warp_layer: 'layers',
+  // The four rows below are transition entries kept in lockstep with their
+  // `tool-tiers.ts` counterparts — see the comment there before removing any
+  // of them.
   ps_warp_layer_mesh: 'layers',
   ps_warp_layer_along: 'layers',
   ps_warp_layer_region: 'layers',
   ps_warp_layer_to: 'layers',
-  // group lifecycle/membership — consolidated into ps_group (2026-08-13); the
-  // five names below stay registered as deprecated aliases for one release.
+  // group lifecycle/membership
   ps_group: 'layers',
-  ps_create_group: 'layers',
-  ps_move_layer_to_group: 'layers',
-  ps_set_group_blend_mode: 'layers',
-  ps_ungroup: 'layers',
-  ps_delete_group: 'layers',
   // vector shape layers — creates a new vector layer
   ps_shape: 'layers',
 
@@ -261,11 +256,8 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_apply_image: 'masks',
   ps_calculations: 'masks',
 
-  // type — consolidated into ps_text (2026-08-13); the two names below stay
-  // registered as deprecated aliases for one release.
+  // type
   ps_text: 'type',
-  ps_create_text_layer: 'type',
-  ps_set_text: 'type',
 
   // perception (CE-destined local CV + detection-driven orchestrations)
   ps_detect: 'perception',

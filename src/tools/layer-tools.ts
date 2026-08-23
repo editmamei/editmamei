@@ -30,9 +30,9 @@ const deleteLayerSchema: JsonSchemaObject = {
 // either direction so we allow ± the same bound.
 const PS_TEXT_COORD_MAX = 300_000;
 
-// Exported for ps_text (text-tools.ts) — its op=create shares this schema
-// and the createTextLayer handler below, so the deprecated ps_create_text_layer
-// and ps_text(op=create) are the identical code path, not just matching tests.
+// Text-layer creation lives here rather than in text-tools.ts because it is a
+// layer-lifecycle snippet; ps_text(op=create) imports this schema and the
+// createTextLayer handler below.
 export const createTextLayerSchema: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -251,7 +251,7 @@ export function createLayerTools(
       tool: {
         name: 'ps_delete_layer',
         description:
-          'DESTRUCTIVE: Delete a layer. With no arg, deletes the currently active layer (backward-compatible). With `name`, recurses into groups and deletes the first LAYER matching that name — useful for cleanup workflows where the dead layer is not currently active. A name that matches a group is refused rather than deleted; use ps_delete_group to delete a group and all its contents. Recoverable only via Edit > Undo.',
+          'DESTRUCTIVE: Delete a layer. With no arg, deletes the currently active layer (backward-compatible). With `name`, recurses into groups and deletes the first LAYER matching that name — useful for cleanup workflows where the dead layer is not currently active. A name that matches a group is refused rather than deleted; use ps_group(op=delete) to delete a group and all its contents. Recoverable only via Edit > Undo.',
         inputSchema: deleteLayerSchema,
         outputSchema: {
           type: 'object',
@@ -268,30 +268,6 @@ export function createLayerTools(
         },
       },
       handler: async (args) => deleteLayer(connection, snippetClient, args),
-    },
-    {
-      tool: {
-        name: 'ps_create_text_layer',
-        description:
-          'DEPRECATED — use ps_text(op=create) instead (kept for one release for backward compatibility, identical behaviour). Create a new text layer with the given content, position, and font size. The text is editable (vector). Use ps_text (op=set_font / set_color / set_alignment) afterwards to style.',
-        inputSchema: createTextLayerSchema,
-        outputSchema: {
-          type: 'object',
-          properties: {
-            created: { type: 'boolean' },
-            layerName: { type: 'string' },
-            text: { type: 'string' },
-            position: { type: 'object' },
-            fontSize: { type: 'number' },
-            context: { type: 'object' },
-          },
-        },
-        annotations: {
-          title: 'Create Text Layer',
-          idempotentHint: false,
-        },
-      },
-      handler: async (args) => createTextLayer(connection, snippetClient, args),
     },
     {
       tool: {

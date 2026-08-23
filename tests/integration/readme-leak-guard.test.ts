@@ -27,13 +27,12 @@ function listFilesRecursive(start: string): string[] {
 
 /**
  * Tool-name leak detection has to use word-boundary matching, not raw
- * substring matching. Several Pro tools have community-tier siblings
- * whose names contain them as prefixes — e.g. `photoshop_move_layer`
- * (Pro) is a substring of `ps_move_layer_to_group` (community).
- * Plain `content.includes(proName)` false-positives on the community
- * sibling. This helper escapes regex metacharacters and matches only
- * when the next character is NOT an identifier char (letter / digit /
- * underscore).
+ * substring matching. Tool names are built by suffixing a shared stem, so a
+ * gated name is regularly a strict prefix of a shippable one — plain
+ * `content.includes(gatedName)` then false-positives on a document that only
+ * ever mentions the longer, shippable sibling. This helper escapes regex
+ * metacharacters and matches only when the next character is NOT an
+ * identifier char (letter / digit / underscore).
  */
 function containsToolName(content: string, name: string): boolean {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

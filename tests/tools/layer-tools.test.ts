@@ -13,14 +13,13 @@ describe('createLayerTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('returns 6 well-formed tools', () => {
+  it('returns 5 well-formed tools', () => {
     const tools = createLayerTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
     // get_layer_tree merged into ps_inspect(what='layer_tree') — Phase 1b.
     expect(tools.map((t) => t.tool.name)).toEqual([
       'ps_create_layer',
       'ps_delete_layer',
-      'ps_create_text_layer',
       'ps_fill_layer',
       'ps_add_fill_layer',
       'ps_select_layer',
@@ -144,22 +143,6 @@ describe('createLayerTools', () => {
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('newLayer');
     expect(build.params.name).toBe('A "B" C');
-  });
-
-  it('create_text_layer passes text, coordinates, and font_size params', async () => {
-    const tools = createLayerTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_create_text_layer', {
-      text: 'Greetings',
-      x: 250,
-      y: 350,
-      font_size: 48,
-    });
-    const build = snippetClient.lastBuild();
-    expect(build.name).toBe('createTextLayer');
-    expect(build.params.text).toBe('Greetings');
-    expect(build.params.x).toBe(250);
-    expect(build.params.y).toBe(350);
-    expect(build.params.fontSize).toBe(48);
   });
 
   it('fill_layer passes RGB triple params', async () => {
