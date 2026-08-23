@@ -228,6 +228,17 @@ func init() {
 		// moveLayerToGroup. Slots: 1=getContextInfo, 2=normNameHelper,
 		// 3=notFoundMessageHelper, 4=layerName(jsLit), 5=groupName(jsLit),
 		// 6=layerName(jsLit), 7=groupName(jsLit).
+		//
+		// The LAYER argument prefers an art layer, falling back to a group of
+		// the same name. deleteLayer refuses groups outright; move must not,
+		// because nesting one group inside another is legitimate and this is
+		// the only tool that does it — refusing would delete a capability to
+		// fix an ambiguity. The preference is enough: when an art layer and a
+		// group share a name, the art layer wins instead of the tree order
+		// deciding, so naming a layer can no longer relocate a whole subtree
+		// by accident. findGroupByName is unaffected — that argument genuinely
+		// is a group, and the `layer === group` guard below still catches the
+		// move-into-itself case, which the fallback keeps reachable.
 		vault.MoveToGroup: `
     %s
 
@@ -249,14 +260,19 @@ func init() {
     var wantedLayerNorm = normName(%s);
     var wantedGroupNorm = normName(%s);
 
+    var groupFallback = null;
     function findLayerByName(layers, depth) {
       if (depth === undefined) depth = 0;
       if (depth > 32) return null;
       for (var i = 0; i < layers.length; i++) {
         var l = layers[i];
-        if (normName(l.name) === wantedLayerNorm) return l;
         var isGroup = false;
         try { isGroup = (l instanceof LayerSet); } catch (e) {}
+        // An art layer wins over a same-named group; a group is remembered as
+        // the fallback (see Go comment) so nesting still works.
+        var nameMatches = (normName(l.name) === wantedLayerNorm);
+        if (nameMatches && !isGroup) return l;
+        if (nameMatches && isGroup && groupFallback === null) groupFallback = l;
         if (isGroup) {
           try {
             var found = findLayerByName(l.layers, depth + 1);
@@ -286,6 +302,7 @@ func init() {
     }
 
     var layer = findLayerByName(doc.layers);
+    if (!layer) layer = groupFallback;
     if (!layer) throw new Error(__notFoundMessage('Layer', %s, false));
     var group = findGroupByName(doc.layers);
     if (!group) throw new Error(__notFoundMessage('Group', %s, true));

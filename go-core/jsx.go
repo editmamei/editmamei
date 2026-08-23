@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -34,7 +35,64 @@ func jsLit(s string) string {
 	if out == "" {
 		return `""`
 	}
-	return out
+	return asciiEscape(out)
+}
+
+// asciiEscape rewrites every character outside printable ASCII as a \uXXXX
+// escape.
+//
+// The emitted .jsx is written UTF-8 with no BOM and carries no `#encoding`
+// directive, so ExtendScript decodes it by the platform codepage. A raw 'ü'
+// therefore arrives mojibake and every comparison against it misses — the
+// inbound half of the same transport problem __notFoundMessage solves on the
+// way out. A \uXXXX escape is pure ASCII, survives any codepage, and the JS
+// parser turns it back into the exact character.
+//
+// encoding/json escapes the control range but passes everything above ASCII
+// through as raw UTF-8, so this only ever rewrites what it left alone — it
+// cannot double-process an escape the encoder already wrote.
+//
+// Scope: this covers INTERPOLATED VALUES. A snippet's own source text can
+// still carry raw non-ASCII, which this does not touch.
+//
+// Keep in lockstep with jsLit in src/utils/jsx.ts — both emit literals into
+// the same scripts on different paths, and a divergence stays invisible until
+// a non-ASCII name reaches one emitter and not the other. The two agree on all
+// valid input; they differ only on malformed UTF-8 / lone surrogates, where
+// encoding/json substitutes U+FFFD and the TS twin preserves the surrogate.
+// jsx_test.go and tests/unit/jsx.test.ts carry the same case table.
+func asciiEscape(s string) string {
+	if isPrintableASCII(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= ' ' && r <= '~':
+			b.WriteRune(r)
+		case r > 0xFFFF:
+			// Outside the BMP: JS string literals address UTF-16 code units,
+			// so an astral rune is written as its surrogate pair and the
+			// parser rejoins it. Matches what JSON.stringify emits in TS.
+			v := r - 0x10000
+			fmt.Fprintf(&b, "\\u%04x\\u%04x", 0xD800+(v>>10), 0xDC00+(v&0x3FF))
+		default:
+			fmt.Fprintf(&b, "\\u%04x", r)
+		}
+	}
+	return b.String()
+}
+
+// isPrintableASCII reports whether s is entirely printable ASCII, letting the
+// common case skip the rewrite and its allocation.
+func isPrintableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 // jsNum renders a finite number the way JS String(n) would (shortest

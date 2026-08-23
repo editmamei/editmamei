@@ -76,6 +76,35 @@ func buildSelections(name string, params map[string]any) (string, bool, error) {
 			boolParam(params, "sampleAllLayers", true),
 			strParam(params, "selectionType", "replace"),
 		), true, nil
+	case "selectFocusArea":
+		return selectFocusArea(
+			numParam(params, "inFocusRadius", 4.07),
+			boolParam(params, "softMask", false),
+			strParam(params, "selectionType", "replace"),
+		), true, nil
+	case "replaceSky":
+		skyPath := strParam(params, "skyPath", "")
+		if skyPath == "" {
+			return "", true, fmt.Errorf("replaceSky: skyPath is required")
+		}
+		// No lightingMode param: Photoshop ignores that descriptor field, so the
+		// fragment hardcodes the captured value rather than exposing a control
+		// that does nothing (verified live 2026-08-16).
+		return replaceSky(
+			skyPath,
+			strParam(params, "skyName", "Custom Sky"),
+			// Mirrors PLACEHOLDER_SKY_ID in src/tools/sky-tools.ts — a direct
+			// go-core caller (live-smoke, goldens) must emit the same shape the
+			// TS layer does, not an empty Idnt.
+			strParam(params, "skyId", "00000000-0000-0000-0000-000000000000"),
+			numParam(params, "shiftEdge", 0),
+			int(numParam(params, "borderSmoothness", 50)),
+			int(numParam(params, "brightness", 0)),
+			int(numParam(params, "temperature", 0)),
+			int(numParam(params, "harmonizationOpacity", 35)),
+			int(numParam(params, "foregroundLightingOpacity", 78)),
+			int(numParam(params, "edgeLightingOpacity", 70)),
+		), true, nil
 	case "selectColorRange":
 		return selectColorRange(
 			numParam(params, "red", 0),

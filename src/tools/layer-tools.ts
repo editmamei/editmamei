@@ -251,7 +251,7 @@ export function createLayerTools(
       tool: {
         name: 'ps_delete_layer',
         description:
-          'DESTRUCTIVE: Delete a layer. With no arg, deletes the currently active layer (backward-compatible). With `name`, recurses into groups and deletes the first layer matching that name — useful for cleanup workflows where the dead layer is not currently active. Recoverable only via Edit > Undo. To delete a group and all its contents, use ps_delete_group.',
+          'DESTRUCTIVE: Delete a layer. With no arg, deletes the currently active layer (backward-compatible). With `name`, recurses into groups and deletes the first LAYER matching that name — useful for cleanup workflows where the dead layer is not currently active. A name that matches a group is refused rather than deleted; use ps_delete_group to delete a group and all its contents. Recoverable only via Edit > Undo.',
         inputSchema: deleteLayerSchema,
         outputSchema: {
           type: 'object',

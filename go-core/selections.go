@@ -36,6 +36,56 @@ func selectSky(sampleAllLayers bool, selectionType string) string {
 	)
 }
 
+// focusMask (Adobe's Focus Area) — selects the in-focus region. Orthogonal to
+// the semantic selectors above and takes no coordinates, which is why it can
+// ship where a point-prompt selector cannot.
+// Slot order: selectionTypeHelpers, getSelectionInfo, selType, inFocusRadius,
+// softMask.
+func selectFocusArea(inFocusRadius float64, softMask bool, selectionType string) string {
+	return fmt.Sprintf(
+		tpl[vault.SelFocus],
+		selectionTypeHelpers(),
+		getSelectionInfo(),
+		jsLit(selectionType),
+		jsNum(inFocusRadius),
+		jsBool(softMask),
+	)
+}
+
+// skyReplacement — composites a new sky and harmonizes the foreground. Emits a
+// layer group, not a selection, so it carries getContextInfo rather than
+// getSelectionInfo.
+//
+// No lighting-mode argument: the fragment hardcodes the captured 'Scrn' because
+// Photoshop ignores that field (proven live 2026-08-16 — see the fragment
+// comment). That also means this emitter has NO raw, un-escaped slot; every
+// interpolation below goes through jsLit/jsNum/jsInt.
+// Slot order: getContextInfo, skyPath, skyName, skyId, shiftEdge,
+// borderSmoothness, brightness, temperature, harmonizationOpacity,
+// foregroundLightingOpacity, edgeLightingOpacity.
+func replaceSky(
+	skyPath, skyName, skyID string,
+	shiftEdge float64,
+	borderSmoothness, brightness, temperature int,
+	harmonizationOpacity, foregroundLightingOpacity int,
+	edgeLightingOpacity int,
+) string {
+	return fmt.Sprintf(
+		tpl[vault.SkyRepl],
+		getContextInfo(),
+		jsLit(skyPath),
+		jsLit(skyName),
+		jsLit(skyID),
+		jsNum(shiftEdge),
+		jsInt(borderSmoothness),
+		jsInt(brightness),
+		jsInt(temperature),
+		jsInt(harmonizationOpacity),
+		jsInt(foregroundLightingOpacity),
+		jsInt(edgeLightingOpacity),
+	)
+}
+
 func selectRectangle(left, top, right, bottom, featherPx float64, selectionType string) string {
 	st := jsLit(selectionType)
 	l, t, r, b := jsNum(left), jsNum(top), jsNum(right), jsNum(bottom)

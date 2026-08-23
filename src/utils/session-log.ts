@@ -222,6 +222,13 @@ export function generateSessionId(now: Date = new Date()): string {
 export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> = [
   // ── Empty-envelope synthetics (must precede every cause-word class) ──────
   { errorClass: 'ps_empty_error', pattern: /returned an empty error|failed with no message/i },
+  // ── Named-target-is-the-wrong-kind (hoisted for the same reason as the
+  //    not-found tier below: the message embeds a user-chosen GROUP name, so
+  //    at its natural wrong_layer_kind position a group called "Validation" or
+  //    "must be dodged" would hand the row to schema_validation or
+  //    invalid_argument. The phrase is fixed text from the delete-layer
+  //    snippet, so matching it here is exact, not a heuristic. ─────────────
+  { errorClass: 'wrong_layer_kind', pattern: /is a group, not an art layer/i },
   // ── Target not found (first — these messages end in user-chosen names) ───
   {
     errorClass: 'layer_not_found',
