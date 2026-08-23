@@ -10,6 +10,19 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+### Removed
+
+- **The eight tool names superseded by `ps_filter`, `ps_group`, and `ps_text` in 1.1.0 are gone.**
+  Call the op-discriminated tool instead:
+  - `ps_apply_filter` → `ps_filter`
+  - `ps_create_group` → `ps_group(op=create)`
+  - `ps_move_layer_to_group` → `ps_group(op=add_layer)`
+  - `ps_set_group_blend_mode` → `ps_group(op=set_blend_mode)`
+  - `ps_ungroup` → `ps_group(op=ungroup)`
+  - `ps_delete_group` → `ps_group(op=delete)`
+  - `ps_create_text_layer` → `ps_text(op=create)`
+  - `ps_set_text` → `ps_text(op=set_font / set_color / set_alignment / set_content)`
+
 ### Fixed
 
 - **Layer names containing non-ASCII characters now survive the round trip on Windows.** A layer
@@ -19,12 +32,11 @@ earlier versions are preserved in the archived wiki repository's
 
 - **`ps_delete_layer` no longer deletes a group.** When the given name matched a group rather than
   a layer, the group and everything inside it was removed and the call reported success. It now
-  declines and says the name is a group; use `ps_delete_group` to delete one deliberately.
+  declines and says the name is a group; use `ps_group(op=delete)` to delete one deliberately.
 
-- **`ps_group(op=add_layer)` and `ps_move_layer_to_group` now prefer a layer over a same-named
-  group** when resolving `layer_name`, instead of letting the layer order decide which one moves.
-  A group is still moved when nothing else matches the name, so nesting one group inside another
-  works as before.
+- **`ps_group(op=add_layer)` now prefers a layer over a same-named group** when resolving
+  `layer_name`, instead of letting the layer order decide which one moves. A group is still moved
+  when nothing else matches the name, so nesting one group inside another works as before.
 
 - **A layer-not-found error now spells the missing name the way you would send it back.**
   Non-ASCII characters in the "Have:" list were shown as escape sequences, which could not be used
