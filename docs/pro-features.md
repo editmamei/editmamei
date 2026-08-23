@@ -109,6 +109,14 @@ It's the locator behind the precision workflow: name a place, get verified geome
 - `ps_list_actions` and `ps_play_action`: enumerate and play your recorded Photoshop Actions
 - `ps_execute_script`: the escape hatch, arbitrary ExtendScript for when no specific tool fits
 
+### Batch
+
+- `ps_batch`: apply one recipe to a whole folder as a single Photoshop batch. The recipe becomes
+  a Photoshop Action and Photoshop runs the set itself, so the per-call cost is paid once instead
+  of once per image.
+- `op=preview` reports what would be processed before anything is touched, and images a
+  percent-based crop would ruin are skipped and reported rather than quietly mangled.
+
 ### Coming later
 
 The [roadmap](roadmap.md) tracks what's in active development and being live-tested against Photoshop now. Which edition each capability lands in is decided when it's verified, so check the roadmap for the current in-progress list.

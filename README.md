@@ -75,7 +75,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**78 tools across 16 capability groups** (59 Community, 19 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
+**79 tools across 16 capability groups** (59 Community, 20 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
 
 | Group | Edition | Tools |
 | --- | --- | --- |
@@ -98,7 +98,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 | **Perception** | Pro | `edit_object` · `add_text_to_object` · `resolve_placement` |
 | **Face mesh** | Pro | `detect_landmarks` · `select_face_feature` |
 | **Templates** | Pro | `template_create_evidence` · `template_save` · `template_list` · `template_apply` · `template_verify` · `template_recall` · `template_delete` |
-| **Automation** | Pro | `list_actions` · `play_action` · `execute_script` |
+| **Automation** | Pro | `list_actions` · `play_action` · `execute_script` · `batch` |
 
 ## Editions
 

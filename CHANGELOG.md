@@ -10,6 +10,19 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-08-23
+
+### Added
+
+- **`ps_batch` runs an edit over a folder of images as one Photoshop batch (Pro).** A recipe is
+  turned into a Photoshop Action and handed to Photoshop once, so a set of images costs one
+  round trip rather than one per file.
+  - Ops are `run`, `preview`, and `export_action`. `preview` reports what would be processed
+    without touching anything.
+  - Files a percent-based crop would ruin are skipped rather than silently mangled, and the run
+    reports which ones and why.
+  - Large sets are processed in chunks.
+
 ### Removed
 
 - **The eight tool names superseded by `ps_filter`, `ps_group`, and `ps_text` in 1.1.0 are gone.**
