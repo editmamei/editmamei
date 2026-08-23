@@ -575,6 +575,13 @@ export class SessionLog {
     return join(this.dir, `${this.sessionId}.ndjson`);
   }
 
+  /** The resolved sessions directory (constructor option → env override → default).
+   *  Readers that must see the same tree this instance writes (e.g. the update
+   *  notice's previous-session lookup) take this instead of re-deriving the path. */
+  get directory(): string {
+    return this.dir;
+  }
+
   /**
    * Register a getter that returns the connected MCP client's identity.
    * Called lazily before the first meta-line emission, so the value is

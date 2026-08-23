@@ -5,9 +5,10 @@
  * logged "update available" never reaches the user. The only reliable user-visible
  * channel is a tool result, so the result of this check rides `ps_ping`'s
  * output (`src/core/server.ts`), which the skill mandates as the first call of a
- * session. This module is the pure, testable core: fetch npm's `latest` dist-tag,
- * compare to the running version, and — if behind — produce an install-channel-aware
- * remediation message.
+ * session. This module is the pure, testable core: fetch the `latest` version
+ * manifest from npm, compare to the running version, and — if behind — produce an
+ * install-channel-aware remediation message plus the list of tools whose recorded
+ * failures the newer versions fix (see `fixesByVersion` below).
  *
  * Contract: **fail-silent**. Any error (offline, timeout, non-2xx, malformed body)
  * resolves to `null`. The check is a fire-and-forget GET to the public npm registry
@@ -27,10 +28,39 @@ export interface UpdateInfo {
   channel: InstallChannel;
   /** Plain-language "here's how to update" for this channel. */
   how_to_update: string;
+  /**
+   * Tools whose recorded failures are fixed in a version newer than the one
+   * running — the manifest's `fixesByVersion` map flattened over `(current, latest]`.
+   * Empty when the publish carries no map or nothing in that window applies.
+   */
+  fixed_tools: string[];
 }
 
-/** npm dist-tags endpoint — tiny JSON (`{"latest":"x.y.z",...}`), no full packument. */
-const DEFAULT_DIST_TAGS_URL = 'https://registry.npmjs.org/-/package/editmamei/dist-tags';
+/**
+ * npm version-manifest endpoint. The `latest` tag resolves server-side and the
+ * response is that version's `package.json` manifest, custom fields included — so
+ * ONE request carries both the version string and the release-metadata map below.
+ * Same host and same request count as the dist-tags endpoint this replaced, which
+ * keeps docs/privacy.md's "one request, to the public npm registry" literally true.
+ */
+const DEFAULT_LATEST_MANIFEST_URL = 'https://registry.npmjs.org/editmamei/latest';
+
+/** What the fetch yields from the version manifest. */
+export interface LatestManifest {
+  /** The version the `latest` tag points at. */
+  version: string;
+  /**
+   * The curated fixes map published under the `editmamei.fixesByVersion` key of
+   * `package.json`: version → tools whose RECORDED FAILURES that version fixes.
+   * Curation rules (enforced editorially at cut time, not by code): list a tool
+   * only when failures a user actually logged are fixed — not message-quality or
+   * internal changes — and list it under the name the FAILING version's session
+   * log records (for a tool renamed since, that is the old name). Each cut keeps
+   * a window of recent versions so a straggler several releases behind still
+   * sees the fixes that landed in between.
+   */
+  fixesByVersion: Record<string, string[]>;
+}
 
 /**
  * Where users download the one-click bundle.
@@ -48,13 +78,54 @@ export function resolveUpdateCheckUrl(
   env: Record<string, string | undefined> = process.env
 ): string {
   const override = env.EDITMAMEI_UPDATE_CHECK_URL;
-  return override && override.length > 0 ? override : DEFAULT_DIST_TAGS_URL;
+  return override && override.length > 0 ? override : DEFAULT_LATEST_MANIFEST_URL;
 }
 
-/** Fetches the `latest` dist-tag string, or null on any failure. Injectable for tests. */
-export type FetchLatest = (url: string, timeoutMs: number) => Promise<string | null>;
+/** Fetches the `latest` version manifest, or null on any failure. Injectable for tests. */
+export type FetchLatestManifest = (
+  url: string,
+  timeoutMs: number
+) => Promise<LatestManifest | null>;
 
-export function httpFetchLatest(): FetchLatest {
+/**
+ * Caps on the parsed fixes map. The registry response is remote input that ends up
+ * in the ping's structuredContent, so bound everything: a hijacked publish must not
+ * be able to flood the model's context through this side door. Generous vs. real
+ * use (a curated window of a few versions, a handful of tools each).
+ */
+const MAX_FIX_VERSIONS = 16;
+const MAX_TOOLS_PER_VERSION = 16;
+const MAX_TOOL_NAME_LENGTH = 64;
+
+/**
+ * Defensive parse of the manifest's `editmamei.fixesByVersion` field. The registry
+ * response is remote input: keep only well-formed entries (semver key, array value,
+ * bounded string members), cap the totals, and drop everything else silently — a
+ * malformed map must degrade to a plain version notice, never break the check.
+ * (Semver-anchored keys also mean `__proto__` and friends can never become keys.)
+ */
+export function parseFixesByVersion(raw: unknown): Record<string, string[]> {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, string[]> = {};
+  let versions = 0;
+  for (const [version, tools] of Object.entries(raw as Record<string, unknown>)) {
+    if (versions >= MAX_FIX_VERSIONS) break;
+    if (!parseSemver(version) || !Array.isArray(tools)) continue;
+    const names = tools
+      .filter(
+        (t): t is string =>
+          typeof t === 'string' && t.length > 0 && t.length <= MAX_TOOL_NAME_LENGTH
+      )
+      .slice(0, MAX_TOOLS_PER_VERSION);
+    if (names.length > 0) {
+      out[version] = names;
+      versions++;
+    }
+  }
+  return out;
+}
+
+export function httpFetchLatest(): FetchLatestManifest {
   return async (url, timeoutMs) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -64,8 +135,15 @@ export function httpFetchLatest(): FetchLatest {
         signal: controller.signal,
       });
       if (!res.ok) return null;
-      const data = (await res.json()) as { latest?: unknown };
-      return typeof data.latest === 'string' ? data.latest : null;
+      const data = (await res.json()) as {
+        version?: unknown;
+        editmamei?: { fixesByVersion?: unknown };
+      };
+      if (typeof data.version !== 'string') return null;
+      return {
+        version: data.version,
+        fixesByVersion: parseFixesByVersion(data.editmamei?.fixesByVersion),
+      };
     } catch {
       return null;
     } finally {
@@ -89,6 +167,42 @@ export function isNewer(latest: string, current: string): boolean {
     if (a[i] !== b[i]) return a[i] > b[i];
   }
   return false;
+}
+
+/**
+ * Flatten the fixes map over the versions the user would gain by updating —
+ * strictly newer than `current`, up to and including `latest`. Entries at or below
+ * the running version are already installed; entries above `latest` should not
+ * exist in a sane publish, but a manifest is remote input, so exclude them rather
+ * than promise fixes the `latest` install doesn't contain. Deduplicated, ordered
+ * oldest version first so the earliest fix of a tool wins the (stable) position.
+ */
+export function fixedToolsSince(
+  fixesByVersion: Record<string, string[]>,
+  current: string,
+  latest: string
+): string[] {
+  const versions = Object.keys(fixesByVersion)
+    .filter((v) => isNewer(v, current) && !isNewer(v, latest))
+    .sort((a, b) => {
+      const pa = parseSemver(a)!;
+      const pb = parseSemver(b)!;
+      for (let i = 0; i < 3; i++) {
+        if (pa[i] !== pb[i]) return pa[i] - pb[i];
+      }
+      return 0;
+    });
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of versions) {
+    for (const tool of fixesByVersion[v]) {
+      if (!seen.has(tool)) {
+        seen.add(tool);
+        out.push(tool);
+      }
+    }
+  }
+  return out;
 }
 
 /** Channel-specific remediation. The ping text states the version delta; this is the
@@ -123,7 +237,7 @@ export interface CheckOptions {
   /** Override the running version (tests). Defaults to the baked `VERSION`. */
   current?: string;
   /** Override the network fetch (tests). Defaults to the real npm-registry GET. */
-  fetchLatest?: FetchLatest;
+  fetchLatest?: FetchLatestManifest;
   timeoutMs?: number;
 }
 
@@ -137,10 +251,17 @@ export async function checkForUpdate(opts: CheckOptions = {}): Promise<UpdateInf
     const current = opts.current ?? VERSION;
     const channel = resolveInstallChannel(env);
     const fetchLatest = opts.fetchLatest ?? httpFetchLatest();
-    const latest = await fetchLatest(resolveUpdateCheckUrl(env), opts.timeoutMs ?? 4000);
-    if (!latest || !parseSemver(latest)) return null;
+    const manifest = await fetchLatest(resolveUpdateCheckUrl(env), opts.timeoutMs ?? 4000);
+    if (!manifest || !parseSemver(manifest.version)) return null;
+    const latest = manifest.version;
     if (!isNewer(latest, current)) return null;
-    return { current, latest, channel, how_to_update: updateMessage(channel, latest) };
+    return {
+      current,
+      latest,
+      channel,
+      how_to_update: updateMessage(channel, latest),
+      fixed_tools: fixedToolsSince(manifest.fixesByVersion, current, latest),
+    };
   } catch {
     return null;
   }

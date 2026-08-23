@@ -276,6 +276,7 @@ export function packageFilesList(edition: Edition): string[] {
 export interface SourcePackageJson {
   name: string;
   mcpName: string;
+  editmamei: { fixesByVersion?: Record<string, string[]> };
   bin: Record<string, string>;
   scripts: Record<string, string>;
   keywords: string[];
@@ -316,6 +317,11 @@ export function buildPackageJson(
         ? 'Photoshop MCP server: natural-language AI photo editing with your own Photoshop (Community Edition)'
         : 'Photoshop MCP server: natural-language AI photo editing with your own Photoshop (Pro Edition)',
     mcpName: src.mcpName,
+    // Release metadata the boot-time update check reads from the npm version
+    // manifest (`registry.npmjs.org/editmamei/latest` — see src/update/check.ts).
+    // Like mcpName, dropping this here ships the feature dead: the client would
+    // fetch a manifest that never carries the fixesByVersion map.
+    editmamei: src.editmamei,
     main: 'dist/index.js',
     type: 'module',
     bin: src.bin,

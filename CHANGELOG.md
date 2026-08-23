@@ -23,6 +23,16 @@ earlier versions are preserved in the archived wiki repository's
     reports which ones and why.
   - Large sets are processed in chunks.
 
+### Changed
+
+- **`ps_ping` stops waiting on a Photoshop that isn't there.** The liveness question could
+  previously wait out the full script budget — about thirty seconds — and even start Photoshop as
+  a side effect. When a detected install has no running process, the ping now skips the script
+  round trip and says so, with no launch attempt; only the first ping of a session still spends up
+  to a few seconds on the startup version check it reports. A Photoshop that is running but still
+  starting up keeps the full budget, since a cold start legitimately takes longer than any short
+  cutoff would allow.
+
 ### Removed
 
 - **The eight tool names superseded by `ps_filter`, `ps_group`, and `ps_text` in 1.1.0 are gone.**
@@ -37,6 +47,14 @@ earlier versions are preserved in the archived wiki repository's
   - `ps_set_text` → `ps_text(op=set_font / set_color / set_alignment / set_content)`
 
 ### Fixed
+
+- **The update notice now reaches the session that should see it.** The startup version check
+  raced the first `ps_ping` of a session and usually lost, so the one ping most sessions make
+  never carried the notice. The first ping now waits for the check (bounded at four seconds),
+  asks for the notice to be relayed (`notify_user` in the result), and — when the previous
+  session's failures are among the fixes the newer version ships — names them, so the reason to
+  update is the one you already felt. The check is still a single request to the public npm
+  registry, and reading the previous session's log never leaves this machine.
 
 - **Layer names containing non-ASCII characters now survive the round trip on Windows.** A layer
   Photoshop named itself in a non-English UI — `Farbfüllung 1`, `Kopie` — came back with the

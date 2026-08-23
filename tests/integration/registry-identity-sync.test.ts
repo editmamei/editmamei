@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { buildPackageJson, type SourcePackageJson } from '../../scripts/lib/build-common.js';
+import { parseFixesByVersion } from '@editmamei/update/check.ts';
 
 // The official MCP registry proves npm-package ownership by reading `mcpName`
 // from the PUBLISHED package.json and requiring it to equal the server name in
@@ -54,4 +55,27 @@ describe('MCP registry identity sync', () => {
       expect(published.mcpName).toBe(pkg.mcpName);
     }
   );
+
+  // The boot-time update check reads `editmamei.fixesByVersion` from the
+  // published version manifest (src/update/check.ts). Same hazard as mcpName:
+  // the whitelist drops unlisted fields silently, and a dropped map ships the
+  // fix-aware notice permanently dead for that immutable version.
+  it.each(['community', 'pro'] as const)(
+    'the %s published manifest keeps the update-check release metadata through the field whitelist',
+    (edition) => {
+      const published = buildPackageJson(edition, '9.9.9', pkg);
+      expect(published.editmamei).toEqual(pkg.editmamei);
+      expect(published.editmamei).toBeDefined();
+    }
+  );
+
+  it('the authored fixesByVersion map survives the client-side defensive parse intact', () => {
+    // parseFixesByVersion silently drops malformed entries (bad semver key,
+    // non-array value). A round-trip inequality here means an authored entry
+    // would be discarded by every client that fetches it — a typo'd version
+    // key fails HERE instead of shipping as a silent no-op.
+    const raw = (pkg as { editmamei?: { fixesByVersion?: unknown } }).editmamei?.fixesByVersion;
+    expect(raw).toBeDefined();
+    expect(parseFixesByVersion(raw)).toEqual(raw);
+  });
 });

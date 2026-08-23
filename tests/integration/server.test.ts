@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -165,30 +166,46 @@ describe('ps_ping surfaces update_available', () => {
   type PingServer = {
     session: { connection: unknown };
     updateInfo: unknown;
+    updateCheck: unknown;
     snippetClient: unknown;
     pingPhotoshop(): Promise<{
       content: Array<{ text: string }>;
-      structuredContent: { connected: boolean; update_available: unknown };
+      structuredContent: { connected: boolean; update_available: unknown; notify_user: boolean };
     }>;
   };
 
-  it('reports a newer version in both the text and structuredContent', async () => {
+  const newerInfo = {
+    current: '0.18.0',
+    latest: '0.19.0',
+    channel: 'npm',
+    how_to_update: 'Run: npm install -g editmamei@latest (then restart your MCP client).',
+    fixed_tools: [] as string[],
+  };
+
+  it('first ping: relay-shaped notice + notify_user; later pings: the passive note', async () => {
     const server = new EditmameiServer() as unknown as PingServer;
-    server.session.connection = makeConnection({ info: null }); // pingState round trip fails fast (early return)
+    // info:null → currentlyRunning defaults false → the absent-PS fast-fail
+    // path, which must carry the notice like every other ping shape.
+    server.session.connection = makeConnection({ info: null });
     server.snippetClient = makeSnippetClient();
-    server.updateInfo = {
-      current: '0.18.0',
-      latest: '0.19.0',
-      channel: 'npm',
-      how_to_update: 'Run: npm install -g editmamei@latest (then restart your MCP client).',
-    };
-    const res = await server.pingPhotoshop();
-    expect(res.structuredContent.update_available).toMatchObject({
+    server.updateInfo = { ...newerInfo };
+
+    const first = await server.pingPhotoshop();
+    expect(first.structuredContent.update_available).toMatchObject({
       latest: '0.19.0',
       channel: 'npm',
     });
-    expect(res.content[0].text).toContain('Update available: v0.18.0 → v0.19.0');
-    expect(res.content[0].text).toContain('npm install -g editmamei@latest');
+    expect(first.structuredContent.notify_user).toBe(true);
+    // The imperative lives in the result TEXT — the channel the model actually
+    // attends at result time — not (only) in an output-schema description.
+    expect(first.content[0].text).toContain('tell the user');
+    expect(first.content[0].text).toContain('v0.19.0');
+    expect(first.content[0].text).toContain('npm install -g editmamei@latest');
+
+    const second = await server.pingPhotoshop();
+    expect(second.structuredContent.notify_user).toBe(false);
+    expect(second.content[0].text).toContain('Update available: v0.18.0 → v0.19.0');
+    expect(second.content[0].text).not.toContain('tell the user');
   });
 
   it('omits the update note and reports null when nothing newer was found', async () => {
@@ -198,7 +215,86 @@ describe('ps_ping surfaces update_available', () => {
     server.updateInfo = null;
     const res = await server.pingPhotoshop();
     expect(res.structuredContent.update_available).toBeNull();
+    expect(res.structuredContent.notify_user).toBe(false);
     expect(res.content[0].text).not.toContain('Update available');
+  });
+
+  it('the first ping waits for an in-flight boot check instead of racing it', async () => {
+    const server = new EditmameiServer() as unknown as PingServer;
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    // Boot shape: the fire-and-forget check is still in flight when the
+    // skill-mandated first ping arrives. Pre-fix, the ping read updateInfo
+    // (still null) and the one ping most sessions make lost the notice.
+    server.updateCheck = new Promise<void>((resolveCheck) => {
+      setTimeout(() => {
+        server.updateInfo = { ...newerInfo };
+        resolveCheck();
+      }, 30);
+    });
+    const res = await server.pingPhotoshop();
+    expect(res.structuredContent.notify_user).toBe(true);
+    expect(res.content[0].text).toContain('v0.19.0');
+  });
+
+  it("names the previous session's failures that the update fixes", async () => {
+    // useSessionLogSandbox() stubbed this to a per-test temp dir; the server
+    // constructed below resolves its SessionLog directory from the same env
+    // var, so a file written here IS the "previous session" its notice reads.
+    const sandboxDir = process.env.EDITMAMEI_SESSION_LOG_DIR!;
+    await writeFile(
+      join(sandboxDir, 'prev-session.ndjson'),
+      [
+        JSON.stringify({ tool: 'ps_delete_layer', success: false }),
+        JSON.stringify({ tool: 'ps_delete_layer', success: false }),
+        JSON.stringify({ tool: 'ps_select_layer', success: false }),
+        JSON.stringify({ tool: 'ps_export', success: true }),
+      ].join('\n') + '\n',
+      'utf8'
+    );
+    const server = new EditmameiServer() as unknown as PingServer;
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = { ...newerInfo, fixed_tools: ['ps_delete_layer', 'ps_select_layer'] };
+
+    const res = await server.pingPhotoshop();
+    expect(res.structuredContent.notify_user).toBe(true);
+    // "fixes known failures in" — deliberately NOT "your failures are fixed":
+    // the log records counts, not causes, so the notice must not claim every
+    // recorded failure was the bug this release closes. The singular form is
+    // pinned exactly ("1 time last" is not a substring of "1 times last").
+    expect(res.content[0].text).toContain('v0.19.0 fixes known failures in');
+    expect(res.content[0].text).toContain('ps_delete_layer (failed 2 times last session)');
+    expect(res.content[0].text).toContain('ps_select_layer (failed 1 time last session)');
+  });
+
+  it('falls back to the plain imperative notice when there is no previous session', async () => {
+    // fixed_tools non-empty but the sandboxed sessions dir has no prior
+    // session — the best-effort read must degrade to the plain notice, still
+    // relayed, never a broken ping.
+    const server = new EditmameiServer() as unknown as PingServer;
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = { ...newerInfo, fixed_tools: ['ps_delete_layer'] };
+
+    const res = await server.pingPhotoshop();
+    expect(res.structuredContent.notify_user).toBe(true);
+    expect(res.content[0].text).toContain('tell the user');
+    expect(res.content[0].text).not.toContain('fixes known failures');
+  });
+
+  it('the success (connected) path carries the notice and notify_user too', async () => {
+    const server = new EditmameiServer() as unknown as PingServer;
+    server.session.connection = makeConnection({
+      result: { version: '25.9', action_sets_count: 0, open_documents: [] },
+    });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = { ...newerInfo };
+
+    const res = await server.pingPhotoshop();
+    expect(res.structuredContent.connected).toBe(true);
+    expect(res.structuredContent.notify_user).toBe(true);
+    expect(res.content[0].text).toContain('tell the user');
   });
 });
 
@@ -265,8 +361,56 @@ describe('ps_ping — pingState is the sole liveness probe', () => {
 
     expect(fakeConn.pingCalls).toBe(0);
     expect(fakeConn.executions).toHaveLength(1); // one round trip attempted, no fallback ping
-    expect(res.structuredContent).toEqual({ connected: false, update_available: null });
+    expect(res.structuredContent).toEqual({
+      connected: false,
+      update_available: null,
+      notify_user: false,
+    });
     expect(res.content[0].text).toBe('Photoshop did not respond');
+  });
+});
+
+// ===========================================================================
+// Absent-Photoshop fast-fail. Without the process-existence guard, a ping
+// against a machine where Photoshop simply isn't running walked into the
+// pingState round trip and sat out the full script budget (~30s) — and
+// executeScript's ensureRunning() could even try to LAUNCH Photoshop as a
+// side effect of a liveness QUESTION. A present-but-cold-starting Photoshop
+// legitimately needs >10s (observed in the field), so the fix is NOT a
+// shorter timeout: absence is detected directly and answered immediately,
+// and presence keeps the full budget.
+// ===========================================================================
+describe('ps_ping — fast-fail when no Photoshop process exists', () => {
+  type PingServer = {
+    session: { connection: unknown };
+    updateInfo: unknown;
+    snippetClient: unknown;
+    pingPhotoshop(): Promise<{
+      content: Array<{ text: string }>;
+      structuredContent: { connected: boolean; update_available: unknown; notify_user: boolean };
+    }>;
+  };
+
+  it('answers immediately: no script round trip, no launch attempt, no fallback ping', async () => {
+    const server = new EditmameiServer() as unknown as PingServer;
+    const fakeConn = makeConnection({ currentlyRunning: false }); // installed, not running
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = null;
+
+    const res = await server.pingPhotoshop();
+
+    expect(res.structuredContent).toEqual({
+      connected: false,
+      update_available: null,
+      notify_user: false,
+    });
+    // Hedged on purpose: a process-name miss on an exotic install must not
+    // read as a definitive "Photoshop is closed".
+    expect(res.content[0].text).toContain('does not appear to be running');
+    expect(fakeConn.executions).toHaveLength(0);
+    expect(fakeConn.ensureRunningCalls).toBe(0);
+    expect(fakeConn.pingCalls).toBe(0);
   });
 });
 
@@ -324,7 +468,10 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
 
   it('build() throws AND the ping() probe also fails: connected:false (Q3)', async () => {
     const server = new EditmameiServer() as unknown as PingServerFull;
-    const fakeConn = makeConnection({ info: null }); // ping() resolves false (info === null)
+    // currentlyRunning:true keeps the process-existence fast-fail out of the
+    // way — this test pins the build-failure fallback, which only runs when a
+    // Photoshop process exists but the connection can't reach it.
+    const fakeConn = makeConnection({ info: null, currentlyRunning: true }); // ping() resolves false (info === null)
     server.session.connection = fakeConn;
     server.snippetClient = {
       build: async () => {
@@ -335,7 +482,11 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
 
     const res = await server.pingPhotoshop();
 
-    expect(res.structuredContent).toEqual({ connected: false, update_available: null });
+    expect(res.structuredContent).toEqual({
+      connected: false,
+      update_available: null,
+      notify_user: false,
+    });
     expect(res.content[0].text).toBe('Photoshop did not respond');
   });
 
@@ -403,6 +554,12 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
       },
       async ping() {
         return info !== null;
+      },
+      // The absent-PS fast-fail guard runs between getVersion() and the
+      // pingState execute; a running Photoshop keeps this double on the
+      // ordering path this test pins.
+      async isCurrentlyRunning() {
+        return true;
       },
     };
     server.session.connection = fakeConn;
