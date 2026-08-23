@@ -18,6 +18,7 @@ import { TelemetryClient } from '../telemetry/client.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
 import { resolveInstallChannel } from '../install-channel.js';
 import { checkForUpdate, shouldCheckForUpdate, type UpdateInfo } from '../update/check.js';
+import { previousSessionFailureCounts, relevantFixes } from '../update/session-fixes.js';
 import { join } from 'node:path';
 import { GoSnippetClient, coreBinaryName } from '../api/snippet-client.js';
 import { isProEntitled } from '../license/entitlement.js';
@@ -176,6 +177,21 @@ export class EditmameiServer {
   private liveVersionResolutionAttempted = false;
   /** A newer published version, if the boot-time check found one. Surfaced on ps_ping. */
   private updateInfo: UpdateInfo | null = null;
+  /**
+   * The in-flight boot-time check. `ps_ping` awaits this so the skill-mandated
+   * FIRST ping of a session renders the notice instead of racing the network fetch
+   * and silently losing (the pre-2026-08 shape: fire-and-forget assignment, first
+   * ping reads null, notice only ever appears on a LATER ping most sessions never
+   * make). `checkForUpdate` self-caps at 4s and never rejects, so this await is
+   * bounded and throw-free; settled by the second ping, so it costs nothing after.
+   */
+  private updateCheck: Promise<void> | null = null;
+  /**
+   * One-shot latch: the relay-shaped notice renders on the first ping that has an
+   * update to report; later pings fall back to the passive one-liner so a session
+   * that pings repeatedly isn't re-instructed to interrupt the user every time.
+   */
+  private updateNoticeShown = false;
   // The host/community Go snippet core seam — the CE go-core binary, used by the
   // CE module's tools, by the Pro module's composite client as the fallback for
   // the community snippets its handlers build, and by the server's own pingState
@@ -231,7 +247,7 @@ export class EditmameiServer {
     // result rides ps_ping (an MCP server's stderr never reaches the user, a tool
     // result does). checkForUpdate is fail-silent, so this never throws and never blocks boot.
     if (shouldCheckForUpdate(effectiveSettings.update_check)) {
-      void checkForUpdate().then((info) => {
+      this.updateCheck = checkForUpdate().then((info) => {
         this.updateInfo = info;
       });
     }
@@ -388,13 +404,19 @@ export class EditmameiServer {
             update_available: {
               type: ['object', 'null'],
               description:
-                'Set when a newer Editmamei version is published, else null. When present, TELL THE USER: relay current → latest and how_to_update verbatim. { current, latest, channel (npm/mcpb/dev), how_to_update }. Anonymous npm-registry check at boot; opt out with `editmamei config set update_check false`.',
+                'Set when a newer Editmamei version is published, else null: { current, latest, channel (npm/mcpb/dev), how_to_update, fixed_tools (tools whose recorded failures the newer version fixes) }. The relay instruction rides the ping TEXT on the first ping — see notify_user. Anonymous npm-registry check at boot; opt out with `editmamei config set update_check false`.',
               properties: {
                 current: { type: 'string' },
                 latest: { type: 'string' },
                 channel: { type: 'string' },
                 how_to_update: { type: 'string' },
+                fixed_tools: { type: 'array', items: { type: 'string' } },
               },
+            },
+            notify_user: {
+              type: 'boolean',
+              description:
+                'True on the one ping whose text carries the update notice — relay that notice to the user before continuing. False on later pings and when no update is available.',
             },
           },
         },
@@ -761,6 +783,16 @@ export class EditmameiServer {
     // Fire-and-forget; never awaited, so the ping result never waits on it.
     this.refreshLicenseOnPing();
 
+    // The boot-time update check races the skill-mandated first ping; wait for it
+    // (bounded by its own 4s cap, never rejects) so the notice lands on the ping
+    // that matters. Settled from the second ping on, so the await is then free.
+    // Safe re lastPingReachedPs's LOAD-BEARING ordering note: that invariant
+    // covers the span between the field's FINAL assignment and the handler's
+    // return; the reset above is the fallback value, not a final assignment, and
+    // every path's final assignment comes after this await.
+    if (this.updateCheck) await this.updateCheck;
+    const update = await this.buildUpdateNotice();
+
     const connection = this.session.getConnection();
 
     // Discovery-signal fetch. Each branch is independent; failures in one
@@ -796,6 +828,42 @@ export class EditmameiServer {
       /* fall through with default; pingState may still populate version */
     }
 
+    // Fast-fail when a DETECTED Photoshop install has no running process.
+    // Without this, the pingState round trip below walks into executeScript's
+    // ensureRunning() — which can sit out the full script budget (and even try
+    // to LAUNCH Photoshop) to report an absence a process-existence check
+    // answers in milliseconds. Deliberately NOT a shorter script timeout: a
+    // ping against a present but cold-starting Photoshop legitimately takes
+    // >10s and must keep the full budget — absence is the only case that
+    // deserves the shortcut. Scoped to detection SUCCESS on purpose:
+    // isCurrentlyRunning() is also false when no install was detected at all
+    // (photoshopInfo null — including unsupported hosts), and those cases keep
+    // their pre-existing paths and messages below rather than being
+    // misdiagnosed as "not running". Runs AFTER getVersion(), which is what
+    // populates photoshopInfo on the real connection. isCurrentlyRunning()
+    // self-catches to false, so this guard can never throw; the hedged
+    // "does not appear" wording covers a process-name miss on an exotic
+    // install, where a definitive claim could send the user chasing a
+    // Photoshop that is already open.
+    if (connection.getPhotoshopInfo() !== null && !(await connection.isCurrentlyRunning())) {
+      this.lastPingReachedPs = false;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text:
+              'Photoshop does not appear to be running. Start Photoshop, then call ps_ping again.' +
+              update.note,
+          },
+        ],
+        structuredContent: {
+          connected: false,
+          update_available: this.updateInfo,
+          notify_user: update.notify,
+        },
+      };
+    }
+
     // C1+C2: build the pingState snippet OUTSIDE the liveness try/catch
     // below. A build() failure means the go-core binary is missing or
     // broken on THIS machine — a packaging/runtime problem with the
@@ -825,10 +893,14 @@ export class EditmameiServer {
           content: [
             {
               type: 'text' as const,
-              text: (reason ?? 'Photoshop did not respond') + this.updateNote(),
+              text: (reason ?? 'Photoshop did not respond') + update.note,
             },
           ],
-          structuredContent: { connected: false, update_available: this.updateInfo },
+          structuredContent: {
+            connected: false,
+            update_available: this.updateInfo,
+            notify_user: update.notify,
+          },
         };
       }
       degraded.push('pingState');
@@ -859,10 +931,12 @@ export class EditmameiServer {
         );
         this.lastPingReachedPs = false;
         return {
-          content: [
-            { type: 'text' as const, text: 'Photoshop did not respond' + this.updateNote() },
-          ],
-          structuredContent: { connected: false, update_available: this.updateInfo },
+          content: [{ type: 'text' as const, text: 'Photoshop did not respond' + update.note }],
+          structuredContent: {
+            connected: false,
+            update_available: this.updateInfo,
+            notify_user: update.notify,
+          },
         };
       }
       if (state.version) {
@@ -919,7 +993,7 @@ export class EditmameiServer {
             `${actionSetsCount} custom action set(s), ${userTemplates} saved template(s), ` +
             `${openDocuments.length} open document(s)${openDocuments.length ? ': ' + openDocuments.join(', ') : ''}` +
             `${degradedNote}.` +
-            this.updateNote(),
+            update.note,
         },
       ],
       structuredContent: {
@@ -930,16 +1004,67 @@ export class EditmameiServer {
         open_documents: openDocuments,
         degraded,
         update_available: this.updateInfo,
+        notify_user: update.notify,
       },
     };
   }
 
-  /** A one-line, user-facing "update available" suffix for the ping text, or '' when the
-   * boot check found nothing newer (or hasn't completed / is disabled). */
-  private updateNote(): string {
+  /**
+   * The ping-text update suffix plus the `notify_user` flag, or an empty note when
+   * the boot check found nothing newer (or is disabled).
+   *
+   * First render with an update available: an imperative, relay-shaped block. The
+   * reader of a tool RESULT is the model, and an instruction in result text is
+   * attended far more reliably than a "TELL THE USER" note in an output-schema
+   * description (where the old imperative lived — visible at tools/list time,
+   * effectively never at result time). When the previous session's failures
+   * intersect the tools this update fixes, the notice names them: "last session
+   * ps_delete_layer failed 10 times — fixed" is a reason to update, not a nag.
+   * Later pings fall back to the passive one-liner.
+   *
+   * Never throws: the session-log read is local and best-effort; any problem
+   * degrades to the plain notice.
+   */
+  private async buildUpdateNotice(): Promise<{ note: string; notify: boolean }> {
     const u = this.updateInfo;
-    if (!u) return '';
-    return ` Update available: v${u.current} → v${u.latest}. ${u.how_to_update}`;
+    if (!u) return { note: '', notify: false };
+    if (this.updateNoticeShown) {
+      return {
+        note: ` Update available: v${u.current} → v${u.latest}. ${u.how_to_update}`,
+        notify: false,
+      };
+    }
+    this.updateNoticeShown = true;
+    let fixNote = '';
+    if (u.fixed_tools.length > 0) {
+      try {
+        const counts = await previousSessionFailureCounts(this.session.getSessionId(), {
+          dir: this.sessionLog.directory,
+        });
+        const hits = relevantFixes(counts, u.fixed_tools);
+        if (hits.length > 0) {
+          // "Fixes known failures in X (failed N times)" — not "your N failures
+          // are fixed": the local log records failure COUNTS per tool, not
+          // causes, so the notice must not claim every one of those failures
+          // was the bug this release closes.
+          const named = hits
+            .map(
+              (h) =>
+                `${h.tool} (failed ${h.failures} time${h.failures === 1 ? '' : 's'} last session)`
+            )
+            .join(', ');
+          fixNote = ` v${u.latest} fixes known failures in ${named}.`;
+        }
+      } catch {
+        /* local log read is best-effort; fall through to the plain notice */
+      }
+    }
+    return {
+      note:
+        ` IMPORTANT — tell the user before continuing: Editmamei v${u.latest} is available` +
+        ` (this install runs v${u.current}).${fixNote} To update: ${u.how_to_update}`,
+      notify: true,
+    };
   }
 
   async start() {

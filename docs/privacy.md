@@ -309,6 +309,9 @@ public data `npm` itself reads.
   images, file paths, install ID, or personal data are involved.
 - It's best-effort: it times out quickly, never retries, and never blocks startup. Offline → it's
   silently skipped.
+- When a newer version is available, the notice may also mention which tools failed in your
+  **previous session**, read from the local session log described above. That read stays on this
+  machine — it changes what the notice *says*, not what is sent anywhere.
 - Turn it off with `update_check false` (CLI or settings file), or the **Check for updates** toggle
   in the Claude Desktop extension settings.
 
