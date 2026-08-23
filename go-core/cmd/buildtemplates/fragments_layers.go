@@ -49,7 +49,7 @@ func init() {
 		// success, so one over-matched name silently destroys layers the caller
 		// never named — and every later delete aimed at one of those children
 		// then fails as "not found", which makes the cause look like the
-		// symptom. Deleting a group is ps_delete_group's job. groupNameMatch
+		// symptom. Deleting a group is ps_group(op=delete)'s job. groupNameMatch
 		// remembers the first group whose name matched so the error can say so
 		// rather than claim the name does not exist; its wording carries the
 		// "layer kind" phrase ERROR_CLASS_TABLE (src/utils/session-log.ts)
@@ -89,7 +89,7 @@ func init() {
         // "layer kind" is load-bearing: ERROR_CLASS_TABLE in
         // src/utils/session-log.ts classifies on it, and this is a
         // wrong_layer_kind, not a layer_not_found — the name exists.
-        throw new Error('Cannot delete "' + groupNameMatch + '": that name is a group, not an art layer (layer kind mismatch). Use ps_delete_group to delete a group and its contents.');
+        throw new Error('Cannot delete "' + groupNameMatch + '": that name is a group, not an art layer (layer kind mismatch). Use ps_group(op=delete) to delete a group and its contents.');
       }
       throw new Error(__notFoundMessage('Layer', %s, false));
     }

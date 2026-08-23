@@ -75,7 +75,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**82 tools across 16 capability groups** (59 Community, 23 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. `tools/list` reports eight more than the table below: the names superseded by `filter`, `group`, and `text` (`apply_filter`, `create_group`, `move_layer_to_group`, `set_group_blend_mode`, `ungroup`, `delete_group`, `create_text_layer`, `set_text`) stay registered as deprecated aliases for one release, so existing calls keep working.
+**78 tools across 16 capability groups** (59 Community, 19 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
 
 | Group | Edition | Tools |
 | --- | --- | --- |
@@ -94,7 +94,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 | **AI selection** | Community | `select_subject` · `select_sky` |
 | **AI selection** | Pro | `select_subject_instance` · `select_object` |
 | **Filters** | Pro | `apply_camera_raw` |
-| **Layers (warp)** | Pro | `warp_layer` · `warp_layer_mesh` · `warp_layer_along` · `warp_layer_region` · `warp_layer_to` |
+| **Layers (warp)** | Pro | `warp_layer` |
 | **Perception** | Pro | `edit_object` · `add_text_to_object` · `resolve_placement` |
 | **Face mesh** | Pro | `detect_landmarks` · `select_face_feature` |
 | **Templates** | Pro | `template_create_evidence` · `template_save` · `template_list` · `template_apply` · `template_verify` · `template_recall` · `template_delete` |

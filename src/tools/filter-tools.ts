@@ -1149,32 +1149,13 @@ export function createFilterTools(
       },
       handler: async (args) => runFilterTool(connection, snippetClient, client, args),
     },
-    {
-      // ps_apply_filter was this tool's name before the Smart-Filter merge
-      // renamed it to ps_filter (2026-08-09). Registered as a deprecated alias
-      // on the same schema and the same handler so an existing caller keeps
-      // working for one release.
-      tool: {
-        name: 'ps_apply_filter',
-        description: `DEPRECATED — use ps_filter instead (kept for one release for backward compatibility, identical behaviour). ${FILTER_DESCRIPTION}`,
-        inputSchema: FILTER_INPUT_SCHEMA,
-        outputSchema: FILTER_OUTPUT_SCHEMA,
-        annotations: {
-          title: 'Apply Filter',
-          destructiveHint: true,
-          idempotentHint: false,
-        },
-      },
-      handler: async (args) => runFilterTool(connection, snippetClient, client, args),
-    },
   ];
 }
 
 // Top-level dispatch for the consolidated tool. `op` defaults to 'apply' when
-// absent, so a pre-merge caller that never set `op` (every caller before this
-// merge) still hits the `type` dispatch below byte-for-byte. The other four
-// ops delegate to the former standalone Smart-Filter tool's op handlers in
-// smart-object-tools.ts, unchanged.
+// absent, so a caller that never sets `op` hits the `type` dispatch below. The
+// other four ops delegate to the Smart-Filter op handlers in
+// smart-object-tools.ts.
 async function runFilterTool(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,

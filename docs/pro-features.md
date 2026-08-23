@@ -96,10 +96,13 @@ It's the locator behind the precision workflow: name a place, get verified geome
 
 ### Warp
 
-- `ps_warp_layer` and `ps_warp_layer_mesh`: standard warp styles plus a custom mesh that holds one edge pinned while the rest lifts, bends, or tapers.
-- `ps_warp_layer_along`: bend a layer to follow a named curve, like text along a shoreline.
-- `ps_warp_layer_region`: bulge or pinch around a named point or region.
-- `ps_warp_layer_to`: pin one edge and reach the far end to a named target.
+`ps_warp_layer` covers all of it under one `mode` argument:
+
+- `mode=style`: Photoshop's built-in warp styles.
+- `mode=mesh`: a custom mesh that holds one edge pinned while the rest lifts, bends, or tapers.
+- `mode=along`: bend a layer to follow a named curve, like text along a shoreline.
+- `mode=region`: bulge or pinch around a named point or region.
+- `mode=to`: pin one edge and reach the far end to a named target.
 
 ### Actions and scripting
 

@@ -77,21 +77,13 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // export_jpeg + export_png consolidated into ps_export
   ps_export: 'community',
 
-  // filter-tools — consolidated into one op-discriminated tool: apply (type-
-  // discriminated) plus the Smart Filter management ops merged in from the
-  // former standalone Smart-Filter tool (2026-08-09). The pre-merge name stays
-  // registered as a deprecated alias for one release.
+  // filter-tools — one op-discriminated tool: apply (type-discriminated) plus
+  // the Smart Filter management ops.
   ps_filter: 'community',
-  ps_apply_filter: 'community',
 
-  // group-tools — consolidated into one op-discriminated tool (2026-08-13).
-  // The five old names stay registered as deprecated aliases for one release.
+  // group-tools — one op-discriminated tool covering group lifecycle and
+  // membership.
   ps_group: 'community',
-  ps_create_group: 'community',
-  ps_move_layer_to_group: 'community',
-  ps_set_group_blend_mode: 'community',
-  ps_ungroup: 'community',
-  ps_delete_group: 'community',
   ps_clipping_mask: 'community',
 
   // history-tools (get_history → ps_inspect)
@@ -122,8 +114,6 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // layer-tools
   ps_create_layer: 'community',
   ps_delete_layer: 'community',
-  // deprecated alias for ps_text(op=create) — see the text-tools section below
-  ps_create_text_layer: 'community',
   ps_fill_layer: 'community',
   ps_add_fill_layer: 'community',
   // get_layer_tree → ps_inspect
@@ -138,6 +128,17 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // corrections → community. Warp is creative manipulation → pro (factory lives
   // in warp-tools-pro.ts, registered by the Pro module, stripped from CE).
   ps_warp_layer: 'pro',
+  // The four grounded warp variants below are no longer registered by the
+  // current module, but their rows must stay for one more release. The module
+  // is downloaded and a newly fetched one only takes effect on the NEXT boot,
+  // so a host on this version can meet a previously-installed module that
+  // still registers all four. `tierOf`/`groupOf` throw on an unknown name and
+  // `assertToolsClassified()` runs them at startup, so a missing row is a
+  // fatal boot failure, not a missing tool. Delete these rows, their
+  // `tool-groups.ts` counterparts, and the matching allowance in
+  // `tests/integration/tool-tiers.test.ts` together, once no supported module
+  // registers them.
+  //
   // Grounded custom-mesh warp — pins one edge (welded by construction) while
   // deforming the rest (rise / ~90° bend / taper).
   ps_warp_layer_mesh: 'pro',
@@ -277,12 +278,9 @@ export const TOOL_TIERS: Record<string, Tier> = {
   ps_template_recall: 'pro',
   ps_template_delete: 'pro',
 
-  // text-tools — consolidated into one op-discriminated tool (2026-08-13),
-  // flattening ps_set_text's old property sub-discriminator into the same
-  // enum as create. ps_set_text (and ps_create_text_layer, layer-tools
-  // section above) stay registered as deprecated aliases for one release.
+  // text-tools — one op-discriminated tool covering both creating a text layer
+  // and styling one, in a single flat op enum.
   ps_text: 'community',
-  ps_set_text: 'community',
 };
 
 /**

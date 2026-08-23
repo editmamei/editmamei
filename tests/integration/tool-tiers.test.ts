@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EditmameiServer } from '@editmamei/core/server.ts';
 import { TOOL_TIERS, isToolAllowedInEdition, tierOf } from '@editmamei/core/tool-tiers.ts';
+import { TOOL_GROUPS } from '@editmamei/core/tool-groups.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
 
 // Every `new EditmameiServer()` below builds its own SessionLog with no `dir`
@@ -19,6 +20,31 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // as orphans — gate the orphan check behind Pro actually being loadable.
 const PRO_SOURCES_PRESENT = existsSync(join(REPO_ROOT, 'src', 'modules', 'pro', 'index.ts'));
 const proIt = PRO_SOURCES_PRESENT ? it : it.skip;
+
+/**
+ * Tier entries that are deliberately NOT registered by any current factory,
+ * and are therefore exempt from the orphan check below.
+ *
+ * These four names are retired warp variants. The classification tables have
+ * to outlive the tools by one release: the module that registers them is
+ * downloaded, and a newly fetched one only takes effect on the NEXT boot, so
+ * a host on this version can be paired with a previously-installed module
+ * that still registers all four. `tierOf`/`groupOf` throw on an unknown name
+ * and `assertToolsClassified()` runs them over the whole registered surface
+ * at startup, so dropping the rows early turns that pairing into a fatal boot
+ * failure rather than a missing tool.
+ *
+ * This list, the `tool-tiers.ts` rows, and their `tool-groups.ts`
+ * counterparts are deleted together, once no supported module registers
+ * these names. The allowance is an explicit name list on purpose — any OTHER
+ * orphan still fails.
+ */
+const TRANSITION_ORPHANS = new Set([
+  'ps_warp_layer_mesh',
+  'ps_warp_layer_along',
+  'ps_warp_layer_region',
+  'ps_warp_layer_to',
+]);
 
 /**
  * Pins the contract between the live tool surface and the tier-classification
@@ -62,7 +88,9 @@ describe('TOOL_TIERS classification table', () => {
         // the orphan check sees the full registered surface.
         await server.loadModules();
         const registered = new Set(server.toolRegistry.list().map((t) => t.name));
-        const orphans = Object.keys(saved).filter((name) => !registered.has(name));
+        const orphans = Object.keys(saved).filter(
+          (name) => !registered.has(name) && !TRANSITION_ORPHANS.has(name)
+        );
         expect(orphans, `Orphan TOOL_TIERS entries: ${orphans.join(', ')}`).toEqual([]);
       } finally {
         for (const name of Object.keys(TOOL_TIERS)) delete TOOL_TIERS[name];
@@ -70,6 +98,25 @@ describe('TOOL_TIERS classification table', () => {
       }
     }
   );
+
+  // The allowance must not outlive the rows it covers. A name left in the set
+  // after its tier row is gone is a permanent, invisible hole in the orphan
+  // check — this runs in every checkout, including ones that skip the check
+  // above. Also pins the `tool-groups.ts` counterpart: `groupOf()` throws at
+  // boot on an unknown name exactly like `tierOf()` does, so a tier row kept
+  // without its group row would be just as fatal a boot failure.
+  it('every transition-orphan allowance still names a live TOOL_TIERS and TOOL_GROUPS entry', () => {
+    for (const name of TRANSITION_ORPHANS) {
+      expect(
+        Object.keys(TOOL_TIERS),
+        `${name} is allowed as a transition orphan but has no tier row`
+      ).toContain(name);
+      expect(
+        Object.keys(TOOL_GROUPS),
+        `${name} is allowed as a transition orphan but has no group row`
+      ).toContain(name);
+    }
+  });
 
   it('classifies every entry as a valid Tier value', () => {
     for (const [name, tier] of Object.entries(TOOL_TIERS)) {

@@ -133,14 +133,13 @@ export const GROUP_OP_SCHEMAS: Record<(typeof GROUP_OPS)[number], JsonSchemaObje
   set_blend_mode: setGroupBlendModeSchema,
 };
 
-// Consolidated input schema for ps_group (2026-08-13). Merges the five
-// per-op schemas above (createGroupSchema, deleteGroupSchema, ungroupSchema,
+// Consolidated input schema for ps_group. Merges the five per-op schemas
+// above (createGroupSchema, deleteGroupSchema, ungroupSchema,
 // moveLayerToGroupSchema, setGroupBlendModeSchema); `name` means "the group
 // in question" across create/delete/ungroup/set_blend_mode (the new group's
 // name for create, the existing group's for the rest) — no collision, same
-// concept. The handler dispatches to the exact same functions the five
-// deprecated standalone tools call, so op-routed and name-routed calls are
-// byte-identical in behavior.
+// concept. The handler re-validates each op against its own schema above, so
+// the advertised superset never widens what an individual op accepts.
 const GROUP_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -238,107 +237,6 @@ export function createGroupTools(
     },
     {
       tool: {
-        name: 'ps_create_group',
-        description: `DEPRECATED — use ps_group(op=create) instead (kept for one release for backward compatibility, identical behaviour). Create a new layer group (LayerSet) above the active layer with the given name — hoisted out of the active layer's group by default even though Photoshop's own Mk-layerSection placement rule would otherwise nest it INSIDE that group (pass into_active_group:true to keep that native nesting; this is why groups created one after another land as siblings rather than nested, so bottom-to-top group creation is safe). Optionally moves existing layers into it in one step. Non-destructive. Foundational for structured non-destructive editing — e.g. group all adjustment layers into an "edits" group so you can A/B toggle the whole stack via group visibility.`,
-        inputSchema: createGroupSchema,
-        outputSchema: {
-          type: 'object',
-          properties: {
-            created: { type: 'boolean' },
-            groupName: { type: 'string' },
-            moved_count: { type: 'number' },
-            not_found: { type: 'array', items: { type: 'string' } },
-            hoisted: {
-              type: 'boolean',
-              description:
-                'True when the new group had to be moved back out of the previously-active group to honor into_active_group:false (the default). False when it landed correctly on its own, or when the move-back itself failed — check the layer tree if this matters and hoisted is false.',
-            },
-            parent_path: {
-              type: ['array', 'null'],
-              items: { type: 'string' },
-              description:
-                'The containing-group name chain (outermost first), empty array at the document root.',
-            },
-            context: { type: 'object' },
-          },
-        },
-        annotations: {
-          title: 'Create Layer Group',
-          idempotentHint: false,
-        },
-      },
-      handler: async (args) => createGroup(connection, snippetClient, args),
-    },
-    {
-      tool: {
-        name: 'ps_move_layer_to_group',
-        description:
-          'DEPRECATED — use ps_group(op=add_layer) instead (kept for one release for backward compatibility, identical behaviour). Move a named layer into a named group. The layer is placed at the top of the group stack. Both layer_name and group_name are looked up recursively. Throws if either is not found, or if the layer IS the group itself.',
-        inputSchema: moveLayerToGroupSchema,
-        outputSchema: {
-          type: 'object',
-          properties: {
-            moved: { type: 'boolean' },
-            layerName: { type: 'string' },
-            groupName: { type: 'string' },
-            context: { type: 'object' },
-          },
-        },
-        annotations: {
-          title: 'Move Layer Into Group',
-          idempotentHint: false,
-        },
-      },
-      handler: async (args) => moveLayerToGroup(connection, snippetClient, args),
-    },
-    {
-      tool: {
-        name: 'ps_set_group_blend_mode',
-        description:
-          "DEPRECATED — use ps_group(op=set_blend_mode) instead (kept for one release for backward compatibility, identical behaviour). Set a group's blend mode. The default for new groups is PASSTHROUGH (adjustments inside affect layers below the group). Change to NORMAL when treating the group as a single composite — required for masking a stack of adjustments with one mask.",
-        inputSchema: setGroupBlendModeSchema,
-        outputSchema: {
-          type: 'object',
-          properties: {
-            set: { type: 'boolean' },
-            groupName: { type: 'string' },
-            blendMode: { type: 'string' },
-            context: { type: 'object' },
-          },
-        },
-        annotations: {
-          title: 'Set Group Blend Mode',
-          idempotentHint: true,
-        },
-      },
-      handler: async (args) => setGroupBlendMode(connection, snippetClient, args),
-    },
-    {
-      tool: {
-        name: 'ps_ungroup',
-        description:
-          'DEPRECATED — use ps_group(op=ungroup) instead (kept for one release for backward compatibility, identical behaviour). DESTRUCTIVE structural change: Dissolve a group, leaving its contents at the parent level in their existing stack order. The group itself is removed. Requires confirm:true. Recoverable only via Edit > Undo.',
-        inputSchema: ungroupSchema,
-        outputSchema: {
-          type: 'object',
-          properties: {
-            ungrouped: { type: 'boolean' },
-            groupName: { type: 'string' },
-            children_promoted: { type: 'number' },
-            child_names: { type: 'array', items: { type: 'string' } },
-            context: { type: 'object' },
-          },
-        },
-        annotations: {
-          title: 'Ungroup Layer Set (destructive structural change)',
-          destructiveHint: true,
-          idempotentHint: false,
-        },
-      },
-      handler: async (args) => ungroup(connection, snippetClient, args),
-    },
-    {
-      tool: {
         name: 'ps_clipping_mask',
         description:
           'Clip or un-clip the active layer against the layer directly below it — choose with `op`. `create`: use the layer below as the alpha source; PS paints the active layer only where the layer below has pixels. Non-destructive — the upper layer is unchanged. Common for constraining a texture/photo to a shape, or masking an effect to a single underlying layer (the add_adjustment_layer tool already accepts clip_to_below for the adjustment-layer-specific case). Equivalent to Layer > Create Clipping Mask (Ctrl+Alt+G). `release`: the inverse — the layer returns to compositing against the whole canvas. Both ops are idempotent: create no-ops (already_clipped:true) on an already-clipped layer; release no-ops (released:false) on a non-clipped layer.',
@@ -359,29 +257,6 @@ export function createGroupTools(
         },
       },
       handler: async (args) => clippingMask(connection, snippetClient, args),
-    },
-    {
-      tool: {
-        name: 'ps_delete_group',
-        description:
-          'DEPRECATED — use ps_group(op=delete) instead (kept for one release for backward compatibility, identical behaviour). DESTRUCTIVE: Delete a group AND ALL its contents (including nested groups and their layers). Requires confirm:true because the destructive scope is much larger than a single-layer delete. Recoverable only via Edit > Undo. To dissolve a group while keeping its contents, use ps_ungroup instead.',
-        inputSchema: deleteGroupSchema,
-        outputSchema: {
-          type: 'object',
-          properties: {
-            deleted: { type: 'boolean' },
-            groupName: { type: 'string' },
-            descendants_deleted: { type: 'number' },
-            context: { type: 'object' },
-          },
-        },
-        annotations: {
-          title: 'Delete Group (destructive, recursive)',
-          destructiveHint: true,
-          idempotentHint: false,
-        },
-      },
-      handler: async (args) => deleteGroup(connection, snippetClient, args),
     },
   ];
 }
@@ -432,12 +307,9 @@ async function clippingMask(
   }
 }
 
-// ps_group → create / delete / ungroup / add_layer / set_blend_mode. Routes
-// to the exact same handler functions the five deprecated standalone tools
-// call (createGroup / deleteGroup / ungroup / moveLayerToGroup /
-// setGroupBlendMode below) — same function, same schema validation, same
-// snippet — so the old and new routes are behaviorally identical by
-// construction, not just by matching test coverage.
+// ps_group → create / delete / ungroup / add_layer / set_blend_mode. Each op
+// strips the discriminator and hands the rest to the matching handler below,
+// which re-validates against its own per-op schema.
 async function groupDispatch(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
