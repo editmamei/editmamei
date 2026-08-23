@@ -237,6 +237,13 @@ func TestGaussianBlurGolden(t *testing.T) {
 		{`selectSubject(false,"add")`, selectSubject(false, "add")},
 		{`selectSky(true,"replace")`, selectSky(true, "replace")},
 		{`selectSky(false,"subtract")`, selectSky(false, "subtract")},
+		// Native-AI additions (2026-08-15). replaceSky is covered here because it
+		// refuses an empty param map (see arityNeedsParams), so these two rows are
+		// its ONLY arity check: one at defaults, one with every tuning value set.
+		{`selectFocusArea(4.07,false,"replace")`, selectFocusArea(4.07, false, "replace")},
+		{`selectFocusArea(12.5,true,"add")`, selectFocusArea(12.5, true, "add")},
+		{`replaceSky(defaults)`, replaceSky("C:/skies/a.jpg", "Sky A", "00000000-0000-0000-0000-000000000000", 0, 50, 0, 0, 35, 78, 70)},
+		{`replaceSky(tuned)`, replaceSky("C:/skies/b.jpg", "Sky B", "11111111-2222-3333-4444-555555555555", -12, 80, 15, -20, 60, 40, 25)},
 		{"newDocument(800,600)", newDocument(800, 600, 72, "NewDocumentMode.RGB")},
 		{`placeImage("C:/img.png",10,20)`, placeImage("C:/img.png", 10, 20, 0, 0, false, false)},
 		{`placeImage("C:/img.png",0,0,50,75)`, placeImage("C:/img.png", 0, 0, 50, 75, true, true)},
@@ -372,6 +379,16 @@ func TestGaussianBlurGolden(t *testing.T) {
 		if !ok {
 			t.Fatalf("golden missing key %q", c.key)
 		}
+		// Every case here is built with real, valid params (never an empty
+		// map), so this loop doubles as the arity check for any snippet
+		// allowlisted out of slot_arity_test.go's empty-param sweep that
+		// appears in `cases` — replaceSky in particular, whose entry there
+		// names this loop as where it's actually checked. A slot/arg-count
+		// mismatch surfaces as a literal %! Sprintf format-verb error baked
+		// straight into the emitted JSX.
+		if strings.Contains(c.got, "%!") {
+			t.Errorf("slot-arity mismatch in %s:\n%s", c.key, c.got)
+		}
 		if normalize(c.got) != normalize(want) {
 			t.Errorf("golden MISMATCH for %s\n--- got ---\n%s\n--- want ---\n%s",
 				c.key, normalize(c.got), normalize(want))
@@ -410,6 +427,16 @@ func updateGolden(t *testing.T, cases []struct {
 	got string
 }) {
 	t.Helper()
+
+	// A slot/arg-count mismatch would otherwise be baked into the fixture as a
+	// literal %! Sprintf format-verb error, and nothing downstream of here
+	// (the merge, the behavioral-change gate) checks for it. Refuse to write
+	// anything if that happened, before either.
+	for _, c := range cases {
+		if strings.Contains(c.got, "%!") {
+			t.Fatalf("slot-arity mismatch in %s — refusing to write it into the golden fixture:\n%s", c.key, c.got)
+		}
+	}
 
 	raw, err := os.ReadFile("testdata/golden.json")
 	if err != nil {

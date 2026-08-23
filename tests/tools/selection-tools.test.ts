@@ -49,6 +49,7 @@ describe('createSelectionTools', () => {
       'ps_selection_channel',
       'ps_select_subject',
       'ps_select_sky',
+      'ps_select_focus_area',
     ]);
   });
 
@@ -798,6 +799,59 @@ describe('createSelectionTools', () => {
     const errConn = makeConnection({ throwOnExecute: new Error('parameters not valid') });
     const tools = createSelectionTools(errConn.asConnection(), makeSnippetClient());
     const result = await callTool(tools, 'ps_select_sky', {});
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/parameters not valid/);
+  });
+
+  // ---------- select_focus_area (dev tier, 2026-08-15) ----------
+  // Depth-of-field selection. Live-verified against PS 27.2.0 the same day:
+  // 12,344,844 px / 0 partial pixels at the defaults below.
+
+  it('select_focus_area dispatches the selectFocusArea snippet', async () => {
+    const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_select_focus_area', {});
+    expect(snippetClient.lastBuild().name).toBe('selectFocusArea');
+  });
+
+  it('select_focus_area forwards a 120s timeout to the executor', async () => {
+    const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_select_focus_area', {});
+    expect(conn.lastTimeout()).toBe(120000);
+  });
+
+  it('select_focus_area defaults to the PS dialog radius and a hard edge', async () => {
+    const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_select_focus_area', {});
+    const { params } = snippetClient.lastBuild();
+    expect(params.inFocusRadius).toBe(4.07);
+    expect(params.softMask).toBe(false);
+    expect(params.selectionType).toBe('replace');
+  });
+
+  it('select_focus_area forwards in_focus_radius and soft_mask', async () => {
+    const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_select_focus_area', { in_focus_radius: 12.5, soft_mask: true });
+    const { params } = snippetClient.lastBuild();
+    expect(params.inFocusRadius).toBe(12.5);
+    expect(params.softMask).toBe(true);
+  });
+
+  it('select_focus_area combines via selection_type', async () => {
+    const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_select_focus_area', { selection_type: 'intersect' });
+    expect(snippetClient.lastBuild().params.selectionType).toBe('intersect');
+  });
+
+  it('select_focus_area rejects an out-of-range in_focus_radius', async () => {
+    const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_select_focus_area', { in_focus_radius: 999 });
+    expect(result.isError).toBe(true);
+  });
+
+  it('select_focus_area surfaces connection failures as an error result', async () => {
+    const errConn = makeConnection({ throwOnExecute: new Error('parameters not valid') });
+    const tools = createSelectionTools(errConn.asConnection(), makeSnippetClient());
+    const result = await callTool(tools, 'ps_select_focus_area', {});
     expect(result.isError).toBe(true);
     expect(textOf(result)).toMatch(/parameters not valid/);
   });

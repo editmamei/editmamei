@@ -201,6 +201,10 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_select_sky: 'select_ai',
   ps_select_subject_instance: 'select_ai',
   ps_select_object: 'select_ai',
+  ps_select_focus_area: 'select_ai',
+  // Not a selection — it composites a layer group — but it is the same Sensei
+  // family and belongs beside its siblings for discovery.
+  ps_replace_sky: 'select_ai',
 
   // adjustments
   ps_add_adjustment_layer: 'adjust',
