@@ -247,8 +247,11 @@ describe('createSceneTools', () => {
 
   // ---------- v2.1 oversight loop: precompute + saved channels + fast load ----------
 
-  it('scene precomputes the confident region MENU (saved as scene:* channels)', async () => {
-    const res = await callTool(tools(), 'ps_read_scene', { annotate: false });
+  it('save_regions:true precomputes the confident region MENU (saved as scene:* channels)', async () => {
+    const res = await callTool(tools(), 'ps_read_scene', {
+      annotate: false,
+      save_regions: true,
+    });
     const menu = (
       res.structuredContent as {
         region_menu: Array<{ target: string; confidence: number; key: string }>;
@@ -274,13 +277,47 @@ describe('createSceneTools', () => {
     }
   });
 
-  it('save_regions:false skips the precompute (light read, no menu)', async () => {
+  // The DEFAULT since 2026-08-24. The eager pass cost ~21s of derive against a
+  // 30s script timeout, so a plain scene read now advertises the menu and
+  // derives nothing — ps_select_by_reference resolves whichever region is
+  // actually asked for. Pinning "no channel work at all" is the load-bearing
+  // half: that is what makes the read fast.
+  it('by DEFAULT the read advertises an on_demand menu and derives nothing', async () => {
+    const res = await callTool(tools(), 'ps_read_scene', { annotate: false });
+    const menu = (
+      res.structuredContent as {
+        region_menu: Array<{ target: string; on_demand?: boolean; confidence?: number }>;
+      }
+    ).region_menu;
+    expect(menu.length).toBeGreaterThan(0);
+    expect(menu.every((m) => m.on_demand === true)).toBe(true);
+    // No confidence: nothing was derived, so there is no score to report and a
+    // fabricated one would assert a verdict we never earned.
+    expect(menu.every((m) => m.confidence === undefined)).toBe(true);
+    // The whole point — zero channel round trips.
+    expect(conn.allScripts().some((s) => s.includes('doc.channels.add()'))).toBe(false);
+  });
+
+  it('the advertised menu gates face/subject/skin on DETECTED presence, not the coarse histogram', async () => {
+    const res = await callTool(tools(), 'ps_read_scene', { annotate: false });
+    const targets = (
+      res.structuredContent as { region_menu: Array<{ target: string }> }
+    ).region_menu.map((m) => m.target);
+    // Luminance/geometry targets are always candidates — the coarse coverage
+    // estimate is unreliable in BOTH directions, so gating on it would hide
+    // regions that are genuinely selectable.
+    expect(targets).toEqual(expect.arrayContaining(['sky', 'ground', 'shadows', 'highlights']));
+    // The fixture detects a person, so skin and subject are honestly advertised.
+    expect(targets).toEqual(expect.arrayContaining(['skin', 'subject']));
+  });
+
+  it('save_regions:false also derives nothing (explicit form of the default)', async () => {
     const res = await callTool(tools(), 'ps_read_scene', {
       annotate: false,
       save_regions: false,
     });
     const menu = (res.structuredContent as { region_menu: unknown[] }).region_menu;
-    expect(menu).toEqual([]);
+    expect(menu.length).toBeGreaterThan(0);
     expect(conn.allScripts().some((s) => s.includes('doc.channels.add()'))).toBe(false);
   });
 
@@ -344,7 +381,7 @@ describe('createSceneTools', () => {
         client: new FakeDetectionClient(),
       }
     );
-    const res = await callTool(t, 'ps_read_scene', { annotate: false });
+    const res = await callTool(t, 'ps_read_scene', { annotate: false, save_regions: true });
     const menu = (res.structuredContent as { region_menu: Array<{ target: string }> }).region_menu;
     const targets = menu.map((m) => m.target);
     expect(targets).toEqual(expect.arrayContaining(['sky', 'subject'])); // still built
@@ -352,6 +389,38 @@ describe('createSceneTools', () => {
   });
 
   // ---------- ps_select_by_reference: recipe routing ----------
+
+  // The other half of the lazy default. If an on-demand derive did not persist
+  // its channel, every select of that region would re-derive (1-9s live) and the
+  // one-time precompute cost would become a permanent per-call one. Before
+  // 2026-08-24 this persist was gated to `face_*` only.
+  // `ch.name = "scene:<target>"` is unique to the SAVE script — the derive
+  // recipes also add scratch channels and mention the target, so a looser match
+  // passes against the wrong script.
+  const savedChannel = (scripts: string[], target: string): string | undefined =>
+    scripts.find((s) => s.includes(`ch.name = "scene:${target}"`));
+
+  it('an on-demand CE derive PERSISTS its scene:* channel so repeats load by name', async () => {
+    await callTool(tools(), 'ps_select_by_reference', { target: 'sky' });
+    const saved = savedChannel(conn.allScripts(), 'sky');
+    expect(saved).toBeDefined();
+    expect(saved).toContain('doc.selection.store(ch, SelectionType.REPLACE);');
+    // Same live regression guard as the precompute path — adding a channel hides
+    // the RGB composite, and leaving it hidden breaks the next histogram read.
+    expect(saved).toContain('restoreCompositeChannel(doc);');
+  });
+
+  it('a REJECTED derive persists nothing — an unconfident region must not be cached as a channel', async () => {
+    // No giraffe in this scene, so subject is honest absence rather than an
+    // error. Caching that as a channel would make the next select load an empty
+    // selection by name and never re-derive.
+    const res = await callTool(tools(), 'ps_select_by_reference', {
+      target: 'subject',
+      label: 'giraffe',
+    });
+    expect((res.structuredContent as { passed: boolean }).passed).toBe(false);
+    expect(savedChannel(conn.allScripts(), 'subject')).toBeUndefined();
+  });
 
   it('sky → threshold glue, gate PASSES for a clean upper-band region', async () => {
     const res = await callTool(tools(), 'ps_select_by_reference', { target: 'sky' });
@@ -576,10 +645,10 @@ describe('createSceneTools', () => {
       client: detectionClient,
       detectDeps: fakeDetectDeps(),
     });
-    await callTool(t, 'ps_read_scene', { annotate: false });
+    await callTool(t, 'ps_read_scene', { annotate: false, save_regions: true });
     expect(detectionClient.calls).toBe(1);
 
-    const res2 = await callTool(t, 'ps_read_scene', { annotate: false });
+    const res2 = await callTool(t, 'ps_read_scene', { annotate: false, save_regions: true });
     expect(detectionClient.calls).toBe(1); // still reused — pixel identity HIT
     expect((res2.structuredContent as { provenance: { cached: boolean } }).provenance.cached).toBe(
       true
@@ -725,13 +794,25 @@ describe('createSceneTools', () => {
       client: new FakeDetectionClient(),
       invokeTool,
     });
-    const res = await callTool(t, 'ps_read_scene', { annotate: false });
+    const res = await callTool(t, 'ps_read_scene', { annotate: false, save_regions: true });
     const menu = (
       res.structuredContent as { region_menu: Array<{ target: string; method: string }> }
     ).region_menu;
     const subject = menu.find((m) => m.target === 'subject');
     expect(subject?.method).toBe('pro_refine');
     expect(calls.some((c) => c.name === 'ps_select_subject_instance')).toBe(true);
+  });
+
+  it('the DEFAULT read does not invoke the Pro refine at all', async () => {
+    // The eager pass called Sensei once per scene read whether or not the
+    // session ever selected the subject. Lazily, it is the select that pays.
+    const { invokeTool, calls } = makeInvokeTool();
+    const t = createSceneTools(conn.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      invokeTool,
+    });
+    await callTool(t, 'ps_read_scene', { annotate: false });
+    expect(calls).toEqual([]);
   });
 });
 
@@ -867,7 +948,7 @@ describe('regions[] cross-linking with the resolved menu', () => {
     // selection. Live 2026-07-30 they disagreed hard on a night cityscape —
     // regions[].sky.coverage 0.08 vs a Sensei sky at 0.83 — and an agent reading
     // only regions[] concluded there was no sky worth selecting.
-    const regions = await readScene({});
+    const regions = await readScene({ save_regions: true });
     expect(regions.length).toBeGreaterThan(0);
     for (const r of regions) {
       expect(r.coverage_is_estimate).toBe(true);
@@ -879,14 +960,17 @@ describe('regions[] cross-linking with the resolved menu', () => {
     expect(sky?.selectable_confidence).toBeTypeOf('number');
   });
 
-  it('reports not_resolved (never a truthy string) when regions were not precomputed', async () => {
+  it('reports candidate (never a truthy string) when regions were only advertised', async () => {
     const regions = await readScene({ save_regions: false });
     for (const r of regions) {
-      expect(r.selectable_state).toBe('not_resolved');
-      // MUST be falsy: a consumer writing `if (r.selectable)` would read the
-      // string 'unknown' as truthy and treat an unresolved region as available.
+      expect(r.selectable_state).toBe('candidate');
+      // MUST be falsy for the same reason 'not_resolved' must be: a consumer
+      // writing `if (r.selectable)` would read a truthy string as a promise that
+      // the region resolves. Advertised is not verified.
       expect(r.selectable).toBeNull();
       expect(r.selectable).toBeFalsy();
+      // No score — the gate has not run.
+      expect(r.selectable_confidence).toBeUndefined();
     }
   });
 
@@ -909,9 +993,12 @@ describe('regions[] cross-linking with the resolved menu', () => {
       client: new FakeDetectionClient(),
       detectDeps: fakeDetectDeps(),
     });
-    const res = await callTool(t, 'ps_read_scene', { annotate: false });
+    const res = await callTool(t, 'ps_read_scene', { annotate: false, save_regions: true });
     const regions = (res.structuredContent as { regions: Array<Record<string, unknown>> }).regions;
     for (const r of regions) {
+      // Distinct from 'candidate': the caller ASKED for a scored menu and the
+      // pass failed, so we know nothing — not even that the region is a plausible
+      // candidate worth offering.
       expect(r.selectable_state).toBe('not_resolved');
       expect(r.selectable).toBeNull();
     }
@@ -962,12 +1049,16 @@ describe('ps_read_scene outputSchema describes what reconcileRegions emits', () 
     expect(regionItemProps().selectable.type).toEqual(['boolean', 'null']);
   });
 
-  it('selectable_state enum matches the three literals reconcileRegions emits', () => {
+  it('selectable_state enum matches the four literals reconcileRegions emits', () => {
     // Cross-checked against the producer rather than restated: these are the
-    // only three values assigned in src/tools/scene-tools.ts reconcileRegions.
+    // only four values assigned in src/tools/scene-tools.ts reconcileRegions.
+    // 'candidate' joined them with the lazy default — an emitted value missing
+    // from this enum is an under-declared output schema, which is what caught
+    // it here rather than in review.
     expect(regionItemProps().selectable_state.enum).toEqual([
       'selectable',
       'not_selectable',
+      'candidate',
       'not_resolved',
     ]);
   });

@@ -87,7 +87,21 @@ export async function saveSelectionAsSceneChannel(
   );
 }
 
-/** Targets precomputed as saved channels (skip the always-there geometric ones). */
+/**
+ * Targets precomputed as saved channels (skip the always-there geometric ones).
+ *
+ * Deriving all seven EAGERLY is now opt-in (`ps_read_scene save_regions:true`),
+ * not the default. Measured live 2026-08-24 on a 4898x3265 layered PSD: the
+ * eager pass cost 20.8s of derive (sky 9.0s, skin 3.6s, ground 3.5s, subject
+ * 2.2s, shadows 1.4s, highlights 1.2s) plus channel saves, making the whole
+ * `ps_read_scene` call 29.9s against a 30s executor timeout — while the scene
+ * model underneath took 3.2s. Three of the seven targets were rejected and
+ * produced nothing, so ~4.8s bought literally no channel.
+ *
+ * This is the same failure the face mesh hit on 2026-07-31 (see `faceMenu`
+ * below), one level up, and it takes the same fix: advertise the menu, derive
+ * on first request. A session selects one or two regions, not seven.
+ */
 const PRECOMPUTE_TARGETS: SelectReferenceTarget[] = [
   'sky',
   'ground',
@@ -103,7 +117,14 @@ export interface RegionMenuItem {
   key: string;
   target: string;
   method: string;
-  confidence: number;
+  /**
+   * The gate score from the derive that produced this entry. **Absent on
+   * `on_demand` entries** — nothing has been derived yet, so there is no score
+   * to report and inventing one (a confident-looking `1`) would assert a
+   * verdict we have not earned. Consumers must treat `undefined` as "unknown",
+   * never as zero.
+   */
+  confidence?: number;
   /** For subject — the COCO label. */
   label?: string;
   bounds: { left: number; top: number; right: number; bottom: number } | null;
@@ -111,10 +132,61 @@ export interface RegionMenuItem {
    * True when the region is ADVERTISED as selectable but no channel has been
    * saved yet — `ps_select_by_reference` derives it on first request (and then
    * saves the channel, so repeats are instant). Set for the Pro face-feature
-   * set, which is materialized lazily: see the eager-vs-lazy note above
-   * PRECOMPUTE_TARGETS.
+   * set and, since the lazy default, for the CE region set too: see the
+   * eager-vs-lazy note above PRECOMPUTE_TARGETS.
    */
   on_demand?: boolean;
+}
+
+/**
+ * The DEFAULT menu: advertise what `ps_select_by_reference` could resolve,
+ * deriving nothing and touching Photoshop not at all.
+ *
+ * **What this can and cannot claim.** An eager pass reports `confidence`
+ * because it ran the gate. This one has not, so entries carry `on_demand: true`
+ * and NO confidence, and the caller learns the verdict when it selects. That is
+ * a deliberate trade: the alternative (asserting selectability we never tested)
+ * is the "authoritative-sounding verdict of absence" that `reconcileRegions`
+ * exists to prevent, pointed the other way.
+ *
+ * **Gating is on ONNX-verified presence ONLY.** `face`/`subject`/`skin` are
+ * advertised from the detector's own findings, which are real. The luminance
+ * and geometry targets are advertised UNCONDITIONALLY — deliberately, because
+ * the only cheap signal available for them is `model.regions[].coverage`, the
+ * coarse histogram split that `reconcileRegions` documents as unreliable in
+ * both directions (live 2026-07-30: a night cityscape scored 0.08 coarse sky
+ * coverage against a genuine 0.83-confidence sky). Gating on it would hide
+ * regions that are actually there, which is the worse error.
+ */
+export function candidateMenu(model: SceneModel): RegionMenuItem[] {
+  const advertise = (target: SelectReferenceTarget): RegionMenuItem => ({
+    key: `${CHANNEL_PREFIX}${target}`,
+    target,
+    // The real method is chosen at derive time (sky alone picks between
+    // sky_ground_flood and threshold_white depending on context), so naming one
+    // here would be a guess presented as fact.
+    method: 'on_demand',
+    bounds: null,
+    on_demand: true,
+  });
+
+  const hasFace = model.faces.length > 0;
+  const hasSubject = model.subjects.length > 0;
+  const hasPerson = model.subjects.some((s) => s.label === 'person');
+
+  const menu: RegionMenuItem[] = [
+    advertise('sky'),
+    advertise('ground'),
+    advertise('shadows'),
+    advertise('highlights'),
+  ];
+  // Matches the eager pass's own short-circuit: skin is a colour range
+  // intersected with a person/face box, so with neither present there is
+  // nothing to intersect and the derive cannot pass.
+  if (hasPerson || hasFace) menu.push(advertise('skin'));
+  if (hasSubject) menu.push(advertise('subject'));
+  if (hasFace) menu.push(advertise('face'));
+  return menu;
 }
 
 // ---------- channel glue (managed scene:* alpha channels) ----------

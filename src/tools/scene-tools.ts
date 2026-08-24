@@ -38,6 +38,7 @@ import type { SceneBuildResult } from '../perception/scene-model.js';
 import type { CompositionContext } from '../perception/region-scorer.js';
 import {
   precomputeRegions,
+  candidateMenu,
   loadPrecomputedRegion,
   saveSelectionAsSceneChannel,
   CHANNEL_PREFIX,
@@ -174,9 +175,9 @@ const sceneSchema: JsonSchemaObject = {
     },
     save_regions: {
       type: 'boolean',
-      default: true,
+      default: false,
       description:
-        'Precompute every confident region (sky/ground/shadows/highlights/skin/subject/face — and, on a Pro host with a face, the face-feature set scene:face_skin/_eyes/_brows/_lips/_teeth/_nose/_under_eye/_cheeks) and SAVE each as a managed `scene:*` alpha channel, returning the `regions` MENU of what is confidently selectable (each with its method + confidence). ps_select_by_reference then loads the saved channel instantly. Set false for a light read with no channels. The `scene:` channel-name prefix is RESERVED: channels matching it are treated as derived and are deleted on the next scene read and on ps_save_psd, so do not give a channel you want to keep a `scene:`-prefixed name.',
+        'EAGERLY derive every region (sky/ground/shadows/highlights/skin/subject/face) up front and SAVE each confident one as a managed `scene:*` alpha channel, so the returned menu carries a verified method + confidence for each. Costs one derive per target — measured at ~21s on a 4898x3265 layered document, against a 30s script timeout — so it is OFF by default. Leave it off unless you specifically need every region scored in one call: the default advertises the same menu as `on_demand` entries and ps_select_by_reference derives whichever region you actually ask for (then saves its channel, so repeats of THAT region are instant). The `scene:` channel-name prefix is RESERVED: channels matching it are treated as derived and are deleted on the next scene read and on ps_save_psd, so do not give a channel you want to keep a `scene:`-prefixed name.',
     },
     composition_context: {
       type: 'object',
@@ -268,8 +269,10 @@ async function scene(
     });
     const model = built.model;
 
-    // Oversight loop: precompute every confident region, save each as a managed
-    // scene:* channel, and return the menu of what is confidently selectable.
+    // Oversight loop. By DEFAULT this advertises the menu and derives nothing —
+    // the eager pass cost ~21s of the ~30s call and three of its seven targets
+    // resolved to nothing (see PRECOMPUTE_TARGETS). `save_regions:true` opts
+    // back into deriving and scoring every region up front.
     let regions: RegionMenuItem[] = [];
     // Distinguish "precompute ran and found nothing" from "precompute FAILED".
     // Without this a transient PS error left regions=[] and every entry was
@@ -296,6 +299,8 @@ async function scene(
         // rather than letting the empty menu read as "nothing is selectable".
         precomputeOk = false;
       }
+    } else {
+      regions = [...candidateMenu(model), ...faceMenuFor(model, hasPro)];
     }
 
     const content: ToolResult['content'] = [];
@@ -320,20 +325,33 @@ async function scene(
         // Non-fatal — return the structured model without the preview.
       }
     }
-    const menuText = !saveRegions
-      ? ''
-      : regions.length
+    const named = (r: RegionMenuItem): string => `${r.target}${r.label ? `:${r.label}` : ''}`;
+    const menuText = !regions.length
+      ? saveRegions
+        ? ' No confident named regions detected here.'
+        : ''
+      : saveRegions
         ? ` Confident regions (select by name): ${regions
-            .map((r) => `${r.target}${r.label ? `:${r.label}` : ''} ${r.confidence.toFixed(2)}`)
+            .map(
+              (r) => `${named(r)}${r.confidence === undefined ? '' : ` ${r.confidence.toFixed(2)}`}`
+            )
             .join(', ')}.`
-        : ' No confident named regions detected here.';
+        : // Candidates, not verdicts — say so, or the model reads the list as a
+          // guarantee each one will resolve and stops checking `passed`.
+          ` Selectable by name (each resolved when you ask for it, not yet scored): ${regions
+            .map(named)
+            .join(', ')}.`;
     content.push({ type: 'text' as const, text: summarizeScene(model) + menuText });
 
     return {
       content,
       structuredContent: {
         ...(model as unknown as Record<string, unknown>),
-        regions: reconcileRegions(model, regions, saveRegions && precomputeOk),
+        regions: reconcileRegions(
+          model,
+          regions,
+          saveRegions ? (precomputeOk ? 'resolved' : 'unresolved') : 'candidate'
+        ),
         region_menu: regions,
       },
     };
@@ -356,14 +374,21 @@ async function scene(
  *
  * Each entry now carries `selectable` / `selectable_via` / `selectable_confidence`
  * pointing at the authoritative menu result, so the coarse coverage is visibly
- * an estimate rather than a verdict. When regions weren't precomputed
- * (save_regions:false) there is nothing to reconcile against and the entries are
- * marked `unknown` rather than implying absence.
+ * an estimate rather than a verdict.
+ *
+ * Three menu modes, because "we didn't check" has two distinct causes that must
+ * not be collapsed:
+ * - `resolved`   — the eager pass ran; the menu is authoritative.
+ * - `candidate`  — the default lazy read; the region is ADVERTISED and will be
+ *                  scored when `ps_select_by_reference` asks for it.
+ * - `unresolved` — the eager pass was requested and FAILED; we know nothing.
  */
+type MenuMode = 'resolved' | 'candidate' | 'unresolved';
+
 function reconcileRegions(
   model: SceneModel,
   menu: RegionMenuItem[],
-  resolved: boolean
+  mode: MenuMode
 ): Array<Record<string, unknown>> {
   return model.regions.map((r) => {
     const base = r as unknown as Record<string, unknown>;
@@ -371,13 +396,16 @@ function reconcileRegions(
     // consumer writing `if (r.selectable)` would read the string 'unknown' as
     // truthy and treat a region we never resolved as confirmed-selectable.
     // null is falsy, so the unknown case degrades to "don't assume", and
-    // `selectable_state` carries the distinction explicitly.
-    if (!resolved) {
+    // `selectable_state` carries the distinction explicitly. A `candidate` is
+    // null for the same reason — advertised is not verified.
+    if (mode !== 'resolved') {
+      const advertised = mode === 'candidate' && menu.some((m) => m.target === r.kind);
       return {
         ...base,
         coverage_is_estimate: true,
         selectable: null,
-        selectable_state: 'not_resolved',
+        selectable_state: advertised ? 'candidate' : 'not_resolved',
+        ...(advertised ? { selectable_via: 'on_demand' } : {}),
       };
     }
     const hit = menu.find((m) => m.target === r.kind);
@@ -524,14 +552,23 @@ async function selectByReference(
       skyCtx: skyCtxFrom(built),
     });
 
-    // Materialize the lazily-advertised face features: the mesh derive above is
-    // the expensive part, so persist the result as its scene:* channel and every
-    // repeat select loads it by name through the fast path instead of re-running
-    // the mesh. Only features actually asked for get a channel — that is the
-    // whole point of deferring them (see `faceMenu` in region-precompute.ts).
+    // Materialize the lazily-advertised region: the derive above is the
+    // expensive part (1-9s for a CE region, more for the face mesh), so persist
+    // the result as its scene:* channel and every repeat select loads it by name
+    // through the fast path instead of re-deriving. Only regions actually asked
+    // for get a channel — that is the whole point of deferring them (see
+    // `faceMenu` and PRECOMPUTE_TARGETS in region-precompute.ts).
+    //
+    // This covers EVERY target, not just face_*. It has to: once the eager
+    // precompute stopped running by default, a CE region that did not persist
+    // here would re-derive on every single select, turning a one-time cost into
+    // a permanent per-call one. Demand-driven saving is also what keeps the old
+    // memory hazard away — we write the one or two channels a session uses, not
+    // all seven at full resolution.
+    //
     // Best-effort: a failed save costs a re-derive next time, never the selection
     // the caller just asked for.
-    if (res.passed && target.startsWith('face_')) {
+    if (res.passed) {
       try {
         await saveSelectionAsSceneChannel(connection, target);
       } catch (err) {
@@ -650,9 +687,9 @@ export function createSceneTools(
                   },
                   selectable_state: {
                     type: 'string',
-                    enum: ['selectable', 'not_selectable', 'not_resolved'],
+                    enum: ['selectable', 'not_selectable', 'candidate', 'not_resolved'],
                     description:
-                      '`selectable`: a precomputed channel is ready to load. `not_selectable`: resolution ran and this region did not pass the confidence gate. `not_resolved`: precompute did not run or failed, so absence here is NOT evidence the region is unavailable.',
+                      '`selectable`: a precomputed channel is ready to load. `not_selectable`: resolution ran and this region did not pass the confidence gate. `candidate`: the DEFAULT read advertised this region without deriving it — ps_select_by_reference scores it when you ask, and it may still turn out not to pass. `not_resolved`: an eagerly-requested precompute did not run or failed, so absence here is NOT evidence the region is unavailable.',
                   },
                   selectable_via: {
                     type: 'string',
