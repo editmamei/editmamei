@@ -247,6 +247,34 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
     pattern: /file not found|map not found|lut not found|could not open lut/i,
   },
   { errorClass: 'face_not_found', pattern: /no face mesh|no face detected/i },
+  // ── Perception pipeline (hoisted above the input tier for the same reason
+  //    the not-found tier is: these messages quote a THIRD PARTY — a JPEG
+  //    decoder, the ONNX runtime, the OS — whose wording collides with
+  //    `invalid_argument`'s ordinary-English vocabulary. "failed to decode JPEG
+  //    at C:/…: Invalid SOS parameters" was landing in `invalid_argument` on the
+  //    word "Invalid", which is confidently wrong rather than honestly `other`;
+  //    an ONNX load failure was landing in `ps_op_failed`, blaming Photoshop for
+  //    a Node-side problem. Each pattern below is anchored to a throw site that
+  //    exists in the tree, not to a hypothetical. ────────────────────────────
+  {
+    errorClass: 'perception_export_failed',
+    // detect-active-doc.ts — the perception export is read_scene's FIRST step
+    // and the likeliest real failure in the whole pipeline.
+    pattern: /saveAs reported success but no file|perception export/i,
+  },
+  { errorClass: 'image_decode_failed', pattern: /failed to decode (jpeg|png)/i },
+  {
+    errorClass: 'detection_unavailable',
+    // Matches the runtime's own text, not ours: a missing/unloadable model
+    // surfaces from onnxruntime rather than from a throw we control.
+    pattern: /onnx|onnxruntime|failed to load model|detection model/i,
+  },
+  {
+    // Case-SENSITIVE by design: these are OS error codes, and a case-insensitive
+    // match would fire on ordinary prose containing the letters.
+    errorClass: 'file_io',
+    pattern: /\b(ENOENT|EBUSY|EACCES|EPERM|EMFILE|ENOSPC)\b/,
+  },
   // ── Input errors ─────────────────────────────────────────────────────────
   {
     errorClass: 'schema_validation',
