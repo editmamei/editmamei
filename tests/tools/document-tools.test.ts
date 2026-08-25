@@ -121,6 +121,10 @@ describe('createDocumentTools', () => {
     const tools = createDocumentTools(conn.asConnection(), snippetClient);
     const res = await callTool(tools, 'ps_document', { op: 'activate', name: '' });
     expect(res.isError).toBe(true);
+    // Assert the SPECIFIC message: activate would already error on a missing
+    // selector, so `isError` alone passes with or without the empty-name check
+    // and would not notice it being removed.
+    expect(textOf(res)).toContain('empty string');
     expect(conn.executions).toHaveLength(0);
   });
 

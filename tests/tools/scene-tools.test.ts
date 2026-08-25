@@ -440,16 +440,25 @@ describe('createSceneTools', () => {
     expect(savedChannel(conn.allScripts(), 'subject')).toBeUndefined();
   });
 
+  // The `passed` assertion is the anti-vacuity guard, not decoration: a REJECTED
+  // derive has never persisted (pinned by the giraffe test above), so without it
+  // these would pass for the pre-existing reason and say nothing about the
+  // discriminated rule.
   it('an INSTANCE-narrowed derive persists nothing either', async () => {
-    await callTool(tools(), 'ps_select_by_reference', { target: 'subject', instance: 0 });
+    const res = await callTool(tools(), 'ps_select_by_reference', {
+      target: 'subject',
+      instance: 0,
+    });
+    expect((res.structuredContent as { passed: boolean }).passed).toBe(true);
     expect(savedChannel(conn.allScripts(), 'subject')).toBeUndefined();
   });
 
   it('a composition_context derive persists nothing — it passed under different priors', async () => {
-    await callTool(tools(), 'ps_select_by_reference', {
+    const res = await callTool(tools(), 'ps_select_by_reference', {
       target: 'sky',
       composition_context: { profile: 'big_sky' },
     });
+    expect((res.structuredContent as { passed: boolean }).passed).toBe(true);
     expect(savedChannel(conn.allScripts(), 'sky')).toBeUndefined();
   });
 

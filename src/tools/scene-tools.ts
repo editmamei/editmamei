@@ -316,7 +316,10 @@ async function scene(
       try {
         await invalidateSceneChannelsIfStale(connection, model.provenance.cache_key);
       } catch {
-        // best-effort — a stale channel is recoverable with refresh:true
+        // Best-effort. Note the recovery is `ps_select_by_reference {refresh:true}`,
+        // NOT refresh:true here: with the pixels unchanged this call returns at its
+        // own guard and purges nothing, which is correct (identical pixels mean the
+        // channels are not semantically stale).
       }
       regions = [...candidateMenu(model), ...faceMenuFor(model, hasPro)];
     }
@@ -563,6 +566,12 @@ async function selectByReference(
     // shared channel; it always derives. `composition_context` counts because it
     // moves the gate, so a mask that passed under `profile:big_sky` must not come
     // back later as the default-priors answer.
+    //
+    // `max_dimension` is deliberately NOT in this set: it changes the derive's
+    // FIDELITY, not its meaning — a sky traced at 4096 and one at 512 are both
+    // answers to "the sky" — and it is always defined (schema default), so it
+    // could not discriminate as written. The residual is that a deliberately
+    // coarse derive can be loaded later by a default-resolution call.
     const discriminated =
       args.label !== undefined ||
       args.instance !== undefined ||
@@ -570,9 +579,15 @@ async function selectByReference(
 
     // Fast path FIRST: if a prior derive saved a `scene:<target>` channel, load it
     // BY NAME — instant, and with NO perception rebuild (no export/detect).
-    // History-independent: the channel is a real doc object Photoshop keeps in sync
-    // with the canvas, so it stays valid across edits. `refresh:true` skips this to
-    // force a fresh derive (e.g. after painting that changes what a region means).
+    //
+    // This reads no cache key, deliberately: consulting one would mean building
+    // the scene model on every select, which is the entire cost the fast path
+    // exists to avoid. The trade is that the channel is geometrically valid but
+    // not necessarily semantically current — Photoshop keeps the mask aligned to
+    // the canvas and has no idea the sky underneath was replaced. A scene read
+    // purges on a pixel change (invalidateSceneChannelsIfStale); a
+    // select→edit→select run with no read in between does not, and `refresh:true`
+    // is the caller's way out. Said plainly in this tool's description too.
     if (!refresh && !discriminated) {
       const loaded = await loadPrecomputedRegion(connection, target);
       if (loaded) {
@@ -580,7 +595,7 @@ async function selectByReference(
           content: [
             {
               type: 'text' as const,
-              text: `Selected "${target}" from the saved scene:${target} channel (precomputed by ps_read_scene). Verify with ps_get_selection_preview.`,
+              text: `Selected "${target}" from the saved scene:${target} channel (cached by an earlier derive). If the image changed since, re-run with refresh:true. Verify with ps_get_selection_preview.`,
             },
           ],
           structuredContent: {

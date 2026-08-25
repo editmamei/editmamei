@@ -1,18 +1,26 @@
 /**
  * Region precompute — Scene Model v2.1 oversight loop.
  *
- * At scene-read time, run every gated region method and SAVE each confident one as
- * a managed `scene:<target>` alpha channel, returning the MENU of what is
- * confidently selectable. `ps_select_by_reference` then LOADS the saved
- * channel BY NAME (instant) instead of re-deriving.
+ * A managed `scene:<target>` alpha channel caches a derived region so
+ * `ps_select_by_reference` can LOAD it BY NAME (instant) instead of re-deriving.
+ * Since 2026-08-25 they are written on FIRST USE by a select, not eagerly by
+ * every scene read — `PRECOMPUTE_TARGETS` below has the measurements.
  *
  * Loading is by NAME and history-independent — `doc.selection.load(scene:<target>)`.
  * No cache-key / history matching is involved: an alpha channel is a real object
  * stored IN the document, which Photoshop keeps in sync with the canvas (it
- * crops/resizes WITH the image), so a saved selection stays valid across edits.
- * It also lives only in the document it was saved in, so switching documents
- * naturally finds no channel and the caller re-derives. To force a fresh derive
- * (e.g. after painting that changes what a region MEANS), pass `refresh:true`.
+ * crops/resizes WITH the image). It also lives only in the document it was saved
+ * in, so switching documents naturally finds no channel and the caller re-derives.
+ *
+ * **Geometrically valid is not semantically current.** Photoshop keeps the mask
+ * aligned to the canvas; it has no idea the sky underneath was replaced. Two
+ * things bound that, and neither is the channel itself:
+ *   - `invalidateSceneChannelsIfStale` purges when a scene read sees the
+ *     document's pixels change (this is the one that fires on the default path);
+ *   - `refresh:true` on `ps_select_by_reference` skips the channel and derives.
+ * A select→edit→select run with no scene read in between consults neither, and
+ * will serve the pre-edit mask. That window is documented in the
+ * `ps_select_by_reference` description, which is where a caller can act on it.
  *
  * `lastPrecomputedKey`/`cachedMenu` below are ONLY a menu-reuse optimization for a
  * repeated `ps_read_scene` read at the same doc-state — they do NOT gate the
@@ -58,8 +66,11 @@ export function __resetPrecompute(): void {
 /**
  * The managed-channel namespace. **`scene:` is RESERVED**: every alpha channel
  * whose name starts with this prefix is treated as derived state Editmamei owns,
- * and is deleted without warning by `purgeSceneChannels` (on `ps_save_psd`) and
- * at the start of every `precomputeRegions` pass. A user channel named
+ * and is deleted without warning by `purgeSceneChannels` (on `ps_save_psd`), at
+ * the start of every `precomputeRegions` pass, and by
+ * `invalidateSceneChannelsIfStale` when a scene read sees the document change —
+ * that third one fires on the DEFAULT path, so it is the one most likely to
+ * delete a channel out from under you. A user channel named
  * `scene:mine` is therefore data loss, not a collision — the match is
  * prefix-only, so nothing distinguishes it from a mask we derived.
  *
@@ -107,19 +118,30 @@ let channelsDocState: string | null = null;
  * the DOCUMENT, so they outlive this process and a stale one from an earlier
  * session is exactly the case that must not be trusted.
  *
- * Best-effort — a failed purge costs a stale channel, and callers can always
- * force a fresh derive with `refresh:true`.
+ * A failed purge FAILS SAFE — the state is recorded only after the purge
+ * actually lands, and cleared if it does not, so the next read tries again.
+ * Latching the key first would mean one transient PS error (a modal, a busy
+ * app, the timeout elapsing) permanently convinces this module the channels
+ * belong to the new state: every later read returns at the guard, never
+ * retries, and `ps_select_by_reference` serves the pre-edit mask with
+ * `passed:true, confidence:1` for the lifetime of that doc-state — the exact
+ * bug this function exists to prevent, latched in. This matches
+ * `channelsExist`'s policy below: treat "couldn't verify" as "assume stale",
+ * because the rebuild path is cheap and the wrong mask is not.
+ *
+ * Recovery if it does go stale: `ps_select_by_reference {refresh:true}`, which
+ * skips the channel entirely and re-derives.
  */
 export async function invalidateSceneChannelsIfStale(
   connection: PhotoshopConnection,
   cacheKey: string
 ): Promise<void> {
   if (channelsDocState === cacheKey) return;
-  channelsDocState = cacheKey;
   try {
     await runScript(connection, deleteSceneChannelsScript(), SCENE_CHANNEL_TIMEOUT_MS);
+    channelsDocState = cacheKey;
   } catch {
-    // best-effort
+    channelsDocState = null; // unknown → purge again on the next read
   }
 }
 

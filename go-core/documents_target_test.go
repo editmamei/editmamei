@@ -83,9 +83,16 @@ func TestDocumentResolutionBlockRefusesAmbiguityAndIsAsciiOnly(t *testing.T) {
 }
 
 func TestDocumentResolutionBlockEscapesTheName(t *testing.T) {
-	// A document name is user data reaching emitted JS source.
-	block := documentResolutionBlock(DocTarget{Name: `a"; app.quit(); //`, HasName: true})
-	if strings.Contains(block, `app.quit();`) && !strings.Contains(block, `\"`) {
-		t.Error("the name must be emitted as an escaped string literal, not raw source")
+	// A document name is user data reaching emitted JS source. State the property
+	// directly — that the block contains exactly what jsLit produces — rather than
+	// probing for an escape sequence, which any unrelated addition to the block
+	// could supply incidentally, silently retiring the guard.
+	const hostile = `a"; app.quit(); //`
+	block := documentResolutionBlock(DocTarget{Name: hostile, HasName: true})
+	if !strings.Contains(block, jsLit(hostile)) {
+		t.Error("the name must be emitted through jsLit, as an escaped string literal")
+	}
+	if strings.Contains(block, `= "a"; app.quit();`) {
+		t.Error("the name escaped its string literal and became executable source")
 	}
 }
