@@ -1067,7 +1067,7 @@ export class EditmameiServer {
         // user already wanted and appears at most once per new version rather
         // than once per session. Phrased as an option, not an instruction: the
         // model is relaying an update, not running an errand for marketing.
-        ` They can also get release notes by email at https://editmamei.com/?src=update-notice` +
+        ` They can also get release notes by email at https://editmamei.com/?src=update_notice` +
         ` if they would rather not rely on catching this notice.`,
       notify: true,
     };

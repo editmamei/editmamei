@@ -218,7 +218,7 @@ describe('ps_ping surfaces update_available', () => {
     // new version. On the passive later pings it must be absent entirely —
     // repeating it every ping is the difference between a pointer and a nag.
     const first = await server.pingPhotoshop();
-    expect(first.content[0].text).toContain('editmamei.com/?src=update-notice');
+    expect(first.content[0].text).toContain('editmamei.com/?src=update_notice');
 
     const second = await server.pingPhotoshop();
     expect(second.content[0].text).not.toContain('editmamei.com');
