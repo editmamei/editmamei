@@ -51,10 +51,10 @@ earlier versions are preserved in the archived wiki repository's
     region means. A narrowed request — one passing `label`, `instance` or `composition_context` —
     is never cached, because the stored region cannot record which subject or which priors it was
     derived for; those re-derive every time.
-  - A scene read now also clears the derived `scene:*` channels when it sees the image has changed,
-    so a stale mask cannot be handed back later. The `scene:` channel-name prefix is reserved for
-    exactly this reason: a channel of your own named `scene:something` will be deleted along with
-    them.
+  - A scene read now also clears the derived `scene:*` channels when the document has changed, so a
+    stale mask is not handed back after a scene read. The `scene:` channel-name prefix is reserved
+    for exactly this reason: a channel of your own named `scene:something` will be deleted along
+    with them.
 
 ### Added
 
