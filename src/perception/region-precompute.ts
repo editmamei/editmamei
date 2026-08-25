@@ -146,13 +146,20 @@ let channelsDocState: string | null = null;
  *   `passed:true, confidence:1`.
  *
  * A "sticky" written-flag closes that particular path but not the sibling one,
- * where a document carrying `scene:*` channels a user saved manually inherits
- * another document's already-purged status. Doing this correctly needs
- * PER-DOCUMENT bookkeeping, and the scene model has no identity fit for the job:
- * `docKeyFrom` is `name:WxH:selectionState`, which flips on a selection change
- * and collides for two open documents sharing a name — a state Photoshop
- * permits. Fix the identity first, then revisit; do not key it on the cache_key
- * string.
+ * where a document carrying `scene:*` channels from a NATIVE Photoshop save (or
+ * any earlier session) inherits another document's already-purged status —
+ * `File > Save` bypasses `purgeSceneChannels` entirely and bakes whatever is
+ * live straight into the PSD, so this is an ordinary vector, not an exotic one.
+ *
+ * Doing this correctly needs PER-DOCUMENT bookkeeping, and the scene model has
+ * no identity fit for the job: `docKeyFrom` is `name:WxH:selectionState`, which
+ * flips on a selection change, collides for two open documents sharing a name
+ * and size — a state Photoshop permits, and one `documentResolutionBlock`
+ * refuses to guess about elsewhere — and returns `null` outright on a degraded
+ * context, so the key is not merely ambiguous but sometimes absent. Do not key a
+ * per-document bucket on the `cache_key` either: it embeds the pixel hash, so it
+ * would fragment on every edit and answer a different question. Fix the identity
+ * first (Photoshop's own `doc.id` is the obvious candidate), then revisit.
  */
 export async function invalidateSceneChannelsIfStale(
   connection: PhotoshopConnection,
