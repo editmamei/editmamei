@@ -1063,12 +1063,16 @@ export class EditmameiServer {
       note:
         ` IMPORTANT — tell the user before continuing: Editmamei v${u.latest} is available` +
         ` (this install runs v${u.current}).${fixNote} To update: ${u.how_to_update}` +
-        // Mentioned only on the first-render notice, so it rides a message the
-        // user already wanted and appears at most once per new version rather
-        // than once per session. Phrased as an option, not an instruction: the
-        // model is relaying an update, not running an errand for marketing.
-        ` They can also get release notes by email at https://editmamei.com/?src=update_notice` +
-        ` if they would rather not rely on catching this notice.`,
+        // Rides the first-render notice only, never the passive later ones, so
+        // it cannot repeat within a session. It DOES recur across sessions for
+        // as long as an update stays uninstalled: the server is a fresh process
+        // each time and this state is per-instance. Installing the update ends
+        // the notice and this line together.
+        //
+        // Marked not-urgent explicitly so it does not inherit the weight of the
+        // imperative above, which is about the update itself.
+        ` Not urgent: release notes are also available by email at` +
+        ` https://editmamei.com/blog?src=update_notice.`,
       notify: true,
     };
   }

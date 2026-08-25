@@ -208,20 +208,22 @@ describe('ps_ping surfaces update_available', () => {
     expect(second.content[0].text).not.toContain('tell the user');
   });
 
-  it('mentions email updates once, on the first notice only', async () => {
+  it('mentions email release notes on the first notice only, and marks it not urgent', async () => {
     const server = new EditmameiServer() as unknown as PingServer;
     server.session.connection = makeConnection({ info: null });
     server.snippetClient = makeSnippetClient();
     server.updateInfo = { ...newerInfo };
 
-    // Rides the notice the user already wanted, so it appears at most once per
-    // new version. On the passive later pings it must be absent entirely —
-    // repeating it every ping is the difference between a pointer and a nag.
     const first = await server.pingPhotoshop();
-    expect(first.content[0].text).toContain('editmamei.com/?src=update_notice');
+    expect(first.content[0].text).toContain('src=update_notice');
+    // The imperative above is about the update; this line must not read as
+    // part of it.
+    expect(first.content[0].text).toContain('Not urgent:');
 
+    // Absent from the passive later pings. Asserted on the source marker
+    // rather than the bare domain, which other copy may legitimately use.
     const second = await server.pingPhotoshop();
-    expect(second.content[0].text).not.toContain('editmamei.com');
+    expect(second.content[0].text).not.toContain('src=update_notice');
   });
 
   it('omits the update note and reports null when nothing newer was found', async () => {
