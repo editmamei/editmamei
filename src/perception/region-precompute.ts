@@ -61,7 +61,6 @@ export function __resetPrecompute(): void {
   lastPrecomputedKey = null;
   cachedMenu = [];
   channelsDocState = null;
-  channelsWritten = false;
 }
 
 /**
@@ -98,20 +97,10 @@ export async function saveSelectionAsSceneChannel(
     saveSelectionToNamedChannelScript(`${CHANNEL_PREFIX}${target}`),
     SCENE_CHANNEL_TIMEOUT_MS
   );
-  channelsWritten = true;
 }
 
 /** The doc-state key the currently-saved `scene:*` channels were derived at. */
 let channelsDocState: string | null = null;
-
-/**
- * Whether anything has written a `scene:*` channel since the last known-clean
- * point. Purely an optimization — see `invalidateSceneChannelsIfStale` — and
- * deliberately conservative: it starts `true`-equivalent (via a null
- * `channelsDocState`, which forces a purge regardless) so an unknown document is
- * never assumed clean.
- */
-let channelsWritten = false;
 
 /**
  * Drop the derived `scene:*` channels when the document has moved on.
@@ -142,41 +131,15 @@ let channelsWritten = false;
  *
  * Recovery if it does go stale: `ps_select_by_reference {refresh:true}`, which
  * skips the channel entirely and re-derives.
- *
- * **The round trip is skipped when there is provably nothing of ours to
- * delete.** Measured live 2026-08-25 on a 4898x3265 document: the purge cost
- * ~1.68s of a 4.57s read while deleting zero channels, because
- * `deleteSceneChannelsScript` pays a script round trip plus an unconditional
- * `restoreCompositeChannel` slct event regardless of what it finds. Two
- * conditions must BOTH hold to skip it, and they are deliberately narrow:
- *
- *  - `channelsDocState !== null` — we have purged this document at least once in
- *    this process, so we know its starting state. A null means "unknown", which
- *    covers a fresh process meeting channels left in a saved PSD by an earlier
- *    session, and always purges.
- *  - `!channelsWritten` — nothing has written a `scene:*` channel since. Only
- *    two places do (`saveSelectionAsSceneChannel` and the eager pass), and both
- *    set the flag.
- *
- * So the skip applies exactly to the read/edit/read loop where no select ever
- * ran, which is where the cost was pure waste. Any select at all, or any doubt
- * about the document, and the purge runs.
  */
 export async function invalidateSceneChannelsIfStale(
   connection: PhotoshopConnection,
   cacheKey: string
 ): Promise<void> {
   if (channelsDocState === cacheKey) return;
-  if (channelsDocState !== null && !channelsWritten) {
-    // Known document, nothing written since it was last clean: there is no
-    // scene:* channel to be stale. Adopt the new state without a round trip.
-    channelsDocState = cacheKey;
-    return;
-  }
   try {
     await runScript(connection, deleteSceneChannelsScript(), SCENE_CHANNEL_TIMEOUT_MS);
     channelsDocState = cacheKey;
-    channelsWritten = false;
   } catch {
     channelsDocState = null; // unknown → purge again on the next read
   }
@@ -542,7 +505,6 @@ export async function precomputeRegions(
   // This pass IS the purge, so record the state its channels belong to — else
   // the lazy path's staleness check would purge them again on the next read.
   channelsDocState = model.provenance.cache_key;
-  channelsWritten = false;
   const menu: RegionMenuItem[] = [];
   for (const target of PRECOMPUTE_TARGETS) {
     try {
@@ -558,8 +520,6 @@ export async function precomputeRegions(
           saveSelectionToNamedChannelScript(key),
           SCENE_CHANNEL_TIMEOUT_MS
         );
-        // Tell the lazy staleness check there is now something of ours to purge.
-        channelsWritten = true;
         menu.push({
           key,
           target,

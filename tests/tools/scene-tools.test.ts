@@ -480,40 +480,6 @@ describe('createSceneTools', () => {
     expect(method).not.toBe('precomputed_channel');
   });
 
-  // The staleness purge costs a real round trip (~1.7s live on a large document,
-  // measured 2026-08-25) and pays it even when it deletes nothing. It is skipped
-  // only when BOTH conditions hold — the document's state is known AND nothing
-  // has written a scene:* channel since. These pin that the skip can never
-  // swallow a purge that matters, which is the only way this optimization could
-  // hurt: a stale mask served at confidence 1.
-  const purgeCount = (scripts: string[]): number =>
-    scripts.filter((s) => s.includes('var removed = 0;')).length;
-
-  it('the FIRST read of an unknown document always purges — it may hold channels from a past session', async () => {
-    await callTool(tools(), 'ps_read_scene', { annotate: false });
-    expect(purgeCount(conn.allScripts())).toBe(1);
-  });
-
-  it('a read/edit/read loop with no select in it purges ONCE, not once per read', async () => {
-    // Nothing wrote a channel, so after the first read there is provably nothing
-    // of ours to be stale, however many times the pixels change.
-    const t = tools();
-    await callTool(t, 'ps_read_scene', { annotate: false });
-    await callTool(t, 'ps_read_scene', { annotate: false, refresh: true });
-    await callTool(t, 'ps_read_scene', { annotate: false, refresh: true });
-    expect(purgeCount(conn.allScripts())).toBe(1);
-  });
-
-  it('once a select has WRITTEN a channel, the next changed-state read purges again', async () => {
-    const t = tools();
-    await callTool(t, 'ps_read_scene', { annotate: false });
-    expect(purgeCount(conn.allScripts())).toBe(1);
-    // This derive persists scene:sky — now there IS something that can go stale.
-    await callTool(t, 'ps_select_by_reference', { target: 'sky' });
-    await callTool(t, 'ps_read_scene', { annotate: false, refresh: true });
-    expect(purgeCount(conn.allScripts())).toBe(2);
-  });
-
   it('sky → threshold glue, gate PASSES for a clean upper-band region', async () => {
     const res = await callTool(tools(), 'ps_select_by_reference', { target: 'sky' });
     expect(res.isError).toBeUndefined();
