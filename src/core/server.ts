@@ -1071,8 +1071,13 @@ export class EditmameiServer {
         //
         // Marked not-urgent explicitly so it does not inherit the weight of the
         // imperative above, which is about the update itself.
-        ` Not urgent: release notes are also available by email at` +
-        ` https://editmamei.com/blog?src=update_notice.`,
+        //
+        // The URL goes LAST and carries no trailing punctuation: this text is
+        // relayed verbatim into chat clients and terminals that auto-linkify,
+        // and many of them swallow a trailing period into the href, which would
+        // break the one link the sentence exists to offer. A test pins it.
+        ` Not urgent: they can also read and subscribe to release notes at` +
+        ` https://editmamei.com/blog?src=update_notice`,
       notify: true,
     };
   }
