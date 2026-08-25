@@ -41,6 +41,20 @@ describe('ToolRegistry', () => {
     expect(registry.count()).toBe(1);
   });
 
+  it('unregister removes exactly the named tool, leaving the rest', () => {
+    registry.registerAll([dummyTool('a'), dummyTool('b')]);
+    registry.unregister('a');
+    expect(registry.get('a')).toBeUndefined();
+    expect(registry.get('b')).toBeDefined();
+    expect(registry.count()).toBe(1);
+  });
+
+  it('unregister is a no-op for a name that was never registered', () => {
+    registry.register('alpha', dummyTool('alpha'));
+    registry.unregister('missing');
+    expect(registry.count()).toBe(1);
+  });
+
   it('registerAll batch-registers an array of definitions', () => {
     registry.registerAll([dummyTool('a'), dummyTool('b'), dummyTool('c')]);
     expect(registry.count()).toBe(3);

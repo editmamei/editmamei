@@ -14,6 +14,14 @@ import {
 } from '@editmamei/delivery/store.ts';
 import type { DeliveryFetch } from '@editmamei/delivery/client.ts';
 import { fakeDelivery, fakeDeliveryConfig as cfg, jsonRes } from '../fixtures/fake-delivery.ts';
+import { VERSION } from '@editmamei/version.ts';
+import { compareVersions } from '@editmamei/delivery/provision.ts';
+import { ModuleLifecycle } from '@editmamei/kernel/module-lifecycle.ts';
+import { ToolRegistry, type ToolDefinition } from '@editmamei/core/tool-registry.ts';
+import { Logger } from '@editmamei/utils/logger.ts';
+import { tierOf } from '@editmamei/core/tool-tiers.ts';
+import { groupOf } from '@editmamei/core/tool-groups.ts';
+import type { Kernel } from '@editmamei/kernel/kernel.ts';
 
 /**
  * Self-healing Pro module load + hardening (v0.22.1). A downloaded module built
@@ -21,7 +29,9 @@ import { fakeDelivery, fakeDeliveryConfig as cfg, jsonRes } from '../fixtures/fa
  * the server — the whole process (CE included) used to die when
  * `assertToolsClassified` threw. These tests pin the skip-reason model, the two
  * degrade-to-Community nets (ABI gate + snapshot/restore rollback), the corrupt
- * detection, and the honest, reason-driven background self-heal.
+ * detection, and the honest, reason-driven background self-heal — plus the
+ * forward-compat per-tool degrade (a module NEWER than the host loses only its
+ * unrecognized tools, not the whole module).
  *
  * Scaffolding mirrors ce-loads-pro-module.test.ts: a COMMUNITY-edition host, a
  * temp ~/.editmamei with a granted license + a genuinely-signed encrypted module
@@ -48,7 +58,28 @@ vi.mock('@editmamei/delivery/signing.ts', async (importOriginal) => {
 
 import { EditmameiServer, classifyModuleOutcome } from '@editmamei/core/server.ts';
 
-const MOD_VERSION = '9.9.9';
+/**
+ * Fixture module version for every test EXCEPT the forward-compat cases below.
+ * Kept <= the host's `VERSION` (src/version.ts) so these fixtures exercise the
+ * pre-existing whole-module rollback path (a backward or equal-version
+ * incompatibility) rather than the newer forward per-tool degrade.
+ */
+const MOD_VERSION = '0.9.9';
+/** Fixture module version strictly newer than the host — the forward-compat cases. */
+const FORWARD_MOD_VERSION = '99.0.0';
+
+/**
+ * One patch above the live host VERSION — the adjacent-release boundary the
+ * forward-compat degrade is actually meant for (a module one release ahead,
+ * not an arbitrary far-future version like FORWARD_MOD_VERSION). Derived
+ * programmatically so a future VERSION bump never leaves a stale hardcoded
+ * literal behind.
+ */
+function bumpPatch(version: string): string {
+  const [core] = version.split('-', 1);
+  const [major, minor, patch] = core.split('.').map(Number);
+  return `${major}.${minor}.${patch + 1}`;
+}
 
 // One signer for every ON-DISK fixture module → fx.pub stays constant so the boot
 // re-verification (mocked MODULE_SIGNING_PUBLIC_KEYS) accepts them. The re-provision
@@ -80,14 +111,25 @@ const dirOf = (home: string): string => join(home, '.editmamei');
 
 /**
  * Build a fresh temp ~/.editmamei home with a granted license + a signed,
- * encrypted module at `abi` whose handlers register `names`. Returns the home;
- * sets fx.home so the next `new EditmameiServer()` resolves against it.
+ * encrypted module at `abi`/`version` whose handlers register `names`. Returns
+ * the home; sets fx.home so the next `new EditmameiServer()` resolves against it.
+ * `version` defaults to MOD_VERSION (<= host VERSION); the forward-compat tests
+ * pass FORWARD_MOD_VERSION (or the host's own VERSION, for the equal-version
+ * fail-safe case) explicitly.
  */
-function buildHome({ names, abi }: { names: string[]; abi: number }): string {
+function buildHome({
+  names,
+  abi,
+  version = MOD_VERSION,
+}: {
+  names: string[];
+  abi: number;
+  version?: string;
+}): string {
   const home = mkdtempSync(join(tmpdir(), 'em-selfheal-'));
   homes.push(home);
   const dir = dirOf(home);
-  const modDir = join(dir, 'modules', 'pro', MOD_VERSION);
+  const modDir = join(dir, 'modules', 'pro', version);
   mkdirSync(modDir, { recursive: true });
 
   writeFileSync(
@@ -109,25 +151,20 @@ function buildHome({ names, abi }: { names: string[]; abi: number }): string {
     { name: 'pro-handlers.mjs', data: Buffer.from(handlersRegistering(names)) },
     {
       name: 'manifest.json',
-      data: Buffer.from(JSON.stringify({ sku: 'pro', version: MOD_VERSION, abi })),
+      data: Buffer.from(JSON.stringify({ sku: 'pro', version, abi })),
     },
   ];
   const blob = packBundle(files, contentKey);
   const sha256 = sha256Hex(blob);
-  const sig = edSign(null, moduleSigMessage('pro', MOD_VERSION, sha256), privateKey).toString(
-    'base64'
-  );
+  const sig = edSign(null, moduleSigMessage('pro', version, sha256), privateKey).toString('base64');
 
   writeFileSync(join(modDir, 'artifact.enc'), Buffer.from(blob), { mode: 0o600 });
-  writeFileSync(
-    join(modDir, 'manifest.json'),
-    JSON.stringify({ sku: 'pro', version: MOD_VERSION, abi })
-  );
+  writeFileSync(join(modDir, 'manifest.json'), JSON.stringify({ sku: 'pro', version, abi }));
   writeFileSync(
     join(dir, 'modules', 'pro', 'installed.json'),
     JSON.stringify({
       sku: 'pro',
-      version: MOD_VERSION,
+      version,
       abi,
       sha256,
       alg: 'AES-256-GCM',
@@ -160,6 +197,7 @@ type ServerProbe = {
   moduleSkipReason: 'corrupt' | 'incompatible' | null;
   reprovisionIfModuleSkipped(delivery: SelfHealDelivery): Promise<void>;
   ensureEntitledModuleFresh(delivery: SelfHealDelivery): Promise<void>;
+  computeModuleStatus(): { outcome: string } | null;
 };
 
 const names = (s: ServerProbe): string[] => s.toolRegistry.list().map((t) => t.name);
@@ -214,6 +252,228 @@ describe('EditmameiServer.loadModules — degrade-to-CE nets', () => {
     // Identity-equal to the pre-load CE definition — the module's overwrite was undone.
     expect(server.toolRegistry.get('ps_ping')).toBe(cePing);
     expect(server.moduleSkipReason).toBe('incompatible');
+  });
+});
+
+describe('fixture sanity — a future host VERSION bump must not silently break these fixtures', () => {
+  it('MOD_VERSION stays older than host VERSION; FORWARD_MOD_VERSION stays newer', () => {
+    // These fixtures are what route the tests below onto the backward-rollback
+    // path vs. the forward-degrade path. If a host VERSION bump ever pushed
+    // MOD_VERSION above it (or FORWARD_MOD_VERSION below it), every test relying
+    // on that routing would silently start exercising the WRONG code path
+    // instead of failing loudly — this guard turns that into a clear assertion
+    // failure with a message pointing straight at the cause.
+    expect(compareVersions(MOD_VERSION, VERSION)).toBeLessThan(0);
+    expect(compareVersions(FORWARD_MOD_VERSION, VERSION)).toBeGreaterThan(0);
+  });
+});
+
+describe('EditmameiServer.loadModules — forward-compat per-tool degrade', () => {
+  // The mirror-image case: a downloaded module NEWER than this host (the delivery
+  // manifest auto-updated ahead of a host restart onto the matching release) ships
+  // a tool this host's tool-tiers.ts/tool-groups.ts don't know yet. Only that ONE
+  // tool should be dropped — the rest of the module, and the rest of Pro, must
+  // keep working.
+
+  it('keeps a classifiable tool and drops only the unknown one from a FORWARD module', async () => {
+    buildHome({
+      names: ['ps_list_actions', 'ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: FORWARD_MOD_VERSION,
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await expect(server.loadModules()).resolves.toBeUndefined();
+
+    expect(names(server)).not.toContain('ps_future_tool_never_heard_of');
+    expect(names(server)).toContain('ps_list_actions'); // the rest of the module loaded
+    expect(names(server)).toContain('ps_ping'); // CE surface intact
+    expect(server.moduleSkipReason).toBeNull(); // the module IS loaded — no re-provision
+  });
+
+  it('drops every tool and contributes nothing when a FORWARD module registers only unknown tools', async () => {
+    buildHome({
+      names: ['ps_future_tool_never_heard_of', 'ps_another_future_tool'],
+      abi: 1,
+      version: FORWARD_MOD_VERSION,
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await expect(server.loadModules()).resolves.toBeUndefined();
+
+    expect(names(server)).not.toContain('ps_future_tool_never_heard_of');
+    expect(names(server)).not.toContain('ps_another_future_tool');
+    expect(names(server)).toContain('ps_ping'); // CE surface intact
+    expect(server.moduleSkipReason).toBeNull();
+  });
+
+  it('falls through to the full rollback for an EQUAL-version module with an unknown tool', async () => {
+    // The fail-safe: same-version build inconsistency is NOT a case a re-provision
+    // can fix (the manifest already matches), so it stays on the old whole-module
+    // rollback rather than silently limping along on a partial module.
+    buildHome({
+      names: ['ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: VERSION, // equal to the host — not strictly newer, so no degrade
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await expect(server.loadModules()).resolves.toBeUndefined();
+
+    expect(names(server)).not.toContain('ps_future_tool_never_heard_of');
+    expect(names(server)).toContain('ps_ping');
+    expect(server.moduleSkipReason).toBe('incompatible');
+  });
+
+  it('a degraded FORWARD module keeps its OWN ps_ping override — no identity restore', async () => {
+    // 'ps_ping' is already classified pre-load, so it's excluded from the
+    // added-name probe (an overwritten CE name never reaches the degrade — see
+    // the loadModules doc comment). On a DEGRADED (not rolled-back) load that
+    // means the module's overwrite of ps_ping SURVIVES, unlike the backward-
+    // rollback test above ("rollback RESTORES an overwritten CE tool by
+    // identity"), where restore() reverts it to the identity-equal CE definition.
+    buildHome({
+      names: ['ps_ping', 'ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: FORWARD_MOD_VERSION,
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    const cePing = server.toolRegistry.get('ps_ping');
+    expect(cePing).toBeDefined();
+
+    await server.loadModules();
+
+    expect(names(server)).not.toContain('ps_future_tool_never_heard_of');
+    expect(names(server)).toContain('ps_ping');
+    expect(server.toolRegistry.get('ps_ping')).not.toBe(cePing); // the module's definition, not restored
+    expect(names(server)).toContain('ps_overview'); // another CE tool, unrelated, intact
+    expect(server.moduleSkipReason).toBeNull();
+  });
+
+  it('logs the per-tool warn naming exactly the dropped tool', async () => {
+    buildHome({
+      names: ['ps_list_actions', 'ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: FORWARD_MOD_VERSION,
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    // Same stderr-capture pattern as the self-heal guidance test below.
+    const lines: string[] = [];
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: unknown): boolean => {
+        lines.push(String(chunk));
+        return true;
+      });
+    try {
+      await server.loadModules();
+    } finally {
+      stderr.mockRestore();
+    }
+    const logged = lines.join('');
+
+    expect(logged).toMatch(
+      /Module tool 'ps_future_tool_never_heard_of' is not recognized by this host — skipping it; the rest of the module is loaded\. Update Editmamei to use it\./
+    );
+  });
+
+  it('after a degraded load, module_status reports "loaded" and the self-heal never runs', async () => {
+    buildHome({
+      names: ['ps_list_actions', 'ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: FORWARD_MOD_VERSION,
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBeNull();
+
+    expect(server.computeModuleStatus()?.outcome).toBe('loaded');
+
+    // reprovisionIfModuleSkipped early-returns on moduleSkipReason === null — the
+    // module IS loaded, so the self-heal has nothing to cure. Prove it by wiring a
+    // delivery fetch that WOULD serve a newer version if it were ever called.
+    const fake = fakeDelivery('9.9.10');
+    let called = false;
+    await server.reprovisionIfModuleSkipped({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        called = true;
+        return fake.fetchImpl(url, init);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+    expect(called).toBe(false);
+  });
+
+  it('fires the degrade for a module exactly one patch ahead of the host (the adjacent-release boundary)', async () => {
+    // The realistic case this net exists for: a module one release ahead, not an
+    // arbitrary far-future version like FORWARD_MOD_VERSION. Derived from the live
+    // VERSION so this never hardcodes a version literal that a future bump stales.
+    buildHome({
+      names: ['ps_list_actions', 'ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: bumpPatch(VERSION),
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await server.loadModules();
+
+    expect(names(server)).not.toContain('ps_future_tool_never_heard_of');
+    expect(names(server)).toContain('ps_list_actions');
+    expect(server.moduleSkipReason).toBeNull();
+  });
+});
+
+describe('ModuleLifecycle.loadModules — a version:null module never enters the forward degrade', () => {
+  // version:null is the dev in-tree module's shape (see ProModuleLocation) — this
+  // public checkout has no `src/modules/pro/` to load for real, so this exercises
+  // ModuleLifecycle directly rather than through EditmameiServer/resolveProModule.
+  // The fake `kernel` stands in for the real Kernel/HostApi wiring; `_proModule` is
+  // set directly (a documented, deliberate bypass of the private field) to reach
+  // the one ProModuleLocation shape resolveProModule can't produce in this repo.
+
+  function dummyTool(name: string): ToolDefinition {
+    return {
+      tool: { name, description: 'fixture', inputSchema: { type: 'object', properties: {} } },
+      handler: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    };
+  }
+
+  it('rolls back an unclassifiable tool from a version:null module', async () => {
+    const registry = new ToolRegistry();
+    registry.register('ps_ping', dummyTool('ps_ping'));
+    const classifyTool = (name: string): void => {
+      tierOf(name);
+      groupOf(name);
+    };
+    const assertToolsClassified = (): void => {
+      for (const t of registry.list()) classifyTool(t.name);
+    };
+    const lifecycle = new ModuleLifecycle({
+      toolRegistry: registry,
+      logger: new Logger('test-module-lifecycle'),
+      assertToolsClassified,
+      classifyTool,
+    });
+    lifecycle.kernel = {
+      loadDownloaded: async () => {
+        registry.register('photoshop_unclassifiable', dummyTool('photoshop_unclassifiable'));
+      },
+    } as unknown as Kernel;
+    (lifecycle as unknown as { _proModule: unknown })._proModule = {
+      importer: () => Promise.resolve({}),
+      binDir: '',
+      abi: null,
+      version: null,
+    };
+
+    await lifecycle.loadModules();
+
+    expect(registry.get('photoshop_unclassifiable')).toBeUndefined();
+    expect(registry.get('ps_ping')).toBeDefined();
+    expect(lifecycle.moduleSkipReason).toBe('incompatible');
   });
 });
 
@@ -281,7 +541,7 @@ describe('EditmameiServer — background self-heal policy', () => {
     await server.loadModules();
     expect(server.moduleSkipReason).toBe('incompatible');
 
-    const fake = fakeDelivery('9.9.10'); // newer than the wedged 9.9.9
+    const fake = fakeDelivery('9.9.10'); // newer than the wedged 0.9.9
     await server.reprovisionIfModuleSkipped({
       config: cfg,
       fetchImpl: fake.fetchImpl,
@@ -339,7 +599,7 @@ describe('EditmameiServer.ensureEntitledModuleFresh — healthy-path auto-update
     await server.loadModules();
     expect(server.moduleSkipReason).toBeNull();
 
-    const fake = fakeDelivery('9.9.10'); // newer than the installed 9.9.9
+    const fake = fakeDelivery('9.9.10'); // newer than the installed 0.9.9
     await server.ensureEntitledModuleFresh({
       config: cfg,
       fetchImpl: fake.fetchImpl,

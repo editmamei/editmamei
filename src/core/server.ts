@@ -488,6 +488,7 @@ export class EditmameiServer {
       toolRegistry: this.toolRegistry,
       logger: this.logger,
       assertToolsClassified: () => this.assertToolsClassified(),
+      classifyTool: (name) => this.classifyTool(name),
     });
     const proModule = this.moduleLifecycle.resolveProModule();
     this.kernel = new Kernel({
@@ -570,18 +571,30 @@ export class EditmameiServer {
   }
 
   /**
-   * Every registered tool must be classified in src/core/tool-tiers.ts (which
-   * EDITION it ships in) AND grouped in src/core/tool-groups.ts (which
-   * capability group presents it). Both `tierOf` and `groupOf` throw on unknown
-   * names — surface a startup-time error so a newly-added tool that was never
-   * tiered or grouped fails fast rather than slipping into the wrong build
-   * bundle (or landing ungroupable) silently. Run after each load phase (CE at
-   * construction, Pro after dynamic load).
+   * THE single source of the classification rule: a tool name must appear in
+   * BOTH src/core/tool-tiers.ts (which EDITION it ships in) AND
+   * src/core/tool-groups.ts (which capability group presents it). Throws when
+   * the name is unclassified (`tierOf`/`groupOf` each throw on an unknown
+   * name). Exposed to `ModuleLifecycle` via `ModuleLifecycleDeps.classifyTool`
+   * so the Pro dynamic-load path's per-tool forward-compat probe (`loadModules`,
+   * Net 2b) checks a single name against the exact same rule `assertToolsClassified`
+   * below checks the whole registry against, rather than a second copy drifting.
+   */
+  private classifyTool(name: string): void {
+    tierOf(name);
+    groupOf(name);
+  }
+
+  /**
+   * Every registered tool must be classified (see `classifyTool`) — surface a
+   * startup-time error so a newly-added tool that was never tiered or grouped
+   * fails fast rather than slipping into the wrong build bundle (or landing
+   * ungroupable) silently. Run after each load phase (CE at construction, Pro
+   * after dynamic load).
    */
   private assertToolsClassified(): void {
     for (const tool of this.toolRegistry.list()) {
-      tierOf(tool.name);
-      groupOf(tool.name);
+      this.classifyTool(tool.name);
     }
   }
 

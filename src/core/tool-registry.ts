@@ -80,6 +80,16 @@ export class ToolRegistry {
     this.tools = new Map(snap);
   }
 
+  /**
+   * Remove a single tool by name. Exists for the module-load forward-compat
+   * per-tool degrade (a newer module's tool this host doesn't recognize yet
+   * gets dropped on its own, rather than rolling back the whole module) — not
+   * part of normal tool flow.
+   */
+  unregister(name: string): void {
+    this.tools.delete(name);
+  }
+
   get(name: string): ToolDefinition | undefined {
     return this.tools.get(name);
   }

@@ -35,9 +35,14 @@ const logger = new Logger('Modules');
  * client must not assume the manifest it consumed is honest. The Ed25519
  * signature below also covers (sku, version), but these checks fail-close even
  * an unsigned or malformed manifest before it can touch the filesystem.
+ *
+ * `VERSION_RE` is exported: `module-lifecycle.ts` validates an installed
+ * module's version against the same shape before trusting it in a semver
+ * comparison (the forward-compat degrade), rather than assuming
+ * `compareVersions`'s "already validated" precondition holds for every caller.
  */
 const SKU_RE = /^[a-z0-9-]{2,32}$/;
-const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+export const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 
 /**
  * Hard cap on a downloaded module artifact — defense-in-depth against a hostile
@@ -278,8 +283,12 @@ function errMsg(e: unknown): string {
  * are compared lexically — exact SemVer precedence isn't needed, only the
  * coarse "is this a downgrade?" decision the rollback guard (M3) makes. Both
  * inputs are already VERSION_RE-validated before this is called.
+ *
+ * Exported: `module-lifecycle.ts` reuses it for the forward-compat per-tool
+ * degrade (installed module version vs. host `VERSION`) rather than
+ * duplicating the comparison.
  */
-function compareVersions(a: string, b: string): number {
+export function compareVersions(a: string, b: string): number {
   const [aCore, aPre] = a.split('-', 2);
   const [bCore, bPre] = b.split('-', 2);
   const ap = aCore.split('.').map(Number);

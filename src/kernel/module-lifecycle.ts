@@ -27,11 +27,17 @@ import {
   installedPath,
   PRO_SKU,
 } from '../delivery/store.js';
-import { provisionModules, type ProvisionOptions } from '../delivery/provision.js';
+import {
+  provisionModules,
+  compareVersions,
+  VERSION_RE,
+  type ProvisionOptions,
+} from '../delivery/provision.js';
 import { readLicense } from '../license/store.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
 import { Kernel } from './kernel.js';
 import { HOST_MIN_ABI } from './host-api.js';
+import { VERSION } from '../version.js';
 
 /** Where a downloaded module's handlers are imported from + its go-core binary dir. */
 export interface ProModuleLocation {
@@ -45,6 +51,14 @@ export interface ProModuleLocation {
    * would otherwise pick up.
    */
   abi: number | null;
+  /**
+   * The downloaded module's `InstalledModule.version`, for the forward-compat
+   * per-tool degrade in `loadModules` (a module strictly NEWER than this host's
+   * `VERSION` gets its unrecognized tools skipped individually rather than
+   * rolled back whole). `null` for the dev in-tree module (no pointer — always
+   * built against this exact host, so the degrade never applies to it).
+   */
+  version: string | null;
 }
 
 /**
@@ -75,6 +89,16 @@ export interface ModuleLifecycleDeps {
    * assertion rather than two copies drifting apart.
    */
   assertToolsClassified: () => void;
+  /**
+   * THE single source of the classification rule (tier + group), for exactly
+   * ONE name — throws when unclassified. `assertToolsClassified` above loops
+   * this over the whole registry; `loadModules`'s Net 2b forward-compat probe
+   * calls it per newly-added tool name so the per-tool check and the
+   * whole-registry backstop check the exact same rule rather than two copies
+   * drifting apart. Both are injected from the host's single implementation
+   * (`EditmameiServer.classifyTool`).
+   */
+  classifyTool: (name: string) => void;
 }
 
 /**
@@ -137,13 +161,15 @@ export class ModuleLifecycle {
       // load unverified Pro code. null → Pro stays dark (fail-closed).
       const verified = loadVerifiedModule(PRO_SKU);
       if (verified) {
-        // Carry the pointer's abi for the HOST_MIN_ABI gate. loadVerifiedModule
-        // already read + integrity-checked the pointer, so it's present here.
-        const abi = readInstalledModule(PRO_SKU)?.abi ?? null;
+        // Carry the pointer's abi (HOST_MIN_ABI gate) and version (forward-compat
+        // degrade in loadModules). loadVerifiedModule already read + integrity-
+        // checked the pointer, so both are present here.
+        const installed = readInstalledModule(PRO_SKU);
         this._proModule = {
           importer: () => import(pathToFileURL(verified.handlersPath).href),
           binDir: verified.binDir,
-          abi,
+          abi: installed?.abi ?? null,
+          version: installed?.version ?? null,
         };
         return this._proModule;
       }
@@ -185,8 +211,9 @@ export class ModuleLifecycle {
         importer: () => import(inTreeProSpecifier),
         binDir: dirname(resolveProBinaryPath()),
         // Dev in-tree module: always built against this exact host, no pointer —
-        // null skips the ABI gate.
+        // null skips both the ABI gate and the forward-compat degrade.
         abi: null,
+        version: null,
       };
       return this._proModule;
     }
@@ -212,6 +239,37 @@ export class ModuleLifecycle {
    *   1. ABI gate — skip a module whose `abi` is below `HOST_MIN_ABI` before importing.
    *   2. Rollback — wrap import + classification; on any throw, unregister exactly
    *      the tools this module added (restoring the clean CE surface) and skip it.
+   *
+   * Forward-compat per-tool degrade (added alongside the above): the OPPOSITE
+   * direction — a downloaded module NEWER than this host (e.g. the delivery
+   * manifest's `latest` auto-updated ahead of a host that hasn't restarted onto
+   * the matching release yet) registers a tool this host's `tool-tiers.ts` /
+   * `tool-groups.ts` don't know yet. Rolling back the WHOLE module here is the
+   * wrong cure — only this host is stale, and a background re-provision can
+   * never fix that (the manifest is already at `latest`; the fix ships in the
+   * NEXT host release). So between the import and the whole-module assertion,
+   * any tool the module just added that this host can't classify is unregistered
+   * ONE AT A TIME, keeping the rest of the module loaded. Gated strictly to a
+   * WELL-FORMED module version (matches `VERSION_RE`) that is strictly greater
+   * than host `VERSION` — a backward or equal-version module, OR one whose
+   * version doesn't even parse as semver, still falls through to the full
+   * rollback above, which remains the right cure there (a genuinely
+   * older/inconsistent build, where a NEWER module re-provisioned in the
+   * background is the fix).
+   *
+   * Two accepted limitations, deliberately not engineered around:
+   *   (a) Dropped tools are NOT dependency-isolated. If a surviving module tool
+   *       invokes a dropped sibling via `HostApi.invokeTool`, that call fails at
+   *       call time with the ordinary "no such tool" error — an honest failure,
+   *       not a crash. Acceptable for adjacent-version drift, where a handful of
+   *       new tools calling each other across the exact boundary that triggers
+   *       this degrade is a corner of a corner.
+   *   (b) A TOTAL degrade — every tool the module added is unknown — leaves the
+   *       module "loaded" (skipReason stays null) but contributing nothing,
+   *       visible only via the per-tool warns below. Accepted because adjacent
+   *       host/module versions never ship an entirely new tool surface in one
+   *       step; an all-unknown module is already a much larger version gap than
+   *       this net is meant to paper over.
    *
    * @internal exposed for tests so they can register the Pro surface without
    * booting the stdio transport.
@@ -247,11 +305,54 @@ export class ModuleLifecycle {
     const snapshot = this.deps.toolRegistry.snapshot();
     try {
       await this.kernel.loadDownloaded(this._proModule.importer);
+
+      // Net 2b — forward-compat per-tool degrade. Only when the installed module
+      // carries a WELL-FORMED version (matches VERSION_RE — same shape provision.ts
+      // already requires of a manifest's `latest`) that is STRICTLY NEWER than this
+      // host: a backward/equal-version module, or one whose version doesn't even
+      // parse as semver, is a genuine incompatibility and still falls through to
+      // the full rollback below via assertToolsClassified's throw.
+      if (
+        this._proModule.version !== null &&
+        VERSION_RE.test(this._proModule.version) &&
+        compareVersions(this._proModule.version, VERSION) > 0
+      ) {
+        // Names the module load just added — a name already in the pre-load
+        // snapshot is an overwritten CE tool, already classified, and never
+        // reaches this probe.
+        const added = this.deps.toolRegistry
+          .list()
+          .map((tool) => tool.name)
+          .filter((name) => !snapshot.has(name));
+        for (const name of added) {
+          try {
+            this.deps.classifyTool(name);
+          } catch {
+            this.deps.toolRegistry.unregister(name);
+            this.deps.logger.warn(
+              `Module tool '${name}' is not recognized by this host — skipping it; the ` +
+                `rest of the module is loaded. Update Editmamei to use it.`
+            );
+          }
+        }
+      }
+
       // Throws if the module registered a tool with no tier/group entry (the
-      // pre-rename `photoshop_*` wedge) — caught below and rolled back.
+      // pre-rename `photoshop_*` wedge, or anything the degrade above didn't
+      // apply to) — caught below and rolled back.
       this.deps.assertToolsClassified();
     } catch (err) {
-      const changed = this.deps.toolRegistry.count() - snapshot.size;
+      // Count truthfully rather than a plain size diff: the forward degrade above
+      // may already have unregistered some of the module's own added tools before
+      // this throw, which would otherwise make `count() - snapshot.size` read low
+      // (even negative). Count names now present that weren't in the pre-load
+      // snapshot (survivors of the module's additions) plus names present in both
+      // but whose definition changed identity (an overwritten CE tool).
+      let changed = 0;
+      for (const tool of this.deps.toolRegistry.list()) {
+        const prior = snapshot.get(tool.name);
+        if (!prior || this.deps.toolRegistry.get(tool.name) !== prior) changed++;
+      }
       this.deps.toolRegistry.restore(snapshot);
       this.deps.logger.warn(
         `Pro module could not be loaded on this host — booting Community and rolling back ` +
