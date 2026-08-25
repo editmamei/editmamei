@@ -1062,7 +1062,13 @@ export class EditmameiServer {
     return {
       note:
         ` IMPORTANT — tell the user before continuing: Editmamei v${u.latest} is available` +
-        ` (this install runs v${u.current}).${fixNote} To update: ${u.how_to_update}`,
+        ` (this install runs v${u.current}).${fixNote} To update: ${u.how_to_update}` +
+        // Mentioned only on the first-render notice, so it rides a message the
+        // user already wanted and appears at most once per new version rather
+        // than once per session. Phrased as an option, not an instruction: the
+        // model is relaying an update, not running an errand for marketing.
+        ` They can also get release notes by email at https://editmamei.com/?src=update-notice` +
+        ` if they would rather not rely on catching this notice.`,
       notify: true,
     };
   }

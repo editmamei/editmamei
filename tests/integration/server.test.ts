@@ -208,6 +208,22 @@ describe('ps_ping surfaces update_available', () => {
     expect(second.content[0].text).not.toContain('tell the user');
   });
 
+  it('mentions email updates once, on the first notice only', async () => {
+    const server = new EditmameiServer() as unknown as PingServer;
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = { ...newerInfo };
+
+    // Rides the notice the user already wanted, so it appears at most once per
+    // new version. On the passive later pings it must be absent entirely —
+    // repeating it every ping is the difference between a pointer and a nag.
+    const first = await server.pingPhotoshop();
+    expect(first.content[0].text).toContain('editmamei.com/?src=update-notice');
+
+    const second = await server.pingPhotoshop();
+    expect(second.content[0].text).not.toContain('editmamei.com');
+  });
+
   it('omits the update note and reports null when nothing newer was found', async () => {
     const server = new EditmameiServer() as unknown as PingServer;
     server.session.connection = makeConnection({ info: null });
