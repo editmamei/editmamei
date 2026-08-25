@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createSceneTools, annotateScene } from '@editmamei/tools/scene-tools.ts';
+import {
+  createSceneTools,
+  annotateScene,
+  SELECTABLE_STATES,
+} from '@editmamei/tools/scene-tools.ts';
 import { __clearSceneCache } from '@editmamei/perception/scene-model.ts';
 import { __resetPrecompute } from '@editmamei/perception/region-precompute.ts';
 import { isToolAllowedInEdition } from '@editmamei/core/tool-tiers.ts';
@@ -1049,17 +1053,25 @@ describe('ps_read_scene outputSchema describes what reconcileRegions emits', () 
     expect(regionItemProps().selectable.type).toEqual(['boolean', 'null']);
   });
 
-  it('selectable_state enum matches the four literals reconcileRegions emits', () => {
-    // Cross-checked against the producer rather than restated: these are the
-    // only four values assigned in src/tools/scene-tools.ts reconcileRegions.
-    // 'candidate' joined them with the lazy default — an emitted value missing
-    // from this enum is an under-declared output schema, which is what caught
-    // it here rather than in review.
-    expect(regionItemProps().selectable_state.enum).toEqual([
-      'selectable',
-      'not_selectable',
-      'candidate',
-      'not_resolved',
-    ]);
+  it('selectable_state enum is DERIVED from the producer, not restated here', () => {
+    // This assertion used to compare the schema against a copy of the list typed
+    // out in this file. Both sides were hand-maintained, so a value added to
+    // reconcileRegions alone left the schema under-declaring and this test
+    // agreed with itself and passed — which is what happened when 'candidate'
+    // was added (2026-08-24; caught by reading, not by this guard).
+    //
+    // Now both the schema and the producer's type come from SELECTABLE_STATES,
+    // so the real guard is the compiler. This only pins that the schema still
+    // spreads that constant rather than drifting back to a literal.
+    expect(regionItemProps().selectable_state.enum).toEqual([...SELECTABLE_STATES]);
+  });
+
+  it('every state the producer can emit is declared in the schema', () => {
+    // The property that actually matters, stated directly: nothing reconcileRegions
+    // can put on the wire is missing from the contract the client validates against.
+    const declared = new Set(regionItemProps().selectable_state.enum);
+    for (const state of SELECTABLE_STATES) {
+      expect(declared.has(state), `outputSchema does not declare '${state}'`).toBe(true);
+    }
   });
 });

@@ -385,11 +385,41 @@ async function scene(
  */
 type MenuMode = 'resolved' | 'candidate' | 'unresolved';
 
+/**
+ * The ONLY legal `regions[].selectable_state` values — the single source of
+ * truth for both the producer below and the `outputSchema` that declares them.
+ *
+ * These were maintained by hand in two places, which the repo's derived-list
+ * invariant forbids: a value added to the producer alone left the schema
+ * under-declaring, and because the client validates the structured payload
+ * against outputSchema, that rejects the WHOLE ps_read_scene response rather
+ * than one field. The guard that was supposed to catch it compared the schema
+ * against a list restated in the test, so it agreed with itself and passed.
+ * Deriving both sides from here makes the producer's type the thing that fails
+ * the build instead.
+ */
+export const SELECTABLE_STATES = [
+  'selectable',
+  'not_selectable',
+  'candidate',
+  'not_resolved',
+] as const;
+
+type SelectableState = (typeof SELECTABLE_STATES)[number];
+
+/** The emitted shape. Typing `selectable_state` is what makes an undeclared
+ *  value a compile error instead of a runtime schema-validation rejection. */
+interface ReconciledRegion extends Record<string, unknown> {
+  coverage_is_estimate: boolean;
+  selectable: boolean | null;
+  selectable_state: SelectableState;
+}
+
 function reconcileRegions(
   model: SceneModel,
   menu: RegionMenuItem[],
   mode: MenuMode
-): Array<Record<string, unknown>> {
+): ReconciledRegion[] {
   return model.regions.map((r) => {
     const base = r as unknown as Record<string, unknown>;
     // `selectable` is a TRISTATE and must never be a bare boolean|string: a
@@ -687,7 +717,7 @@ export function createSceneTools(
                   },
                   selectable_state: {
                     type: 'string',
-                    enum: ['selectable', 'not_selectable', 'candidate', 'not_resolved'],
+                    enum: [...SELECTABLE_STATES],
                     description:
                       '`selectable`: a precomputed channel is ready to load. `not_selectable`: resolution ran and this region did not pass the confidence gate. `candidate`: the DEFAULT read advertised this region without deriving it — ps_select_by_reference scores it when you ask, and it may still turn out not to pass. `not_resolved`: an eagerly-requested precompute did not run or failed, so absence here is NOT evidence the region is unavailable.',
                   },
