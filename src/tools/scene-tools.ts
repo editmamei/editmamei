@@ -39,6 +39,7 @@ import type { CompositionContext } from '../perception/region-scorer.js';
 import {
   precomputeRegions,
   candidateMenu,
+  invalidateSceneChannelsIfStale,
   loadPrecomputedRegion,
   saveSelectionAsSceneChannel,
   CHANNEL_PREFIX,
@@ -137,7 +138,9 @@ function faceMenuFor(model: SceneModel, hasPro: boolean): RegionMenuItem[] {
     key: `${CHANNEL_PREFIX}${target}`,
     target,
     method: 'face_mesh',
-    confidence: 1,
+    // No confidence: the mesh has not run, so there is no score. It used to
+    // claim 1, which asserted a verdict for eight features nothing had measured
+    // — the same over-claim the CE candidate menu is careful not to make.
     bounds: null,
     on_demand: true,
   }));
@@ -260,7 +263,12 @@ async function scene(
     const args = validateArgs(sceneSchema, rawArgs);
     const annotate = (args.annotate as boolean) ?? true;
     const refresh = (args.refresh as boolean) ?? false;
-    const saveRegions = (args.save_regions as boolean) ?? true;
+    // Must match the schema default. Asserting the opposite here is harmless
+    // only while validateArgs fills defaults in; deleting `default: false` from
+    // the schema as a "that's just the absent case" cleanup would silently
+    // reinstate the eager pass, and no test would catch it because every test
+    // that exercises the eager path now passes save_regions explicitly.
+    const saveRegions = (args.save_regions as boolean) ?? false;
 
     const built = await buildSceneModel(connection, snippet, client, {
       useCache: !refresh,
@@ -300,6 +308,16 @@ async function scene(
         precomputeOk = false;
       }
     } else {
+      // The eager pass used to purge derived channels at the start of every
+      // read, which is what stopped a mask outliving the pixels it described.
+      // With that pass off by default the purge has to happen here, or a
+      // sky replaced between two reads leaves `scene:sky` loadable by name.
+      // Costs one round trip only when the document actually changed.
+      try {
+        await invalidateSceneChannelsIfStale(connection, model.provenance.cache_key);
+      } catch {
+        // best-effort — a stale channel is recoverable with refresh:true
+      }
       regions = [...candidateMenu(model), ...faceMenuFor(model, hasPro)];
     }
 
@@ -531,12 +549,31 @@ async function selectByReference(
     const target = args.target as SelectReferenceTarget;
     const refresh = (args.refresh as boolean) ?? false;
 
-    // Fast path FIRST: if a prior ps_read_scene saved a `scene:<target>` channel,
-    // load it BY NAME — instant, and with NO perception rebuild (no export/detect).
+    // A `scene:<target>` channel is keyed by TARGET ALONE, so it cannot represent
+    // "which subject" or "under which priors". When the caller narrows the
+    // request, the channel is therefore not an answer to the question asked:
+    //
+    //   select{target:'subject', label:'dog'}  → derives the dog
+    //   select{target:'subject'}               → wants the MAIN subject
+    //
+    // Sharing one `scene:subject` between those returns the dog for the second
+    // call — with `passed:true, confidence:1` and no hint anything is wrong — and
+    // the mirror case returns the main subject when the dog was asked for. Both
+    // directions are silent, so a discriminated call neither READS nor WRITES the
+    // shared channel; it always derives. `composition_context` counts because it
+    // moves the gate, so a mask that passed under `profile:big_sky` must not come
+    // back later as the default-priors answer.
+    const discriminated =
+      args.label !== undefined ||
+      args.instance !== undefined ||
+      args.composition_context !== undefined;
+
+    // Fast path FIRST: if a prior derive saved a `scene:<target>` channel, load it
+    // BY NAME — instant, and with NO perception rebuild (no export/detect).
     // History-independent: the channel is a real doc object Photoshop keeps in sync
     // with the canvas, so it stays valid across edits. `refresh:true` skips this to
     // force a fresh derive (e.g. after painting that changes what a region means).
-    if (!refresh) {
+    if (!refresh && !discriminated) {
       const loaded = await loadPrecomputedRegion(connection, target);
       if (loaded) {
         return {
@@ -598,7 +635,11 @@ async function selectByReference(
     //
     // Best-effort: a failed save costs a re-derive next time, never the selection
     // the caller just asked for.
-    if (res.passed) {
+    // `!discriminated` for the reason above: persisting a narrowed derive under
+    // the shared key is what makes the next un-narrowed call return the wrong
+    // region. A discriminated select re-derives every time, which is exactly what
+    // it did before this channel was persisted at all.
+    if (res.passed && !discriminated) {
       try {
         await saveSelectionAsSceneChannel(connection, target);
       } catch (err) {
@@ -723,7 +764,8 @@ export function createSceneTools(
                   },
                   selectable_via: {
                     type: 'string',
-                    description: 'The method that resolved it (only when selectable).',
+                    description:
+                      "The method that resolved it, when one did. Reads 'on_demand' for a `candidate` — nothing has resolved it yet and the method is chosen at derive time.",
                   },
                   selectable_confidence: { type: 'number' },
                 },
@@ -749,7 +791,7 @@ export function createSceneTools(
       tool: {
         name: 'ps_select_by_reference',
         description:
-          'Select a region by NAME instead of coordinates — the natural-mask alternative to a rectangle — with a CONFIDENCE GATE. target=sky/ground/foliage/subject/face/shadows/highlights/skin/above_horizon resolves through the right Photoshop-native method (threshold for sky, invert-sky−subjects for ground, luminance for shadows/highlights, skin-tone colour ∩ the subject box, the detected face/subject box) and is SCORED before it is offered: a clean region is left selected; an unconfident one is NOT selected and reported as honest absence (the city with no real sky gets no sky). Pro adds precise FACE-FEATURE targets backed by the face mesh — face_skin (the retouch mask: face minus eyes/brows/lips), face_eyes, face_brows, face_lips, face_teeth (mouth opening), face_nose, face_under_eye, face_cheeks — each a real geometry-following selection, loaded instantly from the scene:face_* channel ps_read_scene precomputes. `passed`/`confidence` are returned. The structural floor (coherence, horizon alignment) is never tuned; for an artistic/non-standard shot pass `composition_context` (e.g. profile:big_sky) to relax the compositional priors so a legitimately large sky is not rejected. For target=subject with several present, pass `label` and/or `instance`. Build/inspect with ps_read_scene first; verify with ps_get_selection_preview (the red-overlay is the human/agent oversight view). Prefer this over a rectangle for any real-world region.',
+          'Select a region by NAME instead of coordinates — the natural-mask alternative to a rectangle — with a CONFIDENCE GATE. target=sky/ground/foliage/subject/face/shadows/highlights/skin/above_horizon resolves through the right Photoshop-native method (threshold for sky, invert-sky−subjects for ground, luminance for shadows/highlights, skin-tone colour ∩ the subject box, the detected face/subject box) and is SCORED before it is offered: a clean region is left selected; an unconfident one is NOT selected and reported as honest absence (the city with no real sky gets no sky). Pro adds precise FACE-FEATURE targets backed by the face mesh — face_skin (the retouch mask: face minus eyes/brows/lips), face_eyes, face_brows, face_lips, face_teeth (mouth opening), face_nose, face_under_eye, face_cheeks — each a real geometry-following selection, derived on first request and then saved as a scene:face_* channel so repeats load instantly. `passed`/`confidence` are returned. A region derived here is cached as a `scene:*` channel keyed by TARGET ONLY, so a later call for the same target loads it by name; pass `refresh:true` to force a fresh derive after an edit that changes what the region means, and note that narrowing a call with `label`/`instance`/`composition_context` always derives (it neither reads nor writes that shared channel). The structural floor (coherence, horizon alignment) is never tuned; for an artistic/non-standard shot pass `composition_context` (e.g. profile:big_sky) to relax the compositional priors so a legitimately large sky is not rejected. For target=subject with several present, pass `label` and/or `instance`. Build/inspect with ps_read_scene first; verify with ps_get_selection_preview (the red-overlay is the human/agent oversight view). Prefer this over a rectangle for any real-world region.',
         inputSchema: selectByReferenceSchema,
         outputSchema: {
           type: 'object',

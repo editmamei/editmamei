@@ -85,10 +85,16 @@ type DocTarget struct {
 // Ambiguity is an ERROR, never a pick. Photoshop happily keeps two documents
 // open under the same name (the same basename from different directories, or a
 // duplicate), and silently choosing one would send every subsequent edit to a
-// document the caller did not mean — the same class of bug the openDocument
-// case-folding comment above records. A miss lists the open names for the same
-// reason ps_* lookups list candidates: the recovery is usually obvious once you
-// can see what IS there.
+// document the caller did not mean. That is the same class of bug the
+// openDocument path guards against by probing volume case-sensitivity rather
+// than guessing (see the vault.OpenDoc fragment comment in
+// cmd/buildtemplates/fragments_documents.go). A miss lists the open names for
+// the same reason ps_* lookups list candidates: the recovery is usually obvious
+// once you can see what IS there.
+//
+// Matching is EXACT and case-sensitive, unlike layer/group lookups, which fold
+// through normName. Open for revisit: it fails safe (a miss lists the names)
+// but it is inconsistent with every other name lookup in the tree.
 func documentResolutionBlock(t DocTarget) string {
 	if !t.HasName && !t.HasID {
 		return "var doc = app.activeDocument;"
@@ -120,7 +126,11 @@ func documentResolutionBlock(t DocTarget) string {
 		"      throw new Error('No open document matches ' + " + label + " + '. Open documents: ' + __mcpNames.join(', '));\n" +
 		"    }\n" +
 		"    if (__mcpMatches.length > 1) {\n" +
-		"      throw new Error(__mcpMatches.length + ' open documents share ' + " + label + " + ' — target by id instead. Open documents: ' + __mcpNames.join(', '));\n" +
+		// ASCII only: this string is emitted straight into the .jsx, which is
+		// written UTF-8 with no BOM and no #encoding directive, so ExtendScript
+		// decodes it by the platform codepage and a non-ASCII dash arrives as
+		// mojibake (cscript flattens it further, to '?').
+		"      throw new Error(__mcpMatches.length + ' open documents share ' + " + label + " + '; target by id instead. Open documents: ' + __mcpNames.join(', '));\n" +
 		"    }\n" +
 		"    var doc = __mcpMatches[0];"
 }

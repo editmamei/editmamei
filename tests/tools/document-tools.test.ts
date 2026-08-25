@@ -105,6 +105,37 @@ describe('createDocumentTools', () => {
     expect(conn.executions).toHaveLength(0);
   });
 
+  it('close_document REFUSES an empty name rather than closing the active document', async () => {
+    // The dangerous asymmetry: dropping an empty name downgrades "close the
+    // document I named" into "close whatever is active", on a destructive op.
+    // An agent that computed the name from a failed lookup would close the
+    // user's working document.
+    const tools = createDocumentTools(conn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_close_document', { save: false, name: '' });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('empty string');
+    expect(conn.executions).toHaveLength(0);
+  });
+
+  it('document(op=activate) refuses an empty name too — same rule, both ops', async () => {
+    const tools = createDocumentTools(conn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_document', { op: 'activate', name: '' });
+    expect(res.isError).toBe(true);
+    expect(conn.executions).toHaveLength(0);
+  });
+
+  it('an activate failure names the operation that failed, not "reading documents"', async () => {
+    const boomConn = makeConnection({
+      resultFor: () => {
+        throw new Error('No open document matches name "b.jpg". Open documents: a.psd');
+      },
+    });
+    const tools = createDocumentTools(boomConn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_document', { op: 'activate', name: 'b.jpg' });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('Error activating document');
+  });
+
   it('close_document forwards a target when given one, and omits the keys when not', async () => {
     const tools = createDocumentTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_close_document', { save: false, name: 'a.psd' });

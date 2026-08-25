@@ -426,6 +426,51 @@ describe('createSceneTools', () => {
     expect(savedChannel(conn.allScripts(), 'subject')).toBeUndefined();
   });
 
+  // A `scene:<target>` channel is keyed by target ALONE, so it cannot express
+  // "which subject". Persisting a labelled derive under the shared key poisons
+  // the next un-narrowed call: it would load the dog by name and report it as
+  // the main subject with confidence 1. Both directions are silent, which is
+  // what makes it dangerous.
+  it('a LABELLED derive persists nothing — the shared channel cannot express which subject', async () => {
+    const res = await callTool(tools(), 'ps_select_by_reference', {
+      target: 'subject',
+      label: 'dog',
+    });
+    expect((res.structuredContent as { passed: boolean }).passed).toBe(true);
+    expect(savedChannel(conn.allScripts(), 'subject')).toBeUndefined();
+  });
+
+  it('an INSTANCE-narrowed derive persists nothing either', async () => {
+    await callTool(tools(), 'ps_select_by_reference', { target: 'subject', instance: 0 });
+    expect(savedChannel(conn.allScripts(), 'subject')).toBeUndefined();
+  });
+
+  it('a composition_context derive persists nothing — it passed under different priors', async () => {
+    await callTool(tools(), 'ps_select_by_reference', {
+      target: 'sky',
+      composition_context: { profile: 'big_sky' },
+    });
+    expect(savedChannel(conn.allScripts(), 'sky')).toBeUndefined();
+  });
+
+  it('a narrowed call does not READ the shared channel either', async () => {
+    // The mirror of the above: an un-narrowed select saved scene:subject (the
+    // MAIN subject). A later label:'dog' call must not be handed that mask.
+    const connLoaded = makeConnection({
+      resultFor: (s: string) =>
+        s.includes('doc.selection.load(ch')
+          ? { loaded: true, width: 1000, height: 800 }
+          : routeScripts(s),
+    });
+    const t = createSceneTools(connLoaded.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      detectDeps: fakeDetectDeps(),
+    });
+    const res = await callTool(t, 'ps_select_by_reference', { target: 'subject', label: 'dog' });
+    const method = (res.structuredContent as { method: string }).method;
+    expect(method).not.toBe('precomputed_channel');
+  });
+
   it('sky → threshold glue, gate PASSES for a clean upper-band region', async () => {
     const res = await callTool(tools(), 'ps_select_by_reference', { target: 'sky' });
     expect(res.isError).toBeUndefined();
@@ -1066,12 +1111,11 @@ describe('ps_read_scene outputSchema describes what reconcileRegions emits', () 
     expect(regionItemProps().selectable_state.enum).toEqual([...SELECTABLE_STATES]);
   });
 
-  it('every state the producer can emit is declared in the schema', () => {
-    // The property that actually matters, stated directly: nothing reconcileRegions
-    // can put on the wire is missing from the contract the client validates against.
-    const declared = new Set(regionItemProps().selectable_state.enum);
-    for (const state of SELECTABLE_STATES) {
-      expect(declared.has(state), `outputSchema does not declare '${state}'`).toBe(true);
-    }
-  });
+  // NOTE: there is deliberately no test asserting "every SELECTABLE_STATES value
+  // appears in the schema enum". The schema enum IS `[...SELECTABLE_STATES]`, so
+  // such a test compares the constant to itself and can never fail — the same
+  // self-agreeing shape that let the missing `candidate` slip through in the
+  // first place. The real guard is the compiler: `reconcileRegions` declares a
+  // `ReconciledRegion[]` return whose `selectable_state` is the literal union,
+  // so emitting an undeclared state fails `tsc`, not vitest.
 });

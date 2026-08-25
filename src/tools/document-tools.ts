@@ -61,7 +61,8 @@ const documentTargetProps = {
       "Target an open document by its exact Photoshop name, INCLUDING the extension as shown in the tab (e.g. 'portrait.jpg', not 'portrait'). If two open documents share a name the call fails rather than guessing — target by id instead.",
   },
   id: {
-    type: 'number',
+    type: 'integer',
+    minimum: 1,
     description:
       'Target an open document by its Photoshop document id. Unambiguous — prefer this when names collide.',
   },
@@ -495,6 +496,20 @@ function documentTargetArgs(args: Record<string, unknown>): Record<string, unkno
   return out;
 }
 
+/**
+ * An empty-string name is a caller bug, not "no target" — and on a DESTRUCTIVE
+ * op the difference is the whole ballgame: silently dropping it downgrades
+ * "close the document I named" to "close whatever is active", which is how an
+ * agent that computed a name from a failed lookup closes the user's working
+ * document instead. Returns an error message, or null when the args are fine.
+ */
+function emptySelectorError(args: Record<string, unknown>): string | null {
+  if (typeof args.name === 'string' && args.name === '') {
+    return 'name was an empty string. Pass a real document name, or omit name entirely to act on the active document.';
+  }
+  return null;
+}
+
 interface DocumentListing {
   index: number;
   id: number;
@@ -511,15 +526,22 @@ async function documentOp(
   snippetClient: SnippetClient,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
+  // Set per-op so a failure names the operation the caller actually asked for —
+  // "Error reading documents: No open document matches name …" points debugging
+  // at the wrong place.
+  let errorPrefix = 'Error reading documents';
   try {
     const args = validateArgs(documentSchema, rawArgs);
     const op = args.op as (typeof DOCUMENT_OPS)[number];
     const target = documentTargetArgs(args);
 
     if (op === 'activate') {
+      errorPrefix = 'Error activating document';
+      const empty = emptySelectorError(args);
+      if (empty !== null) return toolErrorResult(errorPrefix, new Error(empty));
       if (Object.keys(target).length === 0) {
         return toolErrorResult(
-          'Error activating document',
+          errorPrefix,
           new Error('op=activate needs a name or an id. Call op=list to see what is open.')
         );
       }
@@ -569,7 +591,7 @@ async function documentOp(
       },
     };
   } catch (error) {
-    return toolErrorResult('Error reading documents', error);
+    return toolErrorResult(errorPrefix, error);
   }
 }
 
@@ -581,6 +603,9 @@ async function closeDocument(
   try {
     const args = validateArgs(closeDocumentSchema, rawArgs);
     const save = args.save as boolean;
+
+    const empty = emptySelectorError(args);
+    if (empty !== null) return toolErrorResult('Error closing document', new Error(empty));
 
     const script = await snippetClient.build('closeDocument', {
       save,

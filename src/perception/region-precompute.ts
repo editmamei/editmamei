@@ -52,6 +52,7 @@ let cachedMenu: RegionMenuItem[] = [];
 export function __resetPrecompute(): void {
   lastPrecomputedKey = null;
   cachedMenu = [];
+  channelsDocState = null;
 }
 
 /**
@@ -85,6 +86,41 @@ export async function saveSelectionAsSceneChannel(
     saveSelectionToNamedChannelScript(`${CHANNEL_PREFIX}${target}`),
     SCENE_CHANNEL_TIMEOUT_MS
   );
+}
+
+/** The doc-state key the currently-saved `scene:*` channels were derived at. */
+let channelsDocState: string | null = null;
+
+/**
+ * Drop the derived `scene:*` channels when the document has moved on.
+ *
+ * The eager pass opened by deleting them, so no channel could outlive one scene
+ * read at a changed doc-state. With the eager pass off by default that purge
+ * stopped running, and `ps_save_psd` became the only one left in the tree —
+ * which is far too late: replace the sky, read the scene, and
+ * `ps_select_by_reference` would load the PRE-replacement mask by name and
+ * report `passed:true, confidence:1`.
+ *
+ * Keyed on the scene model's `cache_key` (document identity + pixel hash), so
+ * this costs one round trip when the document actually changed and nothing at
+ * all when it did not. A null previous state also purges: the channels live in
+ * the DOCUMENT, so they outlive this process and a stale one from an earlier
+ * session is exactly the case that must not be trusted.
+ *
+ * Best-effort — a failed purge costs a stale channel, and callers can always
+ * force a fresh derive with `refresh:true`.
+ */
+export async function invalidateSceneChannelsIfStale(
+  connection: PhotoshopConnection,
+  cacheKey: string
+): Promise<void> {
+  if (channelsDocState === cacheKey) return;
+  channelsDocState = cacheKey;
+  try {
+    await runScript(connection, deleteSceneChannelsScript(), SCENE_CHANNEL_TIMEOUT_MS);
+  } catch {
+    // best-effort
+  }
 }
 
 /**
@@ -444,6 +480,9 @@ export async function precomputeRegions(
   const tally = { scripts: 0 };
   const countedConnection = countingConnection(connection, tally);
   await runScript(countedConnection, deleteSceneChannelsScript(), SCENE_CHANNEL_TIMEOUT_MS);
+  // This pass IS the purge, so record the state its channels belong to — else
+  // the lazy path's staleness check would purge them again on the next read.
+  channelsDocState = model.provenance.cache_key;
   const menu: RegionMenuItem[] = [];
   for (const target of PRECOMPUTE_TARGETS) {
     try {

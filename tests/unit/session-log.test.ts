@@ -236,7 +236,12 @@ describe('classifyError', () => {
   it('classifies a detection-runtime failure as OUR runtime, not a Photoshop op', () => {
     // Blaming ps_op_failed for a Node-side model problem sends debugging at
     // Photoshop, which is the wrong place entirely.
-    expect(classifyError('Cannot find module onnxruntime-node')).toBe('detection_unavailable');
+    //
+    // The package is onnxruntime-WEB. An earlier draft of this test pinned
+    // "Cannot find module onnxruntime-node", which nothing in this tree can
+    // produce — a pin against an invented message passes forever and proves
+    // nothing, which is precisely the failure the table's own comment warns of.
+    expect(classifyError('Cannot find module onnxruntime-web')).toBe('detection_unavailable');
     expect(classifyError('ONNX Runtime error: failed to load model')).toBe('detection_unavailable');
     expect(classifyError('ONNX Runtime error: failed to load model')).not.toBe('ps_op_failed');
   });
