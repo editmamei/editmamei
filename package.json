@@ -1,13 +1,14 @@
 {
   "name": "editmamei",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "description": "Photoshop MCP server: natural-language AI photo editing with your own Photoshop",
   "mcpName": "io.github.editmamei/editmamei",
   "editmamei": {
     "fixesByVersion": {
       "1.1.0": ["ps_create_clipping_mask"],
-      "1.2.0": ["ps_delete_layer", "ps_select_layer"]
+      "1.2.0": ["ps_delete_layer", "ps_select_layer"],
+      "1.2.1": ["ps_read_scene"]
     }
   },
   "main": "dist/index.js",

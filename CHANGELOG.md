@@ -10,6 +10,55 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-08-25
+
+### Fixed
+
+- **A Pro module newer than the app no longer costs you Pro entirely.** A module built after your
+  installed version could register a tool the app did not recognise, and the app responded by
+  rolling back the whole module at every start, dropping a paying subscriber to Community.
+  - Unrecognised tools are now skipped one at a time with a warning and the rest of the module
+    loads. The all-or-nothing rollback remains for a module at or below the app's version, where
+    re-downloading it genuinely does fix the problem.
+  - Re-downloading could never cure the newer-module case, because the installed module already
+    matched what the server offered — so the app stayed in Community every start until it was
+    updated by hand.
+  - This protects future versions from the same class of problem. If you are already affected,
+    installing this release is what clears it.
+
+- **Reading the scene no longer runs out of time on a large document.** `ps_read_scene` worked out
+  every selectable region before it answered, which on a big layered file consumed most of the
+  thirty seconds Photoshop allows a script and often failed outright.
+  - Measured on a 4898×3265 layered document: about thirty seconds before, around five after.
+  - Three of the seven regions it derived up front routinely resolved to nothing, so a large part
+    of that wait bought nothing at all.
+
+### Changed
+
+- **The scene read now offers regions and works each one out when you ask for it.** It reports what
+  it can select rather than selecting everything in advance; the first request for a region pays
+  for that region, and repeats are immediate.
+  - Because nothing has been measured yet, an offered region carries no confidence score and is
+    marked `candidate`. It is a candidate, not a promise — `ps_select_by_reference` still scores it
+    and can still report honest absence.
+  - Pass `save_regions: true` to `ps_read_scene` for the previous behaviour, where every region is
+    derived and scored in one call.
+  - A region worked out this way is remembered for the rest of the session, so asking for it again
+    is instant. Pass `refresh: true` if you have changed the image in a way that changes what the
+    region means.
+
+### Added
+
+- **A document can be closed by name or id, not only whichever one is in front.** `ps_close_document`
+  takes an optional `name` or `id`, so closing one file out of several no longer means bringing it
+  to the front first.
+  - If two open documents share a name, the call fails and says so rather than guessing. Photoshop
+    permits duplicate names, and picking one silently would send later edits to the wrong file.
+
+- **Release notes are linked from the command line and the update notice.** `editmamei --help` now
+  lists them beside Docs and Issues, and the notice shown when an update is available points at
+  them too.
+
 ## [1.2.0] — 2026-08-23
 
 ### Added

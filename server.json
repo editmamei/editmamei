@@ -7,14 +7,14 @@
     "url": "https://github.com/editmamei/editmamei",
     "source": "github"
   },
-  "version": "1.2.0",
+  "version": "1.2.1",
   "mcpName": "io.github.editmamei/editmamei",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "editmamei",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "transport": {
         "type": "stdio"
       }
