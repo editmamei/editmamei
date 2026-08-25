@@ -247,8 +247,16 @@ func TestGaussianBlurGolden(t *testing.T) {
 		{"newDocument(800,600)", newDocument(800, 600, 72, "NewDocumentMode.RGB")},
 		{`placeImage("C:/img.png",10,20)`, placeImage("C:/img.png", 10, 20, 0, 0, false, false)},
 		{`placeImage("C:/img.png",0,0,50,75)`, placeImage("C:/img.png", 0, 0, 50, 75, true, true)},
-		{"closeDocument()", closeDocument(false)},
-		{"closeDocument(true)", closeDocument(true)},
+		{"closeDocument()", closeDocument(false, DocTarget{})},
+		{"closeDocument(true)", closeDocument(true, DocTarget{})},
+		// Targeted close + the ps_document pair. The by-name and by-id rows differ
+		// only in the resolution block, which is the part that can silently pick
+		// the wrong document, so both shapes are pinned.
+		{`closeDocument(name)`, closeDocument(false, DocTarget{Name: "a.psd", HasName: true})},
+		{`closeDocument(id)`, closeDocument(true, DocTarget{ID: 42, HasID: true})},
+		{"listDocuments()", listDocuments()},
+		{`activateDocument(name)`, activateDocument(DocTarget{Name: "b.jpg", HasName: true})},
+		{`activateDocument(id)`, activateDocument(DocTarget{ID: 7, HasID: true})},
 		{"resizeImage(800,600)", resizeImage(800, 600)},
 		{"cropDocument(0,0,400,300)", cropDocument(0, 0, 400, 300)},
 		// Pinned to the WINDOWS emitter explicitly, not the runtime.GOOS-derived

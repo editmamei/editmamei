@@ -38,6 +38,8 @@ import type { SceneBuildResult } from '../perception/scene-model.js';
 import type { CompositionContext } from '../perception/region-scorer.js';
 import {
   precomputeRegions,
+  candidateMenu,
+  invalidateSceneChannelsIfStale,
   loadPrecomputedRegion,
   saveSelectionAsSceneChannel,
   CHANNEL_PREFIX,
@@ -136,7 +138,9 @@ function faceMenuFor(model: SceneModel, hasPro: boolean): RegionMenuItem[] {
     key: `${CHANNEL_PREFIX}${target}`,
     target,
     method: 'face_mesh',
-    confidence: 1,
+    // No confidence: the mesh has not run, so there is no score. It used to
+    // claim 1, which asserted a verdict for eight features nothing had measured
+    // — the same over-claim the CE candidate menu is careful not to make.
     bounds: null,
     on_demand: true,
   }));
@@ -174,9 +178,9 @@ const sceneSchema: JsonSchemaObject = {
     },
     save_regions: {
       type: 'boolean',
-      default: true,
+      default: false,
       description:
-        'Precompute every confident region (sky/ground/shadows/highlights/skin/subject/face — and, on a Pro host with a face, the face-feature set scene:face_skin/_eyes/_brows/_lips/_teeth/_nose/_under_eye/_cheeks) and SAVE each as a managed `scene:*` alpha channel, returning the `regions` MENU of what is confidently selectable (each with its method + confidence). ps_select_by_reference then loads the saved channel instantly. Set false for a light read with no channels. The `scene:` channel-name prefix is RESERVED: channels matching it are treated as derived and are deleted on the next scene read and on ps_save_psd, so do not give a channel you want to keep a `scene:`-prefixed name.',
+        'EAGERLY derive every region (sky/ground/shadows/highlights/skin/subject/face) up front and SAVE each confident one as a managed `scene:*` alpha channel, so the returned menu carries a verified method + confidence for each. Costs one derive per target — measured at ~21s on a 4898x3265 layered document, against a 30s script timeout — so it is OFF by default. Leave it off unless you specifically need every region scored in one call: the default advertises the same menu as `on_demand` entries and ps_select_by_reference derives whichever region you actually ask for (then saves its channel, so repeats of THAT region are instant). The `scene:` channel-name prefix is RESERVED: channels matching it are treated as derived and are deleted on the next scene read and on ps_save_psd, so do not give a channel you want to keep a `scene:`-prefixed name.',
     },
     composition_context: {
       type: 'object',
@@ -259,7 +263,12 @@ async function scene(
     const args = validateArgs(sceneSchema, rawArgs);
     const annotate = (args.annotate as boolean) ?? true;
     const refresh = (args.refresh as boolean) ?? false;
-    const saveRegions = (args.save_regions as boolean) ?? true;
+    // Must match the schema default. Asserting the opposite here is harmless
+    // only while validateArgs fills defaults in; deleting `default: false` from
+    // the schema as a "that's just the absent case" cleanup would silently
+    // reinstate the eager pass, and no test would catch it because every test
+    // that exercises the eager path now passes save_regions explicitly.
+    const saveRegions = (args.save_regions as boolean) ?? false;
 
     const built = await buildSceneModel(connection, snippet, client, {
       useCache: !refresh,
@@ -268,8 +277,10 @@ async function scene(
     });
     const model = built.model;
 
-    // Oversight loop: precompute every confident region, save each as a managed
-    // scene:* channel, and return the menu of what is confidently selectable.
+    // Oversight loop. By DEFAULT this advertises the menu and derives nothing —
+    // the eager pass cost ~21s of the ~30s call and three of its seven targets
+    // resolved to nothing (see PRECOMPUTE_TARGETS). `save_regions:true` opts
+    // back into deriving and scoring every region up front.
     let regions: RegionMenuItem[] = [];
     // Distinguish "precompute ran and found nothing" from "precompute FAILED".
     // Without this a transient PS error left regions=[] and every entry was
@@ -296,6 +307,21 @@ async function scene(
         // rather than letting the empty menu read as "nothing is selectable".
         precomputeOk = false;
       }
+    } else {
+      // The eager pass used to purge derived channels at the start of every
+      // read, which is what stopped a mask outliving the pixels it described.
+      // With that pass off by default the purge has to happen here, or a
+      // sky replaced between two reads leaves `scene:sky` loadable by name.
+      // Costs one round trip only when the document actually changed.
+      try {
+        await invalidateSceneChannelsIfStale(connection, model.provenance.cache_key);
+      } catch {
+        // Best-effort. Note the recovery is `ps_select_by_reference {refresh:true}`,
+        // NOT refresh:true here: with the pixels unchanged this call returns at its
+        // own guard and purges nothing, which is correct (identical pixels mean the
+        // channels are not semantically stale).
+      }
+      regions = [...candidateMenu(model), ...faceMenuFor(model, hasPro)];
     }
 
     const content: ToolResult['content'] = [];
@@ -320,20 +346,33 @@ async function scene(
         // Non-fatal — return the structured model without the preview.
       }
     }
-    const menuText = !saveRegions
-      ? ''
-      : regions.length
+    const named = (r: RegionMenuItem): string => `${r.target}${r.label ? `:${r.label}` : ''}`;
+    const menuText = !regions.length
+      ? saveRegions
+        ? ' No confident named regions detected here.'
+        : ''
+      : saveRegions
         ? ` Confident regions (select by name): ${regions
-            .map((r) => `${r.target}${r.label ? `:${r.label}` : ''} ${r.confidence.toFixed(2)}`)
+            .map(
+              (r) => `${named(r)}${r.confidence === undefined ? '' : ` ${r.confidence.toFixed(2)}`}`
+            )
             .join(', ')}.`
-        : ' No confident named regions detected here.';
+        : // Candidates, not verdicts — say so, or the model reads the list as a
+          // guarantee each one will resolve and stops checking `passed`.
+          ` Selectable by name (each resolved when you ask for it, not yet scored): ${regions
+            .map(named)
+            .join(', ')}.`;
     content.push({ type: 'text' as const, text: summarizeScene(model) + menuText });
 
     return {
       content,
       structuredContent: {
         ...(model as unknown as Record<string, unknown>),
-        regions: reconcileRegions(model, regions, saveRegions && precomputeOk),
+        regions: reconcileRegions(
+          model,
+          regions,
+          saveRegions ? (precomputeOk ? 'resolved' : 'unresolved') : 'candidate'
+        ),
         region_menu: regions,
       },
     };
@@ -356,28 +395,68 @@ async function scene(
  *
  * Each entry now carries `selectable` / `selectable_via` / `selectable_confidence`
  * pointing at the authoritative menu result, so the coarse coverage is visibly
- * an estimate rather than a verdict. When regions weren't precomputed
- * (save_regions:false) there is nothing to reconcile against and the entries are
- * marked `unknown` rather than implying absence.
+ * an estimate rather than a verdict.
+ *
+ * Three menu modes, because "we didn't check" has two distinct causes that must
+ * not be collapsed:
+ * - `resolved`   — the eager pass ran; the menu is authoritative.
+ * - `candidate`  — the default lazy read; the region is ADVERTISED and will be
+ *                  scored when `ps_select_by_reference` asks for it.
+ * - `unresolved` — the eager pass was requested and FAILED; we know nothing.
  */
+type MenuMode = 'resolved' | 'candidate' | 'unresolved';
+
+/**
+ * The ONLY legal `regions[].selectable_state` values — the single source of
+ * truth for both the producer below and the `outputSchema` that declares them.
+ *
+ * These were maintained by hand in two places, which the repo's derived-list
+ * invariant forbids: a value added to the producer alone left the schema
+ * under-declaring, and because the client validates the structured payload
+ * against outputSchema, that rejects the WHOLE ps_read_scene response rather
+ * than one field. The guard that was supposed to catch it compared the schema
+ * against a list restated in the test, so it agreed with itself and passed.
+ * Deriving both sides from here makes the producer's type the thing that fails
+ * the build instead.
+ */
+export const SELECTABLE_STATES = [
+  'selectable',
+  'not_selectable',
+  'candidate',
+  'not_resolved',
+] as const;
+
+type SelectableState = (typeof SELECTABLE_STATES)[number];
+
+/** The emitted shape. Typing `selectable_state` is what makes an undeclared
+ *  value a compile error instead of a runtime schema-validation rejection. */
+interface ReconciledRegion extends Record<string, unknown> {
+  coverage_is_estimate: boolean;
+  selectable: boolean | null;
+  selectable_state: SelectableState;
+}
+
 function reconcileRegions(
   model: SceneModel,
   menu: RegionMenuItem[],
-  resolved: boolean
-): Array<Record<string, unknown>> {
+  mode: MenuMode
+): ReconciledRegion[] {
   return model.regions.map((r) => {
     const base = r as unknown as Record<string, unknown>;
     // `selectable` is a TRISTATE and must never be a bare boolean|string: a
     // consumer writing `if (r.selectable)` would read the string 'unknown' as
     // truthy and treat a region we never resolved as confirmed-selectable.
     // null is falsy, so the unknown case degrades to "don't assume", and
-    // `selectable_state` carries the distinction explicitly.
-    if (!resolved) {
+    // `selectable_state` carries the distinction explicitly. A `candidate` is
+    // null for the same reason — advertised is not verified.
+    if (mode !== 'resolved') {
+      const advertised = mode === 'candidate' && menu.some((m) => m.target === r.kind);
       return {
         ...base,
         coverage_is_estimate: true,
         selectable: null,
-        selectable_state: 'not_resolved',
+        selectable_state: advertised ? 'candidate' : 'not_resolved',
+        ...(advertised ? { selectable_via: 'on_demand' } : {}),
       };
     }
     const hit = menu.find((m) => m.target === r.kind);
@@ -473,19 +552,50 @@ async function selectByReference(
     const target = args.target as SelectReferenceTarget;
     const refresh = (args.refresh as boolean) ?? false;
 
-    // Fast path FIRST: if a prior ps_read_scene saved a `scene:<target>` channel,
-    // load it BY NAME — instant, and with NO perception rebuild (no export/detect).
-    // History-independent: the channel is a real doc object Photoshop keeps in sync
-    // with the canvas, so it stays valid across edits. `refresh:true` skips this to
-    // force a fresh derive (e.g. after painting that changes what a region means).
-    if (!refresh) {
+    // A `scene:<target>` channel is keyed by TARGET ALONE, so it cannot represent
+    // "which subject" or "under which priors". When the caller narrows the
+    // request, the channel is therefore not an answer to the question asked:
+    //
+    //   select{target:'subject', label:'dog'}  → derives the dog
+    //   select{target:'subject'}               → wants the MAIN subject
+    //
+    // Sharing one `scene:subject` between those returns the dog for the second
+    // call — with `passed:true, confidence:1` and no hint anything is wrong — and
+    // the mirror case returns the main subject when the dog was asked for. Both
+    // directions are silent, so a discriminated call neither READS nor WRITES the
+    // shared channel; it always derives. `composition_context` counts because it
+    // moves the gate, so a mask that passed under `profile:big_sky` must not come
+    // back later as the default-priors answer.
+    //
+    // `max_dimension` is deliberately NOT in this set: it changes the derive's
+    // FIDELITY, not its meaning — a sky traced at 4096 and one at 512 are both
+    // answers to "the sky" — and it is always defined (schema default), so it
+    // could not discriminate as written. The residual is that a deliberately
+    // coarse derive can be loaded later by a default-resolution call.
+    const discriminated =
+      args.label !== undefined ||
+      args.instance !== undefined ||
+      args.composition_context !== undefined;
+
+    // Fast path FIRST: if a prior derive saved a `scene:<target>` channel, load it
+    // BY NAME — instant, and with NO perception rebuild (no export/detect).
+    //
+    // This reads no cache key, deliberately: consulting one would mean building
+    // the scene model on every select, which is the entire cost the fast path
+    // exists to avoid. The trade is that the channel is geometrically valid but
+    // not necessarily semantically current — Photoshop keeps the mask aligned to
+    // the canvas and has no idea the sky underneath was replaced. A scene read
+    // purges on a pixel change (invalidateSceneChannelsIfStale); a
+    // select→edit→select run with no read in between does not, and `refresh:true`
+    // is the caller's way out. Said plainly in this tool's description too.
+    if (!refresh && !discriminated) {
       const loaded = await loadPrecomputedRegion(connection, target);
       if (loaded) {
         return {
           content: [
             {
               type: 'text' as const,
-              text: `Selected "${target}" from the saved scene:${target} channel (precomputed by ps_read_scene). Verify with ps_get_selection_preview.`,
+              text: `Selected "${target}" from the saved scene:${target} channel (cached by an earlier derive). If the image changed since, re-run with refresh:true. Verify with ps_get_selection_preview.`,
             },
           ],
           structuredContent: {
@@ -524,14 +634,27 @@ async function selectByReference(
       skyCtx: skyCtxFrom(built),
     });
 
-    // Materialize the lazily-advertised face features: the mesh derive above is
-    // the expensive part, so persist the result as its scene:* channel and every
-    // repeat select loads it by name through the fast path instead of re-running
-    // the mesh. Only features actually asked for get a channel — that is the
-    // whole point of deferring them (see `faceMenu` in region-precompute.ts).
+    // Materialize the lazily-advertised region: the derive above is the
+    // expensive part (1-9s for a CE region, more for the face mesh), so persist
+    // the result as its scene:* channel and every repeat select loads it by name
+    // through the fast path instead of re-deriving. Only regions actually asked
+    // for get a channel — that is the whole point of deferring them (see
+    // `faceMenu` and PRECOMPUTE_TARGETS in region-precompute.ts).
+    //
+    // This covers EVERY target, not just face_*. It has to: once the eager
+    // precompute stopped running by default, a CE region that did not persist
+    // here would re-derive on every single select, turning a one-time cost into
+    // a permanent per-call one. Demand-driven saving is also what keeps the old
+    // memory hazard away — we write the one or two channels a session uses, not
+    // all seven at full resolution.
+    //
     // Best-effort: a failed save costs a re-derive next time, never the selection
     // the caller just asked for.
-    if (res.passed && target.startsWith('face_')) {
+    // `!discriminated` for the reason above: persisting a narrowed derive under
+    // the shared key is what makes the next un-narrowed call return the wrong
+    // region. A discriminated select re-derives every time, which is exactly what
+    // it did before this channel was persisted at all.
+    if (res.passed && !discriminated) {
       try {
         await saveSelectionAsSceneChannel(connection, target);
       } catch (err) {
@@ -650,13 +773,14 @@ export function createSceneTools(
                   },
                   selectable_state: {
                     type: 'string',
-                    enum: ['selectable', 'not_selectable', 'not_resolved'],
+                    enum: [...SELECTABLE_STATES],
                     description:
-                      '`selectable`: a precomputed channel is ready to load. `not_selectable`: resolution ran and this region did not pass the confidence gate. `not_resolved`: precompute did not run or failed, so absence here is NOT evidence the region is unavailable.',
+                      '`selectable`: a precomputed channel is ready to load. `not_selectable`: resolution ran and this region did not pass the confidence gate. `candidate`: the DEFAULT read advertised this region without deriving it — ps_select_by_reference scores it when you ask, and it may still turn out not to pass. `not_resolved`: an eagerly-requested precompute did not run or failed, so absence here is NOT evidence the region is unavailable.',
                   },
                   selectable_via: {
                     type: 'string',
-                    description: 'The method that resolved it (only when selectable).',
+                    description:
+                      "The method that resolved it, when one did. Reads 'on_demand' for a `candidate` — nothing has resolved it yet and the method is chosen at derive time.",
                   },
                   selectable_confidence: { type: 'number' },
                 },
@@ -682,7 +806,7 @@ export function createSceneTools(
       tool: {
         name: 'ps_select_by_reference',
         description:
-          'Select a region by NAME instead of coordinates — the natural-mask alternative to a rectangle — with a CONFIDENCE GATE. target=sky/ground/foliage/subject/face/shadows/highlights/skin/above_horizon resolves through the right Photoshop-native method (threshold for sky, invert-sky−subjects for ground, luminance for shadows/highlights, skin-tone colour ∩ the subject box, the detected face/subject box) and is SCORED before it is offered: a clean region is left selected; an unconfident one is NOT selected and reported as honest absence (the city with no real sky gets no sky). Pro adds precise FACE-FEATURE targets backed by the face mesh — face_skin (the retouch mask: face minus eyes/brows/lips), face_eyes, face_brows, face_lips, face_teeth (mouth opening), face_nose, face_under_eye, face_cheeks — each a real geometry-following selection, loaded instantly from the scene:face_* channel ps_read_scene precomputes. `passed`/`confidence` are returned. The structural floor (coherence, horizon alignment) is never tuned; for an artistic/non-standard shot pass `composition_context` (e.g. profile:big_sky) to relax the compositional priors so a legitimately large sky is not rejected. For target=subject with several present, pass `label` and/or `instance`. Build/inspect with ps_read_scene first; verify with ps_get_selection_preview (the red-overlay is the human/agent oversight view). Prefer this over a rectangle for any real-world region.',
+          'Select a region by NAME instead of coordinates — the natural-mask alternative to a rectangle — with a CONFIDENCE GATE. target=sky/ground/foliage/subject/face/shadows/highlights/skin/above_horizon resolves through the right Photoshop-native method (threshold for sky, invert-sky−subjects for ground, luminance for shadows/highlights, skin-tone colour ∩ the subject box, the detected face/subject box) and is SCORED before it is offered: a clean region is left selected; an unconfident one is NOT selected and reported as honest absence (the city with no real sky gets no sky). Pro adds precise FACE-FEATURE targets backed by the face mesh — face_skin (the retouch mask: face minus eyes/brows/lips), face_eyes, face_brows, face_lips, face_teeth (mouth opening), face_nose, face_under_eye, face_cheeks — each a real geometry-following selection, derived on first request and then saved as a scene:face_* channel so repeats load instantly. `passed`/`confidence` are returned. A region derived here is cached as a `scene:*` channel keyed by TARGET ONLY, so a later call for the same target loads it by name; pass `refresh:true` to force a fresh derive after an edit that changes what the region means, and note that narrowing a call with `label`/`instance`/`composition_context` always derives (it neither reads nor writes that shared channel). The structural floor (coherence, horizon alignment) is never tuned; for an artistic/non-standard shot pass `composition_context` (e.g. profile:big_sky) to relax the compositional priors so a legitimately large sky is not rejected. For target=subject with several present, pass `label` and/or `instance`. Build/inspect with ps_read_scene first; verify with ps_get_selection_preview (the red-overlay is the human/agent oversight view). Prefer this over a rectangle for any real-world region.',
         inputSchema: selectByReferenceSchema,
         outputSchema: {
           type: 'object',

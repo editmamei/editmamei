@@ -28,8 +28,22 @@ func buildDocuments(name string, params map[string]any) (string, bool, error) {
 			numParam(params, "y", 0),
 			wp, hp, hasW, hasH,
 		), true, nil
+	case "listDocuments":
+		return listDocuments(), true, nil
+	case "activateDocument":
+		t, err := docTargetFrom(params, true)
+		if err != nil {
+			return "", true, fmt.Errorf("activateDocument: %w", err)
+		}
+		return activateDocument(t), true, nil
 	case "closeDocument":
-		return closeDocument(boolParam(params, "save", false)), true, nil
+		// A target is OPTIONAL here — omitted means the active document, which is
+		// what every caller before ps_document passed.
+		t, err := docTargetFrom(params, false)
+		if err != nil {
+			return "", true, fmt.Errorf("closeDocument: %w", err)
+		}
+		return closeDocument(boolParam(params, "save", false), t), true, nil
 	case "resizeImage":
 		return resizeImage(numParam(params, "width", 0), numParam(params, "height", 0)), true, nil
 	case "convertImageMode":

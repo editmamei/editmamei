@@ -69,14 +69,15 @@ func init() {
     return result;
   `,
 
-		// closeDocument. Slots: 1=getContextInfo, 2=save option (literal).
+		// closeDocument. Slots: 1=getContextInfo, 2=resolution block (sets `doc` —
+		// either the active document or a name/id match), 3=save option (literal).
 		vault.CloseDoc: `
     %s
 
     if (app.documents.length === 0) {
       throw new Error('No document is open in Photoshop');
     }
-    var doc = app.activeDocument;
+    %s
     var closedName = doc.name;
     doc.close(%s);
 
@@ -85,6 +86,67 @@ func init() {
     return {
       closed: true,
       closedName: closedName,
+      context: getContextInfo()
+    };
+  `,
+
+		// listDocuments. Slots: 1=getContextInfo.
+		//
+		// Deliberately does NOT throw when nothing is open. Every other document
+		// snippet opens with the "No document is open" guard, which is right for a
+		// snippet that needs a document — but this one exists precisely to be
+		// callable in that state. It is the read an agent makes to find out WHY a
+		// previous call failed, and throwing the same error again would make the
+		// recovery path as opaque as the failure.
+		//
+		// Per-field try/catch is load-bearing: `fullName` THROWS on a document that
+		// has never been saved (PS raises "The document has not yet been saved."
+		// rather than returning null), and one unsaved scratch document must not
+		// take the whole listing down.
+		vault.ListDocs: `
+    %s
+
+    var __mcpDocs = [];
+    var __mcpActiveId = null;
+    try { __mcpActiveId = app.activeDocument.id; } catch (eActive) {}
+
+    for (var __mcpI = 0; __mcpI < app.documents.length; __mcpI++) {
+      var __mcpD = app.documents[__mcpI];
+      var __mcpPath = null;
+      try { __mcpPath = __mcpD.fullName.fsName; } catch (ePath) {}
+      var __mcpSaved = null;
+      try { __mcpSaved = __mcpD.saved; } catch (eSaved) {}
+      var __mcpW = null;
+      var __mcpH = null;
+      try { __mcpW = __mcpD.width.as('px'); __mcpH = __mcpD.height.as('px'); } catch (eDim) {}
+      __mcpDocs.push({
+        index: __mcpI,
+        id: __mcpD.id,
+        name: String(__mcpD.name),
+        path: __mcpPath,
+        saved: __mcpSaved,
+        active: (__mcpActiveId !== null && __mcpD.id === __mcpActiveId),
+        width_px: __mcpW,
+        height_px: __mcpH
+      });
+    }
+
+    return { count: __mcpDocs.length, documents: __mcpDocs, context: getContextInfo() };
+  `,
+
+		// activateDocument. Slots: 1=getContextInfo, 2=resolution block (sets `doc`).
+		vault.ActivateDoc: `
+    %s
+
+    if (app.documents.length === 0) {
+      throw new Error('No documents are open in Photoshop');
+    }
+    %s
+    app.activeDocument = doc;
+    return {
+      activated: true,
+      id: doc.id,
+      name: String(doc.name),
       context: getContextInfo()
     };
   `,

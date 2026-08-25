@@ -45,6 +45,29 @@ const createDocumentSchema: JsonSchemaObject = {
   required: ['width', 'height'],
 };
 
+/**
+ * The name/id selector shared by ps_close_document and ps_document. Kept in one
+ * place so the two can't drift on what "target a document" means.
+ *
+ * Deliberately does NOT name the tool that lists open documents: this object is
+ * spliced into ps_close_document, which is community-tier, and the leak guard
+ * (correctly) rejects a CE-visible description that points at a dev-tier tool a
+ * CE user does not have. Restore the cross-reference when that tool promotes.
+ */
+const documentTargetProps = {
+  name: {
+    type: 'string',
+    description:
+      "Target an open document by its exact Photoshop name, INCLUDING the extension as shown in the tab (e.g. 'portrait.jpg', not 'portrait'). If two open documents share a name the call fails rather than guessing — target by id instead.",
+  },
+  id: {
+    type: 'integer',
+    minimum: 1,
+    description:
+      'Target an open document by its Photoshop document id. Unambiguous — prefer this when names collide.',
+  },
+} as const;
+
 const closeDocumentSchema: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -53,7 +76,24 @@ const closeDocumentSchema: JsonSchemaObject = {
       description: 'Whether to save changes before closing',
       default: false,
     },
+    ...documentTargetProps,
   },
+};
+
+const DOCUMENT_OPS = ['list', 'activate'] as const;
+
+const documentSchema: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    op: {
+      type: 'string',
+      enum: [...DOCUMENT_OPS],
+      description:
+        'list: every open document (index, id, name, path, saved, active, dimensions) — safe to call when NOTHING is open, which is the point. activate: make one of them the active document, by name or id.',
+    },
+    ...documentTargetProps,
+  },
+  required: ['op'],
 };
 
 const openDocumentSchema: JsonSchemaObject = {
@@ -211,9 +251,58 @@ export function createDocumentTools(
     },
     {
       tool: {
+        name: 'ps_document',
+        description:
+          "See and steer WHICH documents are open, without touching their content. op=list answers 'what is open, which one is active, and does it have unsaved changes' — and it is the one document tool that works when nothing is open at all, so it is the recovery read after a 'No document is open' failure. op=activate switches the active document by name or id, which is how you fix having edited the wrong one. Read-only with respect to pixels; use ps_open_document to load a file and ps_close_document to close one.",
+        inputSchema: documentSchema,
+        outputSchema: {
+          type: 'object',
+          properties: {
+            op: { type: 'string' },
+            count: { type: 'number' },
+            documents: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  index: { type: 'number' },
+                  id: { type: 'number' },
+                  name: { type: 'string' },
+                  path: {
+                    type: ['string', 'null'],
+                    description: 'Absolute path, or null for a document never saved to disk.',
+                  },
+                  saved: {
+                    type: ['boolean', 'null'],
+                    description:
+                      'False when the document has unsaved changes. Null when Photoshop would not report it.',
+                  },
+                  active: { type: 'boolean' },
+                  width_px: { type: ['number', 'null'] },
+                  height_px: { type: ['number', 'null'] },
+                },
+              },
+            },
+            activated: { type: 'boolean' },
+            id: { type: 'number' },
+            name: { type: 'string' },
+            context: { type: 'object' },
+          },
+          required: ['op'],
+        },
+        annotations: {
+          title: 'List / Activate Documents',
+          readOnlyHint: true,
+          idempotentHint: true,
+        },
+      },
+      handler: async (args) => documentOp(connection, snippetClient, args),
+    },
+    {
+      tool: {
         name: 'ps_close_document',
         description:
-          'Close the active Photoshop document. Destructive if save=false and the document has unsaved changes. Returns the closed document name plus a fresh context block (which document, if any, is active afterwards).',
+          'Close a Photoshop document — the active one by default, or a specific one by name or id. Destructive if save=false and the document has unsaved changes. If two open documents share the requested name the call fails rather than guessing. Returns the closed document name plus a fresh context block (which document, if any, is active afterwards).',
         inputSchema: closeDocumentSchema,
         outputSchema: {
           type: 'object',
@@ -397,6 +486,115 @@ async function createDocument(
   });
 }
 
+/** Forward only the selector keys the caller actually supplied. An explicit
+ *  `undefined` would still be a present key on the Go side, which flips
+ *  closeDocument from "close the active document" to "resolve a target". */
+function documentTargetArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (typeof args.name === 'string' && args.name !== '') out.name = args.name;
+  if (typeof args.id === 'number') out.id = args.id;
+  return out;
+}
+
+/**
+ * An empty-string name is a caller bug, not "no target" — and on a DESTRUCTIVE
+ * op the difference is the whole ballgame: silently dropping it downgrades
+ * "close the document I named" to "close whatever is active", which is how an
+ * agent that computed a name from a failed lookup closes the user's working
+ * document instead. Returns an error message, or null when the args are fine.
+ */
+function emptySelectorError(args: Record<string, unknown>): string | null {
+  if (typeof args.name === 'string' && args.name === '') {
+    return 'name was an empty string. Pass a real document name, or omit name entirely to act on the active document.';
+  }
+  return null;
+}
+
+interface DocumentListing {
+  index: number;
+  id: number;
+  name: string;
+  path: string | null;
+  saved: boolean | null;
+  active: boolean;
+  width_px: number | null;
+  height_px: number | null;
+}
+
+async function documentOp(
+  connection: PhotoshopConnection,
+  snippetClient: SnippetClient,
+  rawArgs: Record<string, unknown>
+): Promise<ToolResult> {
+  // Set per-op so a failure names the operation the caller actually asked for —
+  // "Error reading documents: No open document matches name …" points debugging
+  // at the wrong place.
+  let errorPrefix = 'Error reading documents';
+  try {
+    const args = validateArgs(documentSchema, rawArgs);
+    const op = args.op as (typeof DOCUMENT_OPS)[number];
+    const target = documentTargetArgs(args);
+
+    if (op === 'activate') {
+      errorPrefix = 'Error activating document';
+      const empty = emptySelectorError(args);
+      if (empty !== null) return toolErrorResult(errorPrefix, new Error(empty));
+      if (Object.keys(target).length === 0) {
+        return toolErrorResult(
+          errorPrefix,
+          new Error('op=activate needs a name or an id. Call op=list to see what is open.')
+        );
+      }
+      const script = await snippetClient.build('activateDocument', target);
+      const result = (await runScript(connection, script)) as {
+        id: number;
+        name: string;
+        context?: Record<string, unknown>;
+      };
+      return {
+        content: [{ type: 'text' as const, text: `Activated "${result.name}" (id ${result.id}).` }],
+        structuredContent: {
+          op,
+          activated: true,
+          id: result.id,
+          name: result.name,
+          context: result.context,
+        },
+      };
+    }
+
+    const script = await snippetClient.build('listDocuments', {});
+    const result = (await runScript(connection, script)) as {
+      count: number;
+      documents: DocumentListing[];
+      context?: Record<string, unknown>;
+    };
+    const docs = result.documents ?? [];
+    // The empty case is a real answer, not an error: "nothing is open" is what
+    // the caller came here to find out after a "No document is open" failure.
+    const summary = docs.length
+      ? `${docs.length} open document(s): ${docs
+          .map(
+            (d) =>
+              `${d.name} (id ${d.id}${d.active ? ', ACTIVE' : ''}${d.saved === false ? ', unsaved changes' : ''})`
+          )
+          .join('; ')}.`
+      : 'No documents are open in Photoshop. Open one with ps_open_document, or create one with ps_create_document.';
+
+    return {
+      content: [{ type: 'text' as const, text: summary }],
+      structuredContent: {
+        op,
+        count: docs.length,
+        documents: docs,
+        context: result.context,
+      },
+    };
+  } catch (error) {
+    return toolErrorResult(errorPrefix, error);
+  }
+}
+
 async function closeDocument(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
@@ -406,7 +604,13 @@ async function closeDocument(
     const args = validateArgs(closeDocumentSchema, rawArgs);
     const save = args.save as boolean;
 
-    const script = await snippetClient.build('closeDocument', { save });
+    const empty = emptySelectorError(args);
+    if (empty !== null) return toolErrorResult('Error closing document', new Error(empty));
+
+    const script = await snippetClient.build('closeDocument', {
+      save,
+      ...documentTargetArgs(args),
+    });
     const result = (await runScript(connection, script)) as {
       closed: boolean;
       closedName?: string;

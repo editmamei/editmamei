@@ -247,6 +247,44 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
     pattern: /file not found|map not found|lut not found|could not open lut/i,
   },
   { errorClass: 'face_not_found', pattern: /no face mesh|no face detected/i },
+  // ── Perception pipeline (hoisted above the input tier for the same reason
+  //    the not-found tier is: these messages quote a THIRD PARTY — a JPEG
+  //    decoder, the ONNX runtime, the OS — whose wording collides with
+  //    `invalid_argument`'s ordinary-English vocabulary. "failed to decode JPEG
+  //    at C:/…: Invalid SOS parameters" was landing in `invalid_argument` on the
+  //    word "Invalid", which is confidently wrong rather than honestly `other`;
+  //    an ONNX load failure was landing in `ps_op_failed`, blaming Photoshop for
+  //    a Node-side problem.
+  //
+  //    Each pattern matches text REACHABLE today — either a throw site in this
+  //    tree or the dependency name a third party puts in its own message.
+  //    Speculative alternations are deliberately absent: a pattern for a message
+  //    nothing emits is untestable, and a pin written against one is a test that
+  //    can only ever pass. Widen these when the throw site lands, not in
+  //    anticipation of it. ──────────────────────────────────────────────────
+  {
+    errorClass: 'perception_export_failed',
+    // detect-active-doc.ts — the perception export is read_scene's FIRST step
+    // and the likeliest real failure in the whole pipeline.
+    pattern: /saveAs reported success but no file/i,
+  },
+  // runtime.ts throws for JPEG only, and the perception export is always JPEG.
+  // No PNG decode path exists, so there is no `png` alternation.
+  { errorClass: 'image_decode_failed', pattern: /failed to decode jpeg/i },
+  {
+    errorClass: 'detection_unavailable',
+    // The dependency NAME, because this text comes from someone else: Node's
+    // module-resolution failure and onnxruntime's own errors both carry it, and
+    // neither is a throw we control. The package is onnxruntime-WEB (WASM) —
+    // there is no native -node addon in this tree.
+    pattern: /onnxruntime|onnx runtime/i,
+  },
+  {
+    // Case-SENSITIVE by design: these are OS error codes, and a case-insensitive
+    // match would fire on ordinary prose containing the letters.
+    errorClass: 'file_io',
+    pattern: /\b(ENOENT|EBUSY|EACCES|EPERM|EMFILE|ENOSPC)\b/,
+  },
   // ── Input errors ─────────────────────────────────────────────────────────
   {
     errorClass: 'schema_validation',

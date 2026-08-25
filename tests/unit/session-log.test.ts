@@ -197,6 +197,72 @@ describe('classifyError', () => {
     );
   });
 
+  // ── Perception pipeline classes ────────────────────────────────────────────
+  //
+  // ps_read_scene funnels every failure through one wrapper, so its class comes
+  // entirely from the cause text. Before these rows the whole perception
+  // pipeline landed in `other` — or worse, in a confidently wrong class, because
+  // the messages quote a decoder / the ONNX runtime / the OS, whose wording
+  // collides with the ordinary-English input-tier vocabulary.
+  //
+  // Every string below is the REAL message from the throw site named in the
+  // comment, not a paraphrase — a pin against a message we invented would pass
+  // while the field kept reporting `other`.
+  it('classifies a failed perception export', () => {
+    // detect-active-doc.ts: the export is read_scene's first step.
+    expect(classifyError('JPEG saveAs reported success but no file at C:/Temp/detect.jpg')).toBe(
+      'perception_export_failed'
+    );
+    expect(
+      classifyError('Error reading scene: JPEG saveAs reported success but no file at /tmp/d.jpg')
+    ).toBe('perception_export_failed');
+  });
+
+  it('classifies a decode failure by the DECODER, not by the word "Invalid" in its message', () => {
+    // runtime.ts. The old table sent this to `invalid_argument` on "Invalid SOS
+    // parameters" — third-party wording read as a caller mistake.
+    expect(classifyError('failed to decode JPEG at C:/t/d.jpg: Invalid SOS parameters')).toBe(
+      'image_decode_failed'
+    );
+    expect(classifyError('failed to decode JPEG buffer: unsupported marker')).toBe(
+      'image_decode_failed'
+    );
+    // The specific trap, stated directly.
+    expect(classifyError('failed to decode JPEG at x: Invalid SOS parameters')).not.toBe(
+      'invalid_argument'
+    );
+  });
+
+  it('classifies a detection-runtime failure as OUR runtime, not a Photoshop op', () => {
+    // Blaming ps_op_failed for a Node-side model problem sends debugging at
+    // Photoshop, which is the wrong place entirely.
+    //
+    // The package is onnxruntime-WEB. An earlier draft of this test pinned
+    // "Cannot find module onnxruntime-node", which nothing in this tree can
+    // produce — a pin against an invented message passes forever and proves
+    // nothing, which is precisely the failure the table's own comment warns of.
+    expect(classifyError('Cannot find module onnxruntime-web')).toBe('detection_unavailable');
+    expect(classifyError('ONNX Runtime error: failed to load model')).toBe('detection_unavailable');
+    expect(classifyError('ONNX Runtime error: failed to load model')).not.toBe('ps_op_failed');
+  });
+
+  it('classifies OS file-IO codes, case-sensitively', () => {
+    expect(classifyError("ENOENT: no such file or directory, open 'C:/t/detect.jpg'")).toBe(
+      'file_io'
+    );
+    expect(classifyError('EBUSY: resource busy or locked')).toBe('file_io');
+    expect(classifyError('EACCES: permission denied')).toBe('file_io');
+    // Lowercase prose must NOT trip it — the codes are uppercase by convention
+    // and a case-insensitive match would fire on ordinary sentences.
+    expect(classifyError('the layer eperm was renamed')).not.toBe('file_io');
+  });
+
+  it('leaves the perception classes behind a more specific target-not-found match', () => {
+    // Ordering: the not-found tier still wins, so a missing LUT that happens to
+    // mention a path does not become file_io.
+    expect(classifyError('LUT not found: C:/luts/teal.cube')).toBe('file_not_found');
+  });
+
   // `/layer.*not found/` spanned the whole message, so any wrapper mentioning a
   // layer stole the more specific class from the tail.
   it('does not let a wrapper that mentions a layer steal a more specific not-found class', () => {
@@ -346,6 +412,11 @@ describe('classifyError', () => {
     expect(classes).toContain('ps_modal_blocking');
     expect(classes).toContain('ps_not_running');
     expect(classes).toContain('timeout');
+    // Perception pipeline (2026-08-25).
+    expect(classes).toContain('perception_export_failed');
+    expect(classes).toContain('image_decode_failed');
+    expect(classes).toContain('detection_unavailable');
+    expect(classes).toContain('file_io');
   });
 
   it('every class token satisfies the telemetry server error_class contract', () => {

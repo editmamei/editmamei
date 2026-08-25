@@ -1,18 +1,26 @@
 /**
  * Region precompute — Scene Model v2.1 oversight loop.
  *
- * At scene-read time, run every gated region method and SAVE each confident one as
- * a managed `scene:<target>` alpha channel, returning the MENU of what is
- * confidently selectable. `ps_select_by_reference` then LOADS the saved
- * channel BY NAME (instant) instead of re-deriving.
+ * A managed `scene:<target>` alpha channel caches a derived region so
+ * `ps_select_by_reference` can LOAD it BY NAME (instant) instead of re-deriving.
+ * Since 2026-08-25 they are written on FIRST USE by a select, not eagerly by
+ * every scene read — `PRECOMPUTE_TARGETS` below has the measurements.
  *
  * Loading is by NAME and history-independent — `doc.selection.load(scene:<target>)`.
  * No cache-key / history matching is involved: an alpha channel is a real object
  * stored IN the document, which Photoshop keeps in sync with the canvas (it
- * crops/resizes WITH the image), so a saved selection stays valid across edits.
- * It also lives only in the document it was saved in, so switching documents
- * naturally finds no channel and the caller re-derives. To force a fresh derive
- * (e.g. after painting that changes what a region MEANS), pass `refresh:true`.
+ * crops/resizes WITH the image). It also lives only in the document it was saved
+ * in, so switching documents naturally finds no channel and the caller re-derives.
+ *
+ * **Geometrically valid is not semantically current.** Photoshop keeps the mask
+ * aligned to the canvas; it has no idea the sky underneath was replaced. Two
+ * things bound that, and neither is the channel itself:
+ *   - `invalidateSceneChannelsIfStale` purges when a scene read sees the
+ *     document's pixels change (this is the one that fires on the default path);
+ *   - `refresh:true` on `ps_select_by_reference` skips the channel and derives.
+ * A select→edit→select run with no scene read in between consults neither, and
+ * will serve the pre-edit mask. That window is documented in the
+ * `ps_select_by_reference` description, which is where a caller can act on it.
  *
  * `lastPrecomputedKey`/`cachedMenu` below are ONLY a menu-reuse optimization for a
  * repeated `ps_read_scene` read at the same doc-state — they do NOT gate the
@@ -52,13 +60,17 @@ let cachedMenu: RegionMenuItem[] = [];
 export function __resetPrecompute(): void {
   lastPrecomputedKey = null;
   cachedMenu = [];
+  channelsDocState = null;
 }
 
 /**
  * The managed-channel namespace. **`scene:` is RESERVED**: every alpha channel
  * whose name starts with this prefix is treated as derived state Editmamei owns,
- * and is deleted without warning by `purgeSceneChannels` (on `ps_save_psd`) and
- * at the start of every `precomputeRegions` pass. A user channel named
+ * and is deleted without warning by `purgeSceneChannels` (on `ps_save_psd`), at
+ * the start of every `precomputeRegions` pass, and by
+ * `invalidateSceneChannelsIfStale` when a scene read sees the document change —
+ * that third one fires on the DEFAULT path, so it is the one most likely to
+ * delete a channel out from under you. A user channel named
  * `scene:mine` is therefore data loss, not a collision — the match is
  * prefix-only, so nothing distinguishes it from a mask we derived.
  *
@@ -87,7 +99,96 @@ export async function saveSelectionAsSceneChannel(
   );
 }
 
-/** Targets precomputed as saved channels (skip the always-there geometric ones). */
+/** The doc-state key the currently-saved `scene:*` channels were derived at. */
+let channelsDocState: string | null = null;
+
+/**
+ * Drop the derived `scene:*` channels when the document has moved on.
+ *
+ * The eager pass opened by deleting them, so no channel could outlive one scene
+ * read at a changed doc-state. With the eager pass off by default that purge
+ * stopped running, and `ps_save_psd` became the only one left in the tree —
+ * which is far too late: replace the sky, read the scene, and
+ * `ps_select_by_reference` would load the PRE-replacement mask by name and
+ * report `passed:true, confidence:1`.
+ *
+ * Keyed on the scene model's `cache_key` (document identity + pixel hash), so
+ * this costs one round trip when the document actually changed and nothing at
+ * all when it did not. A null previous state also purges: the channels live in
+ * the DOCUMENT, so they outlive this process and a stale one from an earlier
+ * session is exactly the case that must not be trusted.
+ *
+ * A failed purge FAILS SAFE — the state is recorded only after the purge
+ * actually lands, and cleared if it does not, so the next read tries again.
+ * Latching the key first would mean one transient PS error (a modal, a busy
+ * app, the timeout elapsing) permanently convinces this module the channels
+ * belong to the new state: every later read returns at the guard, never
+ * retries, and `ps_select_by_reference` serves the pre-edit mask with
+ * `passed:true, confidence:1` for the lifetime of that doc-state — the exact
+ * bug this function exists to prevent, latched in. This matches
+ * `channelsExist`'s policy below: treat "couldn't verify" as "assume stale",
+ * because the rebuild path is cheap and the wrong mask is not.
+ *
+ * Recovery if it does go stale: `ps_select_by_reference {refresh:true}`, which
+ * skips the channel entirely and re-derives.
+ *
+ * **The obvious optimization here is unsafe — it was written, measured, and
+ * reverted on 2026-08-25. Read this before trying it again.** The purge costs a
+ * round trip (~1.7-1.9s live on a 4898x3265 document) and pays it even when it
+ * deletes nothing, so the tempting move is to skip it when module state says
+ * nothing can be stale. Every cheap version of that check is process-global
+ * while the purge itself is scoped to `app.activeDocument`, and the mismatch is
+ * exploitable:
+ *
+ *   read A (purges A) -> select on A (writes scene:sky) -> edit A -> switch to
+ *   B -> read B (purges B, and "nothing written" now looks true again) ->
+ *   switch back to A -> read A SKIPS -> select on A serves the pre-edit mask at
+ *   `passed:true, confidence:1`.
+ *
+ * A "sticky" written-flag closes that particular path but not the sibling one,
+ * where a document carrying `scene:*` channels from a NATIVE Photoshop save (or
+ * any earlier session) inherits another document's already-purged status —
+ * `File > Save` bypasses `purgeSceneChannels` entirely and bakes whatever is
+ * live straight into the PSD, so this is an ordinary vector, not an exotic one.
+ *
+ * Doing this correctly needs PER-DOCUMENT bookkeeping, and the scene model has
+ * no identity fit for the job: `docKeyFrom` is `name:WxH:selectionState`, which
+ * flips on a selection change, collides for two open documents sharing a name
+ * and size — a state Photoshop permits, and one `documentResolutionBlock`
+ * refuses to guess about elsewhere — and returns `null` outright on a degraded
+ * context, so the key is not merely ambiguous but sometimes absent. Do not key a
+ * per-document bucket on the `cache_key` either: it embeds the pixel hash, so it
+ * would fragment on every edit and answer a different question. Fix the identity
+ * first (Photoshop's own `doc.id` is the obvious candidate), then revisit.
+ */
+export async function invalidateSceneChannelsIfStale(
+  connection: PhotoshopConnection,
+  cacheKey: string
+): Promise<void> {
+  if (channelsDocState === cacheKey) return;
+  try {
+    await runScript(connection, deleteSceneChannelsScript(), SCENE_CHANNEL_TIMEOUT_MS);
+    channelsDocState = cacheKey;
+  } catch {
+    channelsDocState = null; // unknown → purge again on the next read
+  }
+}
+
+/**
+ * Targets precomputed as saved channels (skip the always-there geometric ones).
+ *
+ * Deriving all seven EAGERLY is now opt-in (`ps_read_scene save_regions:true`),
+ * not the default. Measured live 2026-08-24 on a 4898x3265 layered PSD: the
+ * eager pass cost 20.8s of derive (sky 9.0s, skin 3.6s, ground 3.5s, subject
+ * 2.2s, shadows 1.4s, highlights 1.2s) plus channel saves, making the whole
+ * `ps_read_scene` call 29.9s against a 30s executor timeout — while the scene
+ * model underneath took 3.2s. Three of the seven targets were rejected and
+ * produced nothing, so ~4.8s bought literally no channel.
+ *
+ * This is the same failure the face mesh hit on 2026-07-31 (see `faceMenu`
+ * below), one level up, and it takes the same fix: advertise the menu, derive
+ * on first request. A session selects one or two regions, not seven.
+ */
 const PRECOMPUTE_TARGETS: SelectReferenceTarget[] = [
   'sky',
   'ground',
@@ -103,7 +204,14 @@ export interface RegionMenuItem {
   key: string;
   target: string;
   method: string;
-  confidence: number;
+  /**
+   * The gate score from the derive that produced this entry. **Absent on
+   * `on_demand` entries** — nothing has been derived yet, so there is no score
+   * to report and inventing one (a confident-looking `1`) would assert a
+   * verdict we have not earned. Consumers must treat `undefined` as "unknown",
+   * never as zero.
+   */
+  confidence?: number;
   /** For subject — the COCO label. */
   label?: string;
   bounds: { left: number; top: number; right: number; bottom: number } | null;
@@ -111,10 +219,61 @@ export interface RegionMenuItem {
    * True when the region is ADVERTISED as selectable but no channel has been
    * saved yet — `ps_select_by_reference` derives it on first request (and then
    * saves the channel, so repeats are instant). Set for the Pro face-feature
-   * set, which is materialized lazily: see the eager-vs-lazy note above
-   * PRECOMPUTE_TARGETS.
+   * set and, since the lazy default, for the CE region set too: see the
+   * eager-vs-lazy note above PRECOMPUTE_TARGETS.
    */
   on_demand?: boolean;
+}
+
+/**
+ * The DEFAULT menu: advertise what `ps_select_by_reference` could resolve,
+ * deriving nothing and touching Photoshop not at all.
+ *
+ * **What this can and cannot claim.** An eager pass reports `confidence`
+ * because it ran the gate. This one has not, so entries carry `on_demand: true`
+ * and NO confidence, and the caller learns the verdict when it selects. That is
+ * a deliberate trade: the alternative (asserting selectability we never tested)
+ * is the "authoritative-sounding verdict of absence" that `reconcileRegions`
+ * exists to prevent, pointed the other way.
+ *
+ * **Gating is on ONNX-verified presence ONLY.** `face`/`subject`/`skin` are
+ * advertised from the detector's own findings, which are real. The luminance
+ * and geometry targets are advertised UNCONDITIONALLY — deliberately, because
+ * the only cheap signal available for them is `model.regions[].coverage`, the
+ * coarse histogram split that `reconcileRegions` documents as unreliable in
+ * both directions (live 2026-07-30: a night cityscape scored 0.08 coarse sky
+ * coverage against a genuine 0.83-confidence sky). Gating on it would hide
+ * regions that are actually there, which is the worse error.
+ */
+export function candidateMenu(model: SceneModel): RegionMenuItem[] {
+  const advertise = (target: SelectReferenceTarget): RegionMenuItem => ({
+    key: `${CHANNEL_PREFIX}${target}`,
+    target,
+    // The real method is chosen at derive time (sky alone picks between
+    // sky_ground_flood and threshold_white depending on context), so naming one
+    // here would be a guess presented as fact.
+    method: 'on_demand',
+    bounds: null,
+    on_demand: true,
+  });
+
+  const hasFace = model.faces.length > 0;
+  const hasSubject = model.subjects.length > 0;
+  const hasPerson = model.subjects.some((s) => s.label === 'person');
+
+  const menu: RegionMenuItem[] = [
+    advertise('sky'),
+    advertise('ground'),
+    advertise('shadows'),
+    advertise('highlights'),
+  ];
+  // Matches the eager pass's own short-circuit: skin is a colour range
+  // intersected with a person/face box, so with neither present there is
+  // nothing to intersect and the derive cannot pass.
+  if (hasPerson || hasFace) menu.push(advertise('skin'));
+  if (hasSubject) menu.push(advertise('subject'));
+  if (hasFace) menu.push(advertise('face'));
+  return menu;
 }
 
 // ---------- channel glue (managed scene:* alpha channels) ----------
@@ -372,6 +531,9 @@ export async function precomputeRegions(
   const tally = { scripts: 0 };
   const countedConnection = countingConnection(connection, tally);
   await runScript(countedConnection, deleteSceneChannelsScript(), SCENE_CHANNEL_TIMEOUT_MS);
+  // This pass IS the purge, so record the state its channels belong to — else
+  // the lazy path's staleness check would purge them again on the next read.
+  channelsDocState = model.provenance.cache_key;
   const menu: RegionMenuItem[] = [];
   for (const target of PRECOMPUTE_TARGETS) {
     try {
