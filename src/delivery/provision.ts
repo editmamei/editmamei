@@ -278,8 +278,12 @@ function errMsg(e: unknown): string {
  * are compared lexically — exact SemVer precedence isn't needed, only the
  * coarse "is this a downgrade?" decision the rollback guard (M3) makes. Both
  * inputs are already VERSION_RE-validated before this is called.
+ *
+ * Exported: `module-lifecycle.ts` reuses it for the forward-compat per-tool
+ * degrade (installed module version vs. host `VERSION`) rather than
+ * duplicating the comparison.
  */
-function compareVersions(a: string, b: string): number {
+export function compareVersions(a: string, b: string): number {
   const [aCore, aPre] = a.split('-', 2);
   const [bCore, bPre] = b.split('-', 2);
   const ap = aCore.split('.').map(Number);
