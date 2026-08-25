@@ -197,6 +197,8 @@ const (
 	ConvertMode  = "doc10" // convertImageMode (DOM changeMode; grayscale/rgb/cmyk/lab)
 	ConvertBitmp = "doc11" // convertImageModeBitmap (DOM BitmapConversionOptions halftone)
 	ProbeOpenDoc = "doc12" // probeOpenDocument (Phase 3b post-timeout re-probe; walks app.documents, matches fullName.fsName)
+	ListDocs     = "doc13" // listDocuments (every open document; the recovery read for "No document is open")
+	ActivateDoc  = "doc14" // activateDocument (make an open document active by name or id)
 
 	// groups family
 	DeleteGroup  = "g1" // deleteGroup

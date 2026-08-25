@@ -179,6 +179,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_get_selection_preview: 'verify',
 
   // document & canvas
+  ps_document: 'document',
   ps_create_document: 'document',
   ps_open_document: 'document',
   ps_close_document: 'document',

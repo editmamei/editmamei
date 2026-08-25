@@ -72,6 +72,8 @@ export const TOOL_TIERS: Record<string, Tier> = {
   ps_apply_adjustment: 'community',
 
   // document-tools
+  // New 2026-08-25. Stays 'dev' until the maintainer promotes it.
+  ps_document: 'dev',
   ps_create_document: 'community',
   ps_close_document: 'community',
   ps_open_document: 'community',

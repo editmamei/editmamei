@@ -71,12 +71,96 @@ func placeImage(filePath string, x, y float64, widthPercent, heightPercent float
 	)
 }
 
-func closeDocument(save bool) string {
+// DocTarget names ONE open document. The zero value (neither field set) means
+// "whatever is active", which is every pre-existing caller's behaviour.
+type DocTarget struct {
+	Name    string
+	HasName bool
+	ID      float64
+	HasID   bool
+}
+
+// documentResolutionBlock emits the JS that binds `doc`.
+//
+// Ambiguity is an ERROR, never a pick. Photoshop happily keeps two documents
+// open under the same name (the same basename from different directories, or a
+// duplicate), and silently choosing one would send every subsequent edit to a
+// document the caller did not mean — the same class of bug the openDocument
+// case-folding comment above records. A miss lists the open names for the same
+// reason ps_* lookups list candidates: the recovery is usually obvious once you
+// can see what IS there.
+func documentResolutionBlock(t DocTarget) string {
+	if !t.HasName && !t.HasID {
+		return "var doc = app.activeDocument;"
+	}
+	byName := "false"
+	target := "null"
+	label := "'id ' + " + jsNum(t.ID)
+	if t.HasName {
+		byName = "true"
+		target = jsLit(t.Name)
+		label = "'name \"' + " + jsLit(t.Name) + " + '\"'"
+	}
+	return "" +
+		"var __mcpByName = " + byName + ";\n" +
+		"    var __mcpTargetName = " + target + ";\n" +
+		"    var __mcpTargetId = " + jsNum(t.ID) + ";\n" +
+		"    var __mcpMatches = [];\n" +
+		"    var __mcpNames = [];\n" +
+		"    for (var __mcpI = 0; __mcpI < app.documents.length; __mcpI++) {\n" +
+		"      var __mcpD = app.documents[__mcpI];\n" +
+		"      __mcpNames.push(String(__mcpD.name));\n" +
+		"      if (__mcpByName) {\n" +
+		"        if (String(__mcpD.name) === __mcpTargetName) { __mcpMatches.push(__mcpD); }\n" +
+		"      } else if (__mcpD.id === __mcpTargetId) {\n" +
+		"        __mcpMatches.push(__mcpD);\n" +
+		"      }\n" +
+		"    }\n" +
+		"    if (__mcpMatches.length === 0) {\n" +
+		"      throw new Error('No open document matches ' + " + label + " + '. Open documents: ' + __mcpNames.join(', '));\n" +
+		"    }\n" +
+		"    if (__mcpMatches.length > 1) {\n" +
+		"      throw new Error(__mcpMatches.length + ' open documents share ' + " + label + " + ' — target by id instead. Open documents: ' + __mcpNames.join(', '));\n" +
+		"    }\n" +
+		"    var doc = __mcpMatches[0];"
+}
+
+// docTargetFrom reads the optional `name` / `id` selector. `required` is set by
+// callers that cannot fall back to the active document.
+//
+// Supplying both is rejected rather than silently ranked. The two can disagree
+// (an id that names a different document than the name does), and picking a
+// winner would resolve that disagreement invisibly — the caller should say which
+// one it means.
+func docTargetFrom(params map[string]any, required bool) (DocTarget, error) {
+	name, hasName := optStrParam(params, "name")
+	id, hasID := optNumParam(params, "id")
+	if hasName && name == "" {
+		hasName = false
+	}
+	if hasName && hasID {
+		return DocTarget{}, fmt.Errorf("pass either name or id, not both")
+	}
+	if required && !hasName && !hasID {
+		return DocTarget{}, fmt.Errorf("a name or id is required")
+	}
+	return DocTarget{Name: name, HasName: hasName, ID: id, HasID: hasID}, nil
+}
+
+func listDocuments() string {
+	return fmt.Sprintf(tpl[vault.ListDocs], getContextInfo())
+}
+
+func activateDocument(t DocTarget) string {
+	return fmt.Sprintf(tpl[vault.ActivateDoc], getContextInfo(), documentResolutionBlock(t))
+}
+
+func closeDocument(save bool, t DocTarget) string {
 	opt := "SaveOptions.DONOTSAVECHANGES"
 	if save {
 		opt = "SaveOptions.SAVECHANGES"
 	}
-	return fmt.Sprintf(tpl[vault.CloseDoc], getContextInfo(), opt)
+	return fmt.Sprintf(tpl[vault.CloseDoc], getContextInfo(), documentResolutionBlock(t), opt)
 }
 
 func resizeImage(width, height float64) string {

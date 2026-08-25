@@ -13,19 +13,108 @@ describe('createDocumentTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('returns 5 well-formed tools with expected names', () => {
+  it('returns 6 well-formed tools with expected names', () => {
     // 2026-06-20 Phase 1: export_jpeg + export_png consolidated into one
-    // ps_export(format) tool.
+    // ps_export(format) tool. 2026-08-25: ps_document added at tier 'dev'.
     const tools = createDocumentTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
     const names = tools.map((t) => t.tool.name);
     expect(names).toEqual([
       'ps_create_document',
+      'ps_document',
       'ps_close_document',
       'ps_open_document',
       'ps_save_psd',
       'ps_export',
     ]);
+  });
+
+  // ---------- ps_document ----------
+
+  it('document(op=list) reports every open document and which one is active', async () => {
+    const listConn = makeConnection({
+      resultFor: () => ({
+        count: 2,
+        documents: [
+          {
+            index: 0,
+            id: 11,
+            name: 'a.psd',
+            path: 'C:/a.psd',
+            saved: true,
+            active: false,
+            width_px: 100,
+            height_px: 50,
+          },
+          {
+            index: 1,
+            id: 12,
+            name: 'b.jpg',
+            path: null,
+            saved: false,
+            active: true,
+            width_px: 20,
+            height_px: 30,
+          },
+        ],
+        context: { hasDocument: true },
+      }),
+    });
+    const tools = createDocumentTools(listConn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_document', { op: 'list' });
+    expect(snippetClient.lastBuild().name).toBe('listDocuments');
+    const sc = res.structuredContent as { count: number; documents: Array<{ name: string }> };
+    expect(sc.count).toBe(2);
+    expect(sc.documents.map((d) => d.name)).toEqual(['a.psd', 'b.jpg']);
+    // The summary has to surface the two things a recovering caller needs.
+    expect(textOf(res)).toContain('ACTIVE');
+    expect(textOf(res)).toContain('unsaved changes');
+  });
+
+  it('document(op=list) answers plainly when NOTHING is open — the recovery case', async () => {
+    // The whole reason this op exists. Every other document snippet throws "No
+    // document is open"; reporting the same error here would leave the caller
+    // exactly as stuck as the failure that sent it here.
+    const emptyConn = makeConnection({
+      resultFor: () => ({ count: 0, documents: [], context: { hasDocument: false } }),
+    });
+    const tools = createDocumentTools(emptyConn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_document', { op: 'list' });
+    expect(res.isError).toBeUndefined();
+    expect((res.structuredContent as { count: number }).count).toBe(0);
+    expect(textOf(res)).toContain('No documents are open');
+  });
+
+  it('document(op=activate) forwards the selector to the snippet', async () => {
+    const actConn = makeConnection({
+      resultFor: () => ({ activated: true, id: 12, name: 'b.jpg', context: {} }),
+    });
+    const tools = createDocumentTools(actConn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_document', { op: 'activate', name: 'b.jpg' });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('activateDocument');
+    expect(build.params).toMatchObject({ name: 'b.jpg' });
+  });
+
+  it('document(op=activate) without a selector is a clean error, not a silent no-op', async () => {
+    const tools = createDocumentTools(conn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_document', { op: 'activate' });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('needs a name or an id');
+    // Nothing was dispatched to Photoshop.
+    expect(conn.executions).toHaveLength(0);
+  });
+
+  it('close_document forwards a target when given one, and omits the keys when not', async () => {
+    const tools = createDocumentTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_close_document', { save: false, name: 'a.psd' });
+    expect(snippetClient.lastBuild().params).toMatchObject({ save: false, name: 'a.psd' });
+
+    await callTool(tools, 'ps_close_document', { save: false });
+    // The key must be ABSENT, not undefined: a present key flips the Go emitter
+    // from "close the active document" to "resolve a target".
+    expect(snippetClient.lastBuild().params).not.toHaveProperty('name');
+    expect(snippetClient.lastBuild().params).not.toHaveProperty('id');
   });
 
   it('create_document dispatches a script that creates a doc with the requested dimensions', async () => {
