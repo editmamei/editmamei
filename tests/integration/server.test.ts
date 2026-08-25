@@ -208,6 +208,32 @@ describe('ps_ping surfaces update_available', () => {
     expect(second.content[0].text).not.toContain('tell the user');
   });
 
+  it('mentions email release notes on the first notice only, and marks it not urgent', async () => {
+    const server = new EditmameiServer() as unknown as PingServer;
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = { ...newerInfo };
+
+    // The whole sentence, not its pieces: this pins the wording, the
+    // de-escalation ("Not urgent"), and that the URL follows immediately
+    // rather than the three happening to appear somewhere in the text.
+    const first = await server.pingPhotoshop();
+    expect(first.content[0].text).toContain(
+      'Not urgent: they can also read and subscribe to release notes at' +
+        ' https://editmamei.com/blog?src=update_notice'
+    );
+    // Ends on the URL. A trailing period here gets swallowed into the href by
+    // linkifiers in chat clients and terminals, breaking the link.
+    expect(first.content[0].text.endsWith('https://editmamei.com/blog?src=update_notice')).toBe(
+      true
+    );
+
+    // Absent from the passive later pings. Asserted on the source marker
+    // rather than the bare domain, which other copy may legitimately use.
+    const second = await server.pingPhotoshop();
+    expect(second.content[0].text).not.toContain('src=update_notice');
+  });
+
   it('omits the update note and reports null when nothing newer was found', async () => {
     const server = new EditmameiServer() as unknown as PingServer;
     server.session.connection = makeConnection({ info: null });

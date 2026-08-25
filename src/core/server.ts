@@ -1075,7 +1075,22 @@ export class EditmameiServer {
     return {
       note:
         ` IMPORTANT — tell the user before continuing: Editmamei v${u.latest} is available` +
-        ` (this install runs v${u.current}).${fixNote} To update: ${u.how_to_update}`,
+        ` (this install runs v${u.current}).${fixNote} To update: ${u.how_to_update}` +
+        // Rides the first-render notice only, never the passive later ones, so
+        // it cannot repeat within a session. It DOES recur across sessions for
+        // as long as an update stays uninstalled: the server is a fresh process
+        // each time and this state is per-instance. Installing the update ends
+        // the notice and this line together.
+        //
+        // Marked not-urgent explicitly so it does not inherit the weight of the
+        // imperative above, which is about the update itself.
+        //
+        // The URL goes LAST and carries no trailing punctuation: this text is
+        // relayed verbatim into chat clients and terminals that auto-linkify,
+        // and many of them swallow a trailing period into the href, which would
+        // break the one link the sentence exists to offer. A test pins it.
+        ` Not urgent: they can also read and subscribe to release notes at` +
+        ` https://editmamei.com/blog?src=update_notice`,
       notify: true,
     };
   }
