@@ -131,6 +131,28 @@ let channelsDocState: string | null = null;
  *
  * Recovery if it does go stale: `ps_select_by_reference {refresh:true}`, which
  * skips the channel entirely and re-derives.
+ *
+ * **The obvious optimization here is unsafe — it was written, measured, and
+ * reverted on 2026-08-25. Read this before trying it again.** The purge costs a
+ * round trip (~1.7-1.9s live on a 4898x3265 document) and pays it even when it
+ * deletes nothing, so the tempting move is to skip it when module state says
+ * nothing can be stale. Every cheap version of that check is process-global
+ * while the purge itself is scoped to `app.activeDocument`, and the mismatch is
+ * exploitable:
+ *
+ *   read A (purges A) -> select on A (writes scene:sky) -> edit A -> switch to
+ *   B -> read B (purges B, and "nothing written" now looks true again) ->
+ *   switch back to A -> read A SKIPS -> select on A serves the pre-edit mask at
+ *   `passed:true, confidence:1`.
+ *
+ * A "sticky" written-flag closes that particular path but not the sibling one,
+ * where a document carrying `scene:*` channels a user saved manually inherits
+ * another document's already-purged status. Doing this correctly needs
+ * PER-DOCUMENT bookkeeping, and the scene model has no identity fit for the job:
+ * `docKeyFrom` is `name:WxH:selectionState`, which flips on a selection change
+ * and collides for two open documents sharing a name — a state Photoshop
+ * permits. Fix the identity first, then revisit; do not key it on the cache_key
+ * string.
  */
 export async function invalidateSceneChannelsIfStale(
   connection: PhotoshopConnection,
