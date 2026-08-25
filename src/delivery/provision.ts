@@ -35,9 +35,14 @@ const logger = new Logger('Modules');
  * client must not assume the manifest it consumed is honest. The Ed25519
  * signature below also covers (sku, version), but these checks fail-close even
  * an unsigned or malformed manifest before it can touch the filesystem.
+ *
+ * `VERSION_RE` is exported: `module-lifecycle.ts` validates an installed
+ * module's version against the same shape before trusting it in a semver
+ * comparison (the forward-compat degrade), rather than assuming
+ * `compareVersions`'s "already validated" precondition holds for every caller.
  */
 const SKU_RE = /^[a-z0-9-]{2,32}$/;
-const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+export const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 
 /**
  * Hard cap on a downloaded module artifact — defense-in-depth against a hostile

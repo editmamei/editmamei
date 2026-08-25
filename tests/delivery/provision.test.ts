@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes, generateKeyPairSync, sign as edSign } from 'node:crypto';
-import { provisionModules } from '@editmamei/delivery/provision.ts';
+import { provisionModules, compareVersions } from '@editmamei/delivery/provision.ts';
 import { sha256Hex } from '@editmamei/delivery/crypto.ts';
 import {
   moduleSigMessage,
@@ -558,5 +558,18 @@ describe('provisionModules — v2 fast-boot fields (2026-07-29)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('compareVersions', () => {
+  it('a release outranks a prerelease of the same core', () => {
+    // module-lifecycle.ts's forward-compat degrade compares an installed module's
+    // version against the host's own VERSION — if the HOST build is itself a
+    // release-candidate prerelease (e.g. '1.3.0-rc.1') and a fully-released module
+    // ships at the same core version, the release module correctly reads as newer.
+    // Firing the degrade for an RC host against the released module it's a
+    // release-candidate FOR is intentional, not a bug: the RC is the stale side.
+    expect(compareVersions('1.3.0', '1.3.0-rc.1')).toBeGreaterThan(0);
+    expect(compareVersions('1.3.0-rc.1', '1.3.0')).toBeLessThan(0);
   });
 });
