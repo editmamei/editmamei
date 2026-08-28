@@ -436,7 +436,8 @@ export const PLACEMENT_SCHEMA: JsonSchemaObject = {
     },
     relation: {
       type: 'object',
-      description: 'The relation, same vocabulary as the placement-resolver tool, when this build has one.',
+      description:
+        'The relation, same vocabulary as the placement-resolver tool, when this build has one.',
     },
     max_dimension: {
       type: 'number',
