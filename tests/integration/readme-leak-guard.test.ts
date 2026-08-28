@@ -41,6 +41,54 @@ function containsToolName(content: string, name: string): boolean {
 }
 
 /**
+ * Positive control (confirmed MEDIUM finding, folded into the 2026-08-28
+ * strengthening pass): every leak assertion in this file lives or dies on
+ * `containsToolName`, and nothing previously proved it can actually catch a
+ * leak. These pin its true-positive behavior (including the word-boundary
+ * edge cases the header comment above describes) and its true-negative
+ * behavior (a near-miss prefix must NOT match).
+ */
+describe('containsToolName (positive control)', () => {
+  it('matches a bare mid-sentence mention', () => {
+    expect(
+      containsToolName('Use ps_resolve_placement to ground the anchor.', 'ps_resolve_placement')
+    ).toBe(true);
+  });
+
+  it('matches a backticked mention', () => {
+    expect(containsToolName('See `ps_resolve_placement` for details.', 'ps_resolve_placement')).toBe(
+      true
+    );
+  });
+
+  it('matches a possessive mention', () => {
+    expect(
+      containsToolName("ps_resolve_placement's output feeds the gate.", 'ps_resolve_placement')
+    ).toBe(true);
+  });
+
+  it('matches at end of sentence with trailing punctuation', () => {
+    expect(containsToolName('Concur first with ps_resolve_placement.', 'ps_resolve_placement')).toBe(
+      true
+    );
+  });
+
+  it('does NOT match when the name is a strict prefix of a longer identifier (word-boundary negative)', () => {
+    // ps_path is a real community-tier tool name; ps_pathfinder is not a
+    // real tool anywhere in this codebase — it exists here purely to prove
+    // the matcher doesn't false-positive on a longer sibling identifier,
+    // the exact failure mode the header comment above describes.
+    expect(containsToolName('This behaves like ps_pathfinder.', 'ps_path')).toBe(false);
+  });
+
+  it('does NOT match an unrelated community-tier mention when scanning for a different blocked name', () => {
+    expect(containsToolName('Use ps_select for common selection tasks.', 'ps_resolve_placement')).toBe(
+      false
+    );
+  });
+});
+
+/**
  * Prevents accidentally tipping unverified work-in-progress tools to
  * end-users via the public README.
  *
@@ -376,7 +424,8 @@ describe('overview tool markdown leak guard', () => {
 });
 
 /**
- * CE tool surface — runtime leak guard (added 2026-06-09 in v0.7.2).
+ * CE tool surface — runtime leak guard (added 2026-06-09 in v0.7.2;
+ * strengthened 2026-08-28).
  *
  * The 2026-06-09 Mac CE session surfaced a real leak: `ps_ping`'s
  * description contained "ps_list_actions / play_action are worth
@@ -388,66 +437,83 @@ describe('overview tool markdown leak guard', () => {
  * (Pro) → invert"). None were caught by the existing README / skill /
  * overview scans because tool-description text wasn't being scanned.
  *
- * This block enumerates every CE-tier factory's tool descriptions and
- * asserts no description names a non-community-tier tool. Captures any
- * future tier-name leak in any CE tool description.
+ * This block enumerates every CE-tier factory's tool descriptions AND every
+ * `description` string nested in each tool's `inputSchema` (both ship in the
+ * same tools/list payload an LLM reads), and asserts none names a
+ * non-community-tier tool. An 2026-08-28 audit found this block had gone
+ * stale in two ways: the factory list below was a hand copy of
+ * `ce/index.ts`'s `ceFactories` that drifted to 18 entries against the
+ * module's real 28 (+ the separately-registered scene factory) — 11
+ * factories' tool descriptions were never scanned — and the scan only ever
+ * looked at `tool.description`, never `inputSchema` property descriptions,
+ * so a leak like `PLACEMENT_SCHEMA` naming `ps_resolve_placement` (pro) in
+ * its own property descriptions reached CE users' tools/list undetected.
+ * The factory list is now derived from `ceFactories` itself instead of
+ * hand-copied, and the scan recurses into `inputSchema`.
  */
-import { createDocumentTools } from '@editmamei/tools/document-tools.ts';
-import { createLayerTools } from '@editmamei/tools/layer-tools.ts';
-import { createGroupTools } from '@editmamei/tools/group-tools.ts';
-import { createImageTools } from '@editmamei/tools/image-tools.ts';
-import { createImagePlacementTools } from '@editmamei/tools/image-placement-tools.ts';
-import { createLayerPropertiesTools } from '@editmamei/tools/layer-properties-tools.ts';
-import { createFilterTools } from '@editmamei/tools/filter-tools.ts';
-import { createAdjustmentTools } from '@editmamei/tools/adjustment-tools.ts';
-import { createTextTools } from '@editmamei/tools/text-tools.ts';
-import { createSelectionTools } from '@editmamei/tools/selection-tools.ts';
-import { createHistoryTools } from '@editmamei/tools/history-tools.ts';
-import { createLayerOrderingTools } from '@editmamei/tools/layer-ordering-tools.ts';
-import { createPreviewTools } from '@editmamei/tools/preview-tools.ts';
-import { createInspectTools } from '@editmamei/tools/inspect-tools.ts';
-import { createOverviewTools } from '@editmamei/tools/overview-tools.ts';
-import { createBrushTools } from '@editmamei/tools/brush-tools.ts';
-import { createLayerTransformTools } from '@editmamei/tools/layer-transform-tools.ts';
-import { createRetouchTools } from '@editmamei/tools/retouch-tools.ts';
+import { ceFactories } from '@editmamei/modules/ce/index.ts';
+import { createSceneTools } from '@editmamei/tools/scene-tools.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
-import { isToolAllowedInEdition } from '@editmamei/core/tool-tiers.ts';
+import { isToolAllowedInEdition, toolsInTier } from '@editmamei/core/tool-tiers.ts';
+
+/**
+ * Recursively collects every string value keyed `description` anywhere in a
+ * JSON-Schema tree — properties, nested objects, array `items`, oneOf/anyOf
+ * branches, all of it. `inputSchema` ships in the same tools/list payload
+ * the LLM reads, so a tool-name leak buried in a nested property
+ * description is exactly as live as one in `tool.description` itself.
+ */
+function collectDescriptions(node: unknown, out: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    for (const item of node) collectDescriptions(item, out);
+  } else if (node && typeof node === 'object') {
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === 'description' && typeof value === 'string') {
+        out.push(value);
+      } else {
+        collectDescriptions(value, out);
+      }
+    }
+  }
+  return out;
+}
 
 describe('CE tool surface leak guard', () => {
   const conn = makeConnection().asConnection();
   const sc = makeSnippetClient();
-  // Enumerate every factory whose tools could land in CE. Pro-only
-  // factories (selection-tools-pro, preview-tools-pro, action-tools-pro,
-  // template-tools-pro) are excluded — their content is stripped at build
-  // time for the CE bundle and never reaches CE users. As of the 2026-06-16
-  // The layer-transform + retouch surfaces are community-tier
-  // (included below) and the whole template surface is Pro (excluded).
-  const ceCandidates = [
-    ...createDocumentTools(conn, sc),
-    ...createLayerTools(conn, sc),
-    ...createGroupTools(conn, sc),
-    ...createImageTools(conn, sc),
-    ...createImagePlacementTools(conn, sc),
-    ...createLayerPropertiesTools(conn, sc),
-    ...createLayerTransformTools(conn, sc),
-    ...createFilterTools(conn, sc),
-    ...createAdjustmentTools(conn, sc),
-    ...createTextTools(conn, sc),
-    ...createSelectionTools(conn, sc),
-    ...createHistoryTools(conn, sc),
-    ...createLayerOrderingTools(conn, sc),
-    ...createPreviewTools(conn, sc),
-    ...createInspectTools(conn, sc),
-    ...createOverviewTools(conn, sc),
-    ...createRetouchTools(conn, sc),
-    ...createBrushTools(conn, sc),
-  ];
+
+  // Derived straight from the module (src/modules/ce/index.ts) instead of a
+  // hand-copied list — the earlier hand list drifted to 18 of the module's
+  // real 28 factories, so 11 factories' worth of tool descriptions were
+  // never scanned. Pro-only factories (selection-tools-pro, preview-tools-
+  // pro, action-tools-pro, template-tools-pro) are still correctly excluded
+  // because they're registered by the Pro module, not `ceFactories`.
+  const ceCandidates = ceFactories.flatMap((f) => f(conn, sc));
+  // createSceneTools is registered separately in ce/index.ts's register()
+  // — it needs host.invokeTool (the cross-module broker), which the generic
+  // (connection, snippetClient) factory shape the rest of ceFactories share
+  // can't supply. Mirror that split here rather than folding it into
+  // ceFactories.
+  const sceneCandidates = createSceneTools(conn, sc);
+
+  it('scans every factory ce/index.ts itself registers (regression guard against a future hand-list)', () => {
+    // ce/index.ts has 28 CE-tier factories today. This is a floor, not an
+    // exact pin, so adding a factory there doesn't require touching this
+    // test — but a collapse (e.g. a broken import silently yielding an
+    // empty or truncated array) fails loudly instead of the old bug, where
+    // a stale 18-factory hand list comfortably cleared the anti-vacuity
+    // floor below and the drift was invisible.
+    expect(ceFactories.length).toBeGreaterThanOrEqual(28);
+  });
+
   // Apply the CE-edition tier filter as defense in depth — community
   // factories should already register only community tools, but if a
   // dev-tier tool shipped without being moved out, the filter catches
   // it before scanning.
-  const ceTools = ceCandidates.filter((def) => isToolAllowedInEdition(def.tool.name, 'community'));
+  const ceTools = [...ceCandidates, ...sceneCandidates].filter((def) =>
+    isToolAllowedInEdition(def.tool.name, 'community')
+  );
 
   // 'community' classified ambient tools (like ps_ping registered
   // directly in server.ts) live in the server source. Read the ping
@@ -473,13 +539,19 @@ describe('CE tool surface leak guard', () => {
         'Update the extraction regex to match the current source.'
     );
   }
-  // Treat ping like any other CE-visible tool definition for scanning.
+  // Treat ping like any other CE-visible tool definition for scanning. Each
+  // tool contributes its own `description` PLUS one scan target per
+  // `description` string recursively found inside its `inputSchema` — both
+  // ship in the same tools/list payload the LLM reads.
   const scanTargets: { name: string; description: string }[] = [
     { name: 'ps_ping', description: pingDescription },
-    ...ceTools.map((def) => ({
-      name: def.tool.name,
-      description: def.tool.description ?? '',
-    })),
+    ...ceTools.flatMap((def) => [
+      { name: def.tool.name, description: def.tool.description ?? '' },
+      ...collectDescriptions(def.tool.inputSchema).map((description) => ({
+        name: `${def.tool.name} (inputSchema)`,
+        description,
+      })),
+    ]),
   ];
 
   const nonCommunityNames = Object.entries(TOOL_TIERS)
@@ -531,12 +603,18 @@ describe('CE tool surface leak guard', () => {
     ).toEqual([]);
   });
 
-  it('CE scan covers at least 40 tools (sanity check the enumeration)', () => {
-    // If a factory import path breaks, scanTargets shrinks silently —
-    // pin a floor so a broken scan can't silently let leaks through.
+  it('CE scan covers at least as many targets as there are community-tier tools (sanity check the enumeration)', () => {
+    // Derived from tool-tiers.ts (the source of truth for tier
+    // classification) instead of a hardcoded magic number. The old floor of
+    // 40 was itself a magic number that happened to sit below the stale
+    // 18-factory hand list's ~48 scanned tools, so it never caught the list
+    // going stale — a derived floor tracks reality instead of a snapshot
+    // guess.
+    const communityToolCount = toolsInTier('community').length;
     expect(
       scanTargets.length,
-      'CE leak guard scan target count dropped below 40 — check factory imports'
-    ).toBeGreaterThanOrEqual(40);
+      `CE leak guard scan target count (${scanTargets.length}) dropped below the ` +
+        `number of community-tier tools (${communityToolCount}) — check factory wiring`
+    ).toBeGreaterThanOrEqual(communityToolCount);
   });
 });

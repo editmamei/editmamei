@@ -42,8 +42,12 @@ import { createChannelComposeTools } from '../../tools/channel-compose-tools.js'
 import { createShapeTools } from '../../tools/shape-tools.js';
 import { createSkyTools } from '../../tools/sky-tools.js';
 
-// CE-tier factories; each takes (connection, snippetClient).
-const ceFactories = [
+// CE-tier factories; each takes (connection, snippetClient). Exported so the
+// leak-guard test (tests/integration/readme-leak-guard.test.ts) can derive
+// its scan list straight from this array instead of hand-copying it — a
+// hand copy previously drifted stale and silently stopped scanning 11
+// factories' worth of tool descriptions.
+export const ceFactories = [
   createDocumentTools,
   createLayerTools,
   createGroupTools,

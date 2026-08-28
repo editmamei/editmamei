@@ -402,10 +402,19 @@ export async function resolveToGeometry(
 }
 
 // ── Reusable `placement` surface for ACTING tools ────────────────────────────
-// ps_shape / ps_crop_document / ps_guides / ps_transform_layer all take the same
+// A number of community-tier tools (ps_shape, ps_crop_document, ps_transform_layer,
+// ps_filter, ps_select, ps_retouch, ps_path, among others) take the same
 // anchor-relational `placement` input and bake the resolved+gated geometry into
 // their own params. The schema fragment + the target-enforcing resolver below are
-// the single source for that contract, so the four consumers can't drift.
+// the single source for that contract, so the consumers can't drift.
+//
+// The description text below is deliberately tier-agnostic: it points at "the
+// placement-resolver tool" rather than naming ps_resolve_placement by identifier.
+// That tool is pro-tier, so every one of these community consumers ships this
+// schema fragment into CE users' tools/list too — naming a tool the CE user
+// cannot reach there sends an LLM hunting for a tool that isn't in its
+// inventory (tests/integration/readme-leak-guard.test.ts's CE tool surface
+// leak guard catches a regression here).
 
 /** The reusable `placement` input sub-schema. Spread into a tool's inputSchema;
  *  override `description` per tool to name the relation kind it needs. */
@@ -414,18 +423,20 @@ export const PLACEMENT_SCHEMA: JsonSchemaObject = {
   description:
     'ANCHOR-RELATIONAL placement (preferred over guessing pixels): name anchors + a relation and the ' +
     'spatial-grounding resolver computes the geometry, verified by an objective gate; the action runs ONLY if the ' +
-    'gate PASSES. For a HARD or ambiguous placement, first concur on ps_resolve_placement (review_crop: true) — a ' +
-    'read-only zoomed crop with a marker at the resolved spot — then pass the SAME anchors + relation here. See ' +
-    'ps_resolve_placement for the full anchors + relation vocabulary.',
+    'gate PASSES. For a HARD or ambiguous placement, first concur with the placement-resolver tool — when this ' +
+    'build has one, it appears in tools/list — by calling it with review_crop: true for a read-only zoomed crop ' +
+    'with a marker at the resolved spot, then pass the SAME anchors + relation here. The full anchors + relation ' +
+    'vocabulary is documented on that tool.',
   properties: {
     anchors: {
       type: 'array',
       description:
-        'Named anchors, same vocabulary as ps_resolve_placement (face/object/grid/extremum/corner/edge/landmark).',
+        'Named anchors, same vocabulary as the placement-resolver tool, when this build has one ' +
+        '(face/object/grid/extremum/corner/edge/landmark).',
     },
     relation: {
       type: 'object',
-      description: 'The relation, same vocabulary as ps_resolve_placement.',
+      description: 'The relation, same vocabulary as the placement-resolver tool, when this build has one.',
     },
     max_dimension: {
       type: 'number',
