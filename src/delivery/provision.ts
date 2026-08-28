@@ -22,6 +22,7 @@ import {
   type ModuleFileDigest,
 } from './signing.js';
 import { installModule, readInstalledModule } from './store.js';
+import { KERNEL_ABI } from '../kernel/host-api.js';
 import type { LicenseStoreOptions } from '../license/store.js';
 import { Logger } from '../utils/logger.js';
 
@@ -135,6 +136,26 @@ export async function provisionModules(
         result.errors.push({
           sku,
           message: `manifest version '${latest}' for ${sku} is not valid semver`,
+        });
+        continue;
+      }
+      // `abi` is the host<->module contract version. It is unvalidated manifest
+      // JSON (`fetchManifest` casts the parse; the `number` type is compile-time
+      // only) that flows into the installed pointer and, past it, into
+      // `installModule` -> `pruneOldModuleVersions`, which DELETES the currently
+      // working install. So it is checked HERE, before any artifact fetch or
+      // install, and a bad value costs the user nothing:
+      //   - above KERNEL_ABI the module cannot load on this host at all (the
+      //     kernel skips it): "update the host first", not "destroy what works";
+      //   - a non-integer / <1 value writes a pointer that `readInstalledModule`
+      //     rejects forever, wedging boot into a permanent force-re-provision.
+      // 1 is the lowest ABI ever published; the load-time `HOST_MIN_ABI` gate
+      // remains the authority on the low side of the acceptance window.
+      const abi = entry.abi;
+      if (!Number.isInteger(abi) || abi < 1 || abi > KERNEL_ABI) {
+        result.errors.push({
+          sku,
+          message: `manifest abi '${String(abi)}' for ${sku} is not supported by this host (expected an integer in 1..${KERNEL_ABI})`,
         });
         continue;
       }
@@ -253,7 +274,7 @@ export async function provisionModules(
         {
           sku,
           version: latest,
-          abi: entry.abi,
+          abi,
           sha256: digest,
           alg: contentKey.alg,
           content_key: contentKey.key,

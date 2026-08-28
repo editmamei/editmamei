@@ -22,6 +22,7 @@ import { Logger } from '@editmamei/utils/logger.ts';
 import { tierOf } from '@editmamei/core/tool-tiers.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
 import type { Kernel } from '@editmamei/kernel/kernel.ts';
+import { KERNEL_ABI } from '@editmamei/kernel/host-api.ts';
 
 /**
  * Self-healing Pro module load + hardening (v0.22.1). A downloaded module built
@@ -224,6 +225,23 @@ describe('EditmameiServer.loadModules — degrade-to-CE nets', () => {
     expect(names(server)).not.toContain('ps_list_actions');
     expect(names(server)).toContain('ps_ping');
     expect(server.moduleSkipReason).toBe('incompatible');
+  });
+
+  it('skips a module whose abi is ABOVE KERNEL_ABI, and never reports it as loaded', async () => {
+    // The mirror of the case above, and the one that used to pass silently: the
+    // kernel refuses a too-new module WITHOUT throwing, so an ungated boot kept a
+    // resolved module + a null skip reason and told telemetry 'loaded' while zero
+    // Pro tools existed. A VALID pro name proves the skip is pre-import.
+    buildHome({ names: ['ps_list_actions'], abi: KERNEL_ABI + 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await expect(server.loadModules()).resolves.toBeUndefined();
+
+    expect(names(server)).not.toContain('ps_list_actions');
+    expect(names(server)).toContain('ps_ping');
+    expect(server.moduleSkipReason).toBe('incompatible');
+    // The reason the gate exists: the outcome must not read as success.
+    expect(server.computeModuleStatus()?.outcome).toBe('skipped_incompatible');
   });
 
   it('leaves the reason null + registers the tool for a compatible module (control)', async () => {
@@ -549,6 +567,43 @@ describe('EditmameiServer — background self-heal policy', () => {
       sleep: async () => {},
     });
     expect(readInstalledModule(PRO_SKU, { dir: dirOf(fx.home) })?.version).toBe('9.9.10');
+  });
+
+  it('costs one manifest GET and no artifact fetch for an abi-too-new skip (no churn per boot)', async () => {
+    // The high-side gate re-provisions without force like any other 'incompatible'
+    // skip. That must stay a cheap no-op every boot rather than re-downloading the
+    // artifact forever: provisionModules refuses the too-new manifest entry before
+    // any fetch, so nothing is installed and nothing is pruned.
+    buildHome({ names: ['ps_list_actions'], abi: KERNEL_ABI + 1 });
+    const dir = dirOf(fx.home);
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBe('incompatible');
+
+    // A manifest that also declares the too-new abi (the real shape: the entry's
+    // abi is what got installed in the first place).
+    const fake = fakeDelivery('9.9.10');
+    const urls: string[] = [];
+    await server.reprovisionIfModuleSkipped({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        urls.push(url);
+        const res = await fake.fetchImpl(url, init);
+        if (!url.endsWith('/v1/modules/manifest')) return res;
+        const m = JSON.parse(await res.text()) as {
+          modules: { pro: { abi: number } };
+        };
+        m.modules.pro.abi = KERNEL_ABI + 1;
+        return jsonRes(200, m);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+
+    expect(urls).toEqual([`${cfg.baseUrl}/v1/modules/manifest`]); // no artifact, no key
+    // The installed module is exactly as it was: nothing installed, nothing pruned.
+    expect(readInstalledModule(PRO_SKU, { dir })?.version).toBe(MOD_VERSION);
+    expect(readInstalledModule(PRO_SKU, { dir })?.abi).toBe(KERNEL_ABI + 1);
   });
 
   it('installs nothing + does NOT recommend repair when only the SAME (incompatible) version is served', async () => {

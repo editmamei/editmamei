@@ -16,8 +16,10 @@ import {
   moduleHandlersPath,
   moduleArtifactPath,
   installedModuleDir,
+  installedPath,
   loadVerifiedModule,
 } from '@editmamei/delivery/store.ts';
+import { KERNEL_ABI } from '@editmamei/kernel/host-api.ts';
 import { packBundle, type BundleFile } from '@editmamei/delivery/bundle.ts';
 import type { DeliveryFetch, DeliveryResponse } from '@editmamei/delivery/client.ts';
 
@@ -372,6 +374,153 @@ describe('provisionModules', () => {
       });
       expect(res2.installed).toEqual([]);
       expect(res2.errors[0]?.message).toMatch(/signature/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('provisionModules - manifest abi validation', () => {
+  /**
+   * Serve `fake`'s manifest with the pro entry's `abi` replaced (`undefined`
+   * deletes the field). Everything else stays honest (artifact bytes, content
+   * key, signature), so any refusal is attributable to the abi alone.
+   */
+  function withAbi(fake: ReturnType<typeof fakeDelivery>, abi: unknown): DeliveryFetch {
+    return async (url, init) => {
+      const res = await fake.fetchImpl(url, init);
+      if (!url.endsWith('/v1/modules/manifest')) return res;
+      const m = JSON.parse(await res.text()) as { modules: { pro: Record<string, unknown> } };
+      if (abi === undefined) delete m.modules.pro.abi;
+      else m.modules.pro.abi = abi;
+      return jsonRes(200, m);
+    };
+  }
+
+  const MANIFEST_URL = `${cfg.baseUrl}/v1/modules/manifest`;
+
+  // Every one of these used to sail past provisioning into installed.json, and
+  // through installModule's prune, which deletes the version that was working.
+  const badAbis: [string, unknown][] = [
+    ['missing', undefined],
+    ['a string', '1'],
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 0.5],
+    ['above KERNEL_ABI', KERNEL_ABI + 1],
+  ];
+
+  for (const [label, abi] of badAbis) {
+    it(`refuses an entry whose abi is ${label} (no fetch, no install)`, async () => {
+      const dir = tmpDir();
+      const fake = fakeDelivery('0.17.0');
+      try {
+        const res = await provisionModules('K', {
+          dir,
+          config: cfg,
+          fetchImpl: withAbi(fake, abi),
+          signingKeys: [fake.pubB64],
+        });
+        expect(res.installed).toEqual([]);
+        expect(res.errors[0]?.sku).toBe('pro');
+        expect(res.errors[0]?.message).toMatch(/abi/);
+        // installModule was never reached: no pointer file at all, and the
+        // artifact + content key were never even requested.
+        expect(existsSync(installedPath('pro', { dir }))).toBe(false);
+        expect(fake.calls).toEqual([MANIFEST_URL]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it('accepts abi at the top of the window (KERNEL_ABI) - the gate is inclusive', async () => {
+    const dir = tmpDir();
+    const fake = fakeDelivery('0.17.0');
+    try {
+      const res = await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: withAbi(fake, KERNEL_ABI),
+        signingKeys: [fake.pubB64],
+      });
+      expect(res.errors).toEqual([]);
+      expect(res.installed).toEqual([{ sku: 'pro', version: '0.17.0' }]);
+      expect(readInstalledModule('pro', { dir })?.abi).toBe(KERNEL_ABI);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a WORKING installed module untouched when the manifest goes abi-too-new', async () => {
+    // The aggravator the gate exists for: installModule prunes prior versions, so
+    // a too-new entry that reached install would delete the module that works and
+    // leave one this host can't load (the kernel skips it) in its place.
+    const dir = tmpDir();
+    const good = fakeDelivery('1.0.0');
+    const tooNew = fakeDelivery('2.0.0');
+    try {
+      await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: good.fetchImpl,
+        signingKeys: [good.pubB64],
+      });
+      expect(readInstalledModule('pro', { dir })?.version).toBe('1.0.0');
+
+      const res = await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: withAbi(tooNew, KERNEL_ABI + 1),
+        signingKeys: [tooNew.pubB64],
+      });
+      expect(res.installed).toEqual([]);
+      expect(res.errors[0]?.message).toMatch(/abi/);
+
+      // Still on the working module, and its directory survived the prune that
+      // never ran, so it still loads.
+      expect(readInstalledModule('pro', { dir })?.version).toBe('1.0.0');
+      expect(existsSync(installedModuleDir('pro', '1.0.0', { dir }))).toBe(true);
+      expect(existsSync(installedModuleDir('pro', '2.0.0', { dir }))).toBe(false);
+      expect(loadVerifiedModule('pro', { dir }, [good.pubB64])).not.toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a malformed abi never reaches the pointer, so the corrupt self-heal cannot wedge', async () => {
+    // A non-numeric abi used to be JSON.stringify'd into installed.json, where
+    // readInstalledModule's strict shape check then rejected the pointer on EVERY
+    // boot: 'corrupt' -> FORCED re-provision -> the same unreadable pointer
+    // rewritten, forever, re-downloading the artifact each time. `force` is the
+    // exact flag that path uses, so it must not reopen the door.
+    const dir = tmpDir();
+    const good = fakeDelivery('1.0.0');
+    const broken = fakeDelivery('1.0.0');
+    try {
+      await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: good.fetchImpl,
+        signingKeys: [good.pubB64],
+      });
+      const before = readInstalledModule('pro', { dir });
+      expect(before?.abi).toBe(1);
+
+      const res = await provisionModules('K', {
+        dir,
+        force: true,
+        config: cfg,
+        fetchImpl: withAbi(broken, '2'),
+        signingKeys: [broken.pubB64],
+      });
+      expect(res.installed).toEqual([]);
+      expect(res.errors[0]?.message).toMatch(/abi/);
+
+      // The pointer is unchanged and still READABLE, so nothing became corrupt,
+      // there is no force-re-provision to repeat, and no artifact was re-fetched.
+      expect(readInstalledModule('pro', { dir })).toEqual(before);
+      expect(broken.calls).toEqual([MANIFEST_URL]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
