@@ -81,5 +81,10 @@ export async function runRepair(opts: RepairOptions = {}): Promise<void> {
     throw new Error('module re-provisioning failed');
   }
 
-  out('\nRestart your MCP client (Claude Desktop / Claude Code) to load Pro tools.\n');
+  // Only worth saying when a restart is actually the next step. On the
+  // abi-too-new path with nothing installed, the host update is the cure and a
+  // restart would load nothing, so the two lines together would contradict.
+  if (prov.installed.length > 0 || tooNew.length === 0) {
+    out('\nRestart your MCP client (Claude Desktop / Claude Code) to load Pro tools.\n');
+  }
 }

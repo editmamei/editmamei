@@ -487,10 +487,11 @@ describe('provisionModules — manifest abi validation', () => {
   });
 
   it('separates the two refusals: a malformed entry vs. a host that is simply too old', async () => {
-    // The texts are what `editmamei repair` prints verbatim before exiting 1, and
-    // what the background self-heal branches on — they must point at the actual
-    // cure, which differs. A fielded host hits the second one every boot after an
-    // ABI bump, and "update Editmamei" is the only thing that helps.
+    // `editmamei repair` and the background self-heal both branch on these codes
+    // and must point at the actual cure, which differs: a malformed entry is a
+    // real failure, while a too-old host is not. A fielded host hits the second
+    // one every boot after an ABI bump, and "update Editmamei" is the only thing
+    // that helps.
     const dir = tmpDir();
     const fake = fakeDelivery('0.17.0');
     try {
