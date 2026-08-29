@@ -41,12 +41,12 @@ function containsToolName(content: string, name: string): boolean {
 }
 
 /**
- * Positive control (confirmed MEDIUM finding, folded into the 2026-08-28
- * strengthening pass): every leak assertion in this file lives or dies on
- * `containsToolName`, and nothing previously proved it can actually catch a
- * leak. These pin its true-positive behavior (including the word-boundary
- * edge cases the header comment above describes) and its true-negative
- * behavior (a near-miss prefix must NOT match).
+ * Every leak assertion in this file lives or dies on `containsToolName`, so the
+ * matcher needs coverage of its own: one that silently matched nothing would
+ * make every assertion below pass vacuously while catching no leak at all.
+ * These pin its true-positive behavior (including the word-boundary edge cases
+ * the header comment above describes) and its true-negative behavior (a
+ * near-miss prefix must NOT match).
  */
 describe('containsToolName (positive control)', () => {
   it('matches a bare mid-sentence mention', () => {
@@ -424,8 +424,7 @@ describe('overview tool markdown leak guard', () => {
 });
 
 /**
- * CE tool surface — runtime leak guard (added 2026-06-09 in v0.7.2;
- * strengthened 2026-08-28).
+ * CE tool surface — runtime leak guard (added 2026-06-09 in v0.7.2).
  *
  * The 2026-06-09 Mac CE session surfaced a real leak: `ps_ping`'s
  * description contained "ps_list_actions / play_action are worth
@@ -440,22 +439,19 @@ describe('overview tool markdown leak guard', () => {
  * This block enumerates every CE-tier factory's tool descriptions AND every
  * `description` string nested in each tool's `inputSchema` / `outputSchema` /
  * `annotations.title` (all ship in the same tools/list payload an LLM
- * reads), and asserts none names a non-community-tier tool. A 2026-08-28
- * audit found this block had gone stale in two ways: the factory list below
- * was a hand copy of `ce/index.ts`'s `ceFactories` that drifted to 18
- * entries against the module's real 28 (+ the separately-registered scene
- * factory) — 11 factories' tool descriptions were never scanned — and the
- * scan only ever looked at `tool.description`, never `inputSchema` property
- * descriptions, so a leak like `PLACEMENT_SCHEMA` naming
- * `ps_resolve_placement` (pro) in its own property descriptions reached CE
- * users' tools/list undetected. The factory list is now derived from
- * `ceFactories` itself instead of hand-copied, and the scan recurses into
- * `inputSchema`. A follow-up 2026-08-28 QA pass on that fix found the new
- * scan path itself untested and its floor check weaker than the one it
- * replaced; extended the walk to `outputSchema` + `annotations.title`, added
- * `collectDescriptions` unit coverage plus an end-to-end synthetic-leak
- * control, and replaced the size-based floor with a name-set completeness
- * check (see below).
+ * reads), and asserts none names a non-community-tier tool.
+ *
+ * Two structural properties keep this guard honest. Both are load-bearing, and
+ * a guard that quietly stops covering something is worse than no guard:
+ *   - The factory list is DERIVED from `ceFactories`, never hand-copied. A hand
+ *     copy drifts silently as factories are added, and every factory it omits
+ *     is one whose descriptions are never scanned at all.
+ *   - The scan RECURSES into schema descriptions rather than reading only
+ *     `tool.description`. A property description (e.g. `PLACEMENT_SCHEMA`
+ *     naming a Pro tool) reaches a CE user's tools/list exactly like the tool
+ *     description does, so scanning one without the other leaves a live hole.
+ * The completeness floor below is a NAME-SET check, not a count: a count cannot
+ * distinguish a renamed tool from a dropped one, and both must fail loudly.
  */
 import { ceFactories } from '@editmamei/modules/ce/index.ts';
 import { createSceneTools } from '@editmamei/tools/scene-tools.ts';
@@ -581,12 +577,13 @@ function findToolNameLeaks(targets: ScanTarget[], blockedNames: string[]): strin
 }
 
 /**
- * Confirmed HIGH finding (2026-08-28 QA pass): the schema-walk scan path
- * itself — `collectDescriptions` and its wiring into scan targets — had no
- * tests. The positive controls above only ever exercised `containsToolName`,
- * which was already covered before this pass; nothing proved the WALKER
- * finds nested descriptions, or that a leak buried in one actually surfaces
- * as a leak entry through the real pipeline.
+ * Schema descriptions ship in the same `tools/list` payload as `tool.description`,
+ * so the scan has to recurse into them — and the walker that does the recursing
+ * needs its own coverage. `containsToolName` being correct proves only that a
+ * string is matched once it is FOUND; it says nothing about whether the walker
+ * reaches a description nested in an array item or a `oneOf` branch. A walker
+ * that quietly returned fewer strings than the schema holds would leave the CE
+ * scan below green while a leak sat in the payload.
  */
 describe('collectDescriptions (schema walker)', () => {
   it('collects every description string from a nested schema — properties, array items, oneOf/anyOf branches', () => {
@@ -654,12 +651,12 @@ describe('collectDescriptions (schema walker)', () => {
 });
 
 /**
- * End-to-end negative control (the other half of the same HIGH finding): a
- * synthetic tool whose `inputSchema` embeds a blocked name in a NESTED
- * property description must actually produce a leak entry when run through
- * `scanTargetsForTool` + `findToolNameLeaks` — the exact two functions the
- * real CE scan below calls. This proves the pipeline, not just the matcher
- * `containsToolName` already covers above.
+ * The walker and the matcher can each be correct while the WIRING between them
+ * is not, and only the assembled pipeline is what protects CE users. So a
+ * synthetic tool whose `inputSchema` embeds a blocked name in a NESTED property
+ * description must actually produce a leak entry when run through
+ * `scanTargetsForTool` + `findToolNameLeaks` — the exact two functions the real
+ * CE scan below calls.
  */
 describe('CE schema-leak scan pipeline (end-to-end synthetic control)', () => {
   it('a blocked name buried in a nested inputSchema property description surfaces as a leak', () => {
@@ -751,7 +748,7 @@ describe('CE tool surface leak guard', () => {
   // — it needs host.invokeTool (the cross-module broker), which the generic
   // (connection, snippetClient) factory shape the rest of ceFactories share
   // can't supply. Mirror that split here rather than folding it into
-  // ceFactories. Pass the SAME broker shape ce/index.ts:129 actually passes
+  // ceFactories. Pass the SAME broker shape `register()` actually passes
   // (a real function, not undefined) — none of scene-tools.ts's returned
   // tool descriptions branch on it today, but if a future edit ever makes a
   // description conditional on Pro-refine availability, this scan should see
@@ -862,14 +859,13 @@ describe('CE tool surface leak guard', () => {
   });
 
   it('every community-tier tool name is actually reachable by the CE scan (name-set completeness)', () => {
-    // Replaces the earlier "scanTargets.length >= N" anti-vacuity floor,
-    // which the 2026-08-28 QA pass flagged as LOOSER than the magic-40 it
-    // replaced: once the walker recurses into inputSchema, scanTargets
-    // counts every nested description (hundreds), not one-per-tool — a
-    // factory-wiring collapse to a couple of factories could still clear
-    // any plausible size floor and stay green. A name-set difference is
-    // immune to that: it asks the actual question ("did every community
-    // tool get scanned at all"), not a proxy question about volume.
+    // A size-based anti-vacuity floor (`scanTargets.length >= N`) cannot work
+    // here: once the walker recurses into inputSchema, scanTargets counts every
+    // nested description (hundreds) rather than one per tool, so a collapse to
+    // a couple of factories would still clear any plausible floor and stay
+    // green. A name-set difference is immune to that — it asks the actual
+    // question ("was every community tool scanned at all"), not a proxy
+    // question about volume.
     //
     // The ambient tools are the allowed exception — community-tier but
     // registered directly in server.ts rather than via a ceFactories entry

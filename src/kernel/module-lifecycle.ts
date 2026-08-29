@@ -594,7 +594,20 @@ export class ModuleLifecycle {
       // A freshness poll is best-effort: on error/notConfigured we simply stay on the
       // currently-installed module. Log at WARN for support, but recommend no lever
       // (nothing is broken — the existing module still works).
+      //
+      // `abi_too_new` is exempt from that WARN, and this is the HEALTHY path — the
+      // module loaded fine this boot. After a publisher ABI bump it is the ordinary
+      // steady state of every older host, every boot, forever: not a failure, and
+      // not something the user can act on beyond updating when they choose to.
+      // Warning about it each boot would train the reader to ignore this channel.
       for (const e of prov.errors) {
+        if (e.code === 'abi_too_new') {
+          this.deps.logger.info(
+            `A newer Pro module is published but needs a newer Editmamei than this ` +
+              `one — staying on the installed version, which works. Update Editmamei to get it.`
+          );
+          continue;
+        }
         this.deps.logger.warn(
           `Pro-module freshness check could not provision the ${e.sku} module ` +
             `(staying on the installed version): ${e.message}`

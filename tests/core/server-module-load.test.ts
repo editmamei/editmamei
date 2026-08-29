@@ -739,6 +739,49 @@ describe('EditmameiServer.ensureEntitledModuleFresh — healthy-path auto-update
     expect(readInstalledModule(PRO_SKU, { dir: dirOf(fx.home) })?.version).toBe('9.9.10');
   });
 
+  it('does not warn every boot when a newer published module needs a newer host', async () => {
+    // The steady state of every older host after a publisher ABI bump: the module
+    // on disk loaded FINE this boot, and the only "problem" is that something
+    // newer exists. Logging a failure-shaped warning on the healthy path, every
+    // boot, forever, teaches the reader to ignore the channel.
+    buildHome({ names: ['ps_list_actions'], abi: 1 }); // compatible → loads, reason null
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBeNull();
+
+    const fake = fakeDelivery('9.9.10');
+    const lines: string[] = [];
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: unknown): boolean => {
+        lines.push(String(chunk));
+        return true;
+      });
+    try {
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async (url, init) => {
+          const res = await fake.fetchImpl(url, init);
+          if (!url.endsWith('/v1/modules/manifest')) return res;
+          const m = JSON.parse(await res.text()) as { modules: { pro: { abi: number } } };
+          m.modules.pro.abi = KERNEL_ABI + 1;
+          return jsonRes(200, m);
+        },
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      });
+    } finally {
+      stderr.mockRestore();
+    }
+    const logged = lines.join('');
+
+    expect(logged).not.toMatch(/\[WARN\]/);
+    expect(logged).not.toMatch(/could not provision/i);
+    expect(logged).toMatch(/needs a newer Editmamei/i);
+    // The working module is untouched — the refusal never reached an install.
+    expect(readInstalledModule(PRO_SKU, { dir: dirOf(fx.home) })?.version).toBe(MOD_VERSION);
+  });
+
   it('is a cheap no-op when already latest — fetches the manifest but NOT the artifact', async () => {
     buildHome({ names: ['ps_list_actions'], abi: 1 });
     const server = new EditmameiServer() as unknown as ServerProbe;
