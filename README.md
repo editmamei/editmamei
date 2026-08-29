@@ -75,14 +75,14 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**79 tools across 16 capability groups** (59 Community, 20 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
+**81 tools across 16 capability groups** (61 Community, 20 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
 
 | Group | Edition | Tools |
 | --- | --- | --- |
 | **Core** | Community | `ping` · `overview` · `list_capabilities` · `undo` · `redo` · `report_problem` |
 | **Inspect** | Community | `inspect` · `get_preview` |
 | **Verify** | Community | `get_histogram` · `compare_regions` · `get_layer_bounds_diff` · `get_selection_preview` |
-| **Document & canvas** | Community | `create_document` · `open_document` · `close_document` · `save_psd` · `export` · `place_image` · `resize_image` · `crop_document` · `convert_image_mode` · `transform_canvas` · `guides` |
+| **Document & canvas** | Community | `document` · `create_document` · `open_document` · `close_document` · `save_psd` · `export` · `place_image` · `resize_image` · `crop_document` · `convert_image_mode` · `transform_canvas` · `guides` |
 | **Selection** | Community | `select` · `modify_selection` · `selection_channel` |
 | **Adjustments** | Community | `add_adjustment_layer` · `apply_adjustment` |
 | **Filters** | Community | `filter` |
@@ -91,7 +91,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 | **Masks & paths** | Community | `layer_mask` · `clipping_mask` · `path` · `vector_mask` · `apply_image` · `calculations` |
 | **Type** | Community | `text` |
 | **Perception** | Community | `detect` · `read_scene` · `select_by_reference` |
-| **AI selection** | Community | `select_subject` · `select_sky` |
+| **AI selection** | Community | `select_subject` · `select_sky` · `replace_sky` |
 | **AI selection** | Pro | `select_subject_instance` · `select_object` |
 | **Filters** | Pro | `apply_camera_raw` |
 | **Layers (warp)** | Pro | `warp_layer` |
