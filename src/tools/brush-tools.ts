@@ -29,6 +29,15 @@ const applyBrushStrokeSchema: JsonSchemaObject = {
     },
     placement: {
       ...PLACEMENT_SCHEMA,
+      // Naming ps_resolve_placement (pro) here is masked only by
+      // ps_apply_brush_stroke itself being 'dev'-tier (tool-tiers.ts) — a
+      // dev-tier tool never registers in a shipped CE or Pro edition, so
+      // this text never reaches a real tools/list. If this tool is ever
+      // promoted to 'community', this description must be rephrased
+      // tier-agnostically first (see the sibling `placement` overrides in
+      // image-tools.ts / shape-tools.ts / layer-transform-tools.ts /
+      // selection-tools.ts for the pattern), or the CE tool surface leak
+      // guard in tests/integration/readme-leak-guard.test.ts will catch it.
       description:
         'ANCHOR-RELATIONAL stroke path (preferred over supplying pixels): a PATH relation — `along` a traced edge ' +
         'or a Pro face-mesh landmark curve, `offset-curve`, or `segment` between two anchors — so the stroke traces ' +
