@@ -52,10 +52,21 @@ export const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
  */
 const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
 
+/**
+ * Stable code for the refusals a CALLER has to branch on; messages are not API.
+ * `abi_too_new` is the one an entitled user hits routinely — a fielded host after
+ * an ABI bump — and it is NOT a delivery failure: nothing is wrong except the
+ * host's age, so the self-heal reports it as "update Editmamei" rather than as a
+ * provisioning error (see `ModuleLifecycle.reprovisionIfModuleSkipped`).
+ * `abi_invalid` means the manifest entry itself is malformed. Absent on every
+ * other error, which callers treat uniformly.
+ */
+export type ProvisionErrorCode = 'abi_invalid' | 'abi_too_new';
+
 export interface ProvisionResult {
   installed: { sku: string; version: string }[];
   skipped: { sku: string; version: string; reason: string }[];
-  errors: { sku: string; message: string }[];
+  errors: { sku: string; message: string; code?: ProvisionErrorCode }[];
   /** True when no delivery endpoint is configured (Phase A) — a clean no-op. */
   notConfigured: boolean;
 }
@@ -139,23 +150,40 @@ export async function provisionModules(
         });
         continue;
       }
-      // `abi` is the host<->module contract version. It is unvalidated manifest
+      // `abi` is the host↔module contract version, and it is unvalidated manifest
       // JSON (`fetchManifest` casts the parse; the `number` type is compile-time
-      // only) that flows into the installed pointer and, past it, into
-      // `installModule` -> `pruneOldModuleVersions`, which DELETES the currently
-      // working install. So it is checked HERE, before any artifact fetch or
-      // install, and a bad value costs the user nothing:
-      //   - above KERNEL_ABI the module cannot load on this host at all (the
-      //     kernel skips it): "update the host first", not "destroy what works";
-      //   - a non-integer / <1 value writes a pointer that `readInstalledModule`
-      //     rejects forever, wedging boot into a permanent force-re-provision.
+      // only). It flows into the installed pointer and, past it, into
+      // `installModule` → `pruneOldModuleVersions`, which DELETES the version that
+      // currently works — so it is checked HERE, before any artifact fetch or
+      // install. Two distinct refusals, because the cures differ:
+      //   - MALFORMED — missing, or any non-integer / <1 value. A value that is not
+      //     a JSON number at all (absent, a string, a bool, null, or a non-finite,
+      //     which `JSON.stringify` writes as `null`) persists a pointer that
+      //     `readInstalledModule` then rejects on EVERY boot, wedging the host into
+      //     a permanent forced re-provision. An out-of-range *number* like 0 or 0.5
+      //     is milder — it persists fine and merely leaves Pro dark via the
+      //     load-time gate — but it is still nothing this host can run. The cure is
+      //     a corrected manifest, so the message points at the entry.
+      //   - TOO NEW (> KERNEL_ABI) — well-formed and probably correct: this host is
+      //     simply older than the published module, the ordinary state of a fielded
+      //     install after an ABI bump. The cure is "update Editmamei", and the
+      //     working install must be left exactly as it is.
       // 1 is the lowest ABI ever published; the load-time `HOST_MIN_ABI` gate
       // remains the authority on the low side of the acceptance window.
       const abi = entry.abi;
-      if (!Number.isInteger(abi) || abi < 1 || abi > KERNEL_ABI) {
+      if (!Number.isInteger(abi) || abi < 1) {
         result.errors.push({
           sku,
-          message: `manifest abi '${String(abi)}' for ${sku} is not supported by this host (expected an integer in 1..${KERNEL_ABI})`,
+          code: 'abi_invalid',
+          message: `the manifest entry for ${sku} declares an invalid abi '${String(abi)}' (expected a whole number of at least 1) — refusing to install it`,
+        });
+        continue;
+      }
+      if (abi > KERNEL_ABI) {
+        result.errors.push({
+          sku,
+          code: 'abi_too_new',
+          message: `the published ${sku} module needs a newer Editmamei than this one (module abi ${abi}, this host runs up to abi ${KERNEL_ABI}) — update Editmamei; the installed module is left as it is`,
         });
         continue;
       }

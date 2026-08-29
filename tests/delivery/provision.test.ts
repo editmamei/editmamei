@@ -380,11 +380,11 @@ describe('provisionModules', () => {
   });
 });
 
-describe('provisionModules - manifest abi validation', () => {
+describe('provisionModules — manifest abi validation', () => {
   /**
    * Serve `fake`'s manifest with the pro entry's `abi` replaced (`undefined`
-   * deletes the field). Everything else stays honest (artifact bytes, content
-   * key, signature), so any refusal is attributable to the abi alone.
+   * deletes the field). Everything else — artifact bytes, content key, signature
+   * — stays honest, so any refusal is attributable to the abi alone.
    */
   function withAbi(fake: ReturnType<typeof fakeDelivery>, abi: unknown): DeliveryFetch {
     return async (url, init) => {
@@ -397,17 +397,47 @@ describe('provisionModules - manifest abi validation', () => {
     };
   }
 
+  /**
+   * Same, but splicing a RAW JSON token into the manifest text — the only way to
+   * deliver a value `JSON.stringify` cannot round-trip (`1e400` parses to
+   * Infinity, whereas stringifying Infinity would quietly write `null` and test
+   * the wrong thing). Throws if the token it edits ever moves.
+   */
+  function withRawAbi(fake: ReturnType<typeof fakeDelivery>, token: string): DeliveryFetch {
+    return async (url, init) => {
+      const res = await fake.fetchImpl(url, init);
+      if (!url.endsWith('/v1/modules/manifest')) return res;
+      const original = await res.text();
+      const text = original.replace('"abi":1,', `"abi":${token},`);
+      if (text === original) throw new Error('fixture drift: no `"abi":1,` in the fake manifest');
+      return {
+        ok: true,
+        status: 200,
+        text: async () => text,
+        arrayBuffer: async () => new TextEncoder().encode(text).buffer as ArrayBuffer,
+      };
+    };
+  }
+
   const MANIFEST_URL = `${cfg.baseUrl}/v1/modules/manifest`;
 
-  // Every one of these used to sail past provisioning into installed.json, and
+  // Every one of these used to sail past provisioning into installed.json — and
   // through installModule's prune, which deletes the version that was working.
+  // They split into two classes once installed: anything that is not a JSON
+  // number (missing/string/bool/null) wedges the pointer, because
+  // readInstalledModule's `typeof abi === 'number'` check then rejects it on
+  // every boot; an out-of-range NUMBER persists readably and merely leaves Pro
+  // dark. Both are refused here, before either outcome can happen.
   const badAbis: [string, unknown][] = [
     ['missing', undefined],
     ['a string', '1'],
+    ['a boolean', true],
+    ['null', null],
     ['zero', 0],
     ['negative', -1],
     ['fractional', 0.5],
     ['above KERNEL_ABI', KERNEL_ABI + 1],
+    ['absurdly large', 2 ** 53],
   ];
 
   for (const [label, abi] of badAbis) {
@@ -434,7 +464,61 @@ describe('provisionModules - manifest abi validation', () => {
     });
   }
 
-  it('accepts abi at the top of the window (KERNEL_ABI) - the gate is inclusive', async () => {
+  it('refuses an entry whose abi is a non-finite JSON number (no fetch, no install)', async () => {
+    // `1e400` is valid JSON that parses to Infinity — the one bad shape that has
+    // to arrive as raw text, and the one JSON.stringify would later write as
+    // `null`, wedging the pointer.
+    const dir = tmpDir();
+    const fake = fakeDelivery('0.17.0');
+    try {
+      const res = await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: withRawAbi(fake, '1e400'),
+        signingKeys: [fake.pubB64],
+      });
+      expect(res.installed).toEqual([]);
+      expect(res.errors[0]?.code).toBe('abi_invalid');
+      expect(existsSync(installedPath('pro', { dir }))).toBe(false);
+      expect(fake.calls).toEqual([MANIFEST_URL]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('separates the two refusals: a malformed entry vs. a host that is simply too old', async () => {
+    // The texts are what `editmamei repair` prints verbatim before exiting 1, and
+    // what the background self-heal branches on — they must point at the actual
+    // cure, which differs. A fielded host hits the second one every boot after an
+    // ABI bump, and "update Editmamei" is the only thing that helps.
+    const dir = tmpDir();
+    const fake = fakeDelivery('0.17.0');
+    try {
+      const malformed = await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: withAbi(fake, '1'),
+        signingKeys: [fake.pubB64],
+      });
+      expect(malformed.errors[0]?.code).toBe('abi_invalid');
+      expect(malformed.errors[0]?.message).toMatch(/manifest entry .* invalid abi/i);
+      expect(malformed.errors[0]?.message).not.toMatch(/update Editmamei/i);
+
+      const tooNew = await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: withAbi(fake, KERNEL_ABI + 1),
+        signingKeys: [fake.pubB64],
+      });
+      expect(tooNew.errors[0]?.code).toBe('abi_too_new');
+      expect(tooNew.errors[0]?.message).toMatch(/needs a newer Editmamei/i);
+      expect(tooNew.errors[0]?.message).toMatch(/update Editmamei/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts abi at the top of the window (KERNEL_ABI) — the gate is inclusive', async () => {
     const dir = tmpDir();
     const fake = fakeDelivery('0.17.0');
     try {
@@ -477,7 +561,7 @@ describe('provisionModules - manifest abi validation', () => {
       expect(res.installed).toEqual([]);
       expect(res.errors[0]?.message).toMatch(/abi/);
 
-      // Still on the working module, and its directory survived the prune that
+      // Still on the working module — and its directory survived the prune that
       // never ran, so it still loads.
       expect(readInstalledModule('pro', { dir })?.version).toBe('1.0.0');
       expect(existsSync(installedModuleDir('pro', '1.0.0', { dir }))).toBe(true);
@@ -517,7 +601,7 @@ describe('provisionModules - manifest abi validation', () => {
       expect(res.installed).toEqual([]);
       expect(res.errors[0]?.message).toMatch(/abi/);
 
-      // The pointer is unchanged and still READABLE, so nothing became corrupt,
+      // The pointer is unchanged and still READABLE — nothing became corrupt, so
       // there is no force-re-provision to repeat, and no artifact was re-fetched.
       expect(readInstalledModule('pro', { dir })).toEqual(before);
       expect(broken.calls).toEqual([MANIFEST_URL]);

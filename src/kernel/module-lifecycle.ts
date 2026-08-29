@@ -126,9 +126,9 @@ export class ModuleLifecycle {
    *   - `'incompatible'` — a downloaded module outside this host's acceptance
    *                     window: below `HOST_MIN_ABI`, above `KERNEL_ABI`, or its
    *                     tools failed classification and were rolled back. Nothing
-   *                     local cures it: only a newer module (too old) or a newer
-   *                     host (too new) helps, so re-provision without force, which
-   *                     installs the former and is a cheap no-op for the latter.
+   *                     local cures it — only a newer module (too old) or a newer
+   *                     host (too new) → re-provision without force, which installs
+   *                     the former and is a cheap no-op for the latter.
    *                     Set in `loadModules`.
    * The new module loads on the next restart (no mid-session hot-swap).
    */
@@ -241,9 +241,11 @@ export class ModuleLifecycle {
    * threw on an unclassifiable tool. Two nets, both degrade to Community + flag a
    * re-provision:
    *   1. ABI gate — skip a module whose `abi` falls outside `[HOST_MIN_ABI,
-   *      KERNEL_ABI]` before importing. The high side matters as much as the low:
-   *      the kernel skips a too-new module silently, so an ungated one would boot
-   *      "loaded" with no Pro tools at all.
+   *      KERNEL_ABI]`. The high side matters as much as the low: the kernel skips
+   *      a too-new module silently, so an ungated one would boot "loaded" with no
+   *      Pro tools at all. Checked TWICE, against the two independent sources of
+   *      that number — the pointer's abi before importing, and the kernel's own
+   *      verdict on the bundle's signed manifest after.
    *   2. Rollback — wrap import + classification; on any throw, unregister exactly
    *      the tools this module added (restoring the clean CE surface) and skip it.
    *
@@ -304,21 +306,24 @@ export class ModuleLifecycle {
       return;
     }
 
-    // Net 1b - the HIGH side of the same `[HOST_MIN_ABI, KERNEL_ABI]` window. The
+    // Net 1b — the HIGH side of the same `[HOST_MIN_ABI, KERNEL_ABI]` window. The
     // kernel already refuses to register a module built for a newer ABI, but it
-    // does so SILENTLY (deliberately: it never crashes the host), so without this
+    // does so SILENTLY (deliberately — it never crashes the host), so without this
     // the boot settles with a resolved module, a null skip reason, and zero Pro
-    // tools, and `module_status` reports 'loaded' through a total Pro outage.
-    // Reuses the 'incompatible' reason rather than a new one, because
-    // `module_status` ships a fixed enum and only a NEWER HOST cures this, which
-    // is exactly what the no-force self-heal already tells the user. That
-    // self-heal costs one manifest GET per boot and cannot churn: provisionModules
-    // refuses a too-new manifest entry outright, so nothing is fetched, installed,
-    // or pruned.
+    // tools: `module_status` would report 'loaded' through a total Pro outage.
+    // Reuses the 'incompatible' reason rather than a new one — `module_status`
+    // ships a fixed enum, and the cure (a newer HOST) is what the self-heal's
+    // 'incompatible' guidance already says. That self-heal costs one manifest GET
+    // per boot and cannot churn: provisionModules refuses a too-new manifest entry
+    // outright, so nothing is fetched, installed, or pruned.
+    //
+    // This is the POINTER's abi, from the (unsigned) delivery manifest. The
+    // module's own signed manifest carries its own — see Net 1c, which catches the
+    // case where the two disagree.
     if (this._proModule.abi !== null && this._proModule.abi > KERNEL_ABI) {
       this.deps.logger.warn(
         `Pro module (abi ${this._proModule.abi}) needs a newer host than this build ` +
-          `(kernel abi ${KERNEL_ABI}) - booting Community; update Editmamei to load it.`
+          `(kernel abi ${KERNEL_ABI}) — booting Community; update Editmamei to load it.`
       );
       this._moduleSkipReason = 'incompatible';
       return;
@@ -331,7 +336,24 @@ export class ModuleLifecycle {
     // exact pre-load CE definitions back.
     const snapshot = this.deps.toolRegistry.snapshot();
     try {
-      await this.kernel.loadDownloaded(this._proModule.importer);
+      const outcome = await this.kernel.loadDownloaded(this._proModule.importer);
+
+      // Net 1c — the same high-side refusal, but sourced from the module's OWN
+      // manifest inside the signed bundle rather than the pointer Net 1b read.
+      // The two are independent: the pointer's abi comes from the delivery
+      // manifest, which is NOT covered by the artifact signature, so a ceremony
+      // slip (or a manifest that understates abi to get past Net 1b) leaves a
+      // module the kernel will refuse. It refuses it silently and registers
+      // nothing, so without this the load looks like a success. Nothing was
+      // registered, so there is nothing to roll back.
+      if (outcome === 'abi-too-new') {
+        this.deps.logger.warn(
+          `The installed Pro module needs a newer host than this build (kernel abi ` +
+            `${KERNEL_ABI}) — booting Community; update Editmamei to load it.`
+        );
+        this._moduleSkipReason = 'incompatible';
+        return;
+      }
 
       // Net 2b — forward-compat per-tool degrade. Only when the installed module
       // carries a WELL-FORMED version (matches VERSION_RE — same shape provision.ts
@@ -466,15 +488,24 @@ export class ModuleLifecycle {
         this.deps.logger.warn('Module delivery is not configured — staying Community.');
         return;
       }
+      // An abi-too-new refusal is not a delivery failure — the manifest is fine and
+      // the download would have worked; this host is just older than what's
+      // published. That is the same wall an 'incompatible' skip hits, so it routes
+      // to the tailored guidance below instead of surfacing as a provisioning
+      // error the user can do nothing with.
+      const abiTooNew = prov.errors.some((e) => e.code === 'abi_too_new');
       for (const e of prov.errors) {
+        if (e.code === 'abi_too_new') continue;
         this.deps.logger.warn(
           `Could not re-provision the ${e.sku} module (staying Community): ${e.message}`
         );
       }
-      if (prov.errors.length === 0) {
-        // Nothing installed, no error. Guidance MUST be honest per skip reason —
-        // never point at a lever that hits the same wall.
-        if (reason === 'incompatible') {
+      if (prov.errors.length === 0 || abiTooNew) {
+        // Nothing installable. Guidance MUST be honest per skip reason — never
+        // point at a lever that hits the same wall. `abiTooNew` forces the
+        // update-the-host branch even from a 'corrupt' skip: a forced re-download
+        // cannot fix a module this host is too old to run.
+        if (reason === 'incompatible' || abiTooNew) {
           // A newer version would have installed; there isn't one. `repair` re-runs
           // the identical provision and would skip too — do NOT recommend it.
           this.deps.logger.warn(

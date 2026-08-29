@@ -33,6 +33,15 @@ import {
  */
 export type ModuleSnippetResolver = (manifest: ModuleManifest) => SnippetClient | null;
 
+/**
+ * What `loadDownloaded` actually did. The kernel refuses a module built for a
+ * newer ABI WITHOUT throwing — it never crashes the host over one — so "resolved
+ * a module" and "registered its tools" are not the same outcome, and a caller
+ * that can't tell them apart reports a total Pro outage as a success. Returned
+ * rather than thrown so the silent-skip semantics stay exactly as they were.
+ */
+export type DownloadedLoadOutcome = 'loaded' | 'abi-too-new';
+
 export interface KernelDeps {
   registry: ToolRegistry;
   connection: PhotoshopConnection;
@@ -165,8 +174,13 @@ export class Kernel {
    * (dev), or an absolute `import()` of the decrypted install dir (the eventual
    * provisioned path). The bundle's `default` export IS the module. `register`
    * may be async (decrypt/setup), so this awaits it.
+   *
+   * Returns which of the two non-throwing outcomes happened. The ABI skip
+   * registers nothing, and only the CALLER can decide what that means for the
+   * host — see `ModuleLifecycle.loadModules`, which turns it into a skip reason
+   * so a skipped module is never reported as loaded.
    */
-  async loadDownloaded(importer: () => Promise<unknown>): Promise<void> {
+  async loadDownloaded(importer: () => Promise<unknown>): Promise<DownloadedLoadOutcome> {
     const imported = (await importer()) as {
       default?: EditmameiModule;
       proModule?: EditmameiModule;
@@ -177,11 +191,12 @@ export class Kernel {
         'downloaded module export is not an EditmameiModule (expected a default export with a manifest + register())'
       );
     }
-    if (this.abiTooNew(mod.manifest)) return;
+    if (this.abiTooNew(mod.manifest)) return 'abi-too-new';
     const before = this.registry.count();
     await mod.register(this.hostApiFor(mod.manifest));
     this.logger.info(
       `Loaded downloaded module '${mod.manifest.id}' (${mod.manifest.name}) — ${this.registry.count() - before} tools.`
     );
+    return 'loaded';
   }
 }
