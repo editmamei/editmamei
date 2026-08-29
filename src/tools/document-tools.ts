@@ -49,10 +49,9 @@ const createDocumentSchema: JsonSchemaObject = {
  * The name/id selector shared by ps_close_document and ps_document. Kept in one
  * place so the two can't drift on what "target a document" means.
  *
- * Deliberately does NOT name the tool that lists open documents: this object is
- * spliced into ps_close_document, which is community-tier, and the leak guard
- * (correctly) rejects a CE-visible description that points at a dev-tier tool a
- * CE user does not have. Restore the cross-reference when that tool promotes.
+ * Both consumers are community-tier, so this text may name either of them; it
+ * is spliced into ps_document itself, which is why the id guidance points at
+ * the op rather than the tool.
  */
 const documentTargetProps = {
   name: {
@@ -292,7 +291,9 @@ export function createDocumentTools(
         },
         annotations: {
           title: 'List / Activate Documents',
-          readOnlyHint: true,
+          // No readOnlyHint: op=activate changes which document every
+          // subsequent tool call targets. Pixels are untouched, but a host that
+          // auto-approves read-only tools must not run this unprompted.
           idempotentHint: true,
         },
       },

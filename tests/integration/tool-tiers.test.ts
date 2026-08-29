@@ -135,6 +135,20 @@ describe('TOOL_TIERS classification table', () => {
   it('tierOf returns the matching tier for known tools', () => {
     expect(tierOf('ps_ping')).toBe('community');
   });
+
+  // Promotion out of 'dev' is a user decision backed by live evidence, so a
+  // silent revert is a real regression rather than a formatting slip. Pinned
+  // per tool because the generic checks above pass at any tier.
+  it('keeps the user-authorized promotions at community tier', () => {
+    expect(tierOf('ps_document')).toBe('community');
+    expect(tierOf('ps_replace_sky')).toBe('community');
+  });
+
+  // Parked deliberately: it needs aiming precision no tier can supply yet, and
+  // it folds into ps_select as mode=focus_area whenever it does promote.
+  it('keeps ps_select_focus_area at dev tier', () => {
+    expect(tierOf('ps_select_focus_area')).toBe('dev');
+  });
 });
 
 describe('isToolAllowedInEdition (the registration gate)', () => {

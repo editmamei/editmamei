@@ -134,11 +134,15 @@ Photoshop isn't responding to the automation request. Common causes:
 - **Photoshop is busy.** If a modal dialog is open (e.g. an unsaved-changes prompt, an Adobe sign-in modal), dismiss it and retry.
 - **macOS automation permissions.** First time only: macOS will prompt you to allow the MCP client to control Photoshop. Approve it in System Settings → Privacy & Security → Automation.
 
-### "Parameters not valid" on `ps_select_subject` / `ps_select_sky`
+### "Parameters not valid" on `ps_select_subject` / `ps_select_sky` / `ps_replace_sky`
 
 These tools (included in Community) depend on Photoshop's Sensei AI features, and the error usually means the currently selected processing option (Cloud or Device) isn't available on your machine.
 
 In Photoshop: **Preferences → Image Processing**, switch the processing option (for example Cloud → Process Locally (Device)), then close and reopen Photoshop.
+
+### `ps_replace_sky` stops working part-way through a session
+
+Sky replacements that succeeded earlier begin failing without anything else changing: Photoshop's sky model can become unavailable mid-session. Restart Photoshop and it comes back.
 
 ### Reporting something not listed here
 
