@@ -10,6 +10,51 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-08-29
+
+### Added
+
+- **Replace a sky without leaving the conversation.** Photoshop's own sky replacement is now part
+  of Community, driven from a preset sky or an image file of your own.
+  - `ps_replace_sky` moves out of development into the shipped surface.
+  - It relies on Photoshop's AI processing, like the existing subject and sky selections. If it
+    reports that parameters are not valid, switch the processing option in
+    Preferences → Image Processing and restart Photoshop.
+  - Photoshop's sky model can stop being available part-way through a long session; restarting
+    Photoshop brings it back.
+
+- **See which documents are open, and choose the one you mean.** You can now list every open
+  document and switch the active one by name or id, without touching any pixels.
+  - `ps_document` moves out of development into the shipped surface.
+  - It answers even when no document is open, which makes it the way back after a call fails
+    because nothing was open.
+  - When two open documents share a name, switching by that name is refused rather than guessed
+    at — target those by id instead.
+
+### Fixed
+
+- **A Pro module built for a newer version of the app no longer replaces the one that works.** The
+  module's compatibility marker is now checked before anything is downloaded or installed.
+  - Previously such a module was installed anyway, loaded none of its tools, and still reported
+    success — while the module that had been working was already deleted to make room for it.
+  - A module entry with a missing or malformed marker could also leave the app downloading the
+    whole module again at every start, without ever being able to use it. Both are now refused
+    before anything on disk changes.
+
+- **Repairing no longer reports a failure when the only thing needed is an app update.** If the
+  published module requires a newer Editmamei than the one installed, that is now stated plainly
+  and the command succeeds.
+  - It previously printed an error and exited with a failure code for a state where nothing was
+    broken and the installed module was untouched, which made routine support checks look like
+    faults.
+  - The same situation is no longer logged as a warning on every single start.
+
+### Changed
+
+- **Tool descriptions no longer point at tools your edition does not include.** Some descriptions
+  in Community referred to capabilities that are not part of it, which could send the assistant
+  looking for tools that were never there.
+
 ## [1.2.1] — 2026-08-25
 
 ### Fixed
