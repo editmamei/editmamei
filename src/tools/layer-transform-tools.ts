@@ -117,7 +117,8 @@ const moveLayerSchema: JsonSchemaObject = {
         'ANCHOR-RELATIONAL move (preferred over guessing a pixel): a POINT relation (centroid/midpoint/offset) → ' +
         'the layer\'s CENTER is moved to the resolved, gate-verified point (e.g. "center this layer on the detected ' +
         'subject" / "…in the gap between the two people"). Moves ONLY if the gate PASSES. When set, delta_*/' +
-        'absolute_*/center_on_* are ignored. See ps_resolve_placement for the anchors + relation vocabulary.',
+        'absolute_*/center_on_* are ignored. See the placement-resolver tool, when this build has one, for the ' +
+        'anchors + relation vocabulary.',
     },
   },
 };

@@ -36,7 +36,7 @@ import {
 import { readLicense } from '../license/store.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
 import { Kernel } from './kernel.js';
-import { HOST_MIN_ABI } from './host-api.js';
+import { HOST_MIN_ABI, KERNEL_ABI } from './host-api.js';
 import { VERSION } from '../version.js';
 
 /** Where a downloaded module's handlers are imported from + its go-core binary dir. */
@@ -44,9 +44,10 @@ export interface ProModuleLocation {
   importer: () => Promise<unknown>;
   binDir: string;
   /**
-   * The downloaded module's `InstalledModule.abi`, for the host's `HOST_MIN_ABI`
-   * gate. `null` for the dev in-tree module (no pointer, always current — the ABI
-   * gate is skipped). Carried here so `loadModules` reads the abi from the exact
+   * The downloaded module's `InstalledModule.abi`, for the host's
+   * `[HOST_MIN_ABI, KERNEL_ABI]` gate. `null` for the dev in-tree module (no
+   * pointer, always current — the ABI gate is skipped). Carried here so
+   * `loadModules` reads the abi from the exact
    * artifact `resolveProModule` chose, never a stale pointer that a dev fallback
    * would otherwise pick up.
    */
@@ -122,10 +123,13 @@ export class ModuleLifecycle {
    *                     check, e.g. one written before the `abi` field). A
    *                     SAME-version re-download is the cure → re-provision with
    *                     `force`. Set in `resolveProModule` (pure filesystem/crypto).
-   *   - `'incompatible'` — a downloaded module that loaded but is too old for this
-   *                     host: below `HOST_MIN_ABI`, or its tools failed
-   *                     classification and were rolled back. Only a NEWER version
-   *                     helps → re-provision without force. Set in `loadModules`.
+   *   - `'incompatible'` — a downloaded module outside this host's acceptance
+   *                     window: below `HOST_MIN_ABI`, above `KERNEL_ABI`, or its
+   *                     tools failed classification and were rolled back. Nothing
+   *                     local cures it — only a newer module (too old) or a newer
+   *                     host (too new) → re-provision without force, which installs
+   *                     the former and is a cheap no-op for the latter.
+   *                     Set in `loadModules`.
    * The new module loads on the next restart (no mid-session hot-swap).
    */
   private _moduleSkipReason: 'corrupt' | 'incompatible' | null = null;
@@ -236,7 +240,12 @@ export class ModuleLifecycle {
    * server — the whole process, CE included, used to die when `assertToolsClassified`
    * threw on an unclassifiable tool. Two nets, both degrade to Community + flag a
    * re-provision:
-   *   1. ABI gate — skip a module whose `abi` is below `HOST_MIN_ABI` before importing.
+   *   1. ABI gate — skip a module whose `abi` falls outside `[HOST_MIN_ABI,
+   *      KERNEL_ABI]`. The high side matters as much as the low: the kernel skips
+   *      a too-new module silently, so an ungated one would boot "loaded" with no
+   *      Pro tools at all. Checked TWICE, against the two independent sources of
+   *      that number — the pointer's abi before importing, and the kernel's own
+   *      verdict on the bundle's signed manifest after.
    *   2. Rollback — wrap import + classification; on any throw, unregister exactly
    *      the tools this module added (restoring the clean CE surface) and skip it.
    *
@@ -297,6 +306,29 @@ export class ModuleLifecycle {
       return;
     }
 
+    // Net 1b — the HIGH side of the same `[HOST_MIN_ABI, KERNEL_ABI]` window. The
+    // kernel already refuses to register a module built for a newer ABI, but it
+    // does so SILENTLY (deliberately — it never crashes the host), so without this
+    // the boot settles with a resolved module, a null skip reason, and zero Pro
+    // tools: `module_status` would report 'loaded' through a total Pro outage.
+    // Reuses the 'incompatible' reason rather than a new one — `module_status`
+    // ships a fixed enum, and the cure (a newer HOST) is what the self-heal's
+    // 'incompatible' guidance already says. That self-heal costs one manifest GET
+    // per boot and cannot churn: provisionModules refuses a too-new manifest entry
+    // outright, so nothing is fetched, installed, or pruned.
+    //
+    // This is the POINTER's abi, from the (unsigned) delivery manifest. The
+    // module's own signed manifest carries its own — see Net 1c, which catches the
+    // case where the two disagree.
+    if (this._proModule.abi !== null && this._proModule.abi > KERNEL_ABI) {
+      this.deps.logger.warn(
+        `Pro module (abi ${this._proModule.abi}) needs a newer host than this build ` +
+          `(kernel abi ${KERNEL_ABI}) — booting Community; update Editmamei to load it.`
+      );
+      this._moduleSkipReason = 'incompatible';
+      return;
+    }
+
     // Net 2 — load + classify under rollback. Snapshot the FULL (already-classified)
     // CE registry — DEFINITIONS, not names: `register` overwrites on a name
     // collision, so a stale module that re-registers a CE tool name would leave its
@@ -304,7 +336,24 @@ export class ModuleLifecycle {
     // exact pre-load CE definitions back.
     const snapshot = this.deps.toolRegistry.snapshot();
     try {
-      await this.kernel.loadDownloaded(this._proModule.importer);
+      const outcome = await this.kernel.loadDownloaded(this._proModule.importer);
+
+      // Net 1c — the same high-side refusal, but sourced from the module's OWN
+      // manifest inside the signed bundle rather than the pointer Net 1b read.
+      // The two are independent: the pointer's abi comes from the delivery
+      // manifest, which is NOT covered by the artifact signature, so a ceremony
+      // slip (or a manifest that understates abi to get past Net 1b) leaves a
+      // module the kernel will refuse. It refuses it silently and registers
+      // nothing, so without this the load looks like a success. Nothing was
+      // registered, so there is nothing to roll back.
+      if (outcome === 'abi-too-new') {
+        this.deps.logger.warn(
+          `The installed Pro module needs a newer host than this build (kernel abi ` +
+            `${KERNEL_ABI}) — booting Community; update Editmamei to load it.`
+        );
+        this._moduleSkipReason = 'incompatible';
+        return;
+      }
 
       // Net 2b — forward-compat per-tool degrade. Only when the installed module
       // carries a WELL-FORMED version (matches VERSION_RE — same shape provision.ts
@@ -439,15 +488,24 @@ export class ModuleLifecycle {
         this.deps.logger.warn('Module delivery is not configured — staying Community.');
         return;
       }
+      // An abi-too-new refusal is not a delivery failure — the manifest is fine and
+      // the download would have worked; this host is just older than what's
+      // published. That is the same wall an 'incompatible' skip hits, so it routes
+      // to the tailored guidance below instead of surfacing as a provisioning
+      // error the user can do nothing with.
+      const abiTooNew = prov.errors.some((e) => e.code === 'abi_too_new');
       for (const e of prov.errors) {
+        if (e.code === 'abi_too_new') continue;
         this.deps.logger.warn(
           `Could not re-provision the ${e.sku} module (staying Community): ${e.message}`
         );
       }
-      if (prov.errors.length === 0) {
-        // Nothing installed, no error. Guidance MUST be honest per skip reason —
-        // never point at a lever that hits the same wall.
-        if (reason === 'incompatible') {
+      if (prov.errors.length === 0 || abiTooNew) {
+        // Nothing installable. Guidance MUST be honest per skip reason — never
+        // point at a lever that hits the same wall. `abiTooNew` forces the
+        // update-the-host branch even from a 'corrupt' skip: a forced re-download
+        // cannot fix a module this host is too old to run.
+        if (reason === 'incompatible' || abiTooNew) {
           // A newer version would have installed; there isn't one. `repair` re-runs
           // the identical provision and would skip too — do NOT recommend it.
           this.deps.logger.warn(
@@ -536,7 +594,20 @@ export class ModuleLifecycle {
       // A freshness poll is best-effort: on error/notConfigured we simply stay on the
       // currently-installed module. Log at WARN for support, but recommend no lever
       // (nothing is broken — the existing module still works).
+      //
+      // `abi_too_new` is exempt from that WARN, and this is the HEALTHY path — the
+      // module loaded fine this boot. After a publisher ABI bump it is the ordinary
+      // steady state of every older host, every boot, forever: not a failure, and
+      // not something the user can act on beyond updating when they choose to.
+      // Warning about it each boot would train the reader to ignore this channel.
       for (const e of prov.errors) {
+        if (e.code === 'abi_too_new') {
+          this.deps.logger.info(
+            `A newer Pro module is published but needs a newer Editmamei than this ` +
+              `one — staying on the installed version, which works. Update Editmamei to get it.`
+          );
+          continue;
+        }
         this.deps.logger.warn(
           `Pro-module freshness check could not provision the ${e.sku} module ` +
             `(staying on the installed version): ${e.message}`

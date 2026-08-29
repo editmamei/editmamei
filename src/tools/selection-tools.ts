@@ -569,7 +569,7 @@ const SELECT_INPUT_SCHEMA: JsonSchemaObject = {
     placement: {
       ...PLACEMENT_SCHEMA,
       description:
-        'Grounded coordinates (rectangle/ellipse/magic_wand): NAME anchors + a relation instead of guessing pixels. rectangle/ellipse ← a REGION relation (inside/gap) → the selection bounding box; magic_wand ← a POINT relation (centroid/extremum/grid) → the click. Verified by the objective gate; wins over the raw edges/x-y. See ps_resolve_placement for the vocabulary.',
+        'Grounded coordinates (rectangle/ellipse/magic_wand): NAME anchors + a relation instead of guessing pixels. rectangle/ellipse ← a REGION relation (inside/gap) → the selection bounding box; magic_wand ← a POINT relation (centroid/extremum/grid) → the click. Verified by the objective gate; wins over the raw edges/x-y. See the placement-resolver tool, when this build has one, for the vocabulary.',
     },
   },
   required: ['mode'],

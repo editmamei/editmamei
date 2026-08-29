@@ -41,6 +41,54 @@ function containsToolName(content: string, name: string): boolean {
 }
 
 /**
+ * Every leak assertion in this file lives or dies on `containsToolName`, so the
+ * matcher needs coverage of its own: one that silently matched nothing would
+ * make every assertion below pass vacuously while catching no leak at all.
+ * These pin its true-positive behavior (including the word-boundary edge cases
+ * the header comment above describes) and its true-negative behavior (a
+ * near-miss prefix must NOT match).
+ */
+describe('containsToolName (positive control)', () => {
+  it('matches a bare mid-sentence mention', () => {
+    expect(
+      containsToolName('Use ps_resolve_placement to ground the anchor.', 'ps_resolve_placement')
+    ).toBe(true);
+  });
+
+  it('matches a backticked mention', () => {
+    expect(
+      containsToolName('See `ps_resolve_placement` for details.', 'ps_resolve_placement')
+    ).toBe(true);
+  });
+
+  it('matches a possessive mention', () => {
+    expect(
+      containsToolName("ps_resolve_placement's output feeds the gate.", 'ps_resolve_placement')
+    ).toBe(true);
+  });
+
+  it('matches at end of sentence with trailing punctuation', () => {
+    expect(
+      containsToolName('Concur first with ps_resolve_placement.', 'ps_resolve_placement')
+    ).toBe(true);
+  });
+
+  it('does NOT match when the name is a strict prefix of a longer identifier (word-boundary negative)', () => {
+    // ps_path is a real community-tier tool name; ps_pathfinder is not a
+    // real tool anywhere in this codebase — it exists here purely to prove
+    // the matcher doesn't false-positive on a longer sibling identifier,
+    // the exact failure mode the header comment above describes.
+    expect(containsToolName('This behaves like ps_pathfinder.', 'ps_path')).toBe(false);
+  });
+
+  it('does NOT match an unrelated community-tier mention when scanning for a different blocked name', () => {
+    expect(
+      containsToolName('Use ps_select for common selection tasks.', 'ps_resolve_placement')
+    ).toBe(false);
+  });
+});
+
+/**
  * Prevents accidentally tipping unverified work-in-progress tools to
  * end-users via the public README.
  *
@@ -388,98 +436,384 @@ describe('overview tool markdown leak guard', () => {
  * (Pro) → invert"). None were caught by the existing README / skill /
  * overview scans because tool-description text wasn't being scanned.
  *
- * This block enumerates every CE-tier factory's tool descriptions and
- * asserts no description names a non-community-tier tool. Captures any
- * future tier-name leak in any CE tool description.
+ * This block enumerates every CE-tier factory's tool descriptions AND every
+ * `description` string nested in each tool's `inputSchema` / `outputSchema` /
+ * `annotations.title` (all ship in the same tools/list payload an LLM
+ * reads), and asserts none names a non-community-tier tool.
+ *
+ * Two structural properties keep this guard honest. Both are load-bearing, and
+ * a guard that quietly stops covering something is worse than no guard:
+ *   - The factory list is DERIVED from `ceFactories`, never hand-copied. A hand
+ *     copy drifts silently as factories are added, and every factory it omits
+ *     is one whose descriptions are never scanned at all.
+ *   - The scan RECURSES into schema descriptions rather than reading only
+ *     `tool.description`. A property description (e.g. `PLACEMENT_SCHEMA`
+ *     naming a Pro tool) reaches a CE user's tools/list exactly like the tool
+ *     description does, so scanning one without the other leaves a live hole.
+ * The completeness floor below is a NAME-SET check, not a count: a count cannot
+ * distinguish a renamed tool from a dropped one, and both must fail loudly.
  */
-import { createDocumentTools } from '@editmamei/tools/document-tools.ts';
-import { createLayerTools } from '@editmamei/tools/layer-tools.ts';
-import { createGroupTools } from '@editmamei/tools/group-tools.ts';
-import { createImageTools } from '@editmamei/tools/image-tools.ts';
-import { createImagePlacementTools } from '@editmamei/tools/image-placement-tools.ts';
-import { createLayerPropertiesTools } from '@editmamei/tools/layer-properties-tools.ts';
-import { createFilterTools } from '@editmamei/tools/filter-tools.ts';
-import { createAdjustmentTools } from '@editmamei/tools/adjustment-tools.ts';
-import { createTextTools } from '@editmamei/tools/text-tools.ts';
-import { createSelectionTools } from '@editmamei/tools/selection-tools.ts';
-import { createHistoryTools } from '@editmamei/tools/history-tools.ts';
-import { createLayerOrderingTools } from '@editmamei/tools/layer-ordering-tools.ts';
-import { createPreviewTools } from '@editmamei/tools/preview-tools.ts';
-import { createInspectTools } from '@editmamei/tools/inspect-tools.ts';
-import { createOverviewTools } from '@editmamei/tools/overview-tools.ts';
-import { createBrushTools } from '@editmamei/tools/brush-tools.ts';
-import { createLayerTransformTools } from '@editmamei/tools/layer-transform-tools.ts';
-import { createRetouchTools } from '@editmamei/tools/retouch-tools.ts';
+import { ceFactories } from '@editmamei/modules/ce/index.ts';
+import { createSceneTools } from '@editmamei/tools/scene-tools.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
-import { isToolAllowedInEdition } from '@editmamei/core/tool-tiers.ts';
+import { isToolAllowedInEdition, toolsInTier } from '@editmamei/core/tool-tiers.ts';
+
+const SCHEMA_WALK_MAX_DEPTH = 50;
+
+/**
+ * Recursively collects every string value keyed `description` anywhere in a
+ * JSON-Schema tree — properties, nested objects, array `items`, oneOf/anyOf
+ * branches, all of it. `inputSchema` / `outputSchema` ship in the same
+ * tools/list payload the LLM reads, so a tool-name leak buried in a nested
+ * property description is exactly as live as one in `tool.description`
+ * itself.
+ *
+ * `ancestors` tracks the CURRENT recursion path (added on entry, removed on
+ * exit via backtracking), not every node ever visited — that distinction
+ * matters because a schema can legitimately reuse the same object reference
+ * from two different branches (a diamond, not a cycle; e.g. two sibling
+ * properties pointing at a shared sub-schema constant), and a global
+ * seen-forever set would misreport that as cyclic. A node that is its own
+ * ancestor, though, IS a real cycle — no JSON Schema in this codebase should
+ * ever be shaped that way, so throwing a clear error beats either silently
+ * truncating the scan (a security-relevant silent failure, given what this
+ * guard exists to catch) or crashing with an opaque `RangeError: Maximum
+ * call stack size exceeded`. The depth cap is the same fail-legibly
+ * philosophy applied as a backstop against runaway (not necessarily cyclic)
+ * nesting.
+ */
+function collectDescriptions(
+  node: unknown,
+  out: string[] = [],
+  ancestors: Set<object> = new Set(),
+  depth = 0
+): string[] {
+  if (depth > SCHEMA_WALK_MAX_DEPTH) {
+    throw new Error(
+      `collectDescriptions: exceeded max walk depth (${SCHEMA_WALK_MAX_DEPTH}) — the schema is ` +
+        `either implausibly deep or cyclic. Investigate rather than raising the cap.`
+    );
+  }
+  if (node !== null && typeof node === 'object') {
+    if (ancestors.has(node)) {
+      throw new Error(
+        'collectDescriptions: cyclic schema detected (a node reachable from itself). No real ' +
+          'JSON Schema in this codebase should be cyclic — check for an accidental self reference.'
+      );
+    }
+    ancestors.add(node);
+    try {
+      if (Array.isArray(node)) {
+        for (const item of node) collectDescriptions(item, out, ancestors, depth + 1);
+      } else {
+        for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+          if (key === 'description' && typeof value === 'string') {
+            out.push(value);
+          } else {
+            collectDescriptions(value, out, ancestors, depth + 1);
+          }
+        }
+      }
+    } finally {
+      ancestors.delete(node);
+    }
+  }
+  return out;
+}
+
+/** One string the LLM can read via tools/list, plus a label identifying
+ *  where it came from (for leak-message diagnostics). */
+interface ScanTarget {
+  name: string;
+  description: string;
+}
+
+/**
+ * Builds every scan target for one MCP tool definition: its own top-level
+ * `description`, plus one target per `description` string recursively found
+ * in `inputSchema`, `outputSchema`, and `annotations.title` — all four ship
+ * in the same tools/list payload the LLM reads. Shared by the real CE scan
+ * below and by the synthetic end-to-end tests, so a test exercising this
+ * function is exercising the actual pipeline, not a parallel reimplementation
+ * of it.
+ */
+function scanTargetsForTool(tool: {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+  outputSchema?: unknown;
+  annotations?: { title?: string };
+}): ScanTarget[] {
+  const targets: ScanTarget[] = [{ name: tool.name, description: tool.description ?? '' }];
+  for (const description of collectDescriptions(tool.inputSchema)) {
+    targets.push({ name: `${tool.name} (inputSchema)`, description });
+  }
+  for (const description of collectDescriptions(tool.outputSchema)) {
+    targets.push({ name: `${tool.name} (outputSchema)`, description });
+  }
+  if (tool.annotations?.title) {
+    targets.push({ name: `${tool.name} (annotations.title)`, description: tool.annotations.title });
+  }
+  return targets;
+}
+
+/**
+ * Finds every (target, blockedName) pair where `blockedName` appears,
+ * word-boundary matched, in `target.description`. Shared by the real CE
+ * scan and the synthetic end-to-end tests for the same reason as
+ * `scanTargetsForTool` above.
+ */
+function findToolNameLeaks(targets: ScanTarget[], blockedNames: string[]): string[] {
+  const leaks: string[] = [];
+  for (const t of targets) {
+    for (const name of blockedNames) {
+      if (containsToolName(t.description, name)) {
+        leaks.push(`${t.name} description → ${name}`);
+      }
+    }
+  }
+  return leaks;
+}
+
+/**
+ * Schema descriptions ship in the same `tools/list` payload as `tool.description`,
+ * so the scan has to recurse into them — and the walker that does the recursing
+ * needs its own coverage. `containsToolName` being correct proves only that a
+ * string is matched once it is FOUND; it says nothing about whether the walker
+ * reaches a description nested in an array item or a `oneOf` branch. A walker
+ * that quietly returned fewer strings than the schema holds would leave the CE
+ * scan below green while a leak sat in the payload.
+ */
+describe('collectDescriptions (schema walker)', () => {
+  it('collects every description string from a nested schema — properties, array items, oneOf/anyOf branches', () => {
+    const schema = {
+      type: 'object',
+      description: 'top-level',
+      properties: {
+        a: { type: 'string', description: 'plain property' },
+        b: {
+          type: 'array',
+          description: 'array property',
+          items: {
+            type: 'object',
+            description: 'array item',
+            properties: {
+              c: { type: 'string', description: 'nested inside an item' },
+            },
+          },
+        },
+        d: {
+          oneOf: [
+            { type: 'string', description: 'oneOf branch 1' },
+            { type: 'number', description: 'oneOf branch 2' },
+          ],
+        },
+        e: {
+          anyOf: [{ type: 'string', description: 'anyOf branch' }],
+        },
+        // A property with no description at all must not blow up the walk
+        // or contribute a spurious entry.
+        f: { type: 'boolean' },
+      },
+    };
+    expect(collectDescriptions(schema).sort()).toEqual(
+      [
+        'top-level',
+        'plain property',
+        'array property',
+        'array item',
+        'nested inside an item',
+        'oneOf branch 1',
+        'oneOf branch 2',
+        'anyOf branch',
+      ].sort()
+    );
+  });
+
+  it('does NOT misreport a diamond (the same sub-schema object reused from two sibling branches) as cyclic', () => {
+    const shared = { type: 'object', description: 'shared sub-schema' };
+    const schema = {
+      type: 'object',
+      properties: {
+        start: shared,
+        end: shared,
+      },
+    };
+    expect(collectDescriptions(schema)).toEqual(['shared sub-schema', 'shared sub-schema']);
+  });
+
+  it('throws a legible error on a genuinely cyclic schema instead of a RangeError', () => {
+    const cyclic: Record<string, unknown> = { type: 'object', description: 'root' };
+    cyclic.properties = { self: cyclic };
+    expect(() => collectDescriptions(cyclic)).toThrow(/cyclic schema detected/);
+  });
+});
+
+/**
+ * The walker and the matcher can each be correct while the WIRING between them
+ * is not, and only the assembled pipeline is what protects CE users. So a
+ * synthetic tool whose `inputSchema` embeds a blocked name in a NESTED property
+ * description must actually produce a leak entry when run through
+ * `scanTargetsForTool` + `findToolNameLeaks` — the exact two functions the real
+ * CE scan below calls.
+ */
+describe('CE schema-leak scan pipeline (end-to-end synthetic control)', () => {
+  it('a blocked name buried in a nested inputSchema property description surfaces as a leak', () => {
+    const fakeTool = {
+      name: 'ps_fake_synthetic_tool',
+      description: 'A synthetic community tool for the end-to-end pipeline test.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          target: {
+            type: 'object',
+            description: 'Same vocabulary as ps_resolve_placement.',
+          },
+        },
+      },
+    };
+    const targets = scanTargetsForTool(fakeTool);
+    const leaks = findToolNameLeaks(targets, ['ps_resolve_placement']);
+    expect(leaks).toEqual([
+      'ps_fake_synthetic_tool (inputSchema) description → ps_resolve_placement',
+    ]);
+  });
+
+  it('a blocked name buried in a nested outputSchema property description surfaces as a leak', () => {
+    const fakeTool = {
+      name: 'ps_fake_synthetic_tool',
+      description: 'A synthetic community tool for the end-to-end pipeline test.',
+      inputSchema: { type: 'object', properties: {} },
+      outputSchema: {
+        type: 'object',
+        properties: {
+          state: {
+            type: 'string',
+            description: 'Resolved the same way ps_apply_brush_stroke would.',
+          },
+        },
+      },
+    };
+    const targets = scanTargetsForTool(fakeTool);
+    const leaks = findToolNameLeaks(targets, ['ps_apply_brush_stroke']);
+    expect(leaks).toEqual([
+      'ps_fake_synthetic_tool (outputSchema) description → ps_apply_brush_stroke',
+    ]);
+  });
+
+  it('a blocked name in annotations.title surfaces as a leak', () => {
+    const fakeTool = {
+      name: 'ps_fake_synthetic_tool',
+      description: 'A synthetic community tool for the end-to-end pipeline test.',
+      inputSchema: { type: 'object', properties: {} },
+      annotations: { title: 'Like ps_resolve_placement, but synthetic' },
+    };
+    const targets = scanTargetsForTool(fakeTool);
+    const leaks = findToolNameLeaks(targets, ['ps_resolve_placement']);
+    expect(leaks).toEqual([
+      'ps_fake_synthetic_tool (annotations.title) description → ps_resolve_placement',
+    ]);
+  });
+
+  it('a clean synthetic tool (no blocked names anywhere) produces no leaks', () => {
+    const fakeTool = {
+      name: 'ps_fake_synthetic_tool',
+      description: 'Uses ps_select, a real community-tier name, which must not be flagged.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', description: 'A plain, tier-agnostic description.' },
+        },
+      },
+    };
+    const targets = scanTargetsForTool(fakeTool);
+    const leaks = findToolNameLeaks(targets, ['ps_resolve_placement', 'ps_apply_brush_stroke']);
+    expect(leaks).toEqual([]);
+  });
+});
 
 describe('CE tool surface leak guard', () => {
   const conn = makeConnection().asConnection();
   const sc = makeSnippetClient();
-  // Enumerate every factory whose tools could land in CE. Pro-only
-  // factories (selection-tools-pro, preview-tools-pro, action-tools-pro,
-  // template-tools-pro) are excluded — their content is stripped at build
-  // time for the CE bundle and never reaches CE users. As of the 2026-06-16
-  // The layer-transform + retouch surfaces are community-tier
-  // (included below) and the whole template surface is Pro (excluded).
-  const ceCandidates = [
-    ...createDocumentTools(conn, sc),
-    ...createLayerTools(conn, sc),
-    ...createGroupTools(conn, sc),
-    ...createImageTools(conn, sc),
-    ...createImagePlacementTools(conn, sc),
-    ...createLayerPropertiesTools(conn, sc),
-    ...createLayerTransformTools(conn, sc),
-    ...createFilterTools(conn, sc),
-    ...createAdjustmentTools(conn, sc),
-    ...createTextTools(conn, sc),
-    ...createSelectionTools(conn, sc),
-    ...createHistoryTools(conn, sc),
-    ...createLayerOrderingTools(conn, sc),
-    ...createPreviewTools(conn, sc),
-    ...createInspectTools(conn, sc),
-    ...createOverviewTools(conn, sc),
-    ...createRetouchTools(conn, sc),
-    ...createBrushTools(conn, sc),
-  ];
+
+  // Derived straight from the module (src/modules/ce/index.ts) instead of a
+  // hand-copied list — the earlier hand list drifted to 18 of the module's
+  // real 28 factories, so 11 factories' worth of tool descriptions were
+  // never scanned. Pro-only factories (selection-tools-pro, preview-tools-
+  // pro, action-tools-pro, template-tools-pro) are still correctly excluded
+  // because they're registered by the Pro module, not `ceFactories`.
+  const ceCandidates = ceFactories.flatMap((f) => f(conn, sc));
+  // createSceneTools is registered separately in ce/index.ts's register()
+  // — it needs host.invokeTool (the cross-module broker), which the generic
+  // (connection, snippetClient) factory shape the rest of ceFactories share
+  // can't supply. Mirror that split here rather than folding it into
+  // ceFactories. Pass the SAME broker shape `register()` actually passes
+  // (a real function, not undefined) — none of scene-tools.ts's returned
+  // tool descriptions branch on it today, but if a future edit ever makes a
+  // description conditional on Pro-refine availability, this scan should see
+  // the production text variant, not the CE-fallback one.
+  const sceneInvokeTool = async () => ({ content: [{ type: 'text' as const, text: 'unused' }] });
+  const sceneCandidates = createSceneTools(conn, sc, { invokeTool: sceneInvokeTool });
+
+  it('scans every factory ce/index.ts itself registers (secondary regression guard; see the name-set completeness check below for the primary one)', () => {
+    // ce/index.ts has 28 CE-tier factories today. This is a floor, not an
+    // exact pin, so adding a factory there doesn't require touching this
+    // test — but a collapse (e.g. a broken import silently yielding an
+    // empty or truncated array) fails loudly instead of the old bug, where
+    // a stale 18-factory hand list comfortably cleared the anti-vacuity
+    // floor below and the drift was invisible.
+    expect(ceFactories.length).toBeGreaterThanOrEqual(28);
+  });
+
   // Apply the CE-edition tier filter as defense in depth — community
   // factories should already register only community tools, but if a
   // dev-tier tool shipped without being moved out, the filter catches
   // it before scanning.
-  const ceTools = ceCandidates.filter((def) => isToolAllowedInEdition(def.tool.name, 'community'));
-
-  // 'community' classified ambient tools (like ps_ping registered
-  // directly in server.ts) live in the server source. Read the ping
-  // description string the same way we read README content above.
-  const serverSrc = readFileSync(join(REPO_ROOT, 'src', 'core', 'server.ts'), 'utf8');
-  // Extract the ping description string between description: ... and the
-  // following comma. Stops at the first `,` outside of escaped quotes.
-  const pingDescriptionMatch = serverSrc.match(
-    /name:\s*'ps_ping'[\s\S]*?description:\s*((?:'[^']*'|"(?:\\.|[^"\\])*")(?:\s*\+\s*(?:'[^']*'|"(?:\\.|[^"\\])*"))*)/
+  const ceTools = [...ceCandidates, ...sceneCandidates].filter((def) =>
+    isToolAllowedInEdition(def.tool.name, 'community')
   );
-  const pingDescription = pingDescriptionMatch
-    ? // Evaluate the JS-literal-or-concat into a plain string.
-      pingDescriptionMatch[1]
-        .split(/\s*\+\s*/)
-        .map((s) => s.replace(/^['"]|['"]$/g, ''))
-        .join('')
-    : '';
-  // Sanity-check the match — if extraction breaks, the test silently
-  // passes; fail loudly instead.
-  if (!pingDescription) {
-    throw new Error(
-      'CE leak guard: could not extract ps_ping description from server.ts. ' +
-        'Update the extraction regex to match the current source.'
-    );
+
+  // 'community' classified ambient tools (registered directly in server.ts
+  // rather than through a ceFactories entry) live in the server source, not
+  // as importable ToolDefinition values — `EditmameiServer` builds them
+  // inline inside its constructor. ps_ping and ps_list_capabilities are the
+  // two: `toolsInTier('community')` names a third, ps_report_problem, but
+  // that one IS wired through `createDiagnosticsTools` in ceFactories, so it
+  // needs no special-casing here.
+  const serverSrc = readFileSync(join(REPO_ROOT, 'src', 'core', 'server.ts'), 'utf8');
+  const AMBIENT_TOOL_NAMES = ['ps_ping', 'ps_list_capabilities'] as const;
+  /**
+   * Extracts the raw source text of an ambient tool's registration block —
+   * from its `name: 'ps_x'` through the next `handler:` — and returns it as
+   * ONE scan target. Deliberately widened to the WHOLE block (description +
+   * inputSchema + outputSchema + annotations, whatever the tool declares)
+   * rather than picking `description` out with its own dedicated regex per
+   * field: unlike a real `Tool` object built through a factory, there's
+   * nothing here to hand to `scanTargetsForTool` — reading the literal
+   * source is the only option, so reading all of it in one pass is both
+   * simpler and can't develop the same kind of coverage gap the walker
+   * itself was strengthened against (a field silently going unscanned).
+   */
+  function extractAmbientToolBlock(name: string): string {
+    const match = serverSrc.match(new RegExp(`name:\\s*'${name}'[\\s\\S]*?\\n\\s*handler:`));
+    // Sanity-check the match — if extraction breaks, the test would
+    // silently pass on an empty scan; fail loudly instead.
+    if (!match) {
+      throw new Error(
+        `CE leak guard: could not extract the '${name}' registration block from server.ts. ` +
+          `Update the extraction regex to match the current source.`
+      );
+    }
+    return match[0];
   }
-  // Treat ping like any other CE-visible tool definition for scanning.
-  const scanTargets: { name: string; description: string }[] = [
-    { name: 'ps_ping', description: pingDescription },
-    ...ceTools.map((def) => ({
-      name: def.tool.name,
-      description: def.tool.description ?? '',
-    })),
+  const ambientTargets: ScanTarget[] = AMBIENT_TOOL_NAMES.map((name) => ({
+    name,
+    description: extractAmbientToolBlock(name),
+  }));
+  const scanTargets: ScanTarget[] = [
+    ...ambientTargets,
+    ...ceTools.flatMap((def) => scanTargetsForTool(def.tool)),
   ];
 
   const nonCommunityNames = Object.entries(TOOL_TIERS)
@@ -487,14 +821,7 @@ describe('CE tool surface leak guard', () => {
     .map(([name]) => name);
 
   it('no CE-visible tool description names a non-community-tier tool', () => {
-    const leaks: string[] = [];
-    for (const t of scanTargets) {
-      for (const name of nonCommunityNames) {
-        if (containsToolName(t.description, name)) {
-          leaks.push(`${t.name} description → ${name}`);
-        }
-      }
-    }
+    const leaks = findToolNameLeaks(scanTargets, nonCommunityNames);
     expect(
       leaks,
       `Pro / dev / none tier tool names referenced from CE tool descriptions:\n  ` +
@@ -531,12 +858,30 @@ describe('CE tool surface leak guard', () => {
     ).toEqual([]);
   });
 
-  it('CE scan covers at least 40 tools (sanity check the enumeration)', () => {
-    // If a factory import path breaks, scanTargets shrinks silently —
-    // pin a floor so a broken scan can't silently let leaks through.
+  it('every community-tier tool name is actually reachable by the CE scan (name-set completeness)', () => {
+    // A size-based anti-vacuity floor (`scanTargets.length >= N`) cannot work
+    // here: once the walker recurses into inputSchema, scanTargets counts every
+    // nested description (hundreds) rather than one per tool, so a collapse to
+    // a couple of factories would still clear any plausible floor and stay
+    // green. A name-set difference is immune to that — it asks the actual
+    // question ("was every community tool scanned at all"), not a proxy
+    // question about volume.
+    //
+    // The ambient tools are the allowed exception — community-tier but
+    // registered directly in server.ts rather than via a ceFactories entry
+    // — so they're added to the reachable set explicitly (they're already
+    // scanned above, via `ambientTargets`; this just tells the completeness
+    // check they don't need to come from `ceTools`).
+    const reachableNames = new Set<string>([
+      ...ceTools.map((def) => def.tool.name),
+      ...AMBIENT_TOOL_NAMES,
+    ]);
+    const communityNames = toolsInTier('community');
+    const missing = communityNames.filter((name) => !reachableNames.has(name));
     expect(
-      scanTargets.length,
-      'CE leak guard scan target count dropped below 40 — check factory imports'
-    ).toBeGreaterThanOrEqual(40);
+      missing,
+      `community-tier tools missing from the CE leak-guard scan: ${missing.join(', ')} — ` +
+        `check factory wiring in ce/index.ts / ceFactories.`
+    ).toEqual([]);
   });
 });

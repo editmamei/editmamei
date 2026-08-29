@@ -56,15 +56,35 @@ export async function runRepair(opts: RepairOptions = {}): Promise<void> {
   for (const m of prov.installed) out(`  Installed ${m.sku} module v${m.version}.\n`);
   // With force, the only remaining skip is the downgrade guard — surface its reason.
   for (const s of prov.skipped) out(`  Skipped ${s.sku} v${s.version}: ${s.reason}.\n`);
-  for (const e of prov.errors) {
+
+  // `abi_too_new` is not a repair failure: the manifest is well-formed and the
+  // download would have worked — this host is simply older than what's published,
+  // and no lever `repair` has can change that. Reporting it on stderr and exiting
+  // non-zero would tell a support script something is broken when nothing is, so
+  // it goes to stdout with the only cure that helps, and repair still succeeds.
+  const tooNew = prov.errors.filter((e) => e.code === 'abi_too_new');
+  const failures = prov.errors.filter((e) => e.code !== 'abi_too_new');
+  for (const e of tooNew) {
+    out(
+      `  The published ${e.sku} module needs a newer Editmamei than this one — ` +
+        `update Editmamei to load it. Your installed module is unchanged.\n`
+    );
+  }
+  for (const e of failures) {
     err(`  Error: could not provision the ${e.sku} module: ${e.message}\n`);
   }
 
-  // A support script needs a real signal: provisioning errors → non-zero exit.
-  // The router maps a thrown subcommand to exit 1 (like the no-license path above).
-  if (prov.errors.length > 0) {
+  // A support script needs a real signal: genuine provisioning errors → non-zero
+  // exit. The router maps a thrown subcommand to exit 1 (like the no-license path
+  // above).
+  if (failures.length > 0) {
     throw new Error('module re-provisioning failed');
   }
 
-  out('\nRestart your MCP client (Claude Desktop / Claude Code) to load Pro tools.\n');
+  // Only worth saying when a restart is actually the next step. On the
+  // abi-too-new path with nothing installed, the host update is the cure and a
+  // restart would load nothing, so the two lines together would contradict.
+  if (prov.installed.length > 0 || tooNew.length === 0) {
+    out('\nRestart your MCP client (Claude Desktop / Claude Code) to load Pro tools.\n');
+  }
 }

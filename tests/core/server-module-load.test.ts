@@ -22,6 +22,7 @@ import { Logger } from '@editmamei/utils/logger.ts';
 import { tierOf } from '@editmamei/core/tool-tiers.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
 import type { Kernel } from '@editmamei/kernel/kernel.ts';
+import { KERNEL_ABI } from '@editmamei/kernel/host-api.ts';
 
 /**
  * Self-healing Pro module load + hardening (v0.22.1). A downloaded module built
@@ -86,8 +87,14 @@ function bumpPatch(version: string): string {
 // path verifies against the fake delivery's own key (passed to loadVerifiedModule).
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 
-/** A downloaded module registering the given tool name(s). */
-function handlersRegistering(names: string[]): string {
+/**
+ * A downloaded module registering the given tool name(s). `abi` is the module's
+ * OWN manifest abi — the one the KERNEL gates on. It is independent of the
+ * installed pointer's abi that `buildHome` writes (which comes from the unsigned
+ * delivery manifest); they normally agree, and the divergence test below is the
+ * reason this is a parameter at all.
+ */
+function handlersRegistering(names: string[], abi = 1): string {
   const tools = names
     .map(
       (n) =>
@@ -97,7 +104,7 @@ function handlersRegistering(names: string[]): string {
     .join(',');
   return [
     'export default {',
-    "  manifest: { id: 'pro', name: 'Pro (fixture)', abi: 1 },",
+    `  manifest: { id: 'pro', name: 'Pro (fixture)', abi: ${abi} },`,
     '  register(host) {',
     `    host.registerTools([${tools}]);`,
     '  },',
@@ -116,14 +123,20 @@ const dirOf = (home: string): string => join(home, '.editmamei');
  * `version` defaults to MOD_VERSION (<= host VERSION); the forward-compat tests
  * pass FORWARD_MOD_VERSION (or the host's own VERSION, for the equal-version
  * fail-safe case) explicitly.
+ *
+ * `abi` is the POINTER's abi (installed.json, sourced from the delivery manifest).
+ * `bundleAbi` is what the module's own manifest declares to the kernel; it
+ * defaults to 1 and only the divergence test sets it apart from `abi`.
  */
 function buildHome({
   names,
   abi,
+  bundleAbi = 1,
   version = MOD_VERSION,
 }: {
   names: string[];
   abi: number;
+  bundleAbi?: number;
   version?: string;
 }): string {
   const home = mkdtempSync(join(tmpdir(), 'em-selfheal-'));
@@ -148,7 +161,7 @@ function buildHome({
 
   const contentKey = randomBytes(32).toString('base64');
   const files: BundleFile[] = [
-    { name: 'pro-handlers.mjs', data: Buffer.from(handlersRegistering(names)) },
+    { name: 'pro-handlers.mjs', data: Buffer.from(handlersRegistering(names, bundleAbi)) },
     {
       name: 'manifest.json',
       data: Buffer.from(JSON.stringify({ sku: 'pro', version, abi })),
@@ -224,6 +237,41 @@ describe('EditmameiServer.loadModules — degrade-to-CE nets', () => {
     expect(names(server)).not.toContain('ps_list_actions');
     expect(names(server)).toContain('ps_ping');
     expect(server.moduleSkipReason).toBe('incompatible');
+  });
+
+  it('skips a module whose abi is ABOVE KERNEL_ABI, and never reports it as loaded', async () => {
+    // The mirror of the case above, and the one that used to pass silently: the
+    // kernel refuses a too-new module WITHOUT throwing, so an ungated boot kept a
+    // resolved module + a null skip reason and told telemetry 'loaded' while zero
+    // Pro tools existed. A VALID pro name proves the skip is pre-import.
+    buildHome({ names: ['ps_list_actions'], abi: KERNEL_ABI + 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await expect(server.loadModules()).resolves.toBeUndefined();
+
+    expect(names(server)).not.toContain('ps_list_actions');
+    expect(names(server)).toContain('ps_ping');
+    expect(server.moduleSkipReason).toBe('incompatible');
+    // The reason the gate exists — the outcome must not read as success.
+    expect(server.computeModuleStatus()?.outcome).toBe('skipped_incompatible');
+  });
+
+  it('skips a module whose BUNDLE needs a newer ABI even when the pointer says otherwise', async () => {
+    // The two abis have independent sources: the pointer's comes from the delivery
+    // manifest (NOT covered by the artifact signature), the module's own comes from
+    // inside the signed bundle. When a ceremony slip — or a manifest understating
+    // abi to slip past the pointer gate — makes them disagree, the pointer gate
+    // passes and the kernel then refuses the module SILENTLY, registering nothing.
+    // Without the kernel reporting that refusal back, this boots as a success.
+    buildHome({ names: ['ps_list_actions'], abi: 1, bundleAbi: KERNEL_ABI + 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await expect(server.loadModules()).resolves.toBeUndefined();
+
+    expect(names(server)).not.toContain('ps_list_actions'); // zero Pro tools…
+    expect(names(server)).toContain('ps_ping'); // …CE surface intact
+    expect(server.moduleSkipReason).toBe('incompatible');
+    expect(server.computeModuleStatus()?.outcome).toBe('skipped_incompatible');
   });
 
   it('leaves the reason null + registers the tool for a compatible module (control)', async () => {
@@ -460,6 +508,7 @@ describe('ModuleLifecycle.loadModules — a version:null module never enters the
     lifecycle.kernel = {
       loadDownloaded: async () => {
         registry.register('photoshop_unclassifiable', dummyTool('photoshop_unclassifiable'));
+        return 'loaded';
       },
     } as unknown as Kernel;
     (lifecycle as unknown as { _proModule: unknown })._proModule = {
@@ -551,6 +600,86 @@ describe('EditmameiServer — background self-heal policy', () => {
     expect(readInstalledModule(PRO_SKU, { dir: dirOf(fx.home) })?.version).toBe('9.9.10');
   });
 
+  it('costs one manifest GET and no artifact fetch for an abi-too-new skip (no churn per boot)', async () => {
+    // The high-side gate re-provisions without force like any other 'incompatible'
+    // skip. That must stay a cheap no-op every boot rather than re-downloading the
+    // artifact forever: provisionModules refuses the too-new manifest entry before
+    // any fetch, so nothing is installed and nothing is pruned.
+    buildHome({ names: ['ps_list_actions'], abi: KERNEL_ABI + 1 });
+    const dir = dirOf(fx.home);
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBe('incompatible');
+
+    // A manifest that also declares the too-new abi (the real shape: the entry's
+    // abi is what got installed in the first place).
+    const fake = fakeDelivery('9.9.10');
+    const urls: string[] = [];
+    await server.reprovisionIfModuleSkipped({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        urls.push(url);
+        const res = await fake.fetchImpl(url, init);
+        if (!url.endsWith('/v1/modules/manifest')) return res;
+        const m = JSON.parse(await res.text()) as {
+          modules: { pro: { abi: number } };
+        };
+        m.modules.pro.abi = KERNEL_ABI + 1;
+        return jsonRes(200, m);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+
+    expect(urls).toEqual([`${cfg.baseUrl}/v1/modules/manifest`]); // no artifact, no key
+    // The installed module is exactly as it was — nothing installed, nothing pruned.
+    expect(readInstalledModule(PRO_SKU, { dir })?.version).toBe(MOD_VERSION);
+    expect(readInstalledModule(PRO_SKU, { dir })?.abi).toBe(KERNEL_ABI + 1);
+  });
+
+  it('tells an abi-too-new user to update Editmamei, not to run repair', async () => {
+    // The delivery gate turns this into a provisioning ERROR, so without routing
+    // it would surface as the raw "could not re-provision" line — true but useless,
+    // since nothing is broken and no lever the user has will change the outcome.
+    // The honest guidance is the same one an 'incompatible' skip gets.
+    buildHome({ names: ['ps_list_actions'], abi: KERNEL_ABI + 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBe('incompatible');
+
+    const fake = fakeDelivery('9.9.10');
+    const lines: string[] = [];
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: unknown): boolean => {
+        lines.push(String(chunk));
+        return true;
+      });
+    try {
+      await server.reprovisionIfModuleSkipped({
+        config: cfg,
+        fetchImpl: async (url, init) => {
+          const res = await fake.fetchImpl(url, init);
+          if (!url.endsWith('/v1/modules/manifest')) return res;
+          const m = JSON.parse(await res.text()) as { modules: { pro: { abi: number } } };
+          m.modules.pro.abi = KERNEL_ABI + 1;
+          return jsonRes(200, m);
+        },
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      });
+    } finally {
+      stderr.mockRestore();
+    }
+    const logged = lines.join('');
+
+    expect(logged).toMatch(/does not yet support this host/i);
+    expect(logged).toMatch(/Update Editmamei/i);
+    // Never the raw provisioning error, and never `repair` — it hits the same wall.
+    expect(logged).not.toMatch(/Could not re-provision/i);
+    expect(logged).not.toMatch(/repair/i);
+  });
+
   it('installs nothing + does NOT recommend repair when only the SAME (incompatible) version is served', async () => {
     buildHome({ names: ['photoshop_list_actions'], abi: 1 }); // wedge → incompatible
     const server = new EditmameiServer() as unknown as ServerProbe;
@@ -608,6 +737,49 @@ describe('EditmameiServer.ensureEntitledModuleFresh — healthy-path auto-update
     });
     // Upgraded on disk; the new version loads on the NEXT restart (no hot-swap).
     expect(readInstalledModule(PRO_SKU, { dir: dirOf(fx.home) })?.version).toBe('9.9.10');
+  });
+
+  it('does not warn every boot when a newer published module needs a newer host', async () => {
+    // The steady state of every older host after a publisher ABI bump: the module
+    // on disk loaded FINE this boot, and the only "problem" is that something
+    // newer exists. Logging a failure-shaped warning on the healthy path, every
+    // boot, forever, teaches the reader to ignore the channel.
+    buildHome({ names: ['ps_list_actions'], abi: 1 }); // compatible → loads, reason null
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBeNull();
+
+    const fake = fakeDelivery('9.9.10');
+    const lines: string[] = [];
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: unknown): boolean => {
+        lines.push(String(chunk));
+        return true;
+      });
+    try {
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async (url, init) => {
+          const res = await fake.fetchImpl(url, init);
+          if (!url.endsWith('/v1/modules/manifest')) return res;
+          const m = JSON.parse(await res.text()) as { modules: { pro: { abi: number } } };
+          m.modules.pro.abi = KERNEL_ABI + 1;
+          return jsonRes(200, m);
+        },
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      });
+    } finally {
+      stderr.mockRestore();
+    }
+    const logged = lines.join('');
+
+    expect(logged).not.toMatch(/\[WARN\]/);
+    expect(logged).not.toMatch(/could not provision/i);
+    expect(logged).toMatch(/needs a newer Editmamei/i);
+    // The working module is untouched — the refusal never reached an install.
+    expect(readInstalledModule(PRO_SKU, { dir: dirOf(fx.home) })?.version).toBe(MOD_VERSION);
   });
 
   it('is a cheap no-op when already latest — fetches the manifest but NOT the artifact', async () => {

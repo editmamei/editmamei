@@ -100,7 +100,7 @@ const pathInputSchema: JsonSchemaObject = {
       type: 'string',
       enum: SUPPORTED_BRUSH_TOOLS,
       description:
-        "stroke only: which brush-family tool paints the path. Default 'brush'. Same 16-tool set as ps_apply_brush_stroke.",
+        "stroke only: which brush-family tool paints the path (see this field's own enum for the full supported set). Default 'brush'.",
       default: 'brush',
     },
     color: {
