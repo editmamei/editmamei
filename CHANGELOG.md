@@ -37,9 +37,9 @@ earlier versions are preserved in the archived wiki repository's
   module's compatibility marker is now checked before anything is downloaded or installed.
   - Previously such a module was installed anyway, loaded none of its tools, and still reported
     success — while the module that had been working was already deleted to make room for it.
-  - A module entry with a missing or malformed marker could also leave the app downloading the
-    whole module again at every start, without ever being able to use it. Both are now refused
-    before anything on disk changes.
+  - An entry whose marker is missing, or is not a number at all, could also leave the app
+    downloading the whole module again at every start without ever being able to use it. Both are
+    now refused before anything on disk changes.
 
 - **Repairing no longer reports a failure when the only thing needed is an app update.** If the
   published module requires a newer Editmamei than the one installed, that is now stated plainly
@@ -47,7 +47,8 @@ earlier versions are preserved in the archived wiki repository's
   - It previously printed an error and exited with a failure code for a state where nothing was
     broken and the installed module was untouched, which made routine support checks look like
     faults.
-  - The same situation is no longer logged as a warning on every single start.
+  - While the installed module still works, that situation is no longer logged as a warning on
+    every start either.
 
 ### Changed
 

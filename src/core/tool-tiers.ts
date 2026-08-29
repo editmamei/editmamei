@@ -72,8 +72,8 @@ export const TOOL_TIERS: Record<string, Tier> = {
   ps_apply_adjustment: 'community',
 
   // document-tools
-  // New 2026-08-25; promoted 2026-08-28 (user-authorized; live-verified
-  // 2026-08-26, session fc5a — op:list only, other ops unexercised live).
+  // Both ops verified against Photoshop 27.10 before promotion, including
+  // activate-by-id and the same-name refusal.
   ps_document: 'community',
   ps_create_document: 'community',
   ps_close_document: 'community',
@@ -237,11 +237,10 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // Named-object selection via local MobileSAM: COCO object → CE detector box →
   // SAM organic mask → selection.
   ps_select_object: 'pro',
-  // Native-AI additions (2026-08-15), both Adobe's own inference and CE-destined
-  // on the usual line. ps_replace_sky promoted 2026-08-28 (user-authorized;
-  // live-verified 2026-08-26, session fc5a). ps_select_focus_area stays 'dev':
-  // standalone only because a parameter cannot be tiered; it folds into
-  // ps_select as mode=focus_area at promotion.
+  // Native-AI additions, both Adobe's own inference and CE-destined on the usual
+  // line. ps_select_focus_area stays 'dev': standalone only because a parameter
+  // cannot be tiered, and it folds into ps_select as mode=focus_area whenever it
+  // does promote.
   //
   // The point-prompt selector (AM deepSelect) is deliberately ABSENT: its only
   // input is a coordinate and we have no precision aiming to give it in any
