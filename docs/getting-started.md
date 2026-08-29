@@ -140,7 +140,9 @@ These tools (included in Community) depend on Photoshop's Sensei AI features, an
 
 In Photoshop: **Preferences → Image Processing**, switch the processing option (for example Cloud → Process Locally (Device)), then close and reopen Photoshop.
 
-`ps_replace_sky` has one additional quirk: the sky model can become unavailable mid-session (replacements start failing after earlier ones succeeded). Restarting Photoshop restores it.
+### `ps_replace_sky` stops working part-way through a session
+
+Sky replacements that succeeded earlier begin failing without anything else changing: Photoshop's sky model can become unavailable mid-session. Restart Photoshop and it comes back.
 
 ### Reporting something not listed here
 

@@ -35,11 +35,11 @@ The Community edition covers the core editing surface most photographers need da
 - **Content-aware retouch:** Content-Aware Fill, Patch, and Content-Aware Move, each driven against a selection the AI can verify first. Erase a distraction or repair a blemish without leaving the conversation
 - **History:** undo, redo, inspect history states
 - **Visual verification:** downscaled preview JPEGs returned inline, layer-bounds diffs, region comparison, and 256-bin per-channel histograms with mean, stdev, and median
-- **Document insight:** camera metadata (make, model, lens, ISO, focal length, GPS), ACR develop settings, full layer tree as JSON, capability overview
+- **Document insight:** camera metadata (make, model, lens, ISO, focal length, GPS), ACR develop settings, full layer tree as JSON, capability overview, plus `ps_document` to list the open documents and switch which one is active
 - **Text:** create text layers, set font, size, color, and alignment, update content
 - **Image placement:** place image files into the document
 - **Scene awareness, on your machine:** `ps_detect` finds faces and objects on-device; `ps_read_scene` reads the scene; `ps_select_by_reference` turns a named thing ("the sky", "the person on the left") into a real selection
-- **AI selections:** `ps_select_subject` and `ps_select_sky` (Photoshop's Sensei selections), each returning the same rich feedback bundle as every other selection so the AI can verify before committing
+- **AI selections and sky replacement:** `ps_select_subject` and `ps_select_sky` (Photoshop's Sensei selections), each returning the same rich feedback bundle as every other selection so the AI can verify before committing, plus `ps_replace_sky` to swap a sky from a preset or your own file
 - **Vector shapes and pen paths:** `ps_shape` (rectangle, ellipse, line), `ps_path` (editable paths, path-to-selection and back), and `ps_vector_mask`
 - **Channel compositing:** `ps_apply_image` and `ps_calculations` for luminosity blends and channel-math masks, plus save / load / duplicate / delete of selection channels
 - **Canvas and guides:** rotate and flip the canvas, add guides and guide layouts, and skew / free-transform layers
