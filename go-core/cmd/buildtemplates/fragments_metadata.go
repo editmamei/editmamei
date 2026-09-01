@@ -284,12 +284,21 @@ func init() {
         var hB = named.blue.histogram;
         var nC = Math.min(hR.length, hG.length, hB.length);
         var synth = [];
-        // Float bins (no rounding) so the downstream mean computation
-        // sees the true total pixel count and the mean stays exact.
+        // LAST RESORT — reached only when doc.histogram throws on every layer
+        // AND the document has no Lightness/Gray channel.
+        //
+        // This is a mixture of the three MARGINAL histograms, not a per-pixel
+        // composite: bin i counts pixels whose R is i, plus pixels whose G is
+        // i, plus pixels whose B is i. The mean is exact by linearity of
+        // expectation, but the SHAPE is not trustworthy — clipping and
+        // percentile reads taken from it are wrong on saturated images, where
+        // one channel is near zero while the others are bright. The source
+        // name is surfaced in the result's channel field so callers can
+        // refuse rather than silently trust it.
         for (var iC = 0; iC < nC; iC++) {
           synth[iC] = (hR[iC] + hG[iC] + hB[iC]) / 3;
         }
-        return { bins: synth, source: 'rgb-channel-average' };
+        return { bins: synth, source: 'rgb-marginal-mixture: shape unreliable' };
       }
       throw new Error('Composite histogram unavailable and no fallback channels available (mode: ' + modeStr + ')');
     }
@@ -304,12 +313,27 @@ func init() {
       // Document-mode dispatched:
       //   Lab       → Lightness channel (true luminance, exact)
       //   Grayscale → Gray channel (it IS luminosity, exact)
-      //   RGB       → synthesize from R+G+B via Rec.709 weighted bin sums.
-      //               APPROXIMATION: marginal weighted sum != true per-pixel
-      //               luminosity histogram (channels are correlated in real
-      //               images). The resulting MEAN is exact (linearity of
-      //               expectation); stdev/median are approximations that
-      //               are accurate enough for exposure judgment.
+      //   RGB       → the TRUE per-pixel composite (doc.histogram).
+      //
+      // This previously synthesized a Rec.709 weighted sum of the three
+      // MARGINAL histograms. That is not a luminosity histogram and not an
+      // approximation of one: a weighted mixture of marginals is not the
+      // distribution of the weighted sum. Bin i counted pixels whose R is i,
+      // plus pixels whose G is i, plus pixels whose B is i — so a pixel that
+      // is dark in ONE channel contributed to a dark bin even when the other
+      // two channels were bright and the pixel was not dark at all.
+      //
+      // The mean stayed exact (linearity of expectation), which is why the
+      // error survived review, but every shape-derived read — clipping,
+      // percentiles, median, stdev — was wrong, and wrong WORST on saturated
+      // images, i.e. the ones this product exists to grade. Measured on a
+      // deep blue-water frame: the synthesis reported 521,101 px at level 0
+      // (~4.3 of every 100 pixels, read downstream as shadow clipping)
+      // because red is genuinely near zero across open water; the true
+      // per-pixel composite held 30 px there, and the green channel — which
+      // carries the dominant share of luminance weight — held 35. The
+      // reported figure was arithmetically impossible, and a caller could
+      // not have detected that from the output.
       var named = collectNamedChannels(doc);
       if (named.lightness) {
         bins = named.lightness.histogram;
@@ -318,21 +342,14 @@ func init() {
         bins = named.gray.histogram;
         resolvedChannel = 'luminosity (Grayscale)';
       } else if (named.red && named.green && named.blue) {
-        var bR = named.red.histogram;
-        var bG = named.green.histogram;
-        var bB = named.blue.histogram;
-        var nB = Math.min(bR.length, bG.length, bB.length);
-        var lum = [];
-        // Rec.709 (sRGB → relative luminance) weights. Float bins (no
-        // rounding) so the downstream mean stays exact under linearity
-        // of expectation; stdev/median remain approximations because
-        // channels are correlated in real images.
-        var wR = 0.2126, wG = 0.7152, wB = 0.0722;
-        for (var iL = 0; iL < nB; iL++) {
-          lum[iL] = wR * bR[iL] + wG * bG[iL] + wB * bB[iL];
-        }
-        bins = lum;
-        resolvedChannel = 'luminosity (Rec.709 approximation from RGB)';
+        // Per-pixel composite. Mean-of-channels rather than Rec.709-weighted,
+        // so it is not photometric luminance — but it IS a real distribution
+        // of real pixels, which is what clipping and percentile reads need.
+        var lumRes = readCompositeBins();
+        bins = lumRes.bins;
+        resolvedChannel = (lumRes.source === 'doc-histogram')
+          ? 'luminosity (per-pixel composite)'
+          : 'luminosity (per-pixel composite, ' + lumRes.source + ')';
       } else {
         throw new Error('Luminosity not available for mode ' + modeStr +
           ' (channels: ' + (function () { var n = []; for (var k in named) n.push(k); return n.join(', '); })() +
