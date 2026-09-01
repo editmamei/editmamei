@@ -402,7 +402,13 @@ export async function buildSceneModel(
 
   // Composition geometry over the subjects + horizon (allBoxes/mainBox hoisted
   // above for the horizon estimator).
-  const composition = computeComposition(mainBox, allBoxes, docW, docH, horizon.placement);
+  const composition = computeComposition(
+    mainBox,
+    allBoxes,
+    docW,
+    docH,
+    horizon.detected ? horizon.placement : null
+  );
 
   const backends = {
     faces: det.result.backends.faces,

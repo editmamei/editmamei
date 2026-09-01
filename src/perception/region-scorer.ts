@@ -161,7 +161,8 @@ export function buildRegionSignals(
   scene: {
     docW: number;
     docH: number;
-    horizonY: number;
+    /** null when no horizon was measured — never substitute a prior. */
+    horizonY: number | null;
     horizonConfidence: number;
     /** Count of detected INDOOR furniture/appliance objects (bed/sofa/…). */
     indoorObjectCount?: number;
@@ -187,7 +188,7 @@ export function buildRegionSignals(
     // a zero-confidence horizon is treated as "no usable horizon", so alignment
     // stays null and sky/ground fall back to the neutral 0.5 rather than trusting
     // a guessed line.
-    if (scene.horizonConfidence > 0) {
+    if (scene.horizonConfidence > 0 && scene.horizonY !== null) {
       // |edge − horizon| as a fraction of frame height → alignment in [0,1].
       lowerEdgeAlign = 1 - Math.min(1, Math.abs(bounds.bottom - scene.horizonY) / docH);
       upperEdgeAlign = 1 - Math.min(1, Math.abs(bounds.top - scene.horizonY) / docH);

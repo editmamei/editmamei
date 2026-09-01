@@ -243,7 +243,9 @@ function summarizeScene(model: SceneModel): string {
   const parts = [
     `${model.subjects.length} subject(s)${subjStr ? ` (${subjStr})` : ''}`,
     `${model.faces.length} face(s)`,
-    `horizon at y=${model.horizon.y} (${Math.round(model.horizon.placement * 100)}% down, conf ${model.horizon.confidence.toFixed(2)})`,
+    model.horizon.detected
+      ? `horizon at y=${model.horizon.y} (${Math.round(model.horizon.placement * 100)}% down, conf ${model.horizon.confidence.toFixed(2)})`
+      : `no horizon measured (${model.horizon.reason})`,
     `sky ~${Math.round((model.regions.find((r) => r.kind === 'sky')?.coverage ?? 0) * 100)}%`,
   ];
   if (main && cell) parts.push(`main subject in the ${cell.row}-${cell.col} third`);
@@ -330,7 +332,9 @@ async function scene(
         // Lift the horizon y into export-pixel space for the overlay.
         const exportH = built.exportImage.height || 0;
         const sy = model.doc.height > 0 ? exportH / model.doc.height : 1;
-        const horizonExportY = Math.round(model.horizon.y * sy);
+        // null when no horizon was measured — annotateScene skips the line
+        // rather than drawing one at a guessed position.
+        const horizonExportY = model.horizon.detected ? Math.round(model.horizon.y * sy) : null;
         const annotated = annotateScene(
           built.decoded,
           built.rawFaces,

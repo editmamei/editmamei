@@ -201,7 +201,8 @@ const INDOOR_LABELS = new Set([
 function sceneCtx(model: SceneModel): {
   docW: number;
   docH: number;
-  horizonY: number;
+  /** null when no horizon was measured — scorers must not substitute a prior. */
+  horizonY: number | null;
   horizonConfidence: number;
   indoorObjectCount: number;
 } {
@@ -210,8 +211,8 @@ function sceneCtx(model: SceneModel): {
   return {
     docW: model.doc.width,
     docH: model.doc.height,
-    horizonY: model.horizon.y,
-    horizonConfidence: model.horizon.confidence,
+    horizonY: model.horizon.detected ? model.horizon.y : null,
+    horizonConfidence: model.horizon.detected ? model.horizon.confidence : 0,
     indoorObjectCount,
   };
 }
@@ -896,7 +897,23 @@ async function resolveAboveHorizon(
   model: SceneModel,
   composition?: CompositionContext
 ): Promise<ResolveResult> {
-  const y = Math.max(1, Math.min(model.doc.height, model.horizon.y));
+  // No measured horizon means there is no "above the horizon" to select. This
+  // used to read a rule-of-thirds prior off the horizon facet and slice the top
+  // third of the frame — a rectangle presented as a region, on images with no
+  // horizon in them at all. Honest absence is the same contract every other
+  // unconfident target here already returns.
+  const horizon = model.horizon;
+  if (!horizon.detected) {
+    return {
+      target: 'above_horizon',
+      method: 'none',
+      passed: false,
+      confidence: 0,
+      reasons: [`no horizon was measured in this frame (${horizon.reason})`],
+      detail: { horizon_detected: false, horizon_reason: horizon.reason },
+    };
+  }
+  const y = Math.max(1, Math.min(model.doc.height, horizon.y));
   const result = (await runScript(
     connection,
     await snippet.build('selectRectangle', {
