@@ -250,6 +250,18 @@ func init() {
     //   3. synthesize from per-channel R+G+B (or Lab Lightness, or Gray).
     // Returns { bins, source } so the caller can record which path landed.
     //
+    // MEASURED on Photoshop 27.10.0 (win32), solid-fill probes at 100x100:
+    //   pure red   -> one bin, 76,  10000 px    (0.30 * 255)
+    //   pure green -> one bin, 150, 10000 px    (0.59 * 255)
+    //   pure blue  -> one bin, 28,  10000 px    (0.11 * 255)
+    //   half red / half white -> two bins, 76 and 255, 5000 px each
+    // Total always equals the pixel count, never three times it, and a mixed
+    // image keeps one bin per DISTINCT PIXEL rather than one per channel value.
+    // So doc.histogram is a true per-pixel luminance histogram weighted
+    // 0.30/0.59/0.11 — Photoshop's Luminosity reading, NOT the Channels-panel
+    // RGB reading, which is the three channel histograms combined. That is the
+    // whole reason this is worth reading instead of synthesising.
+    //
     // doc.histogram follows doc.activeChannels: with a single channel selected in
     // the Channels panel it returns THAT channel's histogram, which would be a
     // per-channel read labelled as the composite — the exact class of mislabelling
