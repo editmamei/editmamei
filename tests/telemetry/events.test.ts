@@ -325,6 +325,27 @@ describe('buildSessionSummary', () => {
     expect(e.templates_saved).toBe(6);
     expect(e.action_sets).toBe(2);
   });
+
+  it("falls back to today's real-clock bucket when tsBucket does not match YYYY-MM-DD", () => {
+    // No injectable "now" for this fallback (unlike the rest of this module, which always
+    // takes `now` as a parameter) — it reaches for the real clock, so the expectation must
+    // too, computed at the same instant rather than pinned to the fixture NOW constant.
+    const e = buildSessionSummary(
+      dims('2026'),
+      { tool_call_count: 1, distinct_tools: 1, any_failures: false },
+      'not-a-date'
+    );
+    expect(e.ts_bucket).toBe(dayBucket(new Date()));
+  });
+
+  it('keeps a well-formed tsBucket verbatim', () => {
+    const e = buildSessionSummary(
+      dims('2026'),
+      { tool_call_count: 1, distinct_tools: 1, any_failures: false },
+      '2026-01-02'
+    );
+    expect(e.ts_bucket).toBe('2026-01-02');
+  });
 });
 
 describe('buildClientConnected', () => {

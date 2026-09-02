@@ -11,7 +11,7 @@
  * known fact, not an absent one).
  */
 
-import { mapClientName, parseMajor } from './activity.js';
+import { mapClientName, parseMajor, boundMajor } from './activity.js';
 
 /** Schema version — must match the server's `v` field. */
 export const TELEMETRY_SCHEMA_VERSION = 2;
@@ -28,8 +28,8 @@ export interface TelemetryDimensions {
    */
   edition: string;
   platform: string;
-  /** Install channel: 'npx' | 'npm_global' | 'mcpb' | 'source' | 'dev'. Attached to the boot
-   *  ping only. */
+  /** Install channel: 'npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'source' | 'dev'.
+   *  Attached to the boot ping only. */
   channel: string;
   /** Resolved lazily — null until the first PS connection identifies the version. */
   getPsVersion: () => string | null;
@@ -130,17 +130,19 @@ export interface SessionStartEvent {
   platform: string;
   ps_version: string;
   /**
-   * Install channel ('npx' | 'npm_global' | 'mcpb' | 'source'). Carried on the boot ping
-   * only — it's a stable per-install attribute, so the server stores it once in
+   * Install channel ('npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'source'). Carried on the
+   * boot ping only — it's a stable per-install attribute, so the server stores it once in
    * `installs_seen` (no daily rollup), keep-first-known. The dev edition is
    * telemetry-inert, so 'dev' never reaches the wire.
    */
   channel: string;
-  /** Node.js major version the server is running under (activity.ts's nodeMajor()). */
+  /** Node.js major version the server is running under (activity.ts's nodeMajor()), bounded
+   *  to 0..999; omitted when unparseable or out of range. */
   node_major?: number;
   /** CPU architecture bucket (activity.ts's archToken()). */
   arch?: 'x64' | 'arm64' | 'other';
-  /** Host OS major version (activity.ts's osMajor()); omitted when unparseable. */
+  /** Host OS major version (activity.ts's osMajor()), bounded to 0..999; omitted when
+   *  unparseable or out of range. */
   os_major?: number;
 }
 
@@ -162,8 +164,9 @@ export interface ClientConnectedEvent {
   platform: string;
   /** The connected MCP client's self-reported name, mapped via activity.ts's mapClientName. */
   client: ReturnType<typeof mapClientName>;
-  /** Leading major of the client's self-reported version. Deliberately nullable — see the
-   *  module doc comment: this is the one field allowed to carry `null` on the wire. */
+  /** Leading major of the client's self-reported version, bounded to 0..9999. Deliberately
+   *  nullable — see the module doc comment: this is the one field allowed to carry `null` on
+   *  the wire, sent both for an unparseable version and one outside the bound. */
   client_major: number | null;
   cap_sampling?: boolean;
   cap_elicitation?: boolean;
@@ -236,6 +239,9 @@ export const MAX_RESULT_BYTES = 16_777_216;
 /** Photoshop UI-locale token shape the server accepts (e.g. "en_US"). */
 const PS_LOCALE_RE = /^[a-z]{2,3}_[A-Z]{2}$/;
 
+/** The server's TS_BUCKET token shape (day granularity, `YYYY-MM-DD`). */
+const TS_BUCKET_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 /** Day-granularity bucket (`YYYY-MM-DD`) — never a precise timestamp (design §4). */
 export function dayBucket(now: Date): string {
   return now.toISOString().slice(0, 10);
@@ -296,6 +302,11 @@ export function buildUsageEvent(
  * no choice but to reuse the persisted start bucket; splitting a session's usage across two
  * days was judged not worth it). Callers compute it once, at session start, rather than at
  * shutdown — see `TelemetryClient`'s `startDayBucket`.
+ *
+ * `tsBucket` is validated against the server's own `YYYY-MM-DD` token shape before use — a
+ * caller passing something malformed (a corrupt persisted session-state file surviving a
+ * hard kill, most plausibly) falls back to today's bucket rather than shipping an event the
+ * server would 400 the whole batch over.
  */
 export function buildSessionSummary(
   dims: TelemetryDimensions,
@@ -320,7 +331,7 @@ export function buildSessionSummary(
     v: TELEMETRY_SCHEMA_VERSION,
     type: 'session_summary',
     install_id: dims.install_id,
-    ts_bucket: tsBucket,
+    ts_bucket: TS_BUCKET_RE.test(tsBucket) ? tsBucket : dayBucket(new Date()),
     editmamei_version: dims.editmamei_version,
     edition: dims.edition,
     platform: dims.platform,
@@ -391,7 +402,10 @@ export function buildClientConnected(
     edition: dims.edition,
     platform: dims.platform,
     client: mapClientName(info.clientName),
-    client_major: parseMajor(info.clientVersion),
+    // Bounded to the server's CLIENT_MAJOR range (0..9999) — an out-of-range parse (a
+    // garbled or hostile version string) degrades to null, the same value space as an
+    // unparseable one, rather than 400ing the whole batch.
+    client_major: boundMajor(parseMajor(info.clientVersion), 9999),
     cap_sampling: info.capSampling,
     cap_elicitation: info.capElicitation,
     cap_roots: info.capRoots,
