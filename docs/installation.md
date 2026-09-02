@@ -37,7 +37,7 @@ For clients that already have Node. Confirm your Node.js version:
 node --version
 ```
 
-If you see `v20.x` or higher, install the CLI globally:
+If you see `v22.x` or higher, install the CLI globally:
 
 ```bash
 npm install -g editmamei
