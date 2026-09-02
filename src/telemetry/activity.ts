@@ -7,13 +7,20 @@
  *
  * Content-free by construction: every value here is an enum token or a small integer, never
  * a free-text string.
+ *
+ * The telemetry server carries an IDENTICAL copy of READ_ONLY_TOOLS / KEPT_WORK_TOOLS in its
+ * own `src/activity.ts` for the aggregate rollups; keep the two in sync by hand whenever
+ * either changes. Both lists must also be reconciled against `src/core/tool-tiers.ts`
+ * whenever the tool roster changes — a tool added there and forgotten here silently falls
+ * through to the DEFAULT classification, not a neutral one: READ_ONLY_TOOLS must be
+ * EXHAUSTIVE, because any tool absent from it counts as an edit (`edits_ok`) the moment it
+ * succeeds, whether or not it actually reads-only.
  */
 
 /**
  * Tools whose successful call reads state without changing the document — used to decide
- * `edits_ok` (a successful call outside this set). The telemetry server carries an IDENTICAL
- * list in its own `src/activity.ts` for the aggregate rollups; keep the two in sync by hand
- * when a read-only tool is added or removed.
+ * `edits_ok` (a successful call outside this set). See the module doc comment above for the
+ * server-sync + exhaustiveness discipline this list is held to.
  */
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'ps_ping',
@@ -32,6 +39,11 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'ps_report_problem',
   'ps_detect',
   'ps_detect_landmarks',
+  // ps_document — only op=list/activate reach telemetry as this tool name; neither
+  // touches pixels (list reads state, activate just switches the active document).
+  'ps_document',
+  'ps_template_verify',
+  'ps_resolve_placement',
 ]);
 
 /**

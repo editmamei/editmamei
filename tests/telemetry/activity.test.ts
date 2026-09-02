@@ -22,6 +22,16 @@ describe('READ_ONLY_TOOLS / KEPT_WORK_TOOLS', () => {
     expect(READ_ONLY_TOOLS.has('ps_add_adjustment_layer')).toBe(false);
     expect(KEPT_WORK_TOOLS.has('ps_add_adjustment_layer')).toBe(false);
   });
+
+  it('classifies ps_document, ps_template_verify, and ps_resolve_placement as read-only', () => {
+    // ps_document: only op=list/activate exist (a closed enum — see document-tools.ts's
+    // DOCUMENT_OPS) and neither touches pixels. ps_template_verify and ps_resolve_placement
+    // are pure reads/checks, never document mutations.
+    for (const tool of ['ps_document', 'ps_template_verify', 'ps_resolve_placement']) {
+      expect(READ_ONLY_TOOLS.has(tool)).toBe(true);
+      expect(KEPT_WORK_TOOLS.has(tool)).toBe(false);
+    }
+  });
 });
 
 describe('mapClientName', () => {
