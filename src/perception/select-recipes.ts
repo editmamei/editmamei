@@ -897,11 +897,10 @@ async function resolveAboveHorizon(
   model: SceneModel,
   composition?: CompositionContext
 ): Promise<ResolveResult> {
-  // No measured horizon means there is no "above the horizon" to select. This
-  // used to read a rule-of-thirds prior off the horizon facet and slice the top
-  // third of the frame — a rectangle presented as a region, on images with no
-  // horizon in them at all. Honest absence is the same contract every other
-  // unconfident target here already returns.
+  // No measured horizon means there is no "above the horizon" to select. Slicing
+  // a fraction of the frame instead would return a rectangle presented as a
+  // region on images with no horizon in them. Absence is the same contract every
+  // other unconfident target here returns.
   const horizon = model.horizon;
   if (!horizon.detected) {
     return {

@@ -33,15 +33,13 @@ export interface ThresholdPick {
 /**
  * The horizon — measured, or explicitly absent.
  *
- * `detected: false` is a real answer, not a placeholder. Every branch of this
- * facet used to return a rule-of-thirds prior (`y = docHeight/3`, confidence
- * 0.2) when it could not measure anything: a guess shaped exactly like a
- * measurement. Readers that checked `confidence` were fine; readers that took
- * `y` or `placement` at face value silently consumed a fabricated coordinate,
- * and nothing in the type stopped them.
+ * `detected: false` is a real answer, not a placeholder, and the union exists so
+ * a caller cannot read `y` or `placement` without first branching on it. A
+ * confidence field alone does not carry that guarantee: it leaves a coordinate
+ * sitting there for anyone who takes it at face value.
  *
- * A refusal a caller must branch on is strictly better than a plausible number
- * with a small figure printed beside it.
+ * Nothing here may substitute a compositional default for a measurement. If the
+ * frame cannot be measured, the facet refuses.
  */
 export type HorizonFacet =
   | {
@@ -189,9 +187,8 @@ export function estimateHorizon(
   //
   // When a subject fills most of the frame AND the crossing falls inside that
   // subject's box, the transition is explained by the subject, so there is no
-  // horizon to report. This previously demoted to the thirds prior because the
-  // field was non-optional and composition math consumed `placement` — the
-  // facet is now a discriminated union precisely so this case can say so.
+  // horizon to report, so refuse. The union is what lets this branch say that
+  // instead of supplying a coordinate composition math would consume.
   if (
     (mainSubjectBox && isDominantSubjectCrossing(y, docHeight, mainSubjectBox)) ||
     (primaryFaceBox && isPortraitFaceCrossing(y, docHeight, primaryFaceBox))

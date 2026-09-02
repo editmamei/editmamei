@@ -249,7 +249,25 @@ func init() {
     //   2. save active layer → switch to a pixel layer → retry → restore.
     //   3. synthesize from per-channel R+G+B (or Lab Lightness, or Gray).
     // Returns { bins, source } so the caller can record which path landed.
+    //
+    // doc.histogram follows doc.activeChannels: with a single channel selected in
+    // the Channels panel it returns THAT channel's histogram, which would be a
+    // per-channel read labelled as the composite — the exact class of mislabelling
+    // this function exists to avoid. Force the component channels for the duration
+    // of the read and put the user's selection back, the same guard the selection
+    // snippets use before a pixel sampler runs.
     function readCompositeBins() {
+      var savedChannels = null;
+      try { savedChannels = doc.activeChannels; } catch (eSc) {}
+      try { doc.activeChannels = doc.componentChannels; } catch (eCc) {}
+      try {
+        return readCompositeBinsInner();
+      } finally {
+        if (savedChannels) { try { doc.activeChannels = savedChannels; } catch (eRc) {} }
+      }
+    }
+
+    function readCompositeBinsInner() {
       try {
         var b1 = doc.histogram;
         if (b1 && b1.length > 0) return { bins: b1, source: 'doc-histogram' };

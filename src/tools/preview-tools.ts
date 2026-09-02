@@ -223,7 +223,7 @@ const histogramSchema: JsonSchemaObject = {
       type: 'string',
       enum: ['composite', 'red', 'green', 'blue', 'luminosity', 'gray'],
       description:
-        'Which channel to read. "composite" (default) is the visible flattened image; if the active layer is an adjustment/fill/shape layer the tool transparently switches to a pixel layer to read it. "red"/"green"/"blue" require an RGB doc; "gray" a grayscale doc. "luminosity" dispatches per doc mode — Lab uses the Lightness channel (exact), Grayscale uses Gray (exact), RGB synthesizes a Rec.709 weighted approximation from R+G+B (mean is exact; stdev/median are approximations). The result\'s `channel` field annotates which path landed when a fallback was used.',
+        'Which channel to read. "composite" (default) is the visible flattened image; if the active layer is an adjustment/fill/shape layer the tool transparently switches to a pixel layer to read it. "red"/"green"/"blue" require an RGB doc; "gray" a grayscale doc. "luminosity" dispatches per doc mode — Lab uses the Lightness channel (exact), Grayscale uses Gray (exact), and RGB reads the per-pixel composite, so mean, stdev, median and clipping reads are all trustworthy. A channel value naming a marginal mixture is a degraded last resort whose shape should not be trusted, only its mean. The result\'s `channel` field annotates which path landed when a fallback was used.',
       default: 'composite',
     },
   },
