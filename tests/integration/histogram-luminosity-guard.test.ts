@@ -109,8 +109,12 @@ describe('GetHistogram luminosity: no marginal-histogram synthesis', () => {
     expect(body).toContain('doc.activeChannels = doc.componentChannels');
     expect(body).toContain('savedChannels = doc.activeChannels');
     expect(body).toMatch(/finally\s*\{[^}]*doc\.activeChannels = savedChannels/);
-    // An empty array is truthy and cannot be restored, so the guard checks length.
+    // Forcing is conditional on having something to restore. Reading the
+    // selection throws while a layer mask is targeted, so an unconditional
+    // force would move the user off their mask with no way back.
     expect(body).toContain('savedChannels && savedChannels.length');
+    expect(body).toMatch(/if \(savedChannels && savedChannels\.length\)\s*\{[^}]*forced = true/);
+    expect(body).toMatch(/finally\s*\{\s*if \(forced\)/);
   });
 
   it('gates RGB luminosity on the document mode, not on English channel names', () => {

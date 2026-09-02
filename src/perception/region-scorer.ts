@@ -184,10 +184,12 @@ export function buildRegionSignals(
     centroidY = (bounds.top + bounds.bottom) / 2 / docH;
     touchesBottom = bounds.bottom >= docH * 0.97;
     touchesTop = bounds.top <= docH * 0.03;
-    // Gate the alignment signal on horizon CONFIDENCE (not horizonY validity):
-    // a zero-confidence horizon is treated as "no usable horizon", so alignment
-    // stays null and sky/ground fall back to the neutral 0.5 rather than trusting
-    // a guessed line.
+    // Alignment requires BOTH a positive confidence and a measured y. Confidence
+    // alone is the semantic gate — a zero-confidence horizon means "no usable
+    // horizon", so alignment stays null and sky/ground take the neutral 0.5
+    // rather than trusting a guessed line. The null check is not redundant:
+    // buildRegionSignals is exported, so a direct caller can pass a refused
+    // horizon, and subtracting null would yield NaN alignment.
     if (scene.horizonConfidence > 0 && scene.horizonY !== null) {
       // |edge − horizon| as a fraction of frame height → alignment in [0,1].
       lowerEdgeAlign = 1 - Math.min(1, Math.abs(bounds.bottom - scene.horizonY) / docH);

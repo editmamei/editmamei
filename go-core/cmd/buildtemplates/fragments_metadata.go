@@ -269,13 +269,25 @@ func init() {
     // of the read and put the user's selection back, the same guard the selection
     // snippets use before a pixel sampler runs.
     function readCompositeBins() {
+      // Only force the component channels when the current selection could be
+      // read back, because forcing without a restore silently changes what the
+      // user is working on. Measured on 27.10.0: while a LAYER MASK is targeted
+      // for editing, reading doc.activeChannels THROWS ("the command Get is not
+      // currently available") and doc.histogram throws too, yet the assignment
+      // still succeeds — so forcing there would kick the user off their mask
+      // with nothing to put back. Editing a mask is an ordinary retouch state,
+      // not an edge case. When the selection is unreadable, leave it alone and
+      // let the fallback chain return a labelled degraded reading instead.
       var savedChannels = null;
-      try { savedChannels = doc.activeChannels; } catch (eSc) {}
-      try { doc.activeChannels = doc.componentChannels; } catch (eCc) {}
+      var forced = false;
+      try { savedChannels = doc.activeChannels; } catch (eSc) { savedChannels = null; }
+      if (savedChannels && savedChannels.length) {
+        try { doc.activeChannels = doc.componentChannels; forced = true; } catch (eCc) {}
+      }
       try {
         return readCompositeBinsInner();
       } finally {
-        if (savedChannels && savedChannels.length) { try { doc.activeChannels = savedChannels; } catch (eRc) {} }
+        if (forced) { try { doc.activeChannels = savedChannels; } catch (eRc) {} }
       }
     }
 
