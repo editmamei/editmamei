@@ -1,20 +1,23 @@
 /**
  * Small, pure helpers for the telemetry client's wire fields: mapping the connected MCP
  * client's self-reported name to a fixed enum, coercing a semver-ish version string to its
- * leading major, and reading the boot-time platform facts (Node major, CPU arch, OS major).
- * Also the shared tool-activity classification used for `edits_ok` / `kept_work` in the
- * session summary.
+ * leading major, bounding a parsed major to a wire-safe range, and reading the boot-time
+ * platform facts (Node major, CPU arch, OS major). Also the shared tool-activity
+ * classification used for `edits_ok` / `kept_work` in the session summary.
  *
  * Content-free by construction: every value here is an enum token or a small integer, never
  * a free-text string.
  *
- * The telemetry server carries an IDENTICAL copy of READ_ONLY_TOOLS / KEPT_WORK_TOOLS in its
- * own `src/activity.ts` for the aggregate rollups; keep the two in sync by hand whenever
- * either changes. Both lists must also be reconciled against `src/core/tool-tiers.ts`
- * whenever the tool roster changes — a tool added there and forgotten here silently falls
- * through to the DEFAULT classification, not a neutral one: READ_ONLY_TOOLS must be
- * EXHAUSTIVE, because any tool absent from it counts as an edit (`edits_ok`) the moment it
- * succeeds, whether or not it actually reads-only.
+ * The telemetry aggregation service applies the SAME classification for its own rollups — the
+ * two must change together whenever either changes. All three lists below must also be
+ * reconciled against `src/core/tool-tiers.ts` whenever the tool roster changes: a tool added
+ * there and forgotten here silently falls through to the DEFAULT classification, not a
+ * neutral one. An edit is a successful call to a tool that changes the open document's state
+ * (pixels, layers, selection, guides); everything else is not an edit. READ_ONLY_TOOLS /
+ * KEPT_WORK_TOOLS / MUTATING_TOOLS together must be EXHAUSTIVE, because any tool absent from
+ * all three counts as an edit (`edits_ok`) the moment it succeeds, whether or not it actually
+ * reads-only. `activity.test.ts` enforces the exhaustiveness against the live tool-tiers
+ * roster, so an unclassified new tool fails the suite until it's assigned to one of the three.
  */
 
 /**
@@ -44,6 +47,11 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'ps_document',
   'ps_template_verify',
   'ps_resolve_placement',
+  // The template trio: each writes a template FILE to disk (save / delete / evidence
+  // capture) but never touches the open document's pixels, layers, selection, or guides.
+  'ps_template_save',
+  'ps_template_delete',
+  'ps_template_create_evidence',
 ]);
 
 /**
@@ -52,6 +60,107 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
  * the same way as READ_ONLY_TOOLS above.
  */
 export const KEPT_WORK_TOOLS: ReadonlySet<string> = new Set(['ps_export', 'ps_save_psd']);
+
+/**
+ * Every other registered tool — a successful call to one of these is an edit (`edits_ok`).
+ * Explicit rather than left implicit so the exhaustiveness test can catch a newly-added tool
+ * that was never classified at all: without this list, an unclassified tool would silently
+ * fall through to the (correct, fail-open) edit default with no test ever failing.
+ */
+export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
+  // action / batch / scripting
+  'ps_play_action',
+  'ps_execute_script',
+  'ps_batch',
+
+  // adjustment
+  'ps_add_adjustment_layer',
+  'ps_apply_adjustment',
+
+  // document lifecycle (ps_document's list/activate ops are read-only — see READ_ONLY_TOOLS)
+  'ps_create_document',
+  'ps_close_document',
+  'ps_open_document',
+
+  // filter / group / clipping
+  'ps_filter',
+  'ps_group',
+  'ps_clipping_mask',
+
+  // history
+  'ps_undo',
+  'ps_redo',
+
+  // placement / image
+  'ps_place_image',
+  'ps_resize_image',
+  'ps_crop_document',
+  'ps_convert_image_mode',
+
+  // layer ordering / properties / lifecycle
+  'ps_move_layer_to_position',
+  'ps_convert_to_smart_object',
+  'ps_rasterize_layer',
+  'ps_set_layer',
+  'ps_duplicate_layer',
+  'ps_copy_to_new_layer',
+  'ps_merge',
+  'ps_bake_layer',
+  'ps_add_layer_style',
+  'ps_create_layer',
+  'ps_delete_layer',
+  'ps_fill_layer',
+  'ps_add_fill_layer',
+  'ps_select_layer', // a selection tool — see the ps_select* group below
+  'ps_transform_layer',
+
+  // warp / canvas / guides
+  'ps_warp_layer',
+  'ps_warp_layer_mesh',
+  'ps_warp_layer_along',
+  'ps_warp_layer_region',
+  'ps_warp_layer_to',
+  'ps_apply_camera_raw',
+  'ps_transform_canvas',
+  'ps_guides',
+
+  // retouch / brush / detection-driven edits
+  'ps_retouch',
+  'ps_apply_brush_stroke',
+  'ps_edit_object',
+  'ps_portrait_touchup',
+  'ps_add_text_to_object',
+  'ps_select_face_feature',
+  'ps_stroke_face_contour',
+
+  // selection tools — every ps_select* variant, plus modify/save-load-channel and layer
+  // masks, changes the document's selection state even when nothing else about the
+  // pixels/layers moves.
+  'ps_select_by_reference',
+  'ps_select',
+  'ps_select_subject',
+  'ps_select_sky',
+  'ps_select_subject_instance',
+  'ps_select_object',
+  'ps_select_focus_area',
+  'ps_replace_sky',
+  'ps_modify_selection',
+  'ps_selection_channel',
+  'ps_layer_mask',
+
+  // path / vector mask / channel compose / shape
+  'ps_path',
+  'ps_vector_mask',
+  'ps_apply_image',
+  'ps_calculations',
+  'ps_shape',
+
+  // ps_template_apply — the one template-* tool that actually touches the open document
+  'ps_template_apply',
+
+  // text
+  'ps_text',
+]);
 
 /**
  * Map the MCP client's self-reported `name` (from the `initialize` handshake) to a fixed
@@ -86,9 +195,20 @@ export function parseMajor(version: string | undefined): number | null {
   return m ? Number(m[1]) : null;
 }
 
-/** The running Node.js major version, from `process.versions.node`. */
-export function nodeMajor(): number {
-  return parseMajor(process.versions.node) ?? 0;
+/**
+ * Clamp a parsed major version to a plausible, wire-safe range, discarding anything outside
+ * it. The server's field specs (NODE_MAJOR/OS_MAJOR: 0..999; CLIENT_MAJOR: 0..9999) reject an
+ * out-of-range int outright and 400 the whole batch — a garbled or hostile input must never
+ * reach the wire as a huge or negative integer that could take a batch down with it. Returns
+ * null when `n` is null or falls outside `[0, max]`.
+ */
+export function boundMajor(n: number | null, max: number): number | null {
+  return n !== null && n >= 0 && n <= max ? n : null;
+}
+
+/** The running Node.js major version, from `process.versions.node`, or `null` when unparseable. */
+export function nodeMajor(): number | null {
+  return parseMajor(process.versions.node);
 }
 
 /** `process.arch`, narrowed to the three buckets telemetry cares about. */
@@ -106,8 +226,10 @@ export function archToken(): 'x64' | 'arm64' | 'other' {
  *   - win32: `os.release()` is `<major>.<minor>.<build>` (e.g. "10.0.22631"). Windows 11
  *     reports the SAME major.minor as Windows 10 and is distinguished only by build number
  *     — build >= 22000 means 11, otherwise the leading major (10) stands.
- *   - darwin: `os.release()` is the Darwin kernel version; the marketing macOS major is the
- *     Darwin major minus 9 (24 -> 15, 23 -> 14, 22 -> 13).
+ *   - darwin: `os.release()` is the Darwin kernel version. Through Darwin 24 (macOS 13-15)
+ *     the marketing major is the Darwin major minus 9 (24 -> 15, 23 -> 14, 22 -> 13); Apple
+ *     broke that mapping at Darwin 25 (macOS 26 "Tahoe"), so from there it's Darwin major
+ *     plus 1 instead (25 -> 26).
  *   - other: the leading integer of `release` (e.g. a Linux kernel version).
  *
  * Returns null when `release` doesn't parse.
@@ -122,7 +244,9 @@ export function osMajor(platform: string, release: string): number | null {
   }
   if (platform === 'darwin') {
     const m = /^(\d+)/.exec(release);
-    return m ? Number(m[1]) - 9 : null;
+    if (!m) return null;
+    const darwinMajor = Number(m[1]);
+    return darwinMajor <= 24 ? darwinMajor - 9 : darwinMajor + 1;
   }
   const m = /^(\d+)/.exec(release);
   return m ? Number(m[1]) : null;

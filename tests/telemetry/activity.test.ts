@@ -1,13 +1,22 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
 import {
   READ_ONLY_TOOLS,
   KEPT_WORK_TOOLS,
+  MUTATING_TOOLS,
   mapClientName,
   parseMajor,
+  boundMajor,
   nodeMajor,
   archToken,
   osMajor,
 } from '@editmamei/telemetry/activity.ts';
+import { TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, '..', '..');
 
 describe('READ_ONLY_TOOLS / KEPT_WORK_TOOLS', () => {
   it('is a fixed, disjoint pair of sets', () => {
@@ -31,6 +40,90 @@ describe('READ_ONLY_TOOLS / KEPT_WORK_TOOLS', () => {
       expect(READ_ONLY_TOOLS.has(tool)).toBe(true);
       expect(KEPT_WORK_TOOLS.has(tool)).toBe(false);
     }
+  });
+
+  it('classifies the template trio (save/delete/create_evidence) as read-only — they write template FILES, never the open document', () => {
+    for (const tool of ['ps_template_save', 'ps_template_delete', 'ps_template_create_evidence']) {
+      expect(READ_ONLY_TOOLS.has(tool)).toBe(true);
+      expect(KEPT_WORK_TOOLS.has(tool)).toBe(false);
+      expect(MUTATING_TOOLS.has(tool)).toBe(false);
+    }
+  });
+
+  it('is exactly the original sixteen plus the six template/document additions (22 total)', () => {
+    expect(READ_ONLY_TOOLS.size).toBe(22);
+  });
+});
+
+describe('MUTATING_TOOLS', () => {
+  it('classifies every ps_select* variant, plus modify/save-load-channel and layer masks, as mutating (selection is document state)', () => {
+    for (const tool of [
+      'ps_select',
+      'ps_select_subject',
+      'ps_select_sky',
+      'ps_select_subject_instance',
+      'ps_select_object',
+      'ps_select_focus_area',
+      'ps_select_by_reference',
+      'ps_select_face_feature',
+      'ps_select_layer',
+      'ps_modify_selection',
+      'ps_selection_channel',
+      'ps_layer_mask',
+    ]) {
+      expect(MUTATING_TOOLS.has(tool)).toBe(true);
+      expect(READ_ONLY_TOOLS.has(tool)).toBe(false);
+    }
+  });
+
+  it('classifies guides and shapes as mutating', () => {
+    expect(MUTATING_TOOLS.has('ps_guides')).toBe(true);
+    expect(MUTATING_TOOLS.has('ps_shape')).toBe(true);
+  });
+
+  it('classifies ps_template_apply as mutating (the one template-* tool that touches the open document)', () => {
+    expect(MUTATING_TOOLS.has('ps_template_apply')).toBe(true);
+    expect(READ_ONLY_TOOLS.has('ps_template_apply')).toBe(false);
+  });
+});
+
+// B-14: exhaustiveness guard. Reads every tool name registered in tool-tiers.ts (the actual
+// source of truth for what tools exist, all tiers) and asserts each falls into EXACTLY one of
+// the three classification sets — so a newly added tool that nobody classified here fails
+// this suite instead of silently defaulting to "edit" with no test noticing either way.
+describe('classification exhaustiveness against tool-tiers.ts', () => {
+  const allToolNames = Object.keys(TOOL_TIERS);
+
+  it('every tool in TOOL_TIERS is classified in exactly one of READ_ONLY_TOOLS / KEPT_WORK_TOOLS / MUTATING_TOOLS', () => {
+    const unclassified: string[] = [];
+    const overlapping: string[] = [];
+    for (const name of allToolNames) {
+      const memberships = [
+        READ_ONLY_TOOLS.has(name),
+        KEPT_WORK_TOOLS.has(name),
+        MUTATING_TOOLS.has(name),
+      ].filter(Boolean).length;
+      if (memberships === 0) unclassified.push(name);
+      if (memberships > 1) overlapping.push(name);
+    }
+    expect(unclassified, `unclassified tool(s): ${unclassified.join(', ')}`).toEqual([]);
+    expect(overlapping, `tool(s) in more than one set: ${overlapping.join(', ')}`).toEqual([]);
+  });
+
+  it('has no entries in the three sets for a tool name that no longer exists in TOOL_TIERS', () => {
+    // The reverse direction — a stale classification entry for a removed tool wouldn't be
+    // caught by the loop above (which only walks TOOL_TIERS forward), so check it explicitly.
+    const known = new Set(allToolNames);
+    const stale = [...READ_ONLY_TOOLS, ...KEPT_WORK_TOOLS, ...MUTATING_TOOLS].filter(
+      (name) => !known.has(name)
+    );
+    expect(stale, `classified but not in tool-tiers.ts: ${stale.join(', ')}`).toEqual([]);
+  });
+
+  it('accounts for every registered tool with no gaps (sanity total)', () => {
+    expect(READ_ONLY_TOOLS.size + KEPT_WORK_TOOLS.size + MUTATING_TOOLS.size).toBe(
+      allToolNames.length
+    );
   });
 });
 
@@ -82,9 +175,38 @@ describe('parseMajor', () => {
   });
 });
 
+describe('boundMajor', () => {
+  it('passes a value through unchanged when inside [0, max]', () => {
+    expect(boundMajor(0, 999)).toBe(0);
+    expect(boundMajor(22, 999)).toBe(22);
+    expect(boundMajor(999, 999)).toBe(999);
+  });
+
+  it('returns null for a value outside [0, max] (the bound, exclusive)', () => {
+    expect(boundMajor(1000, 999)).toBeNull();
+    expect(boundMajor(-1, 999)).toBeNull();
+    expect(boundMajor(10000, 9999)).toBeNull();
+  });
+
+  it('passes null through as null', () => {
+    expect(boundMajor(null, 999)).toBeNull();
+  });
+});
+
 describe('nodeMajor', () => {
   it('matches the leading integer of the real process.versions.node', () => {
     expect(nodeMajor()).toBe(parseMajor(process.versions.node));
+  });
+
+  it('returns null (not a 0 default) when unparseable — source-level pin', () => {
+    // process.versions.node is not writable at runtime (Node ignores the assignment
+    // silently), so the null-return path can't be exercised by calling nodeMajor()
+    // directly with a garbled input. Pin the fix at the source level instead: the old
+    // `parseMajor(process.versions.node) ?? 0` default must not have come back.
+    const src = readFileSync(join(REPO_ROOT, 'src', 'telemetry', 'activity.ts'), 'utf8');
+    const fnMatch = src.match(/export function nodeMajor\(\)[^{]*\{([\s\S]*?)\n\}/);
+    expect(fnMatch, 'nodeMajor() body not found').toBeTruthy();
+    expect(fnMatch![1]).not.toMatch(/\?\?/);
   });
 });
 
@@ -111,10 +233,15 @@ describe('osMajor', () => {
     expect(osMajor('win32', '10.0.21999')).toBe(10); // boundary: just under
   });
 
-  it('parses a macOS release string (Darwin major - 9)', () => {
+  it('parses a macOS release string through Darwin 24 as Darwin major - 9', () => {
     expect(osMajor('darwin', '24.6.0')).toBe(15); // Sequoia
     expect(osMajor('darwin', '23.6.0')).toBe(14); // Sonoma
     expect(osMajor('darwin', '22.6.0')).toBe(13); // Ventura
+  });
+
+  it('parses Darwin 25+ as Darwin major + 1 — Apple broke the -9 mapping at macOS 26', () => {
+    expect(osMajor('darwin', '25.0.0')).toBe(26); // Tahoe
+    expect(osMajor('darwin', '24.6.0')).toBe(15); // boundary: the OLD mapping still applies at 24
   });
 
   it('parses a Linux kernel release string as its leading integer', () => {
