@@ -4,7 +4,14 @@
  * content-free by construction: there is no image, path, or PII here. Category A events
  * (usage / session_summary) carry no free text at all; the Category B diagnostic message
  * is sanitized upstream (see sanitize.ts) before it reaches a DiagnosticEvent.
+ *
+ * Every field added after `v: 2` shipped is OPTIONAL: a builder omits it when the caller
+ * doesn't know it, rather than sending `null` — `client_major` on `ClientConnectedEvent` is
+ * the one deliberate exception (a connected client with an unparseable version is still a
+ * known fact, not an absent one).
  */
+
+import { mapClientName, parseMajor } from './activity.js';
 
 /** Schema version — must match the server's `v` field. */
 export const TELEMETRY_SCHEMA_VERSION = 2;
@@ -63,6 +70,9 @@ export interface UsageEvent {
   success: boolean;
   error_class: string | null;
   duration_ms: number;
+  /** Serialized result size in bytes (see utils/session-log.ts's computeResultBytes),
+   *  clamped to MAX_RESULT_BYTES. Omitted when the caller doesn't have a result to size. */
+  result_bytes?: number;
 }
 
 export interface SessionSummaryEvent {
@@ -77,6 +87,28 @@ export interface SessionSummaryEvent {
   tool_call_count: number;
   distinct_tools: number;
   any_failures: boolean;
+  /** Wall-clock from the first recorded call to the last, in seconds. Capped at 604_800
+   *  (7 days) — a session left running for weeks shouldn't skew the aggregate. */
+  duration_s?: number;
+  /** Calls whose tool + (sanitized) args matched the immediately preceding call. */
+  retry_count?: number;
+  /** True when the LAST recorded call of the session failed. */
+  ended_after_failure?: boolean;
+  /** Successful calls to a tool outside READ_ONLY_TOOLS (activity.ts). */
+  edits_ok?: number;
+  /** Successful calls to a tool in KEPT_WORK_TOOLS (activity.ts) — ps_export / ps_save_psd. */
+  kept_work?: number;
+  /** Whether the boot-time update check found a strictly newer published version. */
+  behind_latest?: boolean;
+  /** In-memory events dropped by the client's MAX_QUEUE_SIZE trim this session. */
+  dropped_events?: number;
+  /** Boot-time Pro-module background refresh outcome. Included only for installs with a
+   *  license record (see TelemetryClient.setModuleUpdate) — a pure-CE install sends nothing. */
+  module_update?: 'none' | 'updated' | 'failed';
+  /** Count of user templates on disk at ps_ping time (see ps_ping's user_templates). */
+  templates_saved?: number;
+  /** Count of custom action sets at ps_ping time (see ps_ping's custom_action_sets). */
+  action_sets?: number;
 }
 
 /**
@@ -103,6 +135,38 @@ export interface SessionStartEvent {
    * reaches the wire.
    */
   channel: string;
+  /** Node.js major version the server is running under (activity.ts's nodeMajor()). */
+  node_major?: number;
+  /** CPU architecture bucket (activity.ts's archToken()). */
+  arch?: 'x64' | 'arm64' | 'other';
+  /** Host OS major version (activity.ts's osMajor()); omitted when unparseable. */
+  os_major?: number;
+}
+
+/**
+ * Sent once per session, when the MCP client's `initialize` handshake completes
+ * (Category A, opt-out) — see `Server.oninitialized` in server.ts. Content-free: the
+ * client's self-reported name is mapped to a fixed enum (never the raw string), its
+ * version is reduced to a bare major, and the three capability flags are booleans. A
+ * client that never initializes (the transport never completes the handshake) sends
+ * nothing here — there is no fallback "eventually" send.
+ */
+export interface ClientConnectedEvent {
+  v: 2;
+  type: 'client_connected';
+  install_id: string;
+  ts_bucket: string;
+  editmamei_version: string;
+  edition: string;
+  platform: string;
+  /** The connected MCP client's self-reported name, mapped via activity.ts's mapClientName. */
+  client: ReturnType<typeof mapClientName>;
+  /** Leading major of the client's self-reported version. Deliberately nullable — see the
+   *  module doc comment: this is the one field allowed to carry `null` on the wire. */
+  client_major: number | null;
+  cap_sampling?: boolean;
+  cap_elicitation?: boolean;
+  cap_roots?: boolean;
 }
 
 /**
@@ -140,10 +204,22 @@ export interface DiagnosticEvent {
   error_message: string;
   snippet?: string;
   stderr_tail?: string;
+  /** Active document's bit depth at the last successful ping. */
+  doc_depth?: 8 | 16 | 32;
+  /** Active document's color mode at the last successful ping. */
+  doc_mode?: 'rgb' | 'cmyk' | 'lab' | 'grayscale' | 'other';
+  /** Photoshop's UI locale (`app.locale`, e.g. "en_US") from the last successful ping. Only
+   *  ever sent when it matches the server's `^[a-z]{2,3}_[A-Z]{2}$` token shape. */
+  ps_locale?: string;
 }
 
 export type TelemetryEvent =
-  UsageEvent | SessionSummaryEvent | SessionStartEvent | ModuleStatusEvent | DiagnosticEvent;
+  | UsageEvent
+  | SessionSummaryEvent
+  | SessionStartEvent
+  | ClientConnectedEvent
+  | ModuleStatusEvent
+  | DiagnosticEvent;
 
 /**
  * ps_version is `null` until the first ping identifies Photoshop, but the server requires
@@ -151,6 +227,13 @@ export type TelemetryEvent =
  * PS_VERSION pattern accepts lowercase letters specifically so this passes).
  */
 export const PS_VERSION_UNKNOWN = 'unknown';
+
+/** Clamp for `UsageEvent.result_bytes` (16 MiB) — a pathological result must not inflate
+ *  the wire payload or the server's stored aggregates without bound. */
+export const MAX_RESULT_BYTES = 16_777_216;
+
+/** Photoshop UI-locale token shape the server accepts (e.g. "en_US"). */
+const PS_LOCALE_RE = /^[a-z]{2,3}_[A-Z]{2}$/;
 
 /** Day-granularity bucket (`YYYY-MM-DD`) — never a precise timestamp (design §4). */
 export function dayBucket(now: Date): string {
@@ -178,7 +261,13 @@ function psVersionOf(dims: TelemetryDimensions): string {
 
 export function buildUsageEvent(
   dims: TelemetryDimensions,
-  call: { tool: string; success: boolean; duration_ms: number; error_class: string | null },
+  call: {
+    tool: string;
+    success: boolean;
+    duration_ms: number;
+    error_class: string | null;
+    result_bytes?: number;
+  },
   now: Date
 ): UsageEvent {
   return {
@@ -194,6 +283,9 @@ export function buildUsageEvent(
     success: call.success,
     error_class: call.error_class === null ? null : normalizeErrorClass(call.error_class),
     duration_ms: call.duration_ms,
+    ...(call.result_bytes !== undefined
+      ? { result_bytes: Math.min(call.result_bytes, MAX_RESULT_BYTES) }
+      : {}),
   };
 }
 
@@ -206,7 +298,21 @@ export function buildUsageEvent(
  */
 export function buildSessionSummary(
   dims: TelemetryDimensions,
-  summary: { tool_call_count: number; distinct_tools: number; any_failures: boolean },
+  summary: {
+    tool_call_count: number;
+    distinct_tools: number;
+    any_failures: boolean;
+    duration_s?: number;
+    retry_count?: number;
+    ended_after_failure?: boolean;
+    edits_ok?: number;
+    kept_work?: number;
+    behind_latest?: boolean;
+    dropped_events?: number;
+    module_update?: 'none' | 'updated' | 'failed';
+    templates_saved?: number;
+    action_sets?: number;
+  },
   tsBucket: string
 ): SessionSummaryEvent {
   return {
@@ -221,10 +327,28 @@ export function buildSessionSummary(
     tool_call_count: summary.tool_call_count,
     distinct_tools: summary.distinct_tools,
     any_failures: summary.any_failures,
+    ...(summary.duration_s !== undefined ? { duration_s: summary.duration_s } : {}),
+    ...(summary.retry_count !== undefined ? { retry_count: summary.retry_count } : {}),
+    ...(summary.ended_after_failure !== undefined
+      ? { ended_after_failure: summary.ended_after_failure }
+      : {}),
+    ...(summary.edits_ok !== undefined ? { edits_ok: summary.edits_ok } : {}),
+    ...(summary.kept_work !== undefined ? { kept_work: summary.kept_work } : {}),
+    ...(summary.behind_latest !== undefined ? { behind_latest: summary.behind_latest } : {}),
+    ...(summary.dropped_events !== undefined ? { dropped_events: summary.dropped_events } : {}),
+    ...(summary.module_update !== undefined ? { module_update: summary.module_update } : {}),
+    ...(summary.templates_saved !== undefined
+      ? { templates_saved: summary.templates_saved }
+      : {}),
+    ...(summary.action_sets !== undefined ? { action_sets: summary.action_sets } : {}),
   };
 }
 
-export function buildSessionStart(dims: TelemetryDimensions, now: Date): SessionStartEvent {
+export function buildSessionStart(
+  dims: TelemetryDimensions,
+  now: Date,
+  facts: { node_major?: number; arch?: 'x64' | 'arm64' | 'other'; os_major?: number } = {}
+): SessionStartEvent {
   return {
     v: TELEMETRY_SCHEMA_VERSION,
     type: 'session_start',
@@ -235,6 +359,43 @@ export function buildSessionStart(dims: TelemetryDimensions, now: Date): Session
     platform: dims.platform,
     ps_version: psVersionOf(dims),
     channel: dims.channel,
+    ...(facts.node_major !== undefined ? { node_major: facts.node_major } : {}),
+    ...(facts.arch !== undefined ? { arch: facts.arch } : {}),
+    ...(facts.os_major !== undefined ? { os_major: facts.os_major } : {}),
+  };
+}
+
+/**
+ * Sent once per session from `Server.oninitialized` (see server.ts's comment on WHY that
+ * hook, not connect(), is the right point) — no ps_version dimension exists here (unlike
+ * usage/session_summary/session_start/diagnostic), and `restampPsVersion` in client.ts
+ * tolerates that the same way it already tolerates `module_status`: via `'ps_version' in
+ * event`, which is simply false for this type.
+ */
+export function buildClientConnected(
+  dims: TelemetryDimensions,
+  info: {
+    clientName: string | undefined;
+    clientVersion: string | undefined;
+    capSampling: boolean;
+    capElicitation: boolean;
+    capRoots: boolean;
+  },
+  now: Date
+): ClientConnectedEvent {
+  return {
+    v: TELEMETRY_SCHEMA_VERSION,
+    type: 'client_connected',
+    install_id: dims.install_id,
+    ts_bucket: dayBucket(now),
+    editmamei_version: dims.editmamei_version,
+    edition: dims.edition,
+    platform: dims.platform,
+    client: mapClientName(info.clientName),
+    client_major: parseMajor(info.clientVersion),
+    cap_sampling: info.capSampling,
+    cap_elicitation: info.capElicitation,
+    cap_roots: info.capRoots,
   };
 }
 
@@ -266,6 +427,12 @@ export function buildDiagnosticEvent(
     error_message: string;
     snippet?: string;
     stderr_tail?: string;
+    doc_depth?: 8 | 16 | 32;
+    doc_mode?: 'rgb' | 'cmyk' | 'lab' | 'grayscale' | 'other';
+    /** Filtered against PS_LOCALE_RE below — a non-conforming value is silently omitted
+     *  rather than sent, the same "degrade, never break the batch" discipline as
+     *  normalizeErrorClass. */
+    ps_locale?: string;
   },
   now: Date
 ): DiagnosticEvent {
@@ -282,6 +449,11 @@ export function buildDiagnosticEvent(
     error_message: diag.error_message,
     ...(diag.snippet ? { snippet: diag.snippet } : {}),
     ...(diag.stderr_tail ? { stderr_tail: diag.stderr_tail } : {}),
+    ...(diag.doc_depth !== undefined ? { doc_depth: diag.doc_depth } : {}),
+    ...(diag.doc_mode !== undefined ? { doc_mode: diag.doc_mode } : {}),
+    ...(diag.ps_locale !== undefined && PS_LOCALE_RE.test(diag.ps_locale)
+      ? { ps_locale: diag.ps_locale }
+      : {}),
   };
 }
 
