@@ -433,6 +433,32 @@ describe('session_summary day attribution', () => {
     expect(summary?.ts_bucket).toBe('2026-06-17');
   });
 
+  it('clamps a corrupt persisted bucket so one bad file cannot reject the batch', async () => {
+    // The persisted state is a plain file on disk: truncation or a hand edit can put
+    // anything in ts_bucket, and the endpoint rejects a whole batch over one bad event.
+    const dir = freshOutboxDir();
+    const state: PersistedSessionState = {
+      install_id: 'i',
+      ts_bucket: 'not-a-bucket',
+      editmamei_version: '1.3.0',
+      edition: 'community',
+      platform: 'win32',
+      ps_version: 'unknown',
+      tool_call_count: 1,
+      distinct_tools: 1,
+      any_failures: false,
+    };
+    writeSessionStateSync(state, { dir });
+
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    const summary = rec.batches.flat().find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(summary?.ts_bucket).not.toBe('not-a-bucket');
+  });
+
   it('crash reconstruction agrees with what a clean shutdown would have produced', async () => {
     // Simulate a hard kill: the session-state marker persisted mid-session survives (no
     // clean shutdown to clear it); the NEXT startup reconstructs the summary from it.

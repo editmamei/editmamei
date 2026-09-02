@@ -33,6 +33,7 @@ import {
   buildSessionSummary,
   buildUsageEvent,
   dayBucket,
+  normalizeDayBucket,
   isContentSafe,
   PS_VERSION_UNKNOWN,
   type ModuleStatusInfo,
@@ -145,7 +146,6 @@ export class TelemetryClient {
    * Deliberately NOT claimed in `start()`. An MCP host can stay resident for days, so a
    * server booted Monday and first used Wednesday would otherwise credit its summary to
    * Monday while every usage event landed on Wednesday.
-
    */
   private startDayBucket: string | null = null;
 
@@ -462,7 +462,9 @@ function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
     v: 2,
     type: 'session_summary',
     install_id: s.install_id,
-    ts_bucket: s.ts_bucket,
+    // Same clamp the clean path gets: this value came off disk, where a truncated or
+    // hand-edited file can hold anything, and one bad bucket rejects the whole batch.
+    ts_bucket: normalizeDayBucket(s.ts_bucket, new Date()),
     editmamei_version: s.editmamei_version,
     edition: s.edition,
     platform: s.platform,
