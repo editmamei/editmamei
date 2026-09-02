@@ -23,6 +23,7 @@ import { tierOf } from '@editmamei/core/tool-tiers.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
 import type { Kernel } from '@editmamei/kernel/kernel.ts';
 import { KERNEL_ABI } from '@editmamei/kernel/host-api.ts';
+import { TelemetryClient } from '@editmamei/telemetry/client.ts';
 
 /**
  * Self-healing Pro module load + hardening (v0.22.1). A downloaded module built
@@ -892,6 +893,162 @@ describe('EditmameiServer.ensureEntitledModuleFresh — healthy-path auto-update
     });
     expect(calls).toBe(0); // …but an unentitled device pulls nothing
     expect(readInstalledModule(PRO_SKU, { dir })?.version).toBe(MOD_VERSION);
+  });
+});
+
+// ===========================================================================
+// B-12: `module_update` outcome reporting for the two background tasks.
+// `onModuleUpdate` is invoked OUTSIDE each task's try/catch now (guarded in
+// its own try/catch), and 'failed' is reported not only on a thrown
+// exception but also when provisioning ran and returned errors with nothing
+// installed. Spies on TelemetryClient.prototype.setModuleUpdate — the
+// callback server.ts wires as `onModuleUpdate` — rather than threading a
+// bespoke deps object through the full crypto/delivery harness above.
+// ===========================================================================
+describe('module_update telemetry wiring (B-12)', () => {
+  it('reprovisionIfModuleSkipped: success installs a module → "updated"', async () => {
+    buildHome({ names: ['photoshop_list_actions'], abi: 1 }); // wedge → incompatible
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBe('incompatible');
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    try {
+      const fake = fakeDelivery('9.9.10'); // newer than the wedged 0.9.9
+      await server.reprovisionIfModuleSkipped({
+        config: cfg,
+        fetchImpl: fake.fetchImpl,
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      });
+      expect(setModuleUpdate).toHaveBeenCalledWith('updated');
+    } finally {
+      setModuleUpdate.mockRestore();
+    }
+  });
+
+  it('reprovisionIfModuleSkipped: a thrown fetch → "failed"', async () => {
+    buildHome({ names: ['photoshop_list_actions'], abi: 1 }); // wedge → incompatible
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBe('incompatible');
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await server.reprovisionIfModuleSkipped({
+        config: cfg,
+        fetchImpl: async () => {
+          throw new Error('network down');
+        },
+        signingKeys: [],
+        sleep: async () => {},
+      });
+      expect(setModuleUpdate).toHaveBeenCalledWith('failed');
+    } finally {
+      stderr.mockRestore();
+      setModuleUpdate.mockRestore();
+    }
+  });
+
+  it('reprovisionIfModuleSkipped: errors with nothing installed (abi-too-new) → "failed"', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: KERNEL_ABI + 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBe('incompatible');
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const fake = fakeDelivery('9.9.10');
+      await server.reprovisionIfModuleSkipped({
+        config: cfg,
+        fetchImpl: async (url, init) => {
+          const res = await fake.fetchImpl(url, init);
+          if (!url.endsWith('/v1/modules/manifest')) return res;
+          const m = JSON.parse(await res.text()) as { modules: { pro: { abi: number } } };
+          m.modules.pro.abi = KERNEL_ABI + 1;
+          return jsonRes(200, m);
+        },
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      });
+      // No exception was thrown — provisionModules ran, refused the too-new manifest entry,
+      // and installed nothing. Before B-12 this outcome never called onModuleUpdate at all.
+      expect(setModuleUpdate).toHaveBeenCalledWith('failed');
+    } finally {
+      stderr.mockRestore();
+      setModuleUpdate.mockRestore();
+    }
+  });
+
+  it('ensureEntitledModuleFresh: success installs a module → "updated"', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 }); // compatible → loads, reason null
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBeNull();
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    try {
+      const fake = fakeDelivery('9.9.10');
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: fake.fetchImpl,
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      });
+      expect(setModuleUpdate).toHaveBeenCalledWith('updated');
+    } finally {
+      setModuleUpdate.mockRestore();
+    }
+  });
+
+  it('ensureEntitledModuleFresh: a thrown fetch → "failed"', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBeNull();
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => {
+          throw new Error('network down');
+        },
+        signingKeys: [],
+        sleep: async () => {},
+      });
+      expect(setModuleUpdate).toHaveBeenCalledWith('failed');
+    } finally {
+      stderr.mockRestore();
+      setModuleUpdate.mockRestore();
+    }
+  });
+
+  it('ensureEntitledModuleFresh: errors with nothing installed (delivery 500s) → "failed"', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      // Same scenario as "stays on the installed module without crashing when provisioning
+      // errors" above (provisionModules collects an error and installs nothing) — this time
+      // asserting the module_update side-effect that fix adds, not just the non-crash.
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => jsonRes(500, { error: 'server' }),
+        signingKeys: [],
+        sleep: async () => {},
+      });
+      expect(setModuleUpdate).toHaveBeenCalledWith('failed');
+    } finally {
+      stderr.mockRestore();
+      setModuleUpdate.mockRestore();
+    }
   });
 });
 
