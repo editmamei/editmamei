@@ -103,6 +103,35 @@ describe('GetHistogram luminosity: no marginal-histogram synthesis', () => {
     expect(body).toContain("resolvedChannel = 'luminosity (Grayscale)'");
   });
 
+  it('reads the composite with the component channels forced, and restores the selection', () => {
+    // doc.histogram follows doc.activeChannels, so a single channel selected in
+    // the Channels panel would come back labelled as the composite. The read
+    // must force the component channels and hand the user's selection back on
+    // every exit path, including a throw.
+    expect(body).toContain('doc.activeChannels = doc.componentChannels');
+    expect(body).toContain('savedChannels = doc.activeChannels');
+    expect(body).toMatch(/finally\s*\{[^}]*doc\.activeChannels = savedChannels/);
+    // An empty array is truthy and cannot be restored, so the guard checks length.
+    expect(body).toContain('savedChannels && savedChannels.length');
+  });
+
+  it('gates RGB luminosity on the document mode, not on English channel names', () => {
+    // Photoshop localises component channel names, so gating on 'red'/'green'/
+    // 'blue' throws on a localised install where the composite read would work.
+    expect(body).toContain("modeStr === 'DocumentMode.RGB'");
+    // The English-name check survives in exactly one place, the last-resort
+    // mixture, which genuinely reads those three channels and has no
+    // alternative. The luminosity dispatch must not be the second.
+    const englishGate = body.match(/named\.red && named\.green && named\.blue/g) ?? [];
+    expect(englishGate).toHaveLength(1);
+  });
+
+  it('only claims a per-pixel composite when the composite read actually landed', () => {
+    // A fallback must name itself rather than inherit the composite's label,
+    // which is the same mislabelling this whole guard exists to prevent.
+    expect(body).not.toContain("'luminosity (per-pixel composite, '");
+  });
+
   it('labels the last-resort marginal mixture as shape-unreliable', () => {
     // readCompositeBins still falls back to a marginal mixture when
     // doc.histogram throws on every layer AND there is no Lightness/Gray

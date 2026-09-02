@@ -371,15 +371,21 @@ func init() {
       } else if (named.gray) {
         bins = named.gray.histogram;
         resolvedChannel = 'luminosity (Grayscale)';
-      } else if (named.red && named.green && named.blue) {
-        // Per-pixel composite. Mean-of-channels rather than Rec.709-weighted,
-        // so it is not photometric luminance — but it IS a real distribution
-        // of real pixels, which is what clipping and percentile reads need.
+      } else if (modeStr === 'DocumentMode.RGB') {
+        // Gate on the MODE, not on English channel names: Photoshop localises
+        // 'Red'/'Green'/'Blue' (Rot/Rosso/...), and the branch no longer reads
+        // those channels anyway. Mode strings are enum constants, so they hold
+        // on every locale.
+        //
+        // A real per-pixel distribution weighted 0.30/0.59/0.11, per the probe
+        // recorded above — which is what clipping and percentile reads need.
+        // Only say 'per-pixel composite' when the composite read actually
+        // landed; a fallback names itself instead, same as the composite branch.
         var lumRes = readCompositeBins();
         bins = lumRes.bins;
         resolvedChannel = (lumRes.source === 'doc-histogram')
           ? 'luminosity (per-pixel composite)'
-          : 'luminosity (per-pixel composite, ' + lumRes.source + ')';
+          : 'luminosity (' + lumRes.source + ')';
       } else {
         throw new Error('Luminosity not available for mode ' + modeStr +
           ' (channels: ' + (function () { var n = []; for (var k in named) n.push(k); return n.join(', '); })() +
