@@ -100,7 +100,8 @@ export interface TelemetryClientOptions {
    * passes the real value so telemetry reflects the loaded module, not the build.
    */
   edition?: string;
-  /** Install channel ('npm' | 'mcpb' | 'dev'). Defaults to `resolveInstallChannel()`. */
+  /** Install channel ('npx' | 'npm_global' | 'mcpb' | 'source' | 'dev'). Defaults to
+   *  `resolveInstallChannel()`. */
   channel?: string;
   /**
    * Boot-time Pro module outcome, resolved by the server AFTER `loadModules()`. Returns

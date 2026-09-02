@@ -28,7 +28,8 @@ export interface TelemetryDimensions {
    */
   edition: string;
   platform: string;
-  /** Install channel: 'npm' | 'mcpb' | 'dev'. Attached to the boot ping only. */
+  /** Install channel: 'npx' | 'npm_global' | 'mcpb' | 'source' | 'dev'. Attached to the boot
+   *  ping only. */
   channel: string;
   /** Resolved lazily — null until the first PS connection identifies the version. */
   getPsVersion: () => string | null;
@@ -129,10 +130,10 @@ export interface SessionStartEvent {
   platform: string;
   ps_version: string;
   /**
-   * Install channel ('npm' | 'mcpb'). Carried on the boot ping only — it's a stable
-   * per-install attribute, so the server stores it once in `installs_seen` (no daily
-   * rollup), keep-first-known. The dev edition is telemetry-inert, so 'dev' never
-   * reaches the wire.
+   * Install channel ('npx' | 'npm_global' | 'mcpb' | 'source'). Carried on the boot ping
+   * only — it's a stable per-install attribute, so the server stores it once in
+   * `installs_seen` (no daily rollup), keep-first-known. The dev edition is
+   * telemetry-inert, so 'dev' never reaches the wire.
    */
   channel: string;
   /** Node.js major version the server is running under (activity.ts's nodeMajor()). */

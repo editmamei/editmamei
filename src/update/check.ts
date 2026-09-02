@@ -216,7 +216,12 @@ export function updateMessage(channel: InstallChannel, latest: string): string {
       return `Download editmamei.mcpb (v${latest}) from ${RELEASES_URL} and reinstall the Claude Desktop extension.`;
     case 'dev':
       return `You're on a local dev build — pull the latest source and rebuild.`;
-    case 'npm':
+    case 'npx':
+      // Nothing to install — npx re-fetches the package fresh on the next invocation.
+      return `The next \`npx -y editmamei\` picks up v${latest} automatically — just restart your AI client.`;
+    case 'source':
+      return `You're running Editmamei from a source checkout — pull the latest changes and rebuild.`;
+    case 'npm_global':
     default:
       return `Run: npm install -g editmamei@latest (then restart your MCP client).`;
   }

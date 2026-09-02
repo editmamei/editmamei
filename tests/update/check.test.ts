@@ -33,7 +33,9 @@ describe('isNewer', () => {
 
 describe('updateMessage', () => {
   it('gives channel-specific remediation', () => {
-    expect(updateMessage('npm', '0.19.0')).toContain('npm install -g editmamei@latest');
+    expect(updateMessage('npm_global', '0.19.0')).toContain('npm install -g editmamei@latest');
+    expect(updateMessage('npx', '0.19.0')).toContain('npx -y editmamei');
+    expect(updateMessage('source', '0.19.0').toLowerCase()).toContain('source checkout');
     const mcpb = updateMessage('mcpb', '0.19.0');
     // Stable, versionless asset filename (release.yml uploads editmamei.mcpb); the
     // version appears as (v0.19.0) for the user, never baked into the filename.
@@ -75,7 +77,7 @@ describe('shouldCheckForUpdate', () => {
 });
 
 describe('checkForUpdate', () => {
-  const validChannels = ['npm', 'mcpb', 'dev'];
+  const validChannels = ['npx', 'npm_global', 'mcpb', 'source', 'dev'];
 
   it('returns UpdateInfo when a newer version is published', async () => {
     const info = await checkForUpdate({
