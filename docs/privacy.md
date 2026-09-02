@@ -160,7 +160,7 @@ hidden fields.
 | `success` | Whether the call succeeded. |
 | `error_class` | On failure, a short error **category** (e.g. `wrong_layer_kind`), never a message or free text. `null` on success. |
 | `duration_ms` | How long the call took, in milliseconds. |
-| `result_bytes` | The **size** of the tool's response, in bytes — never its content. Omitted if unknown. |
+| `result_bytes` | The **size** of the tool's response, in bytes — never its content. Always present; `0` when the tool returned nothing. |
 
 ### Session start: once when Editmamei launches (on by default)
 
@@ -187,9 +187,9 @@ content-free fields as above, with **no tool name, no counts, no free text**. `p
 
 | Field | Meaning |
 |---|---|
-| `channel` | Which install route you used: `npx`, `npm_global` (installed from the package registry), `mcpb` (the one-click Claude Desktop extension), or `source` (running from a git checkout). One of those four values; nothing else. |
+| `channel` | Which install route you used: `npx`, `npm_global` (installed from the package registry into a global prefix), `npm_local` (installed as a dependency of another local project), `mcpb` (the one-click Claude Desktop extension), or `source` (running from a git checkout). One of those five values; nothing else. |
 | `node_major` | The Node.js major version Editmamei is running under (e.g. `22`). Omitted if unknown. |
-| `arch` | CPU architecture bucket: `x64`, `arm64`, or `other`. Omitted if unknown. |
+| `arch` | CPU architecture bucket: `x64`, `arm64`, or `other`. Always present — an unrecognized architecture sends `other`, never omitted. |
 | `os_major` | Your OS's major version (e.g. `11` for Windows 11, `15` for macOS Sequoia). Omitted if unparseable. |
 
 ### Client connected: once per session, when your AI client finishes connecting (on by default)
@@ -283,8 +283,8 @@ No image content, no paths, no tool arguments — an enum outcome plus the modul
 }
 ```
 
-Counts only: how many tool calls in the session, how many distinct tools, and whether anything
-failed. No per-call detail.
+`tool_call_count`, `distinct_tools`, and `any_failures` are simple totals for the session — how
+many tool calls happened, how many distinct tools, whether anything failed. No per-call detail.
 
 | Field | Meaning |
 |---|---|
@@ -293,12 +293,15 @@ failed. No per-call detail.
 | `ended_after_failure` | Whether the session's very last recorded call failed. |
 | `edits_ok` | Successful calls to a tool that actually changes the open document. |
 | `kept_work` | Successful calls to a tool that saves the result to disk (export, save). |
-| `behind_latest` | Whether the boot-time update check found a newer published version. Omitted if the check is off or never resolved. |
+| `behind_latest` | Whether the boot-time update check found a newer published version. Present only when the check actually ran and resolved a verdict — `true` for a confirmed newer version, `false` for confirmed already current. Omitted when the check is off, disabled, still pending, or failed (offline, timeout, malformed response) — a failed check has no verdict to report, so it is never sent as a false `false`. |
 | `dropped_events` | Events this client had to drop in memory because too many piled up before they could be sent. Almost always `0`. |
 | `module_update` | Whether the background Pro-module refresh installed something (`updated`), failed (`failed`), or did neither (`none`). Sent only for installs with a Pro license on file — a Community install never sends this field. |
 | `templates_saved` / `action_sets` | How many templates you've saved and how many Photoshop Action Sets you have loaded, as counts only — never their names or content. Omitted until a connection to Photoshop has reported them. |
 
-Every field above is omitted, not sent as a false zero, when this session never learned it.
+`duration_s`, `ended_after_failure`, `behind_latest`, `module_update`, `templates_saved`, and
+`action_sets` are each omitted — never sent as a false zero — when this session never learned
+them. `retry_count`, `edits_ok`, `kept_work`, and `dropped_events` are always present: `0` is a
+real observation (no retries, no edits kept, nothing dropped), not an unknown.
 
 ### Diagnostic event: only if you opt in
 
@@ -330,7 +333,7 @@ content.
 
 | Field | Meaning |
 |---|---|
-| `doc_depth` | The open document's bit depth at the last successful connection to Photoshop: `8`, `16`, or `32`. Omitted if no document was open. |
+| `doc_depth` | The open document's bit depth at the last successful connection to Photoshop: `8`, `16`, or `32` — present only for a document at one of those three depths. Omitted if no document was open, or its depth is none of the three. |
 | `doc_mode` | The open document's color mode: `rgb`, `cmyk`, `lab`, `grayscale`, or `other`. Omitted if no document was open. |
 | `ps_locale` | Photoshop's UI language/region (e.g. `en_US`), read from Photoshop itself. Omitted if it doesn't match a plain language-region token. |
 
@@ -367,8 +370,9 @@ entirely** rather than sent.
 
 Usage and diagnostic events are sent to Editmamei's **own** telemetry endpoint (not a
 third-party analytics company), where they're aggregated by day. Sending is batched and
-best-effort: it happens in the background, times out quickly, and never retries or blocks your
-editing. If you're offline, events are simply dropped, never queued indefinitely.
+best-effort: it happens in the background, times out quickly, and never blocks your editing.
+Events that fail to send — offline, a network hiccup, the endpoint unreachable — are held in a
+small, bounded local queue and retried at the next launch; they are never queued indefinitely.
 
 Per-install daily counts derived from Category A events (calls, failures, edits, exports, and
 the like) are kept indefinitely against your anonymous install ID, so trends over the life of an
