@@ -136,6 +136,16 @@ export class TelemetryClient {
   private anyFailures = false;
   /** Throttle clock for session-state persistence. 0 = never persisted yet. */
   private lastSessionPersistMs = 0;
+  /**
+   * The day bucket this session is credited to — captured ONCE, the first time it's needed
+   * (`start()`, or the first `recordCall` for a client whose caller never calls `start()`,
+   * e.g. most of this file's tests). Both the clean-shutdown summary and the persisted
+   * session state use this instead of re-deriving `dayBucket(this.now())` at their own call
+   * time, so a session that crosses UTC midnight lands on the day it STARTED, matching what
+   * the crash-recovery path (`summaryFromState`) already does — it has no "now" to consult
+   * and can only ever replay the persisted bucket.
+   */
+  private startDayBucket: string | null = null;
 
   constructor(opts: TelemetryClientOptions) {
     this.settings = opts.settings;
@@ -165,6 +175,7 @@ export class TelemetryClient {
   /** Start the periodic flush timer and emit a one-time boot ping. No-op when inactive. */
   start(): void {
     if (!this.active || this.timer) return;
+    this.ensureStartDayBucket();
     this.timer = setInterval(() => void this.flush(), this.flushIntervalMs);
     // Don't keep the process alive solely for telemetry.
     this.timer.unref?.();
@@ -186,6 +197,7 @@ export class TelemetryClient {
   /** Record one tool call (Category A, opt-out). */
   recordCall(call: RecordedCall): void {
     if (!this.active || !this.settings.telemetry.usage) return;
+    this.ensureStartDayBucket();
     this.toolCallCount += 1;
     this.distinctTools.add(call.tool);
     if (!call.success) this.anyFailures = true;
@@ -197,6 +209,12 @@ export class TelemetryClient {
   private psVersion(): string {
     const v = this.dims.getPsVersion();
     return v && v.length > 0 ? v : PS_VERSION_UNKNOWN;
+  }
+
+  /** The session's start-day bucket, captured on first use — see the field doc. */
+  private ensureStartDayBucket(): string {
+    if (this.startDayBucket === null) this.startDayBucket = dayBucket(this.now());
+    return this.startDayBucket;
   }
 
   /**
@@ -216,7 +234,10 @@ export class TelemetryClient {
     this.lastSessionPersistMs = nowMs;
     const state: PersistedSessionState = {
       install_id: this.dims.install_id,
-      ts_bucket: dayBucket(this.now()),
+      // The session's START bucket, not "now" — see startDayBucket's field doc. This is
+      // what makes a hard-killed session's reconstructed summary (summaryFromState) agree
+      // with what a clean shutdown would have produced for the same session.
+      ts_bucket: this.ensureStartDayBucket(),
       editmamei_version: this.dims.editmamei_version,
       edition: this.dims.edition,
       platform: this.dims.platform,
@@ -363,7 +384,10 @@ export class TelemetryClient {
             distinct_tools: this.distinctTools.size,
             any_failures: this.anyFailures,
           },
-          this.now()
+          // Start-day bucket, not the shutdown-time day — see startDayBucket's field doc.
+          // toolCallCount > 0 guarantees recordCall already ran, so this is never the
+          // first-ever call of ensureStartDayBucket() at shutdown time.
+          this.ensureStartDayBucket()
         )
       );
     }

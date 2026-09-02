@@ -61,6 +61,7 @@ function makeClient(
     edition?: string;
     channel?: string;
     getModuleStatus?: () => ModuleStatusInfo | null;
+    now?: () => Date;
   } = {}
 ) {
   return new TelemetryClient({
@@ -75,6 +76,7 @@ function makeClient(
     ...(over.edition !== undefined ? { edition: over.edition } : {}),
     ...(over.channel !== undefined ? { channel: over.channel } : {}),
     ...(over.getModuleStatus !== undefined ? { getModuleStatus: over.getModuleStatus } : {}),
+    ...(over.now !== undefined ? { now: over.now } : {}),
   });
 }
 
@@ -368,6 +370,56 @@ describe('shutdown → durable outbox', () => {
     await Promise.all([c.shutdown(), c.shutdown()]);
     const summaries = readOutbox({ dir }).filter((e) => e.type === 'session_summary');
     expect(summaries).toHaveLength(1);
+  });
+});
+
+describe('session_summary day attribution', () => {
+  it('a same-day session is credited to that day', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, {
+      now: () => new Date('2026-06-15T12:00:00.000Z'),
+    });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { ts_bucket: string }
+      | undefined;
+    expect(summary?.ts_bucket).toBe('2026-06-15');
+  });
+
+  it('a session crossing UTC midnight is credited to the day it STARTED, not shutdown', async () => {
+    let cur = new Date('2026-06-15T23:59:30.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    // The state persisted mid-session already carries the start-day bucket.
+    expect(readSessionState({ dir })?.ts_bucket).toBe('2026-06-15');
+
+    cur = new Date('2026-06-16T00:00:30.000Z'); // crossed midnight
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { ts_bucket: string }
+      | undefined;
+    expect(summary?.ts_bucket).toBe('2026-06-15'); // start day, not the shutdown day
+  });
+
+  it('crash reconstruction agrees with what a clean shutdown would have produced', async () => {
+    // Simulate a hard kill: the session-state marker persisted mid-session survives (no
+    // clean shutdown to clear it); the NEXT startup reconstructs the summary from it.
+    const cur = new Date('2026-06-15T23:59:45.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    // (deliberately no shutdown() call — the process is presumed hard-killed here)
+
+    const rec2 = recorder();
+    const c2 = makeClient(makeSettings(), rec2, { outboxDir: dir });
+    await c2.flushOutboxOnStartup();
+    const summary = rec2.batches.flat().find((e) => e.type === 'session_summary') as
+      | { ts_bucket: string }
+      | undefined;
+    // Same start-day bucket a clean shutdown would have used (see the previous test).
+    expect(summary?.ts_bucket).toBe('2026-06-15');
   });
 });
 

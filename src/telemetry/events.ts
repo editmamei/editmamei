@@ -197,16 +197,23 @@ export function buildUsageEvent(
   };
 }
 
+/**
+ * `tsBucket` is the SESSION'S START day, not "now" — a session spanning UTC midnight is
+ * credited to the day it started (matches the crash-recovery path in client.ts, which has
+ * no choice but to reuse the persisted start bucket; splitting a session's usage across two
+ * days was judged not worth it). Callers compute it once, at session start, rather than at
+ * shutdown — see `TelemetryClient`'s `startDayBucket`.
+ */
 export function buildSessionSummary(
   dims: TelemetryDimensions,
   summary: { tool_call_count: number; distinct_tools: number; any_failures: boolean },
-  now: Date
+  tsBucket: string
 ): SessionSummaryEvent {
   return {
     v: TELEMETRY_SCHEMA_VERSION,
     type: 'session_summary',
     install_id: dims.install_id,
-    ts_bucket: dayBucket(now),
+    ts_bucket: tsBucket,
     editmamei_version: dims.editmamei_version,
     edition: dims.edition,
     platform: dims.platform,

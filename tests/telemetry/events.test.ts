@@ -196,12 +196,21 @@ describe('buildSessionSummary', () => {
     const e = buildSessionSummary(
       dims('2026'),
       { tool_call_count: 47, distinct_tools: 11, any_failures: true },
-      NOW
+      '2026-06-14'
     );
     expect(e.type).toBe('session_summary');
     expect(e.tool_call_count).toBe(47);
     expect(e.distinct_tools).toBe(11);
     expect(e.any_failures).toBe(true);
+  });
+
+  it('stamps ts_bucket from the passed bucket, not "now" (session-start attribution)', () => {
+    const e = buildSessionSummary(
+      dims('2026'),
+      { tool_call_count: 1, distinct_tools: 1, any_failures: false },
+      '2026-06-13'
+    );
+    expect(e.ts_bucket).toBe('2026-06-13');
   });
 });
 
