@@ -69,6 +69,18 @@ export interface PersistedSessionState {
   tool_call_count: number;
   distinct_tools: number;
   any_failures: boolean;
+  // Added after v1.3.0 — all optional so a state file written by an older version (missing
+  // these keys) still parses; readSessionState's shape check only requires the fields above.
+  duration_s?: number;
+  retry_count?: number;
+  ended_after_failure?: boolean;
+  edits_ok?: number;
+  kept_work?: number;
+  behind_latest?: boolean;
+  dropped_events?: number;
+  module_update?: 'none' | 'updated' | 'failed';
+  templates_saved?: number;
+  action_sets?: number;
 }
 
 function baseDir(opts: OutboxOptions): string {

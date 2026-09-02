@@ -21,12 +21,15 @@
  * is logged at debug. Telemetry must never break or block a tool call.
  */
 
+import { release } from 'node:os';
 import { Logger } from '../utils/logger.js';
 import { EDITION } from '../edition.js';
 import { VERSION } from '../version.js';
 import { resolveInstallChannel } from '../install-channel.js';
 import type { Settings } from '../core/settings.js';
+import { READ_ONLY_TOOLS, KEPT_WORK_TOOLS, nodeMajor, archToken, osMajor } from './activity.js';
 import {
+  buildClientConnected,
   buildDiagnosticEvent,
   buildModuleStatus,
   buildSessionStart,
@@ -61,12 +64,18 @@ const MAX_QUEUE_SIZE = 500;
 const DEFAULT_FLUSH_INTERVAL_MS = 5 * 60_000;
 /** Min wall-clock between session-state persists (cheap, but no need to write every call). */
 const SESSION_PERSIST_THROTTLE_MS = 10_000;
+/** Cap for `session_summary.duration_s` (7 days) — see the field's doc on the interface. */
+const MAX_SESSION_DURATION_S = 604_800;
 
 export interface RecordedCall {
   tool: string;
   success: boolean;
   duration_ms: number;
   error_class: string | null;
+  /** Serialized result size in bytes (see utils/session-log.ts's computeResultBytes). */
+  result_bytes?: number;
+  /** Same tool + deep-equal args as the immediately preceding call (SessionLog's retry key). */
+  retry?: boolean;
 }
 
 export interface RecordedDiagnostic {
@@ -75,6 +84,9 @@ export interface RecordedDiagnostic {
   error_message: string;
   snippet?: string;
   stderr_tail?: string;
+  doc_depth?: 8 | 16 | 32;
+  doc_mode?: 'rgb' | 'cmyk' | 'lab' | 'grayscale' | 'other';
+  ps_locale?: string;
 }
 
 export interface TelemetryClientOptions {
@@ -134,6 +146,32 @@ export class TelemetryClient {
   private toolCallCount = 0;
   private readonly distinctTools = new Set<string>();
   private anyFailures = false;
+  /** ms-epoch of the first / most recent recorded call this session — feeds duration_s. */
+  private firstCallAtMs: number | null = null;
+  private lastCallAtMs: number | null = null;
+  /** Calls whose tool + args matched the immediately preceding call. */
+  private retryCount = 0;
+  /** The most recently recorded call's success — null until a call has been recorded. */
+  private lastCallSuccess: boolean | null = null;
+  /** Successful calls outside READ_ONLY_TOOLS / inside KEPT_WORK_TOOLS (activity.ts). */
+  private editsOk = 0;
+  private keptWork = 0;
+  /**
+   * Events dropped by `enqueue`'s MAX_QUEUE_SIZE trim this session. This is the IN-MEMORY
+   * drop count only — `outbox.ts`'s own bounding (MAX_OUTBOX_EVENTS / MAX_OUTBOX_BYTES,
+   * see readOutbox/appendOutboxSync) doesn't return how many lines it discarded, and adding
+   * that return value would touch every caller of two already-widely-used functions for a
+   * count this field only approximates anyway. Undercounts rather than requires that churn.
+   */
+  private droppedEvents = 0;
+  /** Whether the boot-time update check found a strictly newer published version. null =
+   *  never determined this session (check disabled, or it hadn't resolved by shutdown). */
+  private behindLatest: boolean | null = null;
+  /** Boot-time Pro-module background refresh outcome; only meaningful (and only sent) for
+   *  installs with a license record — see doShutdown's getModuleStatus() gate. */
+  private moduleUpdate: 'none' | 'updated' | 'failed' = 'none';
+  /** On-disk asset counts, read at ps_ping time. null until ps_ping has run once. */
+  private installAssets: { templates_saved: number; action_sets: number } | null = null;
   /** Throttle clock for session-state persistence. 0 = never persisted yet. */
   private lastSessionPersistMs = 0;
   /**
@@ -184,7 +222,14 @@ export class TelemetryClient {
     // promptly so an install shows up without waiting out the periodic interval; a failed send
     // falls through to the outbox like any other batch.
     if (this.settings.telemetry.usage) {
-      this.enqueue(buildSessionStart(this.dims, this.now()));
+      const hostOsMajor = osMajor(process.platform, release());
+      this.enqueue(
+        buildSessionStart(this.dims, this.now(), {
+          node_major: nodeMajor(),
+          arch: archToken(),
+          ...(hostOsMajor !== null ? { os_major: hostOsMajor } : {}),
+        })
+      );
       // Pro module boot outcome, alongside the ping — emitted only for installs with a
       // license record (getModuleStatus returns null otherwise), so a pure-CE host stays
       // silent. This is the signal that answers "did the subscriber's module actually load?".
@@ -194,15 +239,109 @@ export class TelemetryClient {
     }
   }
 
+  /**
+   * Record the connected MCP client's identity + capabilities (Category A, opt-out), once
+   * per session from `Server.oninitialized` (see server.ts). Flushed promptly like the boot
+   * ping — this is a one-time, low-volume signal, not worth waiting out the periodic timer.
+   */
+  recordClientConnected(info: {
+    clientName: string | undefined;
+    clientVersion: string | undefined;
+    capSampling: boolean;
+    capElicitation: boolean;
+    capRoots: boolean;
+  }): void {
+    if (!this.active || !this.settings.telemetry.usage) return;
+    this.enqueue(buildClientConnected(this.dims, info, this.now()));
+    void this.flush();
+  }
+
   /** Record one tool call (Category A, opt-out). */
   recordCall(call: RecordedCall): void {
     if (!this.active || !this.settings.telemetry.usage) return;
     this.ensureStartDayBucket();
+    const nowDate = this.now();
+    const nowMs = nowDate.getTime();
     this.toolCallCount += 1;
     this.distinctTools.add(call.tool);
     if (!call.success) this.anyFailures = true;
-    this.enqueue(buildUsageEvent(this.dims, call, this.now()));
+    this.lastCallSuccess = call.success;
+    if (call.retry) this.retryCount += 1;
+    if (call.success) {
+      if (!READ_ONLY_TOOLS.has(call.tool)) this.editsOk += 1;
+      if (KEPT_WORK_TOOLS.has(call.tool)) this.keptWork += 1;
+    }
+    if (this.firstCallAtMs === null) this.firstCallAtMs = nowMs;
+    this.lastCallAtMs = nowMs;
+    this.enqueue(buildUsageEvent(this.dims, call, nowDate));
     this.persistSessionStateThrottled();
+  }
+
+  /** Whether the boot-time update check found a strictly newer published version. */
+  setBehindLatest(value: boolean): void {
+    this.behindLatest = value;
+  }
+
+  /** Record the boot-time Pro-module background refresh outcome (self-heal / freshness
+   *  check in kernel/module-lifecycle.ts). */
+  setModuleUpdate(outcome: 'updated' | 'failed'): void {
+    this.moduleUpdate = outcome;
+  }
+
+  /** Record the install's on-disk asset counts, read at ps_ping time. */
+  setInstallAssets(assets: { templates_saved: number; action_sets: number }): void {
+    this.installAssets = assets;
+  }
+
+  /** Wall-clock from the first recorded call to the last, in seconds, capped at
+   *  MAX_SESSION_DURATION_S. undefined until a call has been recorded. */
+  private durationS(): number | undefined {
+    if (this.firstCallAtMs === null || this.lastCallAtMs === null) return undefined;
+    return Math.min(
+      Math.floor((this.lastCallAtMs - this.firstCallAtMs) / 1000),
+      MAX_SESSION_DURATION_S
+    );
+  }
+
+  /**
+   * The new accumulator fields, shared verbatim by the persisted session state (so a
+   * hard-killed session reconstructs the same summary a clean shutdown would have produced)
+   * and the session_summary event itself. Each field is omitted rather than sent as
+   * `unknown` when this session never learned it — see the module doc comment on events.ts.
+   */
+  private summaryFields(): {
+    duration_s?: number;
+    retry_count: number;
+    ended_after_failure?: boolean;
+    edits_ok: number;
+    kept_work: number;
+    behind_latest?: boolean;
+    dropped_events: number;
+    module_update?: 'none' | 'updated' | 'failed';
+    templates_saved?: number;
+    action_sets?: number;
+  } {
+    const duration = this.durationS();
+    // module_update is sent ONLY for installs with a license record — a pure-CE install has
+    // no module to report freshness on, so getModuleStatus() returning null here means
+    // "not applicable", not "unknown".
+    const moduleStatus = this.getModuleStatus();
+    return {
+      ...(duration !== undefined ? { duration_s: duration } : {}),
+      retry_count: this.retryCount,
+      ...(this.lastCallSuccess !== null ? { ended_after_failure: !this.lastCallSuccess } : {}),
+      edits_ok: this.editsOk,
+      kept_work: this.keptWork,
+      ...(this.behindLatest !== null ? { behind_latest: this.behindLatest } : {}),
+      dropped_events: this.droppedEvents,
+      ...(moduleStatus !== null ? { module_update: this.moduleUpdate } : {}),
+      ...(this.installAssets
+        ? {
+            templates_saved: this.installAssets.templates_saved,
+            action_sets: this.installAssets.action_sets,
+          }
+        : {}),
+    };
   }
 
   /** Current ps_version token, mirroring events.ts (placeholder until the first ping). */
@@ -245,6 +384,7 @@ export class TelemetryClient {
       tool_call_count: this.toolCallCount,
       distinct_tools: this.distinctTools.size,
       any_failures: this.anyFailures,
+      ...this.summaryFields(),
     };
     writeSessionStateSync(state, this.outboxOpts);
   }
@@ -274,6 +414,9 @@ export class TelemetryClient {
           error_message: sanitizeMessage(diag.error_message),
           ...(diag.snippet ? { snippet: sanitizeSnippet(diag.snippet) } : {}),
           ...(diag.stderr_tail ? { stderr_tail: sanitizeStderrTail(diag.stderr_tail) } : {}),
+          ...(diag.doc_depth !== undefined ? { doc_depth: diag.doc_depth } : {}),
+          ...(diag.doc_mode !== undefined ? { doc_mode: diag.doc_mode } : {}),
+          ...(diag.ps_locale !== undefined ? { ps_locale: diag.ps_locale } : {}),
         },
         this.now()
       )
@@ -321,7 +464,9 @@ export class TelemetryClient {
     this.queue.push(event);
     if (this.queue.length > MAX_QUEUE_SIZE) {
       // Drop oldest — newer signal is more useful, and we must stay bounded.
-      this.queue.splice(0, this.queue.length - MAX_QUEUE_SIZE);
+      const excess = this.queue.length - MAX_QUEUE_SIZE;
+      this.queue.splice(0, excess);
+      this.droppedEvents += excess;
     }
     if (this.queue.length >= this.maxBatchSize) void this.flush();
   }
@@ -383,6 +528,7 @@ export class TelemetryClient {
             tool_call_count: this.toolCallCount,
             distinct_tools: this.distinctTools.size,
             any_failures: this.anyFailures,
+            ...this.summaryFields(),
           },
           // Start-day bucket, not the shutdown-time day — see startDayBucket's field doc.
           // toolCallCount > 0 guarantees recordCall already ran, so this is never the
@@ -454,7 +600,12 @@ export class TelemetryClient {
   }
 }
 
-/** Reconstruct a session_summary event from persisted state (a killed-session recovery). */
+/**
+ * Reconstruct a session_summary event from persisted state (a killed-session recovery).
+ * Every new accumulator is optional on PersistedSessionState (backward-compat with a state
+ * file written by an older version), so each is carried through only when present rather
+ * than reconstructed as a false zero/false.
+ */
 function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
   return {
     v: 2,
@@ -468,6 +619,18 @@ function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
     tool_call_count: s.tool_call_count,
     distinct_tools: s.distinct_tools,
     any_failures: s.any_failures,
+    ...(s.duration_s !== undefined ? { duration_s: s.duration_s } : {}),
+    ...(s.retry_count !== undefined ? { retry_count: s.retry_count } : {}),
+    ...(s.ended_after_failure !== undefined
+      ? { ended_after_failure: s.ended_after_failure }
+      : {}),
+    ...(s.edits_ok !== undefined ? { edits_ok: s.edits_ok } : {}),
+    ...(s.kept_work !== undefined ? { kept_work: s.kept_work } : {}),
+    ...(s.behind_latest !== undefined ? { behind_latest: s.behind_latest } : {}),
+    ...(s.dropped_events !== undefined ? { dropped_events: s.dropped_events } : {}),
+    ...(s.module_update !== undefined ? { module_update: s.module_update } : {}),
+    ...(s.templates_saved !== undefined ? { templates_saved: s.templates_saved } : {}),
+    ...(s.action_sets !== undefined ? { action_sets: s.action_sets } : {}),
   };
 }
 

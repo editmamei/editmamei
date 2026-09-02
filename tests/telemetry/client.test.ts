@@ -229,13 +229,18 @@ describe('start() boot ping', () => {
     const boot = rec.batches.flat().find((e) => e.type === 'session_start') as
       Record<string, unknown> | undefined;
     expect(boot).toBeDefined();
-    // content-free: exactly the shared Category A dimensions + channel, no counts / free text.
+    // content-free: exactly the shared Category A dimensions + channel + the boot-time
+    // platform facts (node_major/arch/os_major — always resolvable on the real test host),
+    // no counts / free text.
     expect(Object.keys(boot!).sort()).toEqual(
       [
+        'arch',
         'channel',
         'edition',
         'editmamei_version',
         'install_id',
+        'node_major',
+        'os_major',
         'platform',
         'ps_version',
         'ts_bucket',
@@ -420,6 +425,334 @@ describe('session_summary day attribution', () => {
       | undefined;
     // Same start-day bucket a clean shutdown would have used (see the previous test).
     expect(summary?.ts_bucket).toBe('2026-06-15');
+  });
+});
+
+describe('session_summary accumulators', () => {
+  it('computes duration_s from the first call to the last, floored to whole seconds', async () => {
+    let cur = new Date('2026-06-15T12:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'ps_add_adjustment_layer', success: true, duration_ms: 1, error_class: null });
+    cur = new Date('2026-06-15T12:02:10.500Z'); // +130.5s
+    c.recordCall({ tool: 'ps_add_adjustment_layer', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { duration_s: number }
+      | undefined;
+    expect(summary?.duration_s).toBe(130);
+  });
+
+  it('caps duration_s at 604_800 (7 days)', async () => {
+    let cur = new Date('2026-06-01T00:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'ps_add_adjustment_layer', success: true, duration_ms: 1, error_class: null });
+    cur = new Date('2026-06-20T00:00:00.000Z'); // way past 7 days later
+    c.recordCall({ tool: 'ps_add_adjustment_layer', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { duration_s: number }
+      | undefined;
+    expect(summary?.duration_s).toBe(604_800);
+  });
+
+  it('counts retries via the retry flag on RecordedCall', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_select_layer', success: true, duration_ms: 1, error_class: null });
+    c.recordCall({
+      tool: 'ps_select_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+      retry: true,
+    });
+    c.recordCall({
+      tool: 'ps_select_layer',
+      success: false,
+      duration_ms: 1,
+      error_class: 'other',
+      retry: true,
+    });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { retry_count: number }
+      | undefined;
+    expect(summary?.retry_count).toBe(2);
+  });
+
+  it('ended_after_failure reflects only the LAST recorded call', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_a', success: false, duration_ms: 1, error_class: 'other' });
+    c.recordCall({ tool: 'ps_b', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { ended_after_failure: boolean }
+      | undefined;
+    expect(summary?.ended_after_failure).toBe(false); // last call succeeded
+
+    const rec2 = recorder();
+    const { client: c2, dir: dir2 } = makeClientD(makeSettings(), rec2);
+    c2.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    c2.recordCall({ tool: 'ps_b', success: false, duration_ms: 1, error_class: 'other' });
+    await c2.shutdown();
+    const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
+      | { ended_after_failure: boolean }
+      | undefined;
+    expect(summary2?.ended_after_failure).toBe(true); // last call failed
+  });
+
+  it('edits_ok / kept_work use the shared READ_ONLY_TOOLS / KEPT_WORK_TOOLS lists', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    // Read-only success — counts toward neither.
+    c.recordCall({ tool: 'ps_ping', success: true, duration_ms: 1, error_class: null });
+    // An ordinary edit — counts toward edits_ok only.
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
+    // A kept-work tool — counts toward BOTH edits_ok (not read-only) and kept_work.
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    // A failed edit — success:false, so it counts toward neither.
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: false,
+      duration_ms: 1,
+      error_class: 'other',
+    });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { edits_ok: number; kept_work: number }
+      | undefined;
+    expect(summary?.edits_ok).toBe(2);
+    expect(summary?.kept_work).toBe(1);
+  });
+
+  it('dropped_events reflects the in-memory MAX_QUEUE_SIZE trim', async () => {
+    const rec = recorder();
+    // Huge batch size disables auto-flush so the queue actually accumulates and trims.
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { maxBatchSize: 1_000_000 });
+    for (let i = 0; i < 600; i++) {
+      c.recordCall({ tool: `photoshop_${i}`, success: true, duration_ms: 1, error_class: null });
+    }
+    expect(c.pendingCount()).toBe(500); // MAX_QUEUE_SIZE
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { dropped_events: number }
+      | undefined;
+    expect(summary?.dropped_events).toBe(100); // 600 recorded - 500 kept
+  });
+
+  it('omits behind_latest until setBehindLatest is called, then carries it through', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { behind_latest?: boolean }
+      | undefined;
+    expect('behind_latest' in (summary ?? {})).toBe(false);
+
+    const rec2 = recorder();
+    const { client: c2, dir: dir2 } = makeClientD(makeSettings(), rec2);
+    c2.setBehindLatest(true);
+    c2.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c2.shutdown();
+    const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
+      | { behind_latest?: boolean }
+      | undefined;
+    expect(summary2?.behind_latest).toBe(true);
+  });
+
+  it('omits module_update for a pure-CE install even after setModuleUpdate is called', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec); // no getModuleStatus → null
+    c.setModuleUpdate('updated');
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { module_update?: string }
+      | undefined;
+    expect('module_update' in (summary ?? {})).toBe(false);
+  });
+
+  it('includes module_update (default "none") for a licensed install', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, {
+      getModuleStatus: () => ({
+        module: 'pro',
+        outcome: 'loaded',
+        module_version: '1.0.0',
+        abi: 3,
+      }),
+    });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { module_update?: string }
+      | undefined;
+    expect(summary?.module_update).toBe('none'); // never set this session, but the install IS licensed
+
+    const rec2 = recorder();
+    const { client: c2, dir: dir2 } = makeClientD(makeSettings(), rec2, {
+      getModuleStatus: () => ({
+        module: 'pro',
+        outcome: 'loaded',
+        module_version: '1.0.0',
+        abi: 3,
+      }),
+    });
+    c2.setModuleUpdate('failed');
+    c2.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c2.shutdown();
+    const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
+      | { module_update?: string }
+      | undefined;
+    expect(summary2?.module_update).toBe('failed');
+  });
+
+  it('includes templates_saved / action_sets only once setInstallAssets is called', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      | { templates_saved?: number; action_sets?: number }
+      | undefined;
+    expect('templates_saved' in (summary ?? {})).toBe(false);
+    expect('action_sets' in (summary ?? {})).toBe(false);
+
+    const rec2 = recorder();
+    const { client: c2, dir: dir2 } = makeClientD(makeSettings(), rec2);
+    c2.setInstallAssets({ templates_saved: 6, action_sets: 2 });
+    c2.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c2.shutdown();
+    const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
+      | { templates_saved?: number; action_sets?: number }
+      | undefined;
+    expect(summary2?.templates_saved).toBe(6);
+    expect(summary2?.action_sets).toBe(2);
+  });
+});
+
+describe('recordClientConnected', () => {
+  it('emits one client_connected event and flushes promptly', async () => {
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { flushIntervalMs: 10_000_000 });
+    c.recordClientConnected({
+      clientName: 'claude-code',
+      clientVersion: '2.1.170',
+      capSampling: true,
+      capElicitation: false,
+      capRoots: true,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const ev = rec.batches.flat().find((e) => e.type === 'client_connected') as
+      | { client: string; client_major: number | null; cap_sampling: boolean }
+      | undefined;
+    expect(ev).toBeDefined();
+    expect(ev?.client).toBe('claude_code');
+    expect(ev?.client_major).toBe(2);
+    expect(ev?.cap_sampling).toBe(true);
+  });
+
+  it('is suppressed when usage telemetry is off', async () => {
+    const rec = recorder();
+    const c = makeClient(makeSettings({ usage: false }), rec, { flushIntervalMs: 10_000_000 });
+    c.recordClientConnected({
+      clientName: 'claude-ai',
+      clientVersion: '0.1.0',
+      capSampling: false,
+      capElicitation: false,
+      capRoots: false,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rec.batches.flat().some((e) => e.type === 'client_connected')).toBe(false);
+  });
+
+  it('is suppressed when inactive', async () => {
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { active: false, flushIntervalMs: 10_000_000 });
+    c.recordClientConnected({
+      clientName: 'claude-ai',
+      clientVersion: '0.1.0',
+      capSampling: false,
+      capElicitation: false,
+      capRoots: false,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rec.batches).toHaveLength(0);
+  });
+});
+
+describe('persisted session state carries the new accumulators', () => {
+  it('round-trips retry_count / edits_ok / kept_work through the session-state file', () => {
+    // persistSessionStateThrottled only writes once per SESSION_PERSIST_THROTTLE_MS (10s),
+    // so the second call's persist must land outside that window to actually hit disk.
+    let cur = new Date('2026-06-15T12:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    cur = new Date('2026-06-15T12:00:11.000Z'); // +11s, past the throttle window
+    c.recordCall({
+      tool: 'ps_export',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+      retry: true,
+    });
+    const state = readSessionState({ dir });
+    expect(state?.retry_count).toBe(1);
+    expect(state?.edits_ok).toBe(2);
+    expect(state?.kept_work).toBe(2);
+  });
+
+  it('reconstructs a session_summary from an OLD-FORMAT state file missing the new fields', async () => {
+    const dir = freshOutboxDir();
+    // Simulates a state file written by a pre-this-change version — none of the new
+    // accumulator fields exist on disk.
+    const oldState: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '1.3.0',
+      edition: 'community',
+      platform: 'darwin',
+      ps_version: '27.7.0',
+      tool_call_count: 5,
+      distinct_tools: 2,
+      any_failures: false,
+    };
+    writeSessionStateSync(oldState, { dir });
+
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await expect(c.flushOutboxOnStartup()).resolves.toBeUndefined();
+
+    const summary = rec.batches.flat().find((e) => e.type === 'session_summary') as
+      | Record<string, unknown>
+      | undefined;
+    expect(summary).toBeDefined();
+    expect(summary?.tool_call_count).toBe(5);
+    // None of the new fields were on disk, so none should appear on the reconstructed event.
+    for (const key of [
+      'duration_s',
+      'retry_count',
+      'ended_after_failure',
+      'edits_ok',
+      'kept_work',
+      'behind_latest',
+      'dropped_events',
+      'module_update',
+      'templates_saved',
+      'action_sets',
+    ]) {
+      expect(key in summary!).toBe(false);
+    }
   });
 });
 
