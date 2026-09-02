@@ -338,9 +338,7 @@ export function buildSessionSummary(
     ...(summary.behind_latest !== undefined ? { behind_latest: summary.behind_latest } : {}),
     ...(summary.dropped_events !== undefined ? { dropped_events: summary.dropped_events } : {}),
     ...(summary.module_update !== undefined ? { module_update: summary.module_update } : {}),
-    ...(summary.templates_saved !== undefined
-      ? { templates_saved: summary.templates_saved }
-      : {}),
+    ...(summary.templates_saved !== undefined ? { templates_saved: summary.templates_saved } : {}),
     ...(summary.action_sets !== undefined ? { action_sets: summary.action_sets } : {}),
   };
 }

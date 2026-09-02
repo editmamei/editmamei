@@ -1090,7 +1090,10 @@ export class EditmameiServer {
     if (docMode !== null) this.lastDocMode = docMode;
     // Install-asset counts, alongside the other session_summary counters — a pure count,
     // content-free like everything else this method reports.
-    this.telemetry.setInstallAssets({ templates_saved: userTemplates, action_sets: actionSetsCount });
+    this.telemetry.setInstallAssets({
+      templates_saved: userTemplates,
+      action_sets: actionSetsCount,
+    });
 
     // Every path above that didn't already return early DID reach Photoshop — the
     // build-failure branch's degraded fallback included, since it only falls through

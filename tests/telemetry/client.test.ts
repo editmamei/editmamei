@@ -387,8 +387,7 @@ describe('session_summary day attribution', () => {
     c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { ts_bucket: string }
-      | undefined;
+      { ts_bucket: string } | undefined;
     expect(summary?.ts_bucket).toBe('2026-06-15');
   });
 
@@ -403,8 +402,7 @@ describe('session_summary day attribution', () => {
     cur = new Date('2026-06-16T00:00:30.000Z'); // crossed midnight
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { ts_bucket: string }
-      | undefined;
+      { ts_bucket: string } | undefined;
     expect(summary?.ts_bucket).toBe('2026-06-15'); // start day, not the shutdown day
   });
 
@@ -421,8 +419,7 @@ describe('session_summary day attribution', () => {
     const c2 = makeClient(makeSettings(), rec2, { outboxDir: dir });
     await c2.flushOutboxOnStartup();
     const summary = rec2.batches.flat().find((e) => e.type === 'session_summary') as
-      | { ts_bucket: string }
-      | undefined;
+      { ts_bucket: string } | undefined;
     // Same start-day bucket a clean shutdown would have used (see the previous test).
     expect(summary?.ts_bucket).toBe('2026-06-15');
   });
@@ -433,13 +430,22 @@ describe('session_summary accumulators', () => {
     let cur = new Date('2026-06-15T12:00:00.000Z');
     const rec = recorder();
     const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
-    c.recordCall({ tool: 'ps_add_adjustment_layer', success: true, duration_ms: 1, error_class: null });
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
     cur = new Date('2026-06-15T12:02:10.500Z'); // +130.5s
-    c.recordCall({ tool: 'ps_add_adjustment_layer', success: true, duration_ms: 1, error_class: null });
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { duration_s: number }
-      | undefined;
+      { duration_s: number } | undefined;
     expect(summary?.duration_s).toBe(130);
   });
 
@@ -447,13 +453,22 @@ describe('session_summary accumulators', () => {
     let cur = new Date('2026-06-01T00:00:00.000Z');
     const rec = recorder();
     const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
-    c.recordCall({ tool: 'ps_add_adjustment_layer', success: true, duration_ms: 1, error_class: null });
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
     cur = new Date('2026-06-20T00:00:00.000Z'); // way past 7 days later
-    c.recordCall({ tool: 'ps_add_adjustment_layer', success: true, duration_ms: 1, error_class: null });
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { duration_s: number }
-      | undefined;
+      { duration_s: number } | undefined;
     expect(summary?.duration_s).toBe(604_800);
   });
 
@@ -477,8 +492,7 @@ describe('session_summary accumulators', () => {
     });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { retry_count: number }
-      | undefined;
+      { retry_count: number } | undefined;
     expect(summary?.retry_count).toBe(2);
   });
 
@@ -489,8 +503,7 @@ describe('session_summary accumulators', () => {
     c.recordCall({ tool: 'ps_b', success: true, duration_ms: 1, error_class: null });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { ended_after_failure: boolean }
-      | undefined;
+      { ended_after_failure: boolean } | undefined;
     expect(summary?.ended_after_failure).toBe(false); // last call succeeded
 
     const rec2 = recorder();
@@ -499,8 +512,7 @@ describe('session_summary accumulators', () => {
     c2.recordCall({ tool: 'ps_b', success: false, duration_ms: 1, error_class: 'other' });
     await c2.shutdown();
     const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
-      | { ended_after_failure: boolean }
-      | undefined;
+      { ended_after_failure: boolean } | undefined;
     expect(summary2?.ended_after_failure).toBe(true); // last call failed
   });
 
@@ -527,8 +539,7 @@ describe('session_summary accumulators', () => {
     });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { edits_ok: number; kept_work: number }
-      | undefined;
+      { edits_ok: number; kept_work: number } | undefined;
     expect(summary?.edits_ok).toBe(2);
     expect(summary?.kept_work).toBe(1);
   });
@@ -543,8 +554,7 @@ describe('session_summary accumulators', () => {
     expect(c.pendingCount()).toBe(500); // MAX_QUEUE_SIZE
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { dropped_events: number }
-      | undefined;
+      { dropped_events: number } | undefined;
     expect(summary?.dropped_events).toBe(100); // 600 recorded - 500 kept
   });
 
@@ -554,8 +564,7 @@ describe('session_summary accumulators', () => {
     c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { behind_latest?: boolean }
-      | undefined;
+      { behind_latest?: boolean } | undefined;
     expect('behind_latest' in (summary ?? {})).toBe(false);
 
     const rec2 = recorder();
@@ -564,8 +573,7 @@ describe('session_summary accumulators', () => {
     c2.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
     await c2.shutdown();
     const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
-      | { behind_latest?: boolean }
-      | undefined;
+      { behind_latest?: boolean } | undefined;
     expect(summary2?.behind_latest).toBe(true);
   });
 
@@ -576,8 +584,7 @@ describe('session_summary accumulators', () => {
     c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { module_update?: string }
-      | undefined;
+      { module_update?: string } | undefined;
     expect('module_update' in (summary ?? {})).toBe(false);
   });
 
@@ -594,8 +601,7 @@ describe('session_summary accumulators', () => {
     c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { module_update?: string }
-      | undefined;
+      { module_update?: string } | undefined;
     expect(summary?.module_update).toBe('none'); // never set this session, but the install IS licensed
 
     const rec2 = recorder();
@@ -611,8 +617,7 @@ describe('session_summary accumulators', () => {
     c2.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
     await c2.shutdown();
     const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
-      | { module_update?: string }
-      | undefined;
+      { module_update?: string } | undefined;
     expect(summary2?.module_update).toBe('failed');
   });
 
@@ -622,8 +627,7 @@ describe('session_summary accumulators', () => {
     c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { templates_saved?: number; action_sets?: number }
-      | undefined;
+      { templates_saved?: number; action_sets?: number } | undefined;
     expect('templates_saved' in (summary ?? {})).toBe(false);
     expect('action_sets' in (summary ?? {})).toBe(false);
 
@@ -633,8 +637,7 @@ describe('session_summary accumulators', () => {
     c2.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
     await c2.shutdown();
     const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
-      | { templates_saved?: number; action_sets?: number }
-      | undefined;
+      { templates_saved?: number; action_sets?: number } | undefined;
     expect(summary2?.templates_saved).toBe(6);
     expect(summary2?.action_sets).toBe(2);
   });
@@ -653,8 +656,7 @@ describe('recordClientConnected', () => {
     });
     await new Promise((r) => setTimeout(r, 0));
     const ev = rec.batches.flat().find((e) => e.type === 'client_connected') as
-      | { client: string; client_major: number | null; cap_sampling: boolean }
-      | undefined;
+      { client: string; client_major: number | null; cap_sampling: boolean } | undefined;
     expect(ev).toBeDefined();
     expect(ev?.client).toBe('claude_code');
     expect(ev?.client_major).toBe(2);
@@ -734,8 +736,7 @@ describe('persisted session state carries the new accumulators', () => {
     await expect(c.flushOutboxOnStartup()).resolves.toBeUndefined();
 
     const summary = rec.batches.flat().find((e) => e.type === 'session_summary') as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(summary).toBeDefined();
     expect(summary?.tool_call_count).toBe(5);
     // None of the new fields were on disk, so none should appear on the reconstructed event.

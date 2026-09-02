@@ -170,7 +170,13 @@ describe('buildUsageEvent', () => {
   it('carries result_bytes verbatim below the clamp', () => {
     const e = buildUsageEvent(
       dims('2026'),
-      { tool: 'ps_get_preview', success: true, duration_ms: 5, error_class: null, result_bytes: 4096 },
+      {
+        tool: 'ps_get_preview',
+        success: true,
+        duration_ms: 5,
+        error_class: null,
+        result_bytes: 4096,
+      },
       NOW
     );
     expect(e.result_bytes).toBe(4096);

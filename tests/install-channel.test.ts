@@ -11,7 +11,11 @@ describe('resolveInstallChannel', () => {
   it('dev wins over every other signal (a working tree is never a distributed channel)', () => {
     expect(resolveInstallChannel({ EDITMAMEI_INSTALL_CHANNEL: 'mcpb' }, 'dev')).toBe('dev');
     expect(
-      resolveInstallChannel({}, 'dev', '/home/x/.npm/_npx/abc123/node_modules/editmamei/dist/index.js')
+      resolveInstallChannel(
+        {},
+        'dev',
+        '/home/x/.npm/_npx/abc123/node_modules/editmamei/dist/index.js'
+      )
     ).toBe('dev');
   });
 
@@ -44,11 +48,7 @@ describe('resolveInstallChannel', () => {
 
   it('reports npm_global for an entry script under an ordinary node_modules (not _npx)', () => {
     expect(
-      resolveInstallChannel(
-        {},
-        'community',
-        '/usr/local/lib/node_modules/editmamei/dist/index.js'
-      )
+      resolveInstallChannel({}, 'community', '/usr/local/lib/node_modules/editmamei/dist/index.js')
     ).toBe('npm_global');
     expect(
       resolveInstallChannel(
@@ -63,9 +63,9 @@ describe('resolveInstallChannel', () => {
     expect(resolveInstallChannel({}, 'community', '/home/alice/editmamei/dist/index.js')).toBe(
       'source'
     );
-    expect(
-      resolveInstallChannel({}, 'community', 'E:\\code\\editmamei\\dist\\index.js')
-    ).toBe('source');
+    expect(resolveInstallChannel({}, 'community', 'E:\\code\\editmamei\\dist\\index.js')).toBe(
+      'source'
+    );
   });
 
   it('falls back to source when argv1 is empty (unavailable)', () => {

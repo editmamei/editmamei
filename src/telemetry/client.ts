@@ -622,9 +622,7 @@ function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
     any_failures: s.any_failures,
     ...(s.duration_s !== undefined ? { duration_s: s.duration_s } : {}),
     ...(s.retry_count !== undefined ? { retry_count: s.retry_count } : {}),
-    ...(s.ended_after_failure !== undefined
-      ? { ended_after_failure: s.ended_after_failure }
-      : {}),
+    ...(s.ended_after_failure !== undefined ? { ended_after_failure: s.ended_after_failure } : {}),
     ...(s.edits_ok !== undefined ? { edits_ok: s.edits_ok } : {}),
     ...(s.kept_work !== undefined ? { kept_work: s.kept_work } : {}),
     ...(s.behind_latest !== undefined ? { behind_latest: s.behind_latest } : {}),
