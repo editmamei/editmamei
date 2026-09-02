@@ -601,15 +601,50 @@ describe('createSceneTools', () => {
     expect((relaxed.structuredContent as { passed: boolean }).passed).toBe(true); // model relaxes ⇒ confident
   });
 
-  it('above_horizon → rectangle to the horizon y', async () => {
-    const res = await callTool(tools(), 'ps_select_by_reference', {
-      target: 'above_horizon',
+  /** An export with a real sky/ground split: top quarter bright, rest dark. */
+  function horizonDecoded(): DecodedImage {
+    const w = 32;
+    const h = 32;
+    const data = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      const v = y < h / 4 ? 220 : 40;
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        data[i] = v;
+        data[i + 1] = v;
+        data[i + 2] = v;
+        data[i + 3] = 255;
+      }
+    }
+    return { width: w, height: h, data };
+  }
+
+  it('above_horizon → rectangle to the horizon y when a horizon is measurable', async () => {
+    const t = createSceneTools(conn.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      detectDeps: fakeDetectDeps(horizonDecoded()),
     });
+    const res = await callTool(t, 'ps_select_by_reference', { target: 'above_horizon' });
     const rect = sc.allBuilds().find((b) => b.name === 'selectRectangle');
     expect(rect).toBeTruthy();
     // The rectangle spans the full width and stops at the horizon (top=0).
     expect(rect?.params).toMatchObject({ left: 0, top: 0, right: 1000 });
     expect((res.structuredContent as { method: string }).method).toBe('rectangle_to_horizon');
+  });
+
+  it('above_horizon is honest absence when no horizon is measurable', async () => {
+    // The default fixture has no decodable export, so there is no row profile
+    // and nothing to measure. An unmeasurable frame must produce NO selection:
+    // supplying a coordinate here would return a rectangle presented as a
+    // region, on an image containing no horizon at all. Asserting absence is
+    // the point — a test that only checked the call succeeded would pass
+    // against a fabricated coordinate.
+    const res = await callTool(tools(), 'ps_select_by_reference', { target: 'above_horizon' });
+    expect(
+      sc.allBuilds().find((b) => b.name === 'selectRectangle'),
+      'must not select a rectangle at a guessed horizon'
+    ).toBeFalsy();
+    expect(res.structuredContent).toMatchObject({ passed: false, method: 'none' });
   });
 
   it('face → the primary face box as a feathered ellipse', async () => {

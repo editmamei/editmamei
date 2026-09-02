@@ -249,7 +249,54 @@ func init() {
     //   2. save active layer → switch to a pixel layer → retry → restore.
     //   3. synthesize from per-channel R+G+B (or Lab Lightness, or Gray).
     // Returns { bins, source } so the caller can record which path landed.
+    //
+    // MEASURED on Photoshop 27.10.0 (win32), solid-fill probes at 100x100:
+    //   pure red   -> one bin, 76,  10000 px    (0.30 * 255)
+    //   pure green -> one bin, 150, 10000 px    (0.59 * 255)
+    //   pure blue  -> one bin, 28,  10000 px    (0.11 * 255)
+    //   half red / half white -> two bins, 76 and 255, 5000 px each
+    // Total always equals the pixel count, never three times it, and a mixed
+    // image keeps one bin per DISTINCT PIXEL rather than one per channel value.
+    // So doc.histogram is a true per-pixel luminance histogram weighted
+    // 0.30/0.59/0.11 — Photoshop's Luminosity reading, NOT the Channels-panel
+    // RGB reading, which is the three channel histograms combined. That is the
+    // whole reason this is worth reading instead of synthesising.
+    //
+    // doc.histogram follows doc.activeChannels: with a single channel selected in
+    // the Channels panel it returns THAT channel's histogram, which would be a
+    // per-channel read labelled as the composite — the exact class of mislabelling
+    // this function exists to avoid. Force the component channels for the duration
+    // of the read and put the user's selection back, the same guard the selection
+    // snippets use before a pixel sampler runs.
     function readCompositeBins() {
+      // Only force the component channels when the current selection could be
+      // read back, because forcing without a restore silently changes what the
+      // user is working on. Measured on 27.10.0: while a LAYER MASK is targeted
+      // for editing, reading doc.activeChannels THROWS ("the command Get is not
+      // currently available") and doc.histogram throws too, yet the assignment
+      // still succeeds — so forcing there would kick the user off their mask
+      // with nothing to put back. Editing a mask is an ordinary retouch state,
+      // not an edge case. So when the selection is unreadable we do not force it.
+      //
+      // That narrows the harm, it does not remove it: the second fallback below
+      // still swaps doc.activeLayer, and restoring an ArtLayer does NOT restore
+      // mask targeting, so a masked read can still land the user on the layer
+      // rather than its mask. Closing that needs the mask-targeting state itself
+      // captured and replayed, which is a wider change than this one.
+      var savedChannels = null;
+      var forced = false;
+      try { savedChannels = doc.activeChannels; } catch (eSc) { savedChannels = null; }
+      if (savedChannels && savedChannels.length) {
+        try { doc.activeChannels = doc.componentChannels; forced = true; } catch (eCc) {}
+      }
+      try {
+        return readCompositeBinsInner();
+      } finally {
+        if (forced) { try { doc.activeChannels = savedChannels; } catch (eRc) {} }
+      }
+    }
+
+    function readCompositeBinsInner() {
       try {
         var b1 = doc.histogram;
         if (b1 && b1.length > 0) return { bins: b1, source: 'doc-histogram' };
@@ -284,12 +331,21 @@ func init() {
         var hB = named.blue.histogram;
         var nC = Math.min(hR.length, hG.length, hB.length);
         var synth = [];
-        // Float bins (no rounding) so the downstream mean computation
-        // sees the true total pixel count and the mean stays exact.
+        // LAST RESORT — reached only when doc.histogram throws on every layer
+        // AND the document has no Lightness/Gray channel.
+        //
+        // This is a mixture of the three MARGINAL histograms, not a per-pixel
+        // composite: bin i counts pixels whose R is i, plus pixels whose G is
+        // i, plus pixels whose B is i. The mean is exact by linearity of
+        // expectation, but the SHAPE is not trustworthy — clipping and
+        // percentile reads taken from it are wrong on saturated images, where
+        // one channel is near zero while the others are bright. The source
+        // name is surfaced in the result's channel field so callers can
+        // refuse rather than silently trust it.
         for (var iC = 0; iC < nC; iC++) {
           synth[iC] = (hR[iC] + hG[iC] + hB[iC]) / 3;
         }
-        return { bins: synth, source: 'rgb-channel-average' };
+        return { bins: synth, source: 'rgb-marginal-mixture: shape unreliable' };
       }
       throw new Error('Composite histogram unavailable and no fallback channels available (mode: ' + modeStr + ')');
     }
@@ -304,12 +360,27 @@ func init() {
       // Document-mode dispatched:
       //   Lab       → Lightness channel (true luminance, exact)
       //   Grayscale → Gray channel (it IS luminosity, exact)
-      //   RGB       → synthesize from R+G+B via Rec.709 weighted bin sums.
-      //               APPROXIMATION: marginal weighted sum != true per-pixel
-      //               luminosity histogram (channels are correlated in real
-      //               images). The resulting MEAN is exact (linearity of
-      //               expectation); stdev/median are approximations that
-      //               are accurate enough for exposure judgment.
+      //   RGB       → the TRUE per-pixel composite (doc.histogram).
+      //
+      // This previously synthesized a Rec.709 weighted sum of the three
+      // MARGINAL histograms. That is not a luminosity histogram and not an
+      // approximation of one: a weighted mixture of marginals is not the
+      // distribution of the weighted sum. Bin i counted pixels whose R is i,
+      // plus pixels whose G is i, plus pixels whose B is i — so a pixel that
+      // is dark in ONE channel contributed to a dark bin even when the other
+      // two channels were bright and the pixel was not dark at all.
+      //
+      // The mean stayed exact (linearity of expectation), which is why the
+      // error survived review, but every shape-derived read — clipping,
+      // percentiles, median, stdev — was wrong, and wrong WORST on saturated
+      // images, i.e. the ones this product exists to grade. Measured on a
+      // deep blue-water frame: the synthesis reported 521,101 px at level 0
+      // (~4.3 of every 100 pixels, read downstream as shadow clipping)
+      // because red is genuinely near zero across open water; the true
+      // per-pixel composite held 30 px there, and the green channel — which
+      // carries the dominant share of luminance weight — held 35. The
+      // reported figure was arithmetically impossible, and a caller could
+      // not have detected that from the output.
       var named = collectNamedChannels(doc);
       if (named.lightness) {
         bins = named.lightness.histogram;
@@ -317,22 +388,21 @@ func init() {
       } else if (named.gray) {
         bins = named.gray.histogram;
         resolvedChannel = 'luminosity (Grayscale)';
-      } else if (named.red && named.green && named.blue) {
-        var bR = named.red.histogram;
-        var bG = named.green.histogram;
-        var bB = named.blue.histogram;
-        var nB = Math.min(bR.length, bG.length, bB.length);
-        var lum = [];
-        // Rec.709 (sRGB → relative luminance) weights. Float bins (no
-        // rounding) so the downstream mean stays exact under linearity
-        // of expectation; stdev/median remain approximations because
-        // channels are correlated in real images.
-        var wR = 0.2126, wG = 0.7152, wB = 0.0722;
-        for (var iL = 0; iL < nB; iL++) {
-          lum[iL] = wR * bR[iL] + wG * bG[iL] + wB * bB[iL];
-        }
-        bins = lum;
-        resolvedChannel = 'luminosity (Rec.709 approximation from RGB)';
+      } else if (modeStr === 'DocumentMode.RGB') {
+        // Gate on the MODE, not on English channel names: Photoshop localises
+        // 'Red'/'Green'/'Blue' (Rot/Rosso/...), and the branch no longer reads
+        // those channels anyway. Mode strings are enum constants, so they hold
+        // on every locale.
+        //
+        // A real per-pixel distribution weighted 0.30/0.59/0.11, per the probe
+        // recorded above — which is what clipping and percentile reads need.
+        // Only say 'per-pixel composite' when the composite read actually
+        // landed; a fallback names itself instead, same as the composite branch.
+        var lumRes = readCompositeBins();
+        bins = lumRes.bins;
+        resolvedChannel = (lumRes.source === 'doc-histogram')
+          ? 'luminosity (per-pixel composite)'
+          : 'luminosity (' + lumRes.source + ')';
       } else {
         throw new Error('Luminosity not available for mode ' + modeStr +
           ' (channels: ' + (function () { var n = []; for (var k in named) n.push(k); return n.join(', '); })() +
