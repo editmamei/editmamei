@@ -26,7 +26,7 @@ func init() {
     }
 
     // Telemetry's ps_locale/doc_depth/doc_mode dimensions (all content-free: a locale
-    // token, a bit depth, an enum mode string — never a document name or path). locale
+    // token, a bit depth, an enum mode string - never a document name or path). locale
     // has no document dependency; depth/mode need an open document and are left null
     // without one, matching every other "no active document" degrade in this file.
     var locale = null;
