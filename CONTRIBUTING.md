@@ -38,10 +38,11 @@ npm run build
 npm test
 ```
 
-You need Node 22 or newer and a Go toolchain. `npm run build` compiles the `editmamei-core` Go
+You need Node 22 or newer and Go 1.27 or newer. `npm run build` compiles the `editmamei-core` Go
 binary that the server calls at runtime. It warns instead of failing when Go is missing, so a
 docs or test-only contributor is not blocked, but you will need Go to exercise anything that
-emits ExtendScript.
+emits ExtendScript. An older Go still works as long as `GOTOOLCHAIN` is left at its `auto`
+default: it reads the version from `go-core/go.mod` and fetches the right toolchain for you.
 
 The Vitest suite runs entirely without Photoshop, which is what makes it fast and what limits it.
 It verifies the ExtendScript we generate, never that Photoshop accepted it. If your change
