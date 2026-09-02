@@ -27,7 +27,14 @@ import { EDITION } from '../edition.js';
 import { VERSION } from '../version.js';
 import { resolveInstallChannel } from '../install-channel.js';
 import type { Settings } from '../core/settings.js';
-import { READ_ONLY_TOOLS, KEPT_WORK_TOOLS, nodeMajor, archToken, osMajor } from './activity.js';
+import {
+  READ_ONLY_TOOLS,
+  KEPT_WORK_TOOLS,
+  nodeMajor,
+  archToken,
+  osMajor,
+  boundMajor,
+} from './activity.js';
 import {
   buildClientConnected,
   buildDiagnosticEvent,
@@ -66,6 +73,8 @@ const DEFAULT_FLUSH_INTERVAL_MS = 5 * 60_000;
 const SESSION_PERSIST_THROTTLE_MS = 10_000;
 /** Cap for `session_summary.duration_s` (7 days) — see the field's doc on the interface. */
 const MAX_SESSION_DURATION_S = 604_800;
+/** Cap for `session_summary.templates_saved` / `action_sets` — matches the server's field spec. */
+const MAX_INSTALL_ASSET_COUNT = 100_000;
 
 export interface RecordedCall {
   tool: string;
@@ -138,6 +147,15 @@ export class TelemetryClient {
   private readonly active: boolean;
   private readonly outboxOpts: OutboxOptions;
   private readonly getModuleStatus: () => ModuleStatusInfo | null;
+  /**
+   * Memoized result of `getModuleStatus()` — resolved at most once per session, lazily on
+   * first use, rather than re-invoked on every persisted-state write. "Does this install
+   * have a license record" doesn't change mid-session, and `persistSessionStateThrottled`
+   * can call `summaryFields()` many times over a long session (throttled, but still). A
+   * boxed `{ value }` wrapper distinguishes "not yet resolved" from "resolved to null" (a
+   * pure-CE install), since `null` is itself a valid resolved value.
+   */
+  private resolvedModuleStatus: { value: ModuleStatusInfo | null } | null = null;
 
   private queue: TelemetryEvent[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -171,8 +189,13 @@ export class TelemetryClient {
   /** Boot-time Pro-module background refresh outcome; only meaningful (and only sent) for
    *  installs with a license record — see doShutdown's getModuleStatus() gate. */
   private moduleUpdate: 'none' | 'updated' | 'failed' = 'none';
-  /** On-disk asset counts, read at ps_ping time. null until ps_ping has run once. */
-  private installAssets: { templates_saved: number; action_sets: number } | null = null;
+  /**
+   * On-disk asset counts, read at ps_ping time. Each field is present only once THAT field
+   * has actually been observed — merged per field (not replaced wholesale) by
+   * setInstallAssets, so a later ping that only re-confirms one field (the other having
+   * degraded that round) can't clobber an earlier good reading of the other.
+   */
+  private installAssets: { templates_saved?: number; action_sets?: number } = {};
   /** Throttle clock for session-state persistence. 0 = never persisted yet. */
   private lastSessionPersistMs = 0;
   /**
@@ -223,18 +246,21 @@ export class TelemetryClient {
     // promptly so an install shows up without waiting out the periodic interval; a failed send
     // falls through to the outbox like any other batch.
     if (this.settings.telemetry.usage) {
-      const hostOsMajor = osMajor(process.platform, release());
+      // Bounded to the server's field range (0..999 for both) — an out-of-range or
+      // unparseable reading is omitted rather than risking a 400 on the whole batch.
+      const hostNodeMajor = boundMajor(nodeMajor(), 999);
+      const hostOsMajor = boundMajor(osMajor(process.platform, release()), 999);
       this.enqueue(
         buildSessionStart(this.dims, this.now(), {
-          node_major: nodeMajor(),
+          ...(hostNodeMajor !== null ? { node_major: hostNodeMajor } : {}),
           arch: archToken(),
           ...(hostOsMajor !== null ? { os_major: hostOsMajor } : {}),
         })
       );
       // Pro module boot outcome, alongside the ping — emitted only for installs with a
-      // license record (getModuleStatus returns null otherwise), so a pure-CE host stays
+      // license record (moduleStatus() returns null otherwise), so a pure-CE host stays
       // silent. This is the signal that answers "did the subscriber's module actually load?".
-      const moduleStatus = this.getModuleStatus();
+      const moduleStatus = this.moduleStatus();
       if (moduleStatus) this.enqueue(buildModuleStatus(this.dims, moduleStatus, this.now()));
       void this.flush();
     }
@@ -242,8 +268,10 @@ export class TelemetryClient {
 
   /**
    * Record the connected MCP client's identity + capabilities (Category A, opt-out), once
-   * per session from `Server.oninitialized` (see server.ts). Flushed promptly like the boot
-   * ping — this is a one-time, low-volume signal, not worth waiting out the periodic timer.
+   * per session from `Server.oninitialized` (see server.ts). Deliberately does NOT force its
+   * own flush — it rides whichever of the boot flush, the periodic timer, the next batch-fill
+   * flush, or (on a hard exit) the durable outbox gets to it first, the same as any other
+   * enqueued event.
    */
   recordClientConnected(info: {
     clientName: string | undefined;
@@ -254,7 +282,6 @@ export class TelemetryClient {
   }): void {
     if (!this.active || !this.settings.telemetry.usage) return;
     this.enqueue(buildClientConnected(this.dims, info, this.now()));
-    void this.flush();
   }
 
   /** Record one tool call (Category A, opt-out). */
@@ -289,17 +316,39 @@ export class TelemetryClient {
     this.moduleUpdate = outcome;
   }
 
-  /** Record the install's on-disk asset counts, read at ps_ping time. */
-  setInstallAssets(assets: { templates_saved: number; action_sets: number }): void {
-    this.installAssets = assets;
+  /**
+   * Record the install's on-disk asset counts, read at ps_ping time. Merges per field
+   * (rather than replacing the object) — pass only the fields this ping actually observed,
+   * so a degraded field on one ping doesn't erase a good value an earlier ping recorded this
+   * session. Each value is clamped to MAX_INSTALL_ASSET_COUNT before being kept, matching the
+   * server's field bound.
+   */
+  setInstallAssets(assets: { templates_saved?: number; action_sets?: number }): void {
+    this.installAssets = {
+      ...this.installAssets,
+      ...(assets.templates_saved !== undefined
+        ? { templates_saved: clampCount(assets.templates_saved) }
+        : {}),
+      ...(assets.action_sets !== undefined ? { action_sets: clampCount(assets.action_sets) } : {}),
+    };
   }
 
-  /** Wall-clock from the first recorded call to the last, in seconds, capped at
-   *  MAX_SESSION_DURATION_S. undefined until a call has been recorded. */
+  /** Resolves + memoizes `getModuleStatus()` — see `resolvedModuleStatus`'s field doc. */
+  private moduleStatus(): ModuleStatusInfo | null {
+    if (this.resolvedModuleStatus === null) {
+      this.resolvedModuleStatus = { value: this.getModuleStatus() };
+    }
+    return this.resolvedModuleStatus.value;
+  }
+
+  /** Wall-clock from the first recorded call to the last, in seconds, clamped to
+   *  [0, MAX_SESSION_DURATION_S] — the lower bound guards a backward-stepping clock (a
+   *  system clock adjustment mid-session) from sending a negative duration. undefined until
+   *  a call has been recorded. */
   private durationS(): number | undefined {
     if (this.firstCallAtMs === null || this.lastCallAtMs === null) return undefined;
     return Math.min(
-      Math.floor((this.lastCallAtMs - this.firstCallAtMs) / 1000),
+      Math.max(0, Math.floor((this.lastCallAtMs - this.firstCallAtMs) / 1000)),
       MAX_SESSION_DURATION_S
     );
   }
@@ -324,9 +373,9 @@ export class TelemetryClient {
   } {
     const duration = this.durationS();
     // module_update is sent ONLY for installs with a license record — a pure-CE install has
-    // no module to report freshness on, so getModuleStatus() returning null here means
+    // no module to report freshness on, so moduleStatus() returning null here means
     // "not applicable", not "unknown".
-    const moduleStatus = this.getModuleStatus();
+    const moduleStatus = this.moduleStatus();
     return {
       ...(duration !== undefined ? { duration_s: duration } : {}),
       retry_count: this.retryCount,
@@ -336,11 +385,11 @@ export class TelemetryClient {
       ...(this.behindLatest !== null ? { behind_latest: this.behindLatest } : {}),
       dropped_events: this.droppedEvents,
       ...(moduleStatus !== null ? { module_update: this.moduleUpdate } : {}),
-      ...(this.installAssets
-        ? {
-            templates_saved: this.installAssets.templates_saved,
-            action_sets: this.installAssets.action_sets,
-          }
+      ...(this.installAssets.templates_saved !== undefined
+        ? { templates_saved: this.installAssets.templates_saved }
+        : {}),
+      ...(this.installAssets.action_sets !== undefined
+        ? { action_sets: this.installAssets.action_sets }
         : {}),
     };
   }
@@ -635,4 +684,10 @@ function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Clamp an install-asset count to [0, MAX_INSTALL_ASSET_COUNT] — matches the server's field
+ *  bound on `templates_saved` / `action_sets`. */
+function clampCount(n: number): number {
+  return Math.min(Math.max(0, n), MAX_INSTALL_ASSET_COUNT);
 }

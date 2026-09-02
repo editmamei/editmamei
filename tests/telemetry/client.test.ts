@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, release } from 'node:os';
 import { join } from 'node:path';
+import { osMajor, nodeMajor, boundMajor } from '@editmamei/telemetry/activity.ts';
 import { TelemetryClient } from '@editmamei/telemetry/client.ts';
 import {
   readOutbox,
@@ -229,25 +230,27 @@ describe('start() boot ping', () => {
     const boot = rec.batches.flat().find((e) => e.type === 'session_start') as
       Record<string, unknown> | undefined;
     expect(boot).toBeDefined();
-    // content-free: exactly the shared Category A dimensions + channel + the boot-time
-    // platform facts (node_major/arch/os_major — always resolvable on the real test host),
-    // no counts / free text.
-    expect(Object.keys(boot!).sort()).toEqual(
-      [
-        'arch',
-        'channel',
-        'edition',
-        'editmamei_version',
-        'install_id',
-        'node_major',
-        'os_major',
-        'platform',
-        'ps_version',
-        'ts_bucket',
-        'type',
-        'v',
-      ].sort()
-    );
+    // content-free: exactly the shared Category A dimensions + channel + arch, no counts /
+    // free text. node_major/os_major are asserted the SAME way the client itself decides
+    // whether to include them (bounded + non-null) — not assumed always-present on whatever
+    // host happens to run this suite (B-24: a real host isn't guaranteed to resolve either).
+    const expectedKeys = [
+      'arch',
+      'channel',
+      'edition',
+      'editmamei_version',
+      'install_id',
+      'platform',
+      'ps_version',
+      'ts_bucket',
+      'type',
+      'v',
+    ];
+    if (boundMajor(nodeMajor(), 999) !== null) expectedKeys.push('node_major');
+    if (boundMajor(osMajor(process.platform, release()), 999) !== null) {
+      expectedKeys.push('os_major');
+    }
+    expect(Object.keys(boot!).sort()).toEqual(expectedKeys.sort());
   });
 
   it('stamps the boot ping with the passed edition + channel (entitlement/install source)', async () => {
@@ -472,6 +475,29 @@ describe('session_summary accumulators', () => {
     expect(summary?.duration_s).toBe(604_800);
   });
 
+  it('clamps duration_s to 0 when the clock steps backward mid-session', async () => {
+    let cur = new Date('2026-06-15T12:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
+    cur = new Date('2026-06-15T11:59:00.000Z'); // clock stepped BACKWARD 60s
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { duration_s: number } | undefined;
+    expect(summary?.duration_s).toBe(0);
+  });
+
   it('counts retries via the retry flag on RecordedCall', async () => {
     const rec = recorder();
     const { client: c, dir } = makeClientD(makeSettings(), rec);
@@ -641,10 +667,38 @@ describe('session_summary accumulators', () => {
     expect(summary2?.templates_saved).toBe(6);
     expect(summary2?.action_sets).toBe(2);
   });
+
+  it('setInstallAssets merges per field — a degraded second ping does not clobber the other', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    // First ping: both observed.
+    c.setInstallAssets({ templates_saved: 6, action_sets: 2 });
+    // Second ping: only templates_saved observed (action_sets degraded this round) —
+    // must NOT erase the action_sets value the first ping recorded.
+    c.setInstallAssets({ templates_saved: 7 });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { templates_saved?: number; action_sets?: number } | undefined;
+    expect(summary?.templates_saved).toBe(7);
+    expect(summary?.action_sets).toBe(2);
+  });
+
+  it('setInstallAssets clamps each field to MAX_INSTALL_ASSET_COUNT (100_000)', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.setInstallAssets({ templates_saved: 100_001, action_sets: -5 });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { templates_saved?: number; action_sets?: number } | undefined;
+    expect(summary?.templates_saved).toBe(100_000);
+    expect(summary?.action_sets).toBe(0);
+  });
 });
 
 describe('recordClientConnected', () => {
-  it('emits one client_connected event and flushes promptly', async () => {
+  it('enqueues one client_connected event without forcing its own flush', async () => {
     const rec = recorder();
     const c = makeClient(makeSettings(), rec, { flushIntervalMs: 10_000_000 });
     c.recordClientConnected({
@@ -654,7 +708,12 @@ describe('recordClientConnected', () => {
       capElicitation: false,
       capRoots: true,
     });
-    await new Promise((r) => setTimeout(r, 0));
+    // Not sent yet — it rides the next flush (boot flush, periodic timer, batch-fill flush,
+    // or shutdown's outbox write), not a flush of its own.
+    expect(rec.batches).toHaveLength(0);
+    expect(c.pendingCount()).toBe(1);
+
+    await c.flush();
     const ev = rec.batches.flat().find((e) => e.type === 'client_connected') as
       { client: string; client_major: number | null; cap_sampling: boolean } | undefined;
     expect(ev).toBeDefined();
