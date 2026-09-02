@@ -109,10 +109,11 @@ Claude Desktop without editing any file.
 log so the default is never a surprise:
 
 > First run: Editmamei collects anonymous, content-free usage telemetry (tool name, success,
-> duration, version/edition/OS/PS-version, install channel) to find what breaks. It never sends
-> image content, file paths, or personal data. Opt out anytime: `editmamei config set telemetry.usage false`
-> (or edit `~/.editmamei/settings.json`). Opt in to sanitized diagnostics:
-> `editmamei config set telemetry.diagnostics true`.
+> duration, bytes returned, version/edition/OS/PS-version, install channel, which AI client
+> connected, Node/OS/architecture versions, and per-session counts like edits made and retries)
+> to find what breaks. It never sends image content, file paths, or personal data. Opt out
+> anytime: `editmamei config set telemetry.usage false` (or edit `~/.editmamei/settings.json`).
+> Opt in to sanitized diagnostics: `editmamei config set telemetry.diagnostics true`.
 
 > **Note:** Editmamei reads the settings file once at startup. After changing a setting, restart
 > your AI client so the server picks it up.
@@ -140,7 +141,8 @@ hidden fields.
   "tool": "ps_add_adjustment_layer",
   "success": true,
   "error_class": null,
-  "duration_ms": 612
+  "duration_ms": 612,
+  "result_bytes": 842
 }
 ```
 
@@ -158,6 +160,7 @@ hidden fields.
 | `success` | Whether the call succeeded. |
 | `error_class` | On failure, a short error **category** (e.g. `wrong_layer_kind`), never a message or free text. `null` on success. |
 | `duration_ms` | How long the call took, in milliseconds. |
+| `result_bytes` | The **size** of the tool's response, in bytes — never its content. Omitted if unknown. |
 
 ### Session start: once when Editmamei launches (on by default)
 
@@ -171,16 +174,55 @@ hidden fields.
   "edition": "community",
   "platform": "win32",
   "ps_version": "unknown",
-  "channel": "npm"
+  "channel": "npx",
+  "node_major": 22,
+  "arch": "x64",
+  "os_major": 11
 }
 ```
 
 Sent once when Editmamei starts, so an install can be counted even before you run anything. Same
 content-free fields as above, with **no tool name, no counts, no free text**. `ps_version` is usually
-`unknown` because Photoshop hasn't been queried yet at startup. `channel` records which install
-route you used — `npm` (installed from the package registry) or `mcpb` (the one-click Claude
-Desktop extension) — so we can tell which distribution channels people actually use. It's one of
-those two values; nothing else.
+`unknown` because Photoshop hasn't been queried yet at startup.
+
+| Field | Meaning |
+|---|---|
+| `channel` | Which install route you used: `npx`, `npm_global` (installed from the package registry), `mcpb` (the one-click Claude Desktop extension), or `source` (running from a git checkout). One of those four values; nothing else. |
+| `node_major` | The Node.js major version Editmamei is running under (e.g. `22`). Omitted if unknown. |
+| `arch` | CPU architecture bucket: `x64`, `arm64`, or `other`. Omitted if unknown. |
+| `os_major` | Your OS's major version (e.g. `11` for Windows 11, `15` for macOS Sequoia). Omitted if unparseable. |
+
+### Client connected: once per session, when your AI client finishes connecting (on by default)
+
+```json
+{
+  "v": 2,
+  "type": "client_connected",
+  "install_id": "9f3c…",
+  "ts_bucket": "2026-06-15",
+  "editmamei_version": "1.0.3",
+  "edition": "community",
+  "platform": "win32",
+  "client": "claude_code",
+  "client_major": 2,
+  "cap_sampling": true,
+  "cap_elicitation": false,
+  "cap_roots": true
+}
+```
+
+Sent once the MCP handshake with your AI client completes, so we can tell which clients people
+actually connect Editmamei to (and prioritize testing against the popular ones). Content-free: the
+client's self-reported name is mapped to a fixed short list, never sent as free text, and its
+version is reduced to a bare major number.
+
+| Field | Meaning |
+|---|---|
+| `client` | Which AI client connected, one of: `claude_desktop`, `claude_code`, `cursor`, `windsurf`, `vscode`, or `other`. Never the raw client name string. |
+| `client_major` | The client's major version number, or `null` if it didn't report one or the version doesn't parse. This is the one field that is ever sent as `null` rather than omitted — a connected client with an unreadable version is still a known fact. |
+| `cap_sampling` / `cap_elicitation` / `cap_roots` | Whether the client declared support for these MCP capabilities. Booleans only. |
+
+If your AI client never completes the handshake, this event is never sent.
 
 ### Module status: once at startup, Pro installs only (on by default)
 
@@ -227,12 +269,36 @@ No image content, no paths, no tool arguments — an enum outcome plus the modul
   "ps_version": "27.8.0",
   "tool_call_count": 47,
   "distinct_tools": 11,
-  "any_failures": true
+  "any_failures": true,
+  "duration_s": 913,
+  "retry_count": 2,
+  "ended_after_failure": false,
+  "edits_ok": 31,
+  "kept_work": 4,
+  "behind_latest": false,
+  "dropped_events": 0,
+  "module_update": "none",
+  "templates_saved": 6,
+  "action_sets": 2
 }
 ```
 
 Counts only: how many tool calls in the session, how many distinct tools, and whether anything
 failed. No per-call detail.
+
+| Field | Meaning |
+|---|---|
+| `duration_s` | Wall-clock from your first tool call to your last, in seconds (capped at 7 days). |
+| `retry_count` | How many calls repeated the immediately preceding tool + arguments — a rough "the AI had to try again" signal. |
+| `ended_after_failure` | Whether the session's very last recorded call failed. |
+| `edits_ok` | Successful calls to a tool that actually changes the open document. |
+| `kept_work` | Successful calls to a tool that saves the result to disk (export, save). |
+| `behind_latest` | Whether the boot-time update check found a newer published version. Omitted if the check is off or never resolved. |
+| `dropped_events` | Events this client had to drop in memory because too many piled up before they could be sent. Almost always `0`. |
+| `module_update` | Whether the background Pro-module refresh installed something (`updated`), failed (`failed`), or did neither (`none`). Sent only for installs with a Pro license on file — a Community install never sends this field. |
+| `templates_saved` / `action_sets` | How many templates you've saved and how many Photoshop Action Sets you have loaded, as counts only — never their names or content. Omitted until a connection to Photoshop has reported them. |
+
+Every field above is omitted, not sent as a false zero, when this session never learned it.
 
 ### Diagnostic event: only if you opt in
 
@@ -251,13 +317,22 @@ Sent **only** when you set `telemetry.diagnostics true`, and only when something
   "error_class": "am_descriptor_no_op",
   "error_message": "…sanitized; paths reduced to filenames…",
   "snippet": "applyShadowsHighlights",
-  "stderr_tail": "…last lines of error output, sanitized…"
+  "stderr_tail": "…last lines of error output, sanitized…",
+  "doc_depth": 16,
+  "doc_mode": "cmyk",
+  "ps_locale": "en_US"
 }
 ```
 
 This adds a sanitized error message, the name of the failing step (`snippet`), and a trimmed
 tail of error output, enough to trace a bug without you mailing a log by hand. Still no image
 content.
+
+| Field | Meaning |
+|---|---|
+| `doc_depth` | The open document's bit depth at the last successful connection to Photoshop: `8`, `16`, or `32`. Omitted if no document was open. |
+| `doc_mode` | The open document's color mode: `rgb`, `cmyk`, `lab`, `grayscale`, or `other`. Omitted if no document was open. |
+| `ps_locale` | Photoshop's UI language/region (e.g. `en_US`), read from Photoshop itself. Omitted if it doesn't match a plain language-region token. |
 
 ### What is deliberately never in any event
 
@@ -294,6 +369,11 @@ Usage and diagnostic events are sent to Editmamei's **own** telemetry endpoint (
 third-party analytics company), where they're aggregated by day. Sending is batched and
 best-effort: it happens in the background, times out quickly, and never retries or blocks your
 editing. If you're offline, events are simply dropped, never queued indefinitely.
+
+Per-install daily counts derived from Category A events (calls, failures, edits, exports, and
+the like) are kept indefinitely against your anonymous install ID, so trends over the life of an
+install stay visible. Opt-in diagnostic rows (Category B — the sanitized error detail) are
+deleted after 90 days.
 
 ---
 
