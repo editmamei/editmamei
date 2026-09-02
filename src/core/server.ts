@@ -17,9 +17,14 @@ import {
 import { TelemetryClient } from '../telemetry/client.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
 import { resolveInstallChannel } from '../install-channel.js';
-import { checkForUpdate, shouldCheckForUpdate, type UpdateInfo } from '../update/check.js';
+import {
+  checkForUpdateWithStatus,
+  shouldCheckForUpdate,
+  type UpdateInfo,
+} from '../update/check.js';
 import { previousSessionFailureCounts, relevantFixes } from '../update/session-fixes.js';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { GoSnippetClient, coreBinaryName } from '../api/snippet-client.js';
 import { isProEntitled } from '../license/entitlement.js';
 import { createPingLicenseRefresher } from '../license/ping-refresh.js';
@@ -60,11 +65,29 @@ export function __resetLogScriptOnErrorWarnForTests(): void {
 }
 
 /**
+ * Hash a retry-detection key (tool name + args) so the raw args are never retained on the
+ * server instance, logged, or emitted — only a SHA-1 digest survives past this call. Returns
+ * null when `args` can't be serialized (e.g. a circular structure); the caller treats that as
+ * "not a retry" rather than letting the whole onCall hook throw.
+ */
+function hashRetryKey(tool: string, args: unknown): string | null {
+  try {
+    const json = JSON.stringify({ tool, args });
+    return createHash('sha1').update(json).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/**
  * First-run disclosure (see docs/privacy.md, "What you control"). The MCP server has no UI, so the
  * one place we can plainly state what Category-A telemetry collects + how to opt out is
  * stderr on the run that creates settings.json. Content-never guarantee stated up front.
+ * Exported so a test can assert this stays word-for-word what docs/privacy.md's first-run
+ * blockquote promises — the two are hand-maintained in separate files and have no other
+ * mechanism keeping them in sync.
  */
-const FIRST_RUN_DISCLOSURE =
+export const FIRST_RUN_DISCLOSURE =
   'First run: Editmamei collects anonymous, content-free usage telemetry (tool name, ' +
   'success, duration, bytes returned, version/edition/OS/PS-version, install channel, ' +
   'which AI client connected, Node/OS/architecture versions, and per-session counts like ' +
@@ -156,12 +179,14 @@ export class EditmameiServer {
    */
   private lastPingReachedPs: boolean | null = null;
   /**
-   * JSON(tool+args) of the immediately preceding tool call, for telemetry's `retry` signal
-   * (RecordedCall.retry — mirrors SessionLog's own `lastCallKey`/`retry_signal`, kept as a
-   * SEPARATE field rather than reused: this one stays in memory and never leaves the
-   * process, while SessionLog's copy is built from sanitized args destined for disk).
+   * SHA-1 hash of JSON(tool+args) of the immediately preceding tool call, for telemetry's
+   * `retry` signal (RecordedCall.retry — mirrors SessionLog's own `lastCallKey`/
+   * `retry_signal`, kept as a SEPARATE field rather than reused: this one stays in memory
+   * and never leaves the process, while SessionLog's copy is built from sanitized args
+   * destined for disk). Hashed, not raw, so the args themselves are never retained on the
+   * instance between calls — see `hashRetryKey`.
    */
-  private lastTelemetryCallKey: string | null = null;
+  private lastTelemetryCallKeyHash: string | null = null;
   /**
    * Photoshop's UI locale (`app.locale`), cached from the last successful `ps_ping` and
    * carried on every diagnostic thereafter — see `recordDiagnostic`'s `ps_locale` param.
@@ -269,12 +294,13 @@ export class EditmameiServer {
     // result rides ps_ping (an MCP server's stderr never reaches the user, a tool
     // result does). checkForUpdate is fail-silent, so this never throws and never blocks boot.
     if (shouldCheckForUpdate(effectiveSettings.update_check)) {
-      this.updateCheck = checkForUpdate().then((info) => {
-        this.updateInfo = info;
-        // true only when checkForUpdate CONFIRMED a strictly newer version — never read
-        // `info === null` as "the check failed": that value also covers "already current",
-        // and check.ts's fail-silent contract makes the two indistinguishable on purpose.
-        this.telemetry.setBehindLatest(info !== null);
+      this.updateCheck = checkForUpdateWithStatus().then((result) => {
+        this.updateInfo = result.info;
+        // setBehindLatest only on a CONFIRMED status — 'newer' -> true, 'current' -> false.
+        // 'failed' calls neither, so the field stays omitted (never resolved this session)
+        // rather than sending a false 'false' for a check that never actually ran.
+        if (result.status === 'newer') this.telemetry.setBehindLatest(true);
+        else if (result.status === 'current') this.telemetry.setBehindLatest(false);
       });
     }
 
@@ -308,6 +334,11 @@ export class EditmameiServer {
             this.resolveLiveVersionInBackground();
           }
         }
+        // Computed once per call and threaded through to both consumers below — the
+        // previous shape called computeResultBytes twice (once inside sessionLog.append,
+        // once here for telemetry), redoing the same content-block walk over what can be a
+        // hundreds-of-KB result on every single tool call.
+        const resultBytes = computeResultBytes(entry.result);
         // Local NDJSON evidence log — fire-and-forget (append never throws).
         void this.sessionLog.append(
           {
@@ -317,7 +348,8 @@ export class EditmameiServer {
             duration_ms: entry.duration_ms,
             ...(entry.error ? { error: entry.error } : {}),
           },
-          entry.result
+          entry.result,
+          resultBytes
         );
         // Tee the same call into content-free telemetry (Category A, opt-out). Failures
         // additionally feed an opt-in Category-B diagnostic (sanitized message). Both are
@@ -347,18 +379,21 @@ export class EditmameiServer {
         const errorClass =
           classifyError(entry.error) ??
           (telemetrySuccess ? null : isPingDowngrade ? 'ps_not_running' : 'other');
-        // Retry signal: same tool + deep-equal args as the IMMEDIATELY preceding call. Keyed
-        // off the raw args (never leaves the process — unlike SessionLog's own copy, which is
-        // built from the sanitized/truncated args it writes to disk).
-        const telemetryCallKey = JSON.stringify({ tool: entry.tool, args: entry.args });
-        const isTelemetryRetry = telemetryCallKey === this.lastTelemetryCallKey;
-        this.lastTelemetryCallKey = telemetryCallKey;
+        // Retry signal: same tool + deep-equal args as the IMMEDIATELY preceding call. Hashed
+        // (never the raw args themselves — nothing about args is retained, logged, or
+        // emitted). A hash failure (unserializable args, e.g. a circular structure) degrades
+        // to "not a retry" rather than aborting this hook; the stored hash is left untouched
+        // so the NEXT call still compares against the last successfully hashed key.
+        const telemetryCallKeyHash = hashRetryKey(entry.tool, entry.args);
+        const isTelemetryRetry =
+          telemetryCallKeyHash !== null && telemetryCallKeyHash === this.lastTelemetryCallKeyHash;
+        if (telemetryCallKeyHash !== null) this.lastTelemetryCallKeyHash = telemetryCallKeyHash;
         this.telemetry.recordCall({
           tool: entry.tool,
           success: telemetrySuccess,
           duration_ms: entry.duration_ms,
           error_class: errorClass,
-          result_bytes: computeResultBytes(entry.result),
+          result_bytes: resultBytes,
           retry: isTelemetryRetry,
         });
         // Gate on the signal telemetry actually recorded, not the registry's raw
@@ -419,15 +454,26 @@ export class EditmameiServer {
     // before it removes any need to reason about a race between a very fast
     // initialize -> initialized round trip and our own synchronous code. If the client never
     // completes the handshake, this simply never fires — no event is the intended behavior.
+    //
+    // Once-latch: nothing in the MCP spec stops a client from sending a second
+    // `notifications/initialized` (a buggy or non-conforming one might), and
+    // recordClientConnected no longer forces its own flush (B-18), so a repeat would
+    // silently queue a duplicate event rather than visibly double-send. `client_connected`
+    // is a once-per-session signal — send it at most once no matter how many times this fires.
+    let clientConnectedSent = false;
     this.server.oninitialized = () => {
+      if (clientConnectedSent) return;
+      clientConnectedSent = true;
       const clientInfo = this.server.getClientVersion();
       const caps = this.server.getClientCapabilities();
       this.telemetry.recordClientConnected({
         clientName: clientInfo?.name,
         clientVersion: clientInfo?.version,
-        capSampling: caps?.sampling !== undefined,
-        capElicitation: caps?.elicitation !== undefined,
-        capRoots: caps?.roots !== undefined,
+        // `!= null`, not `!== undefined`: an explicit `null` capability is a client saying
+        // "I don't have this," the same as omitting it entirely — not a declaration.
+        capSampling: caps?.sampling != null,
+        capElicitation: caps?.elicitation != null,
+        capRoots: caps?.roots != null,
       });
     };
 
@@ -876,6 +922,10 @@ export class EditmameiServer {
     // with real reads and the LLM had no way to tell them apart.
     let version = 'Unknown';
     let actionSetsCount = 0;
+    // Whether THIS ping's pingState round trip actually reported action_sets_count — see
+    // the telemetry.setInstallAssets() call near the end of this method, which sends only
+    // the fields this ping genuinely observed (never a stale 0 for a degraded field).
+    let actionSetsObserved = false;
     let openDocuments: string[] = [];
     // Photoshop's UI locale (app.locale), telemetry's ps_locale diagnostic dimension — see
     // lastPsLocale's field doc. null unless this ping's pingState round trip reports one.
@@ -1034,7 +1084,10 @@ export class EditmameiServer {
         version = state.version;
         versionIsLive = true;
       }
-      if (typeof state.action_sets_count === 'number') actionSetsCount = state.action_sets_count;
+      if (typeof state.action_sets_count === 'number') {
+        actionSetsCount = state.action_sets_count;
+        actionSetsObserved = true;
+      }
       if (Array.isArray(state.open_documents)) openDocuments = state.open_documents;
       if (typeof state.locale === 'string') psLocale = state.locale;
       if (state.doc_depth === 8 || state.doc_depth === 16 || state.doc_depth === 32) {
@@ -1052,9 +1105,11 @@ export class EditmameiServer {
     }
 
     let userTemplates = 0;
+    let templatesObserved = false;
     try {
       const templates = await listTemplates();
       userTemplates = templates.length;
+      templatesObserved = true;
     } catch (err) {
       this.logger.warn(`listTemplates failed: ${err instanceof Error ? err.message : String(err)}`);
       degraded.push('templates');
@@ -1089,10 +1144,15 @@ export class EditmameiServer {
     if (docDepth !== null) this.lastDocDepth = docDepth;
     if (docMode !== null) this.lastDocMode = docMode;
     // Install-asset counts, alongside the other session_summary counters — a pure count,
-    // content-free like everything else this method reports.
+    // content-free like everything else this method reports. Only the fields THIS ping
+    // actually observed: action_sets needs the pingState round trip to have run at all;
+    // templates_saved needs listTemplates() to have succeeded. Sending an unobserved field
+    // as its stale default (0) would read as "confirmed zero" rather than "didn't check
+    // this time" — client.ts's setInstallAssets merges per field, so a degraded field here
+    // simply leaves an earlier good value (if any) alone instead of stomping it.
     this.telemetry.setInstallAssets({
-      templates_saved: userTemplates,
-      action_sets: actionSetsCount,
+      ...(templatesObserved ? { templates_saved: userTemplates } : {}),
+      ...(actionSetsObserved ? { action_sets: actionSetsCount } : {}),
     });
 
     // Every path above that didn't already return early DID reach Photoshop — the

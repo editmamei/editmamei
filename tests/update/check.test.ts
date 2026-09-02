@@ -5,6 +5,7 @@ import {
   resolveUpdateCheckUrl,
   shouldCheckForUpdate,
   checkForUpdate,
+  checkForUpdateWithStatus,
   parseFixesByVersion,
   fixedToolsSince,
   httpFetchLatest,
@@ -155,6 +156,59 @@ describe('checkForUpdate', () => {
       }),
     });
     expect(info!.fixed_tools).toEqual(['ps_create_clipping_mask', 'ps_delete_layer']);
+  });
+});
+
+describe('checkForUpdateWithStatus', () => {
+  it('status "newer" with a populated info when a newer version is published', async () => {
+    const result = await checkForUpdateWithStatus({
+      env: {},
+      current: '0.18.0',
+      fetchLatest: async () => bare('0.99.0'),
+    });
+    expect(result.status).toBe('newer');
+    expect(result.info?.latest).toBe('0.99.0');
+  });
+
+  it('status "current" (not "failed") with a null info when already up to date', async () => {
+    const result = await checkForUpdateWithStatus({
+      env: {},
+      current: '0.18.0',
+      fetchLatest: async () => bare('0.18.0'),
+    });
+    expect(result.status).toBe('current');
+    expect(result.info).toBeNull();
+  });
+
+  it('status "failed" with a null info when the fetch returns null (offline / non-2xx)', async () => {
+    const result = await checkForUpdateWithStatus({
+      env: {},
+      current: '0.18.0',
+      fetchLatest: async () => null,
+    });
+    expect(result.status).toBe('failed');
+    expect(result.info).toBeNull();
+  });
+
+  it('status "failed" when the fetch throws', async () => {
+    const result = await checkForUpdateWithStatus({
+      env: {},
+      current: '0.18.0',
+      fetchLatest: async () => {
+        throw new Error('network down');
+      },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.info).toBeNull();
+  });
+
+  it('status "failed" for a malformed latest value', async () => {
+    const result = await checkForUpdateWithStatus({
+      env: {},
+      current: '0.18.0',
+      fetchLatest: async () => bare('not-a-version'),
+    });
+    expect(result.status).toBe('failed');
   });
 });
 
