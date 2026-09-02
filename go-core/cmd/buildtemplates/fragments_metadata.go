@@ -276,8 +276,13 @@ func init() {
       // currently available") and doc.histogram throws too, yet the assignment
       // still succeeds — so forcing there would kick the user off their mask
       // with nothing to put back. Editing a mask is an ordinary retouch state,
-      // not an edge case. When the selection is unreadable, leave it alone and
-      // let the fallback chain return a labelled degraded reading instead.
+      // not an edge case. So when the selection is unreadable we do not force it.
+      //
+      // That narrows the harm, it does not remove it: the second fallback below
+      // still swaps doc.activeLayer, and restoring an ArtLayer does NOT restore
+      // mask targeting, so a masked read can still land the user on the layer
+      // rather than its mask. Closing that needs the mask-targeting state itself
+      // captured and replayed, which is a wider change than this one.
       var savedChannels = null;
       var forced = false;
       try { savedChannels = doc.activeChannels; } catch (eSc) { savedChannels = null; }

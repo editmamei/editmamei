@@ -189,7 +189,9 @@ export function buildRegionSignals(
     // horizon", so alignment stays null and sky/ground take the neutral 0.5
     // rather than trusting a guessed line. The null check is not redundant:
     // buildRegionSignals is exported, so a direct caller can pass a refused
-    // horizon, and subtracting null would yield NaN alignment.
+    // horizon, and `bounds.bottom - null` coerces to a subtraction of zero —
+    // a plausible-looking alignment measured against the frame top, which is
+    // worse than NaN because nothing downstream can detect it.
     if (scene.horizonConfidence > 0 && scene.horizonY !== null) {
       // |edge − horizon| as a fraction of frame height → alignment in [0,1].
       lowerEdgeAlign = 1 - Math.min(1, Math.abs(bounds.bottom - scene.horizonY) / docH);
