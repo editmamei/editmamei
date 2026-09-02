@@ -14,10 +14,8 @@ const METADATA_FRAGMENTS = join(
 );
 
 /**
- * Guard against the marginal-histogram luminosity bug (2026-09-01).
- *
- * GetHistogram's `luminosity` path used to synthesize, for an RGB document,
- * a Rec.709 weighted sum of the three MARGINAL channel histograms:
+ * GetHistogram's `luminosity` path must never synthesize, for an RGB document,
+ * a weighted sum of the three MARGINAL channel histograms:
  *
  *     lum[i] = 0.2126 * red[i] + 0.7152 * green[i] + 0.0722 * blue[i]
  *
@@ -128,7 +126,12 @@ describe('GetHistogram luminosity: no marginal-histogram synthesis', () => {
 
   it('only claims a per-pixel composite when the composite read actually landed', () => {
     // A fallback must name itself rather than inherit the composite's label,
-    // which is the same mislabelling this whole guard exists to prevent.
+    // which is the same mislabelling this whole guard exists to prevent. The
+    // positive assertion is the load-bearing one: without it, collapsing the
+    // ternary to an unconditional label would pass.
+    expect(body).toMatch(
+      /lumRes\.source === 'doc-histogram'\)\s*\?\s*'luminosity \(per-pixel composite\)'\s*:\s*'luminosity \(' \+ lumRes\.source/
+    );
     expect(body).not.toContain("'luminosity (per-pixel composite, '");
   });
 
