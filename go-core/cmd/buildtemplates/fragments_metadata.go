@@ -263,7 +263,7 @@ func init() {
       try {
         return readCompositeBinsInner();
       } finally {
-        if (savedChannels) { try { doc.activeChannels = savedChannels; } catch (eRc) {} }
+        if (savedChannels && savedChannels.length) { try { doc.activeChannels = savedChannels; } catch (eRc) {} }
       }
     }
 
