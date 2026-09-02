@@ -61,6 +61,7 @@ function makeClient(
     edition?: string;
     channel?: string;
     getModuleStatus?: () => ModuleStatusInfo | null;
+    now?: () => Date;
   } = {}
 ) {
   return new TelemetryClient({
@@ -75,6 +76,7 @@ function makeClient(
     ...(over.edition !== undefined ? { edition: over.edition } : {}),
     ...(over.channel !== undefined ? { channel: over.channel } : {}),
     ...(over.getModuleStatus !== undefined ? { getModuleStatus: over.getModuleStatus } : {}),
+    ...(over.now !== undefined ? { now: over.now } : {}),
   });
 }
 
@@ -368,6 +370,111 @@ describe('shutdown → durable outbox', () => {
     await Promise.all([c.shutdown(), c.shutdown()]);
     const summaries = readOutbox({ dir }).filter((e) => e.type === 'session_summary');
     expect(summaries).toHaveLength(1);
+  });
+});
+
+describe('session_summary day attribution', () => {
+  it('a same-day session is credited to that day', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, {
+      now: () => new Date('2026-06-15T12:00:00.000Z'),
+    });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toBe('2026-06-15');
+  });
+
+  it('a session crossing UTC midnight is credited to the day it STARTED, not shutdown', async () => {
+    let cur = new Date('2026-06-15T23:59:30.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    // The state persisted mid-session already carries the start-day bucket.
+    expect(readSessionState({ dir })?.ts_bucket).toBe('2026-06-15');
+
+    cur = new Date('2026-06-16T00:00:30.000Z'); // crossed midnight
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toBe('2026-06-15'); // start day, not the shutdown day
+  });
+
+  it('a later persist does not advance the bucket past midnight', async () => {
+    // The persisted bucket must survive a persist that happens on a later day. The two
+    // calls have to be far enough apart to clear SESSION_PERSIST_THROTTLE_MS, or the
+    // second persist never runs and the assertion proves nothing.
+    let cur = new Date('2026-06-15T23:59:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    expect(readSessionState({ dir })?.ts_bucket).toBe('2026-06-15');
+
+    cur = new Date('2026-06-16T00:05:00.000Z'); // past midnight AND past the throttle
+    c.recordCall({ tool: 'photoshop_b', success: true, duration_ms: 1, error_class: null });
+    expect(readSessionState({ dir })?.ts_bucket).toBe('2026-06-15');
+  });
+
+  it('a resident server credits the day of its first CALL, not the day it booted', async () => {
+    // An MCP host can stay resident for days. Claiming the bucket in start() would credit
+    // the summary to the boot day while every usage event landed on the day of the work.
+    let cur = new Date('2026-06-15T08:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.start();
+    expect(readSessionState({ dir })).toBeNull(); // nothing claimed yet
+
+    cur = new Date('2026-06-17T10:00:00.000Z'); // first use, two days later
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toBe('2026-06-17');
+  });
+
+  it('clamps a corrupt persisted bucket so one bad file cannot reject the batch', async () => {
+    // The persisted state is a plain file on disk: truncation or a hand edit can put
+    // anything in ts_bucket, and the endpoint rejects a whole batch over one bad event.
+    const dir = freshOutboxDir();
+    const state: PersistedSessionState = {
+      install_id: 'i',
+      ts_bucket: 'not-a-bucket',
+      editmamei_version: '1.3.0',
+      edition: 'community',
+      platform: 'win32',
+      ps_version: 'unknown',
+      tool_call_count: 1,
+      distinct_tools: 1,
+      any_failures: false,
+    };
+    writeSessionStateSync(state, { dir });
+
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    const summary = rec.batches.flat().find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(summary?.ts_bucket).not.toBe('not-a-bucket');
+  });
+
+  it('crash reconstruction agrees with what a clean shutdown would have produced', async () => {
+    // Simulate a hard kill: the session-state marker persisted mid-session survives (no
+    // clean shutdown to clear it); the NEXT startup reconstructs the summary from it.
+    const cur = new Date('2026-06-15T23:59:45.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    // (deliberately no shutdown() call — the process is presumed hard-killed here)
+
+    const rec2 = recorder();
+    const c2 = makeClient(makeSettings(), rec2, { outboxDir: dir });
+    await c2.flushOutboxOnStartup();
+    const summary = rec2.batches.flat().find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    // Same start-day bucket a clean shutdown produces, so the two paths agree.
+    expect(summary?.ts_bucket).toBe('2026-06-15');
   });
 });
 

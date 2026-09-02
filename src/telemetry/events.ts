@@ -171,6 +171,17 @@ export function normalizeErrorClass(value: string): string {
   return cleaned.length > 0 ? cleaned : 'other';
 }
 
+/**
+ * Force a day bucket into the server's `^\d{4}-\d{2}-\d{2}$` shape. Every in-tree caller
+ * passes a `dayBucket()` result, which conforms by construction — but this value now
+ * arrives as a string rather than being derived here, and one malformed event 400s the
+ * WHOLE batch on the server. Same defensive reasoning as `normalizeErrorClass`. A value
+ * that does not conform falls back to the current UTC day.
+ */
+export function normalizeDayBucket(value: string, now: Date): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : dayBucket(now);
+}
+
 function psVersionOf(dims: TelemetryDimensions): string {
   const v = dims.getPsVersion();
   return v && v.length > 0 ? v : PS_VERSION_UNKNOWN;
@@ -197,16 +208,24 @@ export function buildUsageEvent(
   };
 }
 
+/**
+ * `tsBucket` is the SESSION'S START day, not "now" — a session spanning UTC midnight is
+ * credited to the day its first call ran, rather than being split across two days. Callers
+ * capture it once, on the first recorded call, and both the clean-shutdown summary and the
+ * persisted crash-recovery state replay that same value — see `TelemetryClient`'s
+ * `startDayBucket`. Clamped on the way out because the shape is no longer derived here.
+ */
 export function buildSessionSummary(
   dims: TelemetryDimensions,
   summary: { tool_call_count: number; distinct_tools: number; any_failures: boolean },
+  tsBucket: string,
   now: Date
 ): SessionSummaryEvent {
   return {
     v: TELEMETRY_SCHEMA_VERSION,
     type: 'session_summary',
     install_id: dims.install_id,
-    ts_bucket: dayBucket(now),
+    ts_bucket: normalizeDayBucket(tsBucket, now),
     editmamei_version: dims.editmamei_version,
     edition: dims.edition,
     platform: dims.platform,

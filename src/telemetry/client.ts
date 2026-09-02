@@ -33,6 +33,7 @@ import {
   buildSessionSummary,
   buildUsageEvent,
   dayBucket,
+  normalizeDayBucket,
   isContentSafe,
   PS_VERSION_UNKNOWN,
   type ModuleStatusInfo,
@@ -136,6 +137,17 @@ export class TelemetryClient {
   private anyFailures = false;
   /** Throttle clock for session-state persistence. 0 = never persisted yet. */
   private lastSessionPersistMs = 0;
+  /**
+   * The day bucket this session is credited to — captured ONCE, on the first recorded call.
+   * Both the clean-shutdown summary and the persisted session state reuse it instead of
+   * re-deriving `dayBucket(this.now())` at their own call time, so a session crossing UTC
+   * midnight lands on the day its first call ran rather than being split across two days.
+   *
+   * Deliberately NOT claimed in `start()`. An MCP host can stay resident for days, so a
+   * server booted Monday and first used Wednesday would otherwise credit its summary to
+   * Monday while every usage event landed on Wednesday.
+   */
+  private startDayBucket: string | null = null;
 
   constructor(opts: TelemetryClientOptions) {
     this.settings = opts.settings;
@@ -186,6 +198,7 @@ export class TelemetryClient {
   /** Record one tool call (Category A, opt-out). */
   recordCall(call: RecordedCall): void {
     if (!this.active || !this.settings.telemetry.usage) return;
+    this.ensureStartDayBucket();
     this.toolCallCount += 1;
     this.distinctTools.add(call.tool);
     if (!call.success) this.anyFailures = true;
@@ -197,6 +210,12 @@ export class TelemetryClient {
   private psVersion(): string {
     const v = this.dims.getPsVersion();
     return v && v.length > 0 ? v : PS_VERSION_UNKNOWN;
+  }
+
+  /** The session's start-day bucket, captured on first use — see the field doc. */
+  private ensureStartDayBucket(): string {
+    if (this.startDayBucket === null) this.startDayBucket = dayBucket(this.now());
+    return this.startDayBucket;
   }
 
   /**
@@ -216,7 +235,10 @@ export class TelemetryClient {
     this.lastSessionPersistMs = nowMs;
     const state: PersistedSessionState = {
       install_id: this.dims.install_id,
-      ts_bucket: dayBucket(this.now()),
+      // The session's START bucket, not "now" — see startDayBucket's field doc. This is
+      // what makes a hard-killed session's reconstructed summary (summaryFromState) agree
+      // with what a clean shutdown would have produced for the same session.
+      ts_bucket: this.ensureStartDayBucket(),
       editmamei_version: this.dims.editmamei_version,
       edition: this.dims.edition,
       platform: this.dims.platform,
@@ -363,6 +385,10 @@ export class TelemetryClient {
             distinct_tools: this.distinctTools.size,
             any_failures: this.anyFailures,
           },
+          // Start-day bucket, not the shutdown-time day — see startDayBucket's field doc.
+          // toolCallCount > 0 guarantees recordCall already ran, so this is never the
+          // first-ever call of ensureStartDayBucket() at shutdown time.
+          this.ensureStartDayBucket(),
           this.now()
         )
       );
@@ -436,7 +462,9 @@ function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
     v: 2,
     type: 'session_summary',
     install_id: s.install_id,
-    ts_bucket: s.ts_bucket,
+    // Same clamp the clean path gets: this value came off disk, where a truncated or
+    // hand-edited file can hold anything, and one bad bucket rejects the whole batch.
+    ts_bucket: normalizeDayBucket(s.ts_bucket, new Date()),
     editmamei_version: s.editmamei_version,
     edition: s.edition,
     platform: s.platform,
