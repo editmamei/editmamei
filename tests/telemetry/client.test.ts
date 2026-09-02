@@ -382,8 +382,7 @@ describe('session_summary day attribution', () => {
     c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { ts_bucket: string }
-      | undefined;
+      { ts_bucket: string } | undefined;
     expect(summary?.ts_bucket).toBe('2026-06-15');
   });
 
@@ -398,8 +397,7 @@ describe('session_summary day attribution', () => {
     cur = new Date('2026-06-16T00:00:30.000Z'); // crossed midnight
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
-      | { ts_bucket: string }
-      | undefined;
+      { ts_bucket: string } | undefined;
     expect(summary?.ts_bucket).toBe('2026-06-15'); // start day, not the shutdown day
   });
 
@@ -416,8 +414,7 @@ describe('session_summary day attribution', () => {
     const c2 = makeClient(makeSettings(), rec2, { outboxDir: dir });
     await c2.flushOutboxOnStartup();
     const summary = rec2.batches.flat().find((e) => e.type === 'session_summary') as
-      | { ts_bucket: string }
-      | undefined;
+      { ts_bucket: string } | undefined;
     // Same start-day bucket a clean shutdown would have used (see the previous test).
     expect(summary?.ts_bucket).toBe('2026-06-15');
   });
