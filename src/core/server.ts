@@ -8,7 +8,7 @@ import { groupOf, GROUPS, type ToolGroup } from './tool-groups.js';
 import { EDITION } from '../edition.js';
 import { VERSION } from '../version.js';
 import { Session } from './session.js';
-import { SessionLog, classifyError } from '../utils/session-log.js';
+import { SessionLog, classifyError, computeResultBytes } from '../utils/session-log.js';
 import {
   loadSettings,
   applyTelemetryEnvOverrides,
@@ -66,10 +66,12 @@ export function __resetLogScriptOnErrorWarnForTests(): void {
  */
 const FIRST_RUN_DISCLOSURE =
   'First run: Editmamei collects anonymous, content-free usage telemetry (tool name, ' +
-  'success, duration, version/edition/OS/PS-version, install channel) to find what breaks. ' +
-  'It never sends image content, file paths, or personal data. Opt out anytime: ' +
-  '`editmamei config set telemetry.usage false` (or edit ~/.editmamei/settings.json). ' +
-  'Opt in to sanitized diagnostics: `editmamei config set telemetry.diagnostics true`.';
+  'success, duration, bytes returned, version/edition/OS/PS-version, install channel, ' +
+  'which AI client connected, Node/OS/architecture versions, and per-session counts like ' +
+  'edits made and retries) to find what breaks. It never sends image content, file paths, ' +
+  'or personal data. Opt out anytime: `editmamei config set telemetry.usage false` (or edit ' +
+  '~/.editmamei/settings.json). Opt in to sanitized diagnostics: `editmamei config set ' +
+  'telemetry.diagnostics true`.';
 
 /**
  * Timeout for the background ps_version probe (resolveLiveVersionInBackground) —
@@ -153,6 +155,19 @@ export class EditmameiServer {
    * interleave and be read by the first call's `onCall` instead of its own.
    */
   private lastPingReachedPs: boolean | null = null;
+  /**
+   * JSON(tool+args) of the immediately preceding tool call, for telemetry's `retry` signal
+   * (RecordedCall.retry — mirrors SessionLog's own `lastCallKey`/`retry_signal`, kept as a
+   * SEPARATE field rather than reused: this one stays in memory and never leaves the
+   * process, while SessionLog's copy is built from sanitized args destined for disk).
+   */
+  private lastTelemetryCallKey: string | null = null;
+  /**
+   * Photoshop's UI locale (`app.locale`), cached from the last successful `ps_ping` and
+   * carried on every diagnostic thereafter — see `recordDiagnostic`'s `ps_locale` param.
+   * null until the first successful ping (or on a host where the field is unavailable).
+   */
+  private lastPsLocale: string | null = null;
   /**
    * One-shot latch for `resolveLiveVersionInBackground` — set only once we
    * actually commit to a round trip (Photoshop confirmed running RIGHT NOW),
@@ -249,6 +264,10 @@ export class EditmameiServer {
     if (shouldCheckForUpdate(effectiveSettings.update_check)) {
       this.updateCheck = checkForUpdate().then((info) => {
         this.updateInfo = info;
+        // true only when checkForUpdate CONFIRMED a strictly newer version — never read
+        // `info === null` as "the check failed": that value also covers "already current",
+        // and check.ts's fail-silent contract makes the two indistinguishable on purpose.
+        this.telemetry.setBehindLatest(info !== null);
       });
     }
 
@@ -321,11 +340,19 @@ export class EditmameiServer {
         const errorClass =
           classifyError(entry.error) ??
           (telemetrySuccess ? null : isPingDowngrade ? 'ps_not_running' : 'other');
+        // Retry signal: same tool + deep-equal args as the IMMEDIATELY preceding call. Keyed
+        // off the raw args (never leaves the process — unlike SessionLog's own copy, which is
+        // built from the sanitized/truncated args it writes to disk).
+        const telemetryCallKey = JSON.stringify({ tool: entry.tool, args: entry.args });
+        const isTelemetryRetry = telemetryCallKey === this.lastTelemetryCallKey;
+        this.lastTelemetryCallKey = telemetryCallKey;
         this.telemetry.recordCall({
           tool: entry.tool,
           success: telemetrySuccess,
           duration_ms: entry.duration_ms,
           error_class: errorClass,
+          result_bytes: computeResultBytes(entry.result),
+          retry: isTelemetryRetry,
         });
         // Gate on the signal telemetry actually recorded, not the registry's raw
         // flag. Keying these two branches off different notions of failure is
@@ -342,6 +369,7 @@ export class EditmameiServer {
               (isPingDowngrade
                 ? 'ps_ping did not reach Photoshop'
                 : 'tool reported failure with no message'),
+            ...(this.lastPsLocale !== null ? { ps_locale: this.lastPsLocale } : {}),
           });
         }
       },
@@ -371,6 +399,28 @@ export class EditmameiServer {
       getClientVersion?(): { name: string; version: string } | undefined;
     };
     this.sessionLog.setMcpClientGetter(() => srv.getClientVersion?.() ?? null);
+
+    // client_connected (Category A telemetry): `oninitialized` fires from a notification
+    // handler the SDK's Server constructor wires up FOR ITSELF —
+    // `setNotificationHandler(InitializedNotificationSchema, () => this.oninitialized?.())`,
+    // read straight out of @modelcontextprotocol/sdk's server/index.js — not something
+    // `connect()` sets up. The callback can therefore be assigned any time after `this.server`
+    // exists; doing it here, before `connect()` even runs (in start()), is deliberate: connect()
+    // is the earliest a client's messages can arrive at all, so wiring the callback strictly
+    // before it removes any need to reason about a race between a very fast
+    // initialize -> initialized round trip and our own synchronous code. If the client never
+    // completes the handshake, this simply never fires — no event is the intended behavior.
+    this.server.oninitialized = () => {
+      const clientInfo = this.server.getClientVersion();
+      const caps = this.server.getClientCapabilities();
+      this.telemetry.recordClientConnected({
+        clientName: clientInfo?.name,
+        clientVersion: clientInfo?.version,
+        capSampling: caps?.sampling !== undefined,
+        capElicitation: caps?.elicitation !== undefined,
+        capRoots: caps?.roots !== undefined,
+      });
+    };
 
     this.registerTools();
     this.setupHandlers();
@@ -489,6 +539,7 @@ export class EditmameiServer {
       logger: this.logger,
       assertToolsClassified: () => this.assertToolsClassified(),
       classifyTool: (name) => this.classifyTool(name),
+      onModuleUpdate: (outcome) => this.telemetry.setModuleUpdate(outcome),
     });
     const proModule = this.moduleLifecycle.resolveProModule();
     this.kernel = new Kernel({
@@ -817,6 +868,9 @@ export class EditmameiServer {
     let version = 'Unknown';
     let actionSetsCount = 0;
     let openDocuments: string[] = [];
+    // Photoshop's UI locale (app.locale), telemetry's ps_locale diagnostic dimension — see
+    // lastPsLocale's field doc. null unless this ping's pingState round trip reports one.
+    let psLocale: string | null = null;
     const degraded: string[] = [];
     // Tracks whether `version` came from the LIVE pingState query below, as opposed to
     // staying at connection.getVersion()'s disk-detected fallback from the try/catch
@@ -931,12 +985,18 @@ export class EditmameiServer {
     // (unlike a build() failure above, which is caught before this point
     // and never reaches here).
     if (pingStateSnippet !== null) {
-      let state: { version?: string; action_sets_count?: number; open_documents?: string[] };
+      let state: {
+        version?: string;
+        action_sets_count?: number;
+        open_documents?: string[];
+        locale?: string;
+      };
       try {
         state = (await runScript(connection, pingStateSnippet)) as {
           version?: string;
           action_sets_count?: number;
           open_documents?: string[];
+          locale?: string;
         };
       } catch (err) {
         this.logger.warn(
@@ -958,6 +1018,7 @@ export class EditmameiServer {
       }
       if (typeof state.action_sets_count === 'number') actionSetsCount = state.action_sets_count;
       if (Array.isArray(state.open_documents)) openDocuments = state.open_documents;
+      if (typeof state.locale === 'string') psLocale = state.locale;
     }
 
     let userTemplates = 0;
@@ -990,6 +1051,13 @@ export class EditmameiServer {
       // placeholder. Best-effort + content-free; never affects the ping result.
       this.telemetry.onPsVersionResolved();
     }
+    // Cache the locale for every diagnostic recorded for the rest of the session (see
+    // lastPsLocale's field doc) — only overwritten on a ping that actually reported one, so
+    // a later degraded ping doesn't blank out an already-known locale.
+    if (psLocale !== null) this.lastPsLocale = psLocale;
+    // Install-asset counts, alongside the other session_summary counters — a pure count,
+    // content-free like everything else this method reports.
+    this.telemetry.setInstallAssets({ templates_saved: userTemplates, action_sets: actionSetsCount });
 
     // Every path above that didn't already return early DID reach Photoshop — the
     // build-failure branch's degraded fallback included, since it only falls through

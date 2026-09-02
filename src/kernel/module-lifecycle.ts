@@ -100,6 +100,13 @@ export interface ModuleLifecycleDeps {
    * (`EditmameiServer.classifyTool`).
    */
   classifyTool: (name: string) => void;
+  /**
+   * Telemetry hook for the `session_summary.module_update` field — called at most once per
+   * background task, on a successful provision ('updated') or a caught failure ('failed').
+   * Optional so tests that construct a `ModuleLifecycle` without a telemetry client don't
+   * need to stub it; the host wires it to `TelemetryClient.setModuleUpdate`.
+   */
+  onModuleUpdate?: (outcome: 'updated' | 'failed') => void;
 }
 
 /**
@@ -482,6 +489,7 @@ export class ModuleLifecycle {
         for (const m of prov.installed) {
           this.deps.logger.info(`Pro module updated to v${m.version}, restart to load.`);
         }
+        this.deps.onModuleUpdate?.('updated');
         return;
       }
       if (prov.notConfigured) {
@@ -527,6 +535,7 @@ export class ModuleLifecycle {
         `Background Pro-module re-provision failed (staying Community): ` +
           `${err instanceof Error ? err.message : String(err)}`
       );
+      this.deps.onModuleUpdate?.('failed');
     }
   }
 
@@ -591,6 +600,7 @@ export class ModuleLifecycle {
       for (const m of prov.installed) {
         this.deps.logger.info(`Pro module updated to v${m.version} — restart to load.`);
       }
+      if (prov.installed.length > 0) this.deps.onModuleUpdate?.('updated');
       // A freshness poll is best-effort: on error/notConfigured we simply stay on the
       // currently-installed module. Log at WARN for support, but recommend no lever
       // (nothing is broken — the existing module still works).
@@ -618,6 +628,7 @@ export class ModuleLifecycle {
         `Background Pro-module freshness check failed (staying on the installed version): ` +
           `${err instanceof Error ? err.message : String(err)}`
       );
+      this.deps.onModuleUpdate?.('failed');
     }
   }
 }

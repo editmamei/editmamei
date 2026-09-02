@@ -1093,8 +1093,11 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
         success: boolean;
         duration_ms: number;
         error_class: string | null;
+        result_bytes?: number;
+        retry?: boolean;
       }): void;
       recordDiagnostic(diag: { tool: string; error_class: string; error_message: string }): void;
+      setInstallAssets(assets: { templates_saved: number; action_sets: number }): void;
     };
     handleToolCall(
       name: string,
@@ -1103,13 +1106,19 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
   };
 
   // F12 — a full double, not a partial one: pingPhotoshop()'s own connected
-  // path calls telemetry.onPsVersionResolved(), and onCall can call
-  // recordDiagnostic. A partial double throws a TypeError that handleToolCall's
-  // try/catch swallows into an unrelated isError result — confirmed by hand:
-  // the first cut of this double (recordCall + recordDiagnostic only) broke
-  // the "genuinely connects" test below with exactly that failure mode.
+  // path calls telemetry.onPsVersionResolved() AND telemetry.setInstallAssets(), and
+  // onCall can call recordDiagnostic. A partial double throws a TypeError that
+  // handleToolCall's try/catch swallows into an unrelated isError result — confirmed by
+  // hand: the first cut of this double (recordCall + recordDiagnostic only) broke the
+  // "genuinely connects" test below with exactly that failure mode, and setInstallAssets
+  // reproduced it again once ps_ping started calling it too.
   function spyTelemetry() {
-    return { recordCall: vi.fn(), recordDiagnostic: vi.fn(), onPsVersionResolved: vi.fn() };
+    return {
+      recordCall: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
   }
 
   it('records success:false when the ping never reaches Photoshop, without changing the tool result', async () => {
@@ -1137,6 +1146,8 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       success: false,
       duration_ms: expect.any(Number),
       error_class: 'ps_not_running',
+      result_bytes: expect.any(Number),
+      retry: false,
     });
     // The downgrade is a failure, so it feeds the opt-in diagnostic too. This
     // was previously gated on the registry's raw success flag — still true
@@ -1175,6 +1186,8 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       success: true,
       duration_ms: expect.any(Number),
       error_class: null,
+      result_bytes: expect.any(Number),
+      retry: false,
     });
     // A success feeds no diagnostic.
     expect(telemetry.recordDiagnostic).not.toHaveBeenCalled();
@@ -1335,6 +1348,8 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       success: false,
       duration_ms: expect.any(Number),
       error_class: 'other',
+      result_bytes: expect.any(Number),
+      retry: false,
     });
     expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
       tool: 'ps_export',
@@ -1358,6 +1373,66 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
     expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
       tool: 'ps_ping',
       error_class: 'ps_not_running',
+    });
+  });
+});
+
+describe('client_connected: wired from Server.oninitialized', () => {
+  type OninitializedServer = {
+    server: {
+      oninitialized?: () => void;
+      getClientVersion(): { name: string; version: string } | undefined;
+      getClientCapabilities(): Record<string, unknown> | undefined;
+    };
+    telemetry: {
+      recordClientConnected(info: {
+        clientName: string | undefined;
+        clientVersion: string | undefined;
+        capSampling: boolean;
+        capElicitation: boolean;
+        capRoots: boolean;
+      }): void;
+    };
+  };
+
+  it('maps the client name/major and capability presence into recordClientConnected', () => {
+    const server = new EditmameiServer() as unknown as OninitializedServer;
+    server.server.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
+    server.server.getClientCapabilities = () => ({ sampling: {}, roots: { listChanged: true } });
+    const recordClientConnected = vi.fn();
+    server.telemetry.recordClientConnected = recordClientConnected;
+
+    // The callback is wired in the constructor (see server.ts's comment on WHY — the SDK's
+    // Server wires its own `notifications/initialized` handler there too, not at connect()
+    // time), so it already exists before this test ever touches the transport.
+    expect(server.server.oninitialized).toBeTypeOf('function');
+    server.server.oninitialized!();
+
+    expect(recordClientConnected).toHaveBeenCalledTimes(1);
+    expect(recordClientConnected).toHaveBeenCalledWith({
+      clientName: 'claude-code',
+      clientVersion: '2.1.170',
+      capSampling: true,
+      capElicitation: false,
+      capRoots: true,
+    });
+  });
+
+  it('passes undefined name/version through when the client never reports them', () => {
+    const server = new EditmameiServer() as unknown as OninitializedServer;
+    server.server.getClientVersion = () => undefined;
+    server.server.getClientCapabilities = () => undefined;
+    const recordClientConnected = vi.fn();
+    server.telemetry.recordClientConnected = recordClientConnected;
+
+    server.server.oninitialized!();
+
+    expect(recordClientConnected).toHaveBeenCalledWith({
+      clientName: undefined,
+      clientVersion: undefined,
+      capSampling: false,
+      capElicitation: false,
+      capRoots: false,
     });
   });
 });
