@@ -29,9 +29,10 @@ const PRO_FEATURES = join(DOCS_DIR, 'pro-features.md');
 
 const PS_NAME = /\bps_[a-z0-9_]+\b/g;
 
-// ps_*-shaped identifiers that are legitimately not tools: settings keys the
-// privacy doc documents. Anything added here needs the same justification.
-const NON_TOOL_PS_NAMES = new Set(['ps_version', 'ps_path']);
+// ps_*-shaped identifiers that are legitimately not tools: settings keys and
+// telemetry-event field names the privacy doc documents. Anything added here
+// needs the same justification.
+const NON_TOOL_PS_NAMES = new Set(['ps_version', 'ps_path', 'ps_locale']);
 
 function docFiles(dir: string): string[] {
   const out: string[] = [];
