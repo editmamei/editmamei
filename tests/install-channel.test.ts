@@ -46,10 +46,13 @@ describe('resolveInstallChannel', () => {
     ).toBe('npx');
   });
 
-  it('reports npm_global for an entry script under an ordinary node_modules (not _npx)', () => {
+  it('reports npm_global for a node_modules segment preceded by lib (POSIX global convention)', () => {
     expect(
       resolveInstallChannel({}, 'community', '/usr/local/lib/node_modules/editmamei/dist/index.js')
     ).toBe('npm_global');
+  });
+
+  it('reports npm_global for a node_modules segment preceded by npm (Windows AppData layout)', () => {
     expect(
       resolveInstallChannel(
         {},
@@ -59,6 +62,58 @@ describe('resolveInstallChannel', () => {
     ).toBe('npm_global');
   });
 
+  it('reports npm_global for nvm/volta-style global layouts (a lib segment above node_modules)', () => {
+    // nvm: node_modules sits under <node version>/lib/, same convention as any other
+    // POSIX global npm prefix — no execPath inference needed, the lib segment alone decides.
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/alice/.nvm/versions/node/v20.11.0/lib/node_modules/editmamei/dist/index.js'
+      )
+    ).toBe('npm_global');
+    // volta: global packages land under its own "image" tree, same lib/node_modules shape.
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/alice/.volta/tools/image/packages/editmamei/lib/node_modules/editmamei/dist/index.js'
+      )
+    ).toBe('npm_global');
+  });
+
+  it("reports npm_global when node_modules sits under the running node binary's own directory (no lib/npm segment)", () => {
+    // The Windows official installer layout: node.exe and node_modules\ are SIBLINGS in the
+    // same directory, with neither a `lib` nor an `npm` segment between them.
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\Program Files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe'
+      )
+    ).toBe('npm_global');
+  });
+
+  it('reports npm_local for any OTHER node_modules segment (a project-local install)', () => {
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/alice/my-project/node_modules/editmamei/dist/index.js',
+        '/usr/bin/node' // not a sibling/ancestor of the node_modules segment above
+      )
+    ).toBe('npm_local');
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\projects\\my-app\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe'
+      )
+    ).toBe('npm_local');
+  });
+
   it('reports source for an entry script outside any node_modules', () => {
     expect(resolveInstallChannel({}, 'community', '/home/alice/editmamei/dist/index.js')).toBe(
       'source'
@@ -66,6 +121,19 @@ describe('resolveInstallChannel', () => {
     expect(resolveInstallChannel({}, 'community', 'E:\\code\\editmamei\\dist\\index.js')).toBe(
       'source'
     );
+  });
+
+  it('reports source (never npm_global) for a directory whose name merely CONTAINS "node_modules" — segment matching, not substring', () => {
+    // The old substring check (`.includes('node_modules')`) would have misclassified this as
+    // npm_global; there is no `node_modules` PATH SEGMENT here at all, only a directory named
+    // `node_modules_backup`.
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/alice/projects/node_modules_backup/editmamei/dist/index.js'
+      )
+    ).toBe('source');
   });
 
   it('falls back to source when argv1 is empty (unavailable)', () => {
