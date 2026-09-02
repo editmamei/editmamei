@@ -633,14 +633,12 @@ describe('createSceneTools', () => {
   });
 
   it('above_horizon is honest absence when no horizon is measurable', async () => {
-    // Regression (2026-09-01). estimateHorizon used to answer docHeight/3 at
-    // confidence 0.2 for any frame it could not measure, and this resolver read
-    // that y and selected the top third of the frame — a rectangle presented as
-    // a region, on images containing no horizon at all. The default fixture has
-    // no decodable export, so there is no row profile and nothing to measure.
-    //
-    // This test previously PASSED against the fabricated prior. That is the
-    // whole reason the bug survived: the fallback made the failure look correct.
+    // The default fixture has no decodable export, so there is no row profile
+    // and nothing to measure. An unmeasurable frame must produce NO selection:
+    // supplying a coordinate here would return a rectangle presented as a
+    // region, on an image containing no horizon at all. Asserting absence is
+    // the point — a test that only checked the call succeeded would pass
+    // against a fabricated coordinate.
     const res = await callTool(tools(), 'ps_select_by_reference', { target: 'above_horizon' });
     expect(
       sc.allBuilds().find((b) => b.name === 'selectRectangle'),

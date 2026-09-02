@@ -27,9 +27,9 @@ const METADATA_FRAGMENTS = join(
  * PLUS pixels whose BLUE is i — so a pixel dark in one channel landed in a
  * dark bin even when the other two were bright and the pixel was not dark.
  *
- * The mean stayed exact (linearity of expectation), which is why the error
- * survived review and why the code called stdev/median "approximations."
- * Every shape-derived read was wrong: clipping, percentiles, median, stdev.
+ * The mean stays exact under that synthesis (linearity of expectation), so a
+ * mean-only check cannot detect the fault. Every shape-derived read was wrong:
+ * clipping, percentiles, median, stdev.
  * It failed WORST on saturated images — the ones this product exists to
  * grade — because saturation is precisely the condition where one channel
  * approaches zero while the others stay high.
