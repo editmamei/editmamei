@@ -145,10 +145,7 @@ export class TelemetryClient {
    * Deliberately NOT claimed in `start()`. An MCP host can stay resident for days, so a
    * server booted Monday and first used Wednesday would otherwise credit its summary to
    * Monday while every usage event landed on Wednesday.
-   *
-   * Before this existed the persisted bucket was re-derived on every throttled persist, so
-   * a crashed session was credited to its last persist rather than to its start, and the
-   * clean and crashed paths disagreed.
+
    */
   private startDayBucket: string | null = null;
 

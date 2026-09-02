@@ -402,11 +402,9 @@ describe('session_summary day attribution', () => {
   });
 
   it('a later persist does not advance the bucket past midnight', async () => {
-    // The crash path's real regression risk: persistSessionStateThrottled used to re-derive
-    // the bucket on EVERY persist, so a session whose second persist landed after midnight
-    // was credited to the following day. Both calls must be far enough apart to clear
-    // SESSION_PERSIST_THROTTLE_MS, or the second persist never runs and the test proves
-    // nothing.
+    // The persisted bucket must survive a persist that happens on a later day. The two
+    // calls have to be far enough apart to clear SESSION_PERSIST_THROTTLE_MS, or the
+    // second persist never runs and the assertion proves nothing.
     let cur = new Date('2026-06-15T23:59:00.000Z');
     const rec = recorder();
     const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
@@ -449,7 +447,7 @@ describe('session_summary day attribution', () => {
     await c2.flushOutboxOnStartup();
     const summary = rec2.batches.flat().find((e) => e.type === 'session_summary') as
       { ts_bucket: string } | undefined;
-    // Same start-day bucket a clean shutdown would have used (see the previous test).
+    // Same start-day bucket a clean shutdown produces, so the two paths agree.
     expect(summary?.ts_bucket).toBe('2026-06-15');
   });
 });
