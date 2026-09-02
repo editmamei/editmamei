@@ -196,7 +196,8 @@ describe('buildSessionSummary', () => {
     const e = buildSessionSummary(
       dims('2026'),
       { tool_call_count: 47, distinct_tools: 11, any_failures: true },
-      '2026-06-14'
+      '2026-06-14',
+      new Date('2026-06-14T09:00:00.000Z')
     );
     expect(e.type).toBe('session_summary');
     expect(e.tool_call_count).toBe(47);
@@ -208,9 +209,20 @@ describe('buildSessionSummary', () => {
     const e = buildSessionSummary(
       dims('2026'),
       { tool_call_count: 1, distinct_tools: 1, any_failures: false },
-      '2026-06-13'
+      '2026-06-13',
+      new Date('2026-06-14T00:30:00.000Z')
     );
     expect(e.ts_bucket).toBe('2026-06-13');
+  });
+
+  it('clamps a malformed bucket to the current UTC day rather than 400 the whole batch', () => {
+    const e = buildSessionSummary(
+      dims('2026'),
+      { tool_call_count: 1, distinct_tools: 1, any_failures: false },
+      'not-a-bucket',
+      new Date('2026-06-14T00:30:00.000Z')
+    );
+    expect(e.ts_bucket).toBe('2026-06-14');
   });
 });
 

@@ -137,13 +137,18 @@ export class TelemetryClient {
   /** Throttle clock for session-state persistence. 0 = never persisted yet. */
   private lastSessionPersistMs = 0;
   /**
-   * The day bucket this session is credited to — captured ONCE, the first time it's needed
-   * (`start()`, or the first `recordCall` for a client whose caller never calls `start()`,
-   * e.g. most of this file's tests). Both the clean-shutdown summary and the persisted
-   * session state use this instead of re-deriving `dayBucket(this.now())` at their own call
-   * time, so a session that crosses UTC midnight lands on the day it STARTED, matching what
-   * the crash-recovery path (`summaryFromState`) already does — it has no "now" to consult
-   * and can only ever replay the persisted bucket.
+   * The day bucket this session is credited to — captured ONCE, on the first recorded call.
+   * Both the clean-shutdown summary and the persisted session state reuse it instead of
+   * re-deriving `dayBucket(this.now())` at their own call time, so a session crossing UTC
+   * midnight lands on the day its first call ran rather than being split across two days.
+   *
+   * Deliberately NOT claimed in `start()`. An MCP host can stay resident for days, so a
+   * server booted Monday and first used Wednesday would otherwise credit its summary to
+   * Monday while every usage event landed on Wednesday.
+   *
+   * Before this existed the persisted bucket was re-derived on every throttled persist, so
+   * a crashed session was credited to its last persist rather than to its start, and the
+   * clean and crashed paths disagreed.
    */
   private startDayBucket: string | null = null;
 
@@ -175,7 +180,6 @@ export class TelemetryClient {
   /** Start the periodic flush timer and emit a one-time boot ping. No-op when inactive. */
   start(): void {
     if (!this.active || this.timer) return;
-    this.ensureStartDayBucket();
     this.timer = setInterval(() => void this.flush(), this.flushIntervalMs);
     // Don't keep the process alive solely for telemetry.
     this.timer.unref?.();
@@ -387,7 +391,8 @@ export class TelemetryClient {
           // Start-day bucket, not the shutdown-time day — see startDayBucket's field doc.
           // toolCallCount > 0 guarantees recordCall already ran, so this is never the
           // first-ever call of ensureStartDayBucket() at shutdown time.
-          this.ensureStartDayBucket()
+          this.ensureStartDayBucket(),
+          this.now()
         )
       );
     }

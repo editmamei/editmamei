@@ -401,6 +401,40 @@ describe('session_summary day attribution', () => {
     expect(summary?.ts_bucket).toBe('2026-06-15'); // start day, not the shutdown day
   });
 
+  it('a later persist does not advance the bucket past midnight', async () => {
+    // The crash path's real regression risk: persistSessionStateThrottled used to re-derive
+    // the bucket on EVERY persist, so a session whose second persist landed after midnight
+    // was credited to the following day. Both calls must be far enough apart to clear
+    // SESSION_PERSIST_THROTTLE_MS, or the second persist never runs and the test proves
+    // nothing.
+    let cur = new Date('2026-06-15T23:59:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    expect(readSessionState({ dir })?.ts_bucket).toBe('2026-06-15');
+
+    cur = new Date('2026-06-16T00:05:00.000Z'); // past midnight AND past the throttle
+    c.recordCall({ tool: 'photoshop_b', success: true, duration_ms: 1, error_class: null });
+    expect(readSessionState({ dir })?.ts_bucket).toBe('2026-06-15');
+  });
+
+  it('a resident server credits the day of its first CALL, not the day it booted', async () => {
+    // An MCP host can stay resident for days. Claiming the bucket in start() would credit
+    // the summary to the boot day while every usage event landed on the day of the work.
+    let cur = new Date('2026-06-15T08:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.start();
+    expect(readSessionState({ dir })).toBeNull(); // nothing claimed yet
+
+    cur = new Date('2026-06-17T10:00:00.000Z'); // first use, two days later
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toBe('2026-06-17');
+  });
+
   it('crash reconstruction agrees with what a clean shutdown would have produced', async () => {
     // Simulate a hard kill: the session-state marker persisted mid-session survives (no
     // clean shutdown to clear it); the NEXT startup reconstructs the summary from it.
