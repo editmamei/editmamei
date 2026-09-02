@@ -1437,6 +1437,111 @@ describe('client_connected: wired from Server.oninitialized', () => {
   });
 });
 
+describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mode)', () => {
+  it('caches locale/doc_depth/doc_mode from a successful ping and attaches them to a later diagnostic', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+    server.session.connection = makeConnection({
+      result: {
+        version: '27.8.0',
+        action_sets_count: 0,
+        open_documents: [],
+        locale: 'en_US',
+        doc_depth: 16,
+        doc_mode: 'cmyk',
+      },
+    });
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    // The ping caches the dimensions; it emits no diagnostic itself (it succeeds).
+    await server.handleToolCall('ps_ping', {});
+    expect(recordDiagnostic).not.toHaveBeenCalled();
+
+    // A later, unrelated failing tool call picks up the cached dimensions.
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(1);
+    expect(recordDiagnostic.mock.calls[0][0]).toMatchObject({
+      ps_locale: 'en_US',
+      doc_depth: 16,
+      doc_mode: 'cmyk',
+    });
+  });
+
+  it('omits doc_depth/doc_mode/ps_locale from a diagnostic when a ping never reported them', async () => {
+    const server = new EditmameiServer() as unknown as {
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+    const recordDiagnostic = vi.fn();
+    server.telemetry = { recordCall: vi.fn(), recordDiagnostic };
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+
+    await server.handleToolCall('ps_export', {});
+
+    const diag = recordDiagnostic.mock.calls[0][0];
+    expect('ps_locale' in diag).toBe(false);
+    expect('doc_depth' in diag).toBe(false);
+    expect('doc_mode' in diag).toBe(false);
+  });
+});
+
 // ===========================================================================
 // Boot-order regression pin (owner request, 2026-08-11) — the public repo had
 // no local test for this invariant; the equivalent pin

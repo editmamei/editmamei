@@ -169,6 +169,13 @@ export class EditmameiServer {
    */
   private lastPsLocale: string | null = null;
   /**
+   * Active document's bit depth / color mode at the last `ps_ping` that had one open,
+   * carried on every diagnostic thereafter (same cache-and-reuse shape as lastPsLocale).
+   * null until a ping reports them (no document is open, or the read failed).
+   */
+  private lastDocDepth: 8 | 16 | 32 | null = null;
+  private lastDocMode: 'rgb' | 'cmyk' | 'lab' | 'grayscale' | 'other' | null = null;
+  /**
    * One-shot latch for `resolveLiveVersionInBackground` — set only once we
    * actually commit to a round trip (Photoshop confirmed running RIGHT NOW),
    * and never cleared after that, whether the round trip succeeds or fails.
@@ -370,6 +377,8 @@ export class EditmameiServer {
                 ? 'ps_ping did not reach Photoshop'
                 : 'tool reported failure with no message'),
             ...(this.lastPsLocale !== null ? { ps_locale: this.lastPsLocale } : {}),
+            ...(this.lastDocDepth !== null ? { doc_depth: this.lastDocDepth } : {}),
+            ...(this.lastDocMode !== null ? { doc_mode: this.lastDocMode } : {}),
           });
         }
       },
@@ -871,6 +880,11 @@ export class EditmameiServer {
     // Photoshop's UI locale (app.locale), telemetry's ps_locale diagnostic dimension — see
     // lastPsLocale's field doc. null unless this ping's pingState round trip reports one.
     let psLocale: string | null = null;
+    // Active document's bit depth / color mode, telemetry's doc_depth/doc_mode diagnostic
+    // dimensions — see lastDocDepth/lastDocMode's field doc. null unless this ping's
+    // pingState round trip had a document open to report on.
+    let docDepth: 8 | 16 | 32 | null = null;
+    let docMode: 'rgb' | 'cmyk' | 'lab' | 'grayscale' | 'other' | null = null;
     const degraded: string[] = [];
     // Tracks whether `version` came from the LIVE pingState query below, as opposed to
     // staying at connection.getVersion()'s disk-detected fallback from the try/catch
@@ -990,6 +1004,8 @@ export class EditmameiServer {
         action_sets_count?: number;
         open_documents?: string[];
         locale?: string;
+        doc_depth?: number;
+        doc_mode?: string;
       };
       try {
         state = (await runScript(connection, pingStateSnippet)) as {
@@ -997,6 +1013,8 @@ export class EditmameiServer {
           action_sets_count?: number;
           open_documents?: string[];
           locale?: string;
+          doc_depth?: number;
+          doc_mode?: string;
         };
       } catch (err) {
         this.logger.warn(
@@ -1019,6 +1037,18 @@ export class EditmameiServer {
       if (typeof state.action_sets_count === 'number') actionSetsCount = state.action_sets_count;
       if (Array.isArray(state.open_documents)) openDocuments = state.open_documents;
       if (typeof state.locale === 'string') psLocale = state.locale;
+      if (state.doc_depth === 8 || state.doc_depth === 16 || state.doc_depth === 32) {
+        docDepth = state.doc_depth;
+      }
+      if (
+        state.doc_mode === 'rgb' ||
+        state.doc_mode === 'cmyk' ||
+        state.doc_mode === 'lab' ||
+        state.doc_mode === 'grayscale' ||
+        state.doc_mode === 'other'
+      ) {
+        docMode = state.doc_mode;
+      }
     }
 
     let userTemplates = 0;
@@ -1051,10 +1081,13 @@ export class EditmameiServer {
       // placeholder. Best-effort + content-free; never affects the ping result.
       this.telemetry.onPsVersionResolved();
     }
-    // Cache the locale for every diagnostic recorded for the rest of the session (see
-    // lastPsLocale's field doc) — only overwritten on a ping that actually reported one, so
-    // a later degraded ping doesn't blank out an already-known locale.
+    // Cache the locale + doc depth/mode for every diagnostic recorded for the rest of the
+    // session (see lastPsLocale/lastDocDepth/lastDocMode's field docs) — only overwritten
+    // on a ping that actually reported one, so a later degraded ping (or one with no
+    // document open) doesn't blank out an already-known value.
     if (psLocale !== null) this.lastPsLocale = psLocale;
+    if (docDepth !== null) this.lastDocDepth = docDepth;
+    if (docMode !== null) this.lastDocMode = docMode;
     // Install-asset counts, alongside the other session_summary counters — a pure count,
     // content-free like everything else this method reports.
     this.telemetry.setInstallAssets({ templates_saved: userTemplates, action_sets: actionSetsCount });

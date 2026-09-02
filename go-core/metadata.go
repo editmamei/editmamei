@@ -9,7 +9,7 @@ import (
 // metadata family (Phase 1).
 
 func pingState() string {
-	return tpl[vault.PingState]
+	return fmt.Sprintf(tpl[vault.PingState], bitsPerChannelHelper())
 }
 
 func getLayerTree() string {
