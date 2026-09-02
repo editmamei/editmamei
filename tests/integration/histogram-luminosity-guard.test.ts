@@ -34,11 +34,12 @@ const METADATA_FRAGMENTS = join(
  * grade — because saturation is precisely the condition where one channel
  * approaches zero while the others stay high.
  *
- * Measured on a deep blue-water frame: 521,101 px reported at level 0, read
- * downstream by ps_template_verify as ~4.3 percent shadow clipping, on an
- * image whose true per-pixel composite held 30 px at level 0 and whose green
- * channel — carrying 0.7152 of the weight — held 35. The reported figure was
- * arithmetically impossible and no caller could have detected it.
+ * Measured on a deep blue-water frame: 521,101 px reported at level 0 on an
+ * image whose true per-pixel composite held 30 there, and whose green channel
+ * — carrying 0.7152 of the weight — held 35. The synthesis was computing a
+ * real quantity, just not the one every caller reads it as: any consumer
+ * deriving a shadow-clipping fraction from it saw several percent where the
+ * truth was a rounding error, with no way to detect the difference.
  *
  * This bug passed the entire suite. It was invisible because nothing asserted
  * anything about the SHAPE of a synthesized histogram — only that a call

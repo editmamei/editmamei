@@ -133,8 +133,9 @@ export function pickThresholdLevel(hist: LumaHistogram): ThresholdPick {
  * the row where the running brightness crosses the histogram-picked threshold.
  *
  * `rowMeans` is a top→bottom array of mean luminance per row strip (length R,
- * each strip covering docHeight/R px). When row data isn't available we fall
- * back to a thirds-rule prior (horizon at 1/3 down) flagged with low confidence.
+ * each strip covering docHeight/R px). When row data isn't available, or no
+ * crossing survives the checks below, the facet refuses rather than inventing a
+ * line — see the discriminated union on HorizonFacet.
  */
 export function estimateHorizon(
   rowMeans: number[] | undefined,
@@ -166,7 +167,7 @@ export function estimateHorizon(
   const R = rowMeans.length;
   // Find the first row (scanning top→bottom) where the mean drops below the
   // threshold level — the sky→ground transition. If the whole frame is above or
-  // below threshold, there's no clear horizon; fall back to thirds.
+  // below threshold, there's no clear horizon and the facet refuses.
   let crossRow = -1;
   for (let r = 0; r < R; r++) {
     if (rowMeans[r] < pick.level) {
