@@ -1,16 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { createSequenceTools } from '@editmamei/tools/sequence-tools.ts';
-import { tierOf } from '@editmamei/core/tool-tiers.ts';
+import { createSequenceTools, HISTORY_UNSAFE_TOOLS } from '@editmamei/tools/sequence-tools.ts';
+import { tierOf, TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
 import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
 import type { ToolResult } from '@editmamei/core/tool-registry.ts';
 
 // ps_sequence never talks to Photoshop itself — every step is dispatched
-// through an injected invokeTool, exactly the seam the real CE module wires
-// to host.invokeTool (src/modules/ce/index.ts). These tests drive that seam
-// directly with a fake, never a real registry or connection.
+// through an injected invokeTool and validated through an injected hasTool,
+// exactly the seams the real CE module wires to host.invokeTool / host.hasTool
+// (src/modules/ce/index.ts). These tests drive both directly, never a real
+// registry or connection.
 
 type FakeInvoke = (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
+type HasTool = (name: string) => boolean;
+
+/** Accepts any tool name — the injected registry-lookup stand-in for tests that don't care about it. */
+const allow: HasTool = () => true;
 
 const ok = (text = 'ok'): ToolResult => ({ content: [{ type: 'text' as const, text }] });
 const fail = (text = 'boom'): ToolResult => ({
@@ -18,9 +23,29 @@ const fail = (text = 'boom'): ToolResult => ({
   isError: true,
 });
 
+/** A ps_inspect(what='history') result shaped the way performRollback reads it. */
+function historyResult(
+  index: number,
+  opts: { stateName?: string; total?: number; documentName?: string | null } = {}
+): ToolResult {
+  const { stateName = `state-${index}`, total = index + 1, documentName = 'doc.psd' } = opts;
+  return {
+    content: [{ type: 'text' as const, text: 'history' }],
+    structuredContent: {
+      currentIndex: index,
+      currentState: stateName,
+      totalStates: total,
+      context:
+        documentName === null
+          ? { hasDocument: false }
+          : { hasDocument: true, document: { name: documentName } },
+    },
+  };
+}
+
 describe('createSequenceTools', () => {
   it('returns one well-formed tool', () => {
-    const tools = createSequenceTools(async () => ok());
+    const tools = createSequenceTools(async () => ok(), allow);
     assertToolShape(tools);
     expect(tools.map((t) => t.tool.name)).toEqual(['ps_sequence']);
   });
@@ -28,6 +53,14 @@ describe('createSequenceTools', () => {
   it('is registered at dev tier and appears in the automation group', () => {
     expect(tierOf('ps_sequence')).toBe('dev');
     expect(groupOf('ps_sequence')).toBe('automation');
+  });
+
+  it('every HISTORY_UNSAFE_TOOLS entry names a real, currently classified tool', () => {
+    // A rename in tool-tiers.ts that isn't mirrored here would otherwise
+    // silently drop a guard entry with no test ever noticing.
+    for (const name of HISTORY_UNSAFE_TOOLS) {
+      expect(Object.keys(TOOL_TIERS), `${name} is not in TOOL_TIERS`).toContain(name);
+    }
   });
 
   // ---------- ordering ----------
@@ -38,47 +71,48 @@ describe('createSequenceTools', () => {
       invoked.push({ name, args });
       return ok();
     };
-    const tools = createSequenceTools(invokeTool);
+    const tools = createSequenceTools(invokeTool, allow);
     await callTool(tools, 'ps_sequence', {
       steps: [
-        { tool: 'ps_ping', args: {} },
-        { tool: 'ps_undo', args: { steps: 2 } },
-        { tool: 'ps_redo', args: { steps: 3 } },
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_b', args: { steps: 2 } },
+        { tool: 'tool_c', args: { steps: 3 } },
       ],
     });
     expect(invoked).toEqual([
-      { name: 'ps_ping', args: {} },
-      { name: 'ps_undo', args: { steps: 2 } },
-      { name: 'ps_redo', args: { steps: 3 } },
+      { name: 'tool_a', args: {} },
+      { name: 'tool_b', args: { steps: 2 } },
+      { name: 'tool_c', args: { steps: 3 } },
     ]);
   });
 
   // ---------- validation, before any step runs ----------
 
-  it('validation refuses an unknown tool and runs nothing', async () => {
+  it('validation refuses a tool the injected registry lookup rejects, and runs nothing', async () => {
     const invoked: string[] = [];
     const invokeTool: FakeInvoke = async (name) => {
       invoked.push(name);
       return ok();
     };
-    const tools = createSequenceTools(invokeTool);
+    const hasTool: HasTool = (name) => name !== 'tool_not_registered';
+    const tools = createSequenceTools(invokeTool, hasTool);
     const res = await callTool(tools, 'ps_sequence', {
-      steps: [{ tool: 'ps_this_tool_does_not_exist', args: {} }],
+      steps: [{ tool: 'tool_not_registered', args: {} }],
     });
     expect(res.isError).toBe(true);
-    expect(textOf(res)).toMatch(/not a tool registered in this edition/);
+    expect(textOf(res)).toMatch(/not a tool registered right now/);
     expect(invoked).toEqual([]);
   });
 
-  it('validation refuses ps_sequence nesting itself and runs nothing', async () => {
+  it('validation refuses ps_sequence nesting itself even when the lookup would allow it', async () => {
     const invoked: string[] = [];
     const invokeTool: FakeInvoke = async (name) => {
       invoked.push(name);
       return ok();
     };
-    const tools = createSequenceTools(invokeTool);
+    const tools = createSequenceTools(invokeTool, allow);
     const res = await callTool(tools, 'ps_sequence', {
-      steps: [{ tool: 'ps_sequence', args: { steps: [{ tool: 'ps_ping', args: {} }] } }],
+      steps: [{ tool: 'ps_sequence', args: { steps: [{ tool: 'tool_a', args: {} }] } }],
     });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/cannot nest ps_sequence/);
@@ -91,12 +125,40 @@ describe('createSequenceTools', () => {
       invoked.push(name);
       return ok();
     };
-    const tools = createSequenceTools(invokeTool);
-    const tooMany = Array.from({ length: 26 }, () => ({ tool: 'ps_ping', args: {} }));
+    const tools = createSequenceTools(invokeTool, allow);
+    const tooMany = Array.from({ length: 26 }, () => ({ tool: 'tool_a', args: {} }));
     const res = await callTool(tools, 'ps_sequence', { steps: tooMany });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/must contain 1 to 25 items/);
     expect(invoked).toEqual([]);
+  });
+
+  it('rejects an invalid on_error value', async () => {
+    const tools = createSequenceTools(async () => ok(), allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_a', args: {} }],
+      on_error: 'retry',
+    });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/on_error/);
+  });
+
+  it('rejects an invalid return value', async () => {
+    const tools = createSequenceTools(async () => ok(), allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_a', args: {} }],
+      return: 'verbose',
+    });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/return/);
+  });
+
+  it('defaults on_error to "stop" and return to "summary" when omitted', async () => {
+    const tools = createSequenceTools(async () => ok(), allow);
+    const res = await callTool(tools, 'ps_sequence', { steps: [{ tool: 'tool_a', args: {} }] });
+    const sc = res.structuredContent as { on_error: string; return: string };
+    expect(sc.on_error).toBe('stop');
+    expect(sc.return).toBe('summary');
   });
 
   // ---------- on_error policies ----------
@@ -105,54 +167,81 @@ describe('createSequenceTools', () => {
     const invoked: string[] = [];
     const invokeTool: FakeInvoke = async (name) => {
       invoked.push(name);
-      return name === 'ps_get_histogram' ? fail() : ok();
+      return name === 'tool_fail' ? fail() : ok();
     };
-    const tools = createSequenceTools(invokeTool);
+    const tools = createSequenceTools(invokeTool, allow);
     const res = await callTool(tools, 'ps_sequence', {
       steps: [
-        { tool: 'ps_ping', args: {} },
-        { tool: 'ps_get_histogram', args: {} },
-        { tool: 'ps_undo', args: {} },
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_fail', args: {} },
+        { tool: 'tool_c', args: {} },
       ],
       on_error: 'stop',
     });
-    expect(invoked).toEqual(['ps_ping', 'ps_get_histogram']);
+    expect(invoked).toEqual(['tool_a', 'tool_fail']);
     expect(res.isError).toBe(true);
     const sc = res.structuredContent as { failed_step: unknown; ran_steps: number };
-    expect(sc.failed_step).toEqual({ index: 1, tool: 'ps_get_histogram' });
+    expect(sc.failed_step).toEqual({ index: 1, tool: 'tool_fail' });
     expect(sc.ran_steps).toBe(2);
+  });
+
+  it('a thrown (rejected) invokeTool call reaches the synthetic error path and stops (on_error=stop)', async () => {
+    const invoked: string[] = [];
+    const invokeTool: FakeInvoke = async (name) => {
+      invoked.push(name);
+      if (name === 'tool_throws') throw new Error('kernel depth exceeded');
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_throws', args: {} },
+        { tool: 'tool_c', args: {} },
+      ],
+      on_error: 'stop',
+    });
+    expect(invoked).toEqual(['tool_a', 'tool_throws']);
+    expect(res.isError).toBe(true);
+    const sc = res.structuredContent as {
+      failed_step: unknown;
+      steps: Array<{ ok: boolean; text: string }>;
+    };
+    expect(sc.failed_step).toEqual({ index: 1, tool: 'tool_throws' });
+    expect(sc.steps[1].ok).toBe(false);
+    expect(sc.steps[1].text).toMatch(/kernel depth exceeded/);
   });
 
   it('on_error=continue records the failure and runs every remaining step', async () => {
     const invoked: string[] = [];
     const invokeTool: FakeInvoke = async (name) => {
       invoked.push(name);
-      return name === 'ps_get_histogram' ? fail() : ok();
+      return name === 'tool_fail' ? fail() : ok();
     };
-    const tools = createSequenceTools(invokeTool);
+    const tools = createSequenceTools(invokeTool, allow);
     const res = await callTool(tools, 'ps_sequence', {
       steps: [
-        { tool: 'ps_ping', args: {} },
-        { tool: 'ps_get_histogram', args: {} },
-        { tool: 'ps_undo', args: {} },
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_fail', args: {} },
+        { tool: 'tool_c', args: {} },
       ],
       on_error: 'continue',
     });
-    expect(invoked).toEqual(['ps_ping', 'ps_get_histogram', 'ps_undo']);
+    expect(invoked).toEqual(['tool_a', 'tool_fail', 'tool_c']);
     expect(res.isError).toBeFalsy();
     const sc = res.structuredContent as { failed_step: unknown; ran_steps: number };
-    expect(sc.failed_step).toEqual({ index: 1, tool: 'ps_get_histogram' });
+    expect(sc.failed_step).toEqual({ index: 1, tool: 'tool_fail' });
     expect(sc.ran_steps).toBe(3);
   });
 
   it('on_error=continue reports the FIRST failure when several steps fail', async () => {
-    const invokeTool: FakeInvoke = async (name) => (name === 'ps_ping' ? ok() : fail());
-    const tools = createSequenceTools(invokeTool);
+    const invokeTool: FakeInvoke = async (name) => (name === 'tool_ok' ? ok() : fail());
+    const tools = createSequenceTools(invokeTool, allow);
     const res = await callTool(tools, 'ps_sequence', {
       steps: [
-        { tool: 'ps_get_histogram', args: {} }, // fails first
-        { tool: 'ps_ping', args: {} },
-        { tool: 'ps_undo', args: {} }, // fails too, but should not overwrite failed_step
+        { tool: 'tool_fail_1', args: {} }, // fails first
+        { tool: 'tool_ok', args: {} },
+        { tool: 'tool_fail_2', args: {} }, // fails too, but should not overwrite failed_step
       ],
       on_error: 'continue',
     });
@@ -160,49 +249,78 @@ describe('createSequenceTools', () => {
       failed_step: unknown;
       steps: Array<{ index: number; ok: boolean }>;
     };
-    expect(sc.failed_step).toEqual({ index: 0, tool: 'ps_get_histogram' });
+    expect(sc.failed_step).toEqual({ index: 0, tool: 'tool_fail_1' });
     expect(sc.steps.map((s) => s.ok)).toEqual([false, true, false]);
   });
 
-  it('on_error=rollback restores the history cursor (ps_inspect + ps_undo) after a failing step', async () => {
+  // ---------- rollback: verified restore ----------
+
+  it('on_error=rollback verifies the restore (re-reads index, state name, and document) before reporting success', async () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
     let historyReads = 0;
     const invokeTool: FakeInvoke = async (name, args) => {
       calls.push({ name, args });
-      if (name === 'ps_inspect' && args.what === 'history') {
+      if (name === 'ps_inspect') {
         historyReads++;
-        // Before step 1: index 5. After the failed step ran: index 8 — 3
-        // in-document edits happened, so rollback should undo exactly 3.
-        return {
-          ...ok('history'),
-          structuredContent: { currentIndex: historyReads === 1 ? 5 : 8 },
-        };
+        // 1: capture (index 5). 2: pre-undo re-read (index 8, 3 edits ran).
+        // 3: post-undo verification re-read (back to 5 — matches).
+        if (historyReads === 1) return historyResult(5, { stateName: 'S5', total: 10 });
+        if (historyReads === 2) return historyResult(8, { stateName: 'S8', total: 13 });
+        return historyResult(5, { stateName: 'S5', total: 13 });
       }
-      if (name === 'ps_get_histogram') return fail();
+      if (name === 'ps_undo') return ok('Undo successful');
+      if (name === 'tool_fail') return fail();
       return ok();
     };
-    const tools = createSequenceTools(invokeTool);
+    const tools = createSequenceTools(invokeTool, allow);
     const res = await callTool(tools, 'ps_sequence', {
       steps: [
-        { tool: 'ps_ping', args: {} },
-        { tool: 'ps_get_histogram', args: {} },
-        { tool: 'ps_undo', args: {} }, // never reached — rollback stops the loop
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_fail', args: {} },
+        { tool: 'tool_c', args: {} }, // never reached — rollback stops the loop
       ],
       on_error: 'rollback',
     });
     expect(calls.map((c) => c.name)).toEqual([
       'ps_inspect', // capture, before step 1
-      'ps_ping',
-      'ps_get_histogram', // fails
+      'tool_a',
+      'tool_fail', // fails
       'ps_inspect', // re-read to compute the rollback distance
       'ps_undo', // the actual restore
+      'ps_inspect', // re-read AGAIN to verify it actually landed
     ]);
-    expect(calls.at(-1)).toEqual({ name: 'ps_undo', args: { steps: 3 } });
-    const sc = res.structuredContent as { rolled_back: boolean; failed_step: unknown };
+    expect(calls[4]).toEqual({ name: 'ps_undo', args: { steps: 3 } });
+    const sc = res.structuredContent as {
+      rolled_back: boolean;
+      rollback_reason?: string;
+      failed_step: unknown;
+    };
     expect(sc.rolled_back).toBe(true);
-    expect(sc.failed_step).toEqual({ index: 1, tool: 'ps_get_histogram' });
+    expect(sc.rollback_reason).toBeUndefined();
+    expect(sc.failed_step).toEqual({ index: 1, tool: 'tool_fail' });
     expect(res.isError).toBe(true);
-    expect(textOf(res)).toMatch(/rolled back|restored/);
+    expect(textOf(res)).toMatch(/verified restored/);
+  });
+
+  it('on_error=rollback with no in-document edits (delta<=0) still re-verifies before reporting success', async () => {
+    const calls: string[] = [];
+    const invokeTool: FakeInvoke = async (name) => {
+      calls.push(name);
+      if (name === 'ps_inspect') return historyResult(5, { stateName: 'S5' });
+      if (name === 'tool_fail') return fail();
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_fail', args: {} }],
+      on_error: 'rollback',
+    });
+    // capture, the failing step, the pre-undo check, the post-check — never ps_undo.
+    expect(calls).toEqual(['ps_inspect', 'tool_fail', 'ps_inspect', 'ps_inspect']);
+    const sc = res.structuredContent as { rolled_back: boolean };
+    expect(sc.rolled_back).toBe(true);
+    expect(textOf(res)).not.toMatch(/nothing to roll back/);
+    expect(textOf(res)).toMatch(/verified already at its state/);
   });
 
   it('on_error=rollback refuses at validation when a step sits outside history scope', async () => {
@@ -211,10 +329,10 @@ describe('createSequenceTools', () => {
       invoked.push(name);
       return ok();
     };
-    const tools = createSequenceTools(invokeTool);
+    const tools = createSequenceTools(invokeTool, allow);
     const res = await callTool(tools, 'ps_sequence', {
       steps: [
-        { tool: 'ps_ping', args: {} },
+        { tool: 'tool_a', args: {} },
         { tool: 'ps_close_document', args: {} },
       ],
       on_error: 'rollback',
@@ -225,6 +343,149 @@ describe('createSequenceTools', () => {
     expect(invoked).toEqual([]);
   });
 
+  it('on_error=rollback fails validation for ps_undo and ps_redo too, since they move the cursor rollback depends on', async () => {
+    const tools = createSequenceTools(async () => ok(), allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'ps_undo', args: {} }],
+      on_error: 'rollback',
+    });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/can't be honored/);
+  });
+
+  it('the pre-sequence history capture failing (invokeTool throws) refuses before any step runs', async () => {
+    const invoked: string[] = [];
+    const invokeTool: FakeInvoke = async (name) => {
+      invoked.push(name);
+      if (name === 'ps_inspect') throw new Error('Photoshop is busy');
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_a', args: {} }],
+      on_error: 'rollback',
+    });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/capturing history state/);
+    expect(invoked).toEqual(['ps_inspect']);
+  });
+
+  it('the pre-sequence history capture returning unusable data refuses before any step runs', async () => {
+    const invoked: string[] = [];
+    const invokeTool: FakeInvoke = async (name) => {
+      invoked.push(name);
+      // Missing currentState/totalStates — extractHistorySnapshot must reject this.
+      if (name === 'ps_inspect') {
+        return {
+          content: [{ type: 'text' as const, text: 'history' }],
+          structuredContent: { currentIndex: 5 },
+        };
+      }
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_a', args: {} }],
+      on_error: 'rollback',
+    });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/capturing history state/);
+    expect(invoked).toEqual(['ps_inspect']);
+  });
+
+  // ---------- rollback reason tokens ----------
+
+  it('rollback_reason=undo_failed when ps_undo itself returns isError', async () => {
+    let historyReads = 0;
+    const invokeTool: FakeInvoke = async (name) => {
+      if (name === 'ps_inspect') {
+        historyReads++;
+        return historyReads === 1 ? historyResult(5) : historyResult(8);
+      }
+      if (name === 'ps_undo') return fail('Photoshop refused the undo');
+      if (name === 'tool_fail') return fail();
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_fail', args: {} }],
+      on_error: 'rollback',
+    });
+    const sc = res.structuredContent as { rolled_back: boolean; rollback_reason: string };
+    expect(sc.rolled_back).toBe(false);
+    expect(sc.rollback_reason).toBe('undo_failed');
+  });
+
+  it('rollback_reason=cursor_moved_backward when the index is earlier than the capture', async () => {
+    let historyReads = 0;
+    const invokeTool: FakeInvoke = async (name) => {
+      if (name === 'ps_inspect') {
+        historyReads++;
+        // Captured at 5; by the time we check, it's already at 3 — a step
+        // must have called undo/redo on its own.
+        return historyReads === 1 ? historyResult(5) : historyResult(3);
+      }
+      if (name === 'tool_fail') return fail();
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_fail', args: {} }],
+      on_error: 'rollback',
+    });
+    const sc = res.structuredContent as { rolled_back: boolean; rollback_reason: string };
+    expect(sc.rolled_back).toBe(false);
+    expect(sc.rollback_reason).toBe('cursor_moved_backward');
+  });
+
+  it('rollback_reason=document_changed when the active document differs from the capture', async () => {
+    let historyReads = 0;
+    const invokeTool: FakeInvoke = async (name) => {
+      if (name === 'ps_inspect') {
+        historyReads++;
+        return historyReads === 1
+          ? historyResult(5, { documentName: 'A.psd' })
+          : historyResult(5, { documentName: 'B.psd' });
+      }
+      if (name === 'tool_fail') return fail();
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_fail', args: {} }],
+      on_error: 'rollback',
+    });
+    const sc = res.structuredContent as { rolled_back: boolean; rollback_reason: string };
+    expect(sc.rolled_back).toBe(false);
+    expect(sc.rollback_reason).toBe('document_changed');
+  });
+
+  it('rollback_reason=history_evicted when the verification re-read does not match the capture', async () => {
+    let historyReads = 0;
+    const invokeTool: FakeInvoke = async (name) => {
+      if (name === 'ps_inspect') {
+        historyReads++;
+        if (historyReads === 1) return historyResult(5, { stateName: 'S5', total: 10 });
+        if (historyReads === 2) return historyResult(8, { stateName: 'S8', total: 13 });
+        // Post-undo: ps_undo claimed success, but the buffer evicted state 5 —
+        // the cursor landed somewhere that is neither the right index nor name.
+        return historyResult(6, { stateName: 'S-evicted', total: 13 });
+      }
+      if (name === 'ps_undo') return ok('Undo successful'); // clamps/lies — see doc comment
+      if (name === 'tool_fail') return fail();
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_fail', args: {} }],
+      on_error: 'rollback',
+    });
+    const sc = res.structuredContent as { rolled_back: boolean; rollback_reason: string };
+    expect(sc.rolled_back).toBe(false);
+    expect(sc.rollback_reason).toBe('history_evicted');
+    expect(textOf(res)).toMatch(/rollback did not complete/);
+  });
+
   // ---------- return modes + image stripping ----------
 
   it("return=summary carries a per-step summary line plus the last step's full result", async () => {
@@ -232,44 +493,32 @@ describe('createSequenceTools', () => {
       content: [{ type: 'text' as const, text: `${name} line1\nline2` }],
       structuredContent: { tool: name },
     });
-    const tools = createSequenceTools(invokeTool);
+    const tools = createSequenceTools(invokeTool, allow);
     const res = await callTool(tools, 'ps_sequence', {
       steps: [
-        { tool: 'ps_ping', args: {} },
-        { tool: 'ps_undo', args: {} },
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_b', args: {} },
       ],
       return: 'summary',
     });
     const sc = res.structuredContent as { steps: unknown; final: ToolResult };
     expect(sc.steps).toEqual([
-      {
-        index: 0,
-        tool: 'ps_ping',
-        ok: true,
-        duration_ms: expect.any(Number),
-        text: 'ps_ping line1',
-      },
-      {
-        index: 1,
-        tool: 'ps_undo',
-        ok: true,
-        duration_ms: expect.any(Number),
-        text: 'ps_undo line1',
-      },
+      { index: 0, tool: 'tool_a', ok: true, duration_ms: expect.any(Number), text: 'tool_a line1' },
+      { index: 1, tool: 'tool_b', ok: true, duration_ms: expect.any(Number), text: 'tool_b line1' },
     ]);
     expect(sc.final).toEqual({
-      content: [{ type: 'text', text: 'ps_undo line1\nline2' }],
-      structuredContent: { tool: 'ps_undo' },
+      content: [{ type: 'text', text: 'tool_b line1\nline2' }],
+      structuredContent: { tool: 'tool_b' },
     });
   });
 
   it("return=full carries every step's full result", async () => {
     const invokeTool: FakeInvoke = async (name) => ok(`${name} ok`);
-    const tools = createSequenceTools(invokeTool);
+    const tools = createSequenceTools(invokeTool, allow);
     const res = await callTool(tools, 'ps_sequence', {
       steps: [
-        { tool: 'ps_ping', args: {} },
-        { tool: 'ps_undo', args: {} },
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_b', args: {} },
       ],
       return: 'full',
     });
@@ -277,41 +526,63 @@ describe('createSequenceTools', () => {
     expect(sc.steps).toEqual([
       {
         index: 0,
-        tool: 'ps_ping',
+        tool: 'tool_a',
         ok: true,
         duration_ms: expect.any(Number),
-        result: ok('ps_ping ok'),
+        result: ok('tool_a ok'),
       },
       {
         index: 1,
-        tool: 'ps_undo',
+        tool: 'tool_b',
         ok: true,
         duration_ms: expect.any(Number),
-        result: ok('ps_undo ok'),
+        result: ok('tool_b ok'),
       },
     ]);
     expect(sc.final).toBeUndefined();
   });
 
-  it('strips inline image content from every step except the last, in both return modes', async () => {
+  it('return=full strips inline image content from every step except the last', async () => {
     const image = { type: 'image' as const, data: 'AAAA', mimeType: 'image/jpeg' };
     const invokeTool: FakeInvoke = async (name) => ({
       content: [{ type: 'text' as const, text: `${name} ok` }, image],
     });
-    const tools = createSequenceTools(invokeTool);
-    const steps = [
-      { tool: 'ps_ping', args: {} },
-      { tool: 'ps_undo', args: {} },
-    ];
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_b', args: {} },
+      ],
+      return: 'full',
+    });
+    const sc = res.structuredContent as { steps: Array<{ result: ToolResult }> };
+    expect(sc.steps[0].result.content).toEqual([{ type: 'text', text: 'tool_a ok' }]);
+    expect(sc.steps[1].result.content).toContainEqual(image);
+  });
 
-    const summaryRes = await callTool(tools, 'ps_sequence', { steps, return: 'summary' });
-    const summarySc = summaryRes.structuredContent as { final: ToolResult };
-    expect(summarySc.final.content).toContainEqual(image);
-
-    const fullRes = await callTool(tools, 'ps_sequence', { steps, return: 'full' });
-    const fullSc = fullRes.structuredContent as { steps: Array<{ result: ToolResult }> };
-    expect(fullSc.steps[0].result.content).toEqual([{ type: 'text', text: 'ps_ping ok' }]);
-    expect(fullSc.steps[1].result.content).toContainEqual(image);
+  it('return=summary never leaks image data through the per-step text line, and keeps it on the final result', async () => {
+    const image = { type: 'image' as const, data: 'AAAA', mimeType: 'image/jpeg' };
+    const invokeTool: FakeInvoke = async (name) => ({
+      content: [{ type: 'text' as const, text: `${name} ok` }, image],
+    });
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_b', args: {} },
+      ],
+      return: 'summary',
+    });
+    const sc = res.structuredContent as {
+      steps: Array<{ text: string }>;
+      final: ToolResult;
+    };
+    // Every non-last step reduces to a plain text line — there is no field an
+    // image could ride on, which is what makes summary mode safe by
+    // construction rather than by an explicit strip.
+    expect(sc.steps[0].text).toBe('tool_a ok');
+    expect(JSON.stringify(sc.steps[0])).not.toContain('AAAA');
+    expect(sc.final.content).toContainEqual(image);
   });
 
   // ---------- overall time budget ----------
@@ -329,19 +600,25 @@ describe('createSequenceTools', () => {
       t += 200_000;
       return v;
     };
-    const tools = createSequenceTools(invokeTool, { now });
+    const tools = createSequenceTools(invokeTool, allow, { now });
     const res = await callTool(tools, 'ps_sequence', {
       steps: [
-        { tool: 'ps_ping', args: {} },
-        { tool: 'ps_undo', args: {} },
-        { tool: 'ps_redo', args: {} },
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_b', args: {} },
+        { tool: 'tool_c', args: {} },
       ],
     });
     // Only the first step actually ran; the cap fired before the second.
-    expect(invoked).toEqual(['ps_ping']);
-    const sc = res.structuredContent as { cap_exceeded: boolean; failed_step: unknown };
+    expect(invoked).toEqual(['tool_a']);
+    const sc = res.structuredContent as {
+      cap_exceeded: boolean;
+      failed_step: unknown;
+      ran_steps: number;
+    };
     expect(sc.cap_exceeded).toBe(true);
-    expect(sc.failed_step).toEqual({ index: 1, tool: 'ps_undo' });
+    expect(sc.failed_step).toEqual({ index: 1, tool: 'tool_b' });
+    // The never-run synthetic cap entry must not count as a step that ran.
+    expect(sc.ran_steps).toBe(1);
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/exceeded its overall time budget/);
   });

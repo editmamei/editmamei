@@ -129,10 +129,13 @@ export const ceModule: EditmameiModule = {
       // when entitled, else CE fallback.
       ...createSceneTools(connection, snippet, { invokeTool: host.invokeTool }),
       // ps_sequence — runs an ordered list of already-registered tool calls
-      // through host.invokeTool (the cross-module broker), so it needs the
-      // same broker scene reading does; the generic (connection, snippet)
-      // factory shape the rest of ceFactories share can't supply it.
-      ...createSequenceTools(host.invokeTool),
+      // through host.invokeTool (the cross-module broker) and validates each
+      // one against host.hasTool (the live registry), so it needs a shape the
+      // generic (connection, snippet) factory call can't supply. hasTool is
+      // optional on HostApi for cross-version compatibility; this kernel
+      // always provides it, and the fallback below just makes that explicit
+      // rather than asserting it.
+      ...createSequenceTools(host.invokeTool, (name) => host.hasTool?.(name) ?? false),
     ].filter((def) => isToolAllowedInEdition(def.tool.name, EDITION));
     host.registerTools(defs);
   },

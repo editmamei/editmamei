@@ -2,40 +2,54 @@
  * ps_sequence — run an ordered list of already-registered tool calls in one
  * round trip, dispatched through the same `invokeTool` broker scene reading
  * uses (Kernel §7: the same path an MCP request takes, on the shared
- * serialized Photoshop connection). Composes ONLY tools the caller already
- * has; it never executes arbitrary code (that's ps_execute_script, Pro) and
- * it never fans a recipe out over a folder of files (that's ps_batch, Pro).
+ * serialized Photoshop connection). Composes only tools already registered
+ * for the caller's edition, against the current document.
  */
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import { validateArgs, type JsonSchemaObject, type JsonSchemaProperty } from '../utils/validate.js';
 import { toolErrorResult } from '../utils/tool-helpers.js';
-import { TOOL_TIERS, isToolAllowedInEdition } from '../core/tool-tiers.js';
-import { EDITION } from '../edition.js';
 import { SEQUENCE_OVERALL_TIMEOUT_MS } from '../utils/operation-timeouts.js';
 
 type InvokeTool = (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
+
+/**
+ * Whether `name` is currently dispatchable — backed by the live registry
+ * (HostApi.hasTool), not a static edition table. Registry membership already
+ * IS the entitlement check: the kernel only registers what this build/module
+ * set is entitled to, so a name that is not registered would throw at
+ * dispatch regardless of what a static table says. Taken as a parameter
+ * (rather than imported) so a test can inject one that rejects on demand.
+ */
+type HasTool = (name: string) => boolean;
 
 const SEQUENCE_TOOL_NAME = 'ps_sequence';
 const MIN_STEPS = 1;
 const MAX_STEPS = 25;
 
 /**
- * Tools whose effect sits outside the document's history cursor: opening or
- * creating a document, closing one, saving one, or switching which one is
- * active (ps_document's op=activate). `doc.activeHistoryState` — what
- * ps_undo/ps_redo and this tool's rollback move — is a per-document cursor;
- * none of these four categories are reversible by moving it, and Photoshop's
- * history buffer is finite besides. Kept in one place so on_error='rollback'
- * validation (below) and any future caller asking the same question read the
- * identical list.
+ * Tools ps_sequence refuses under on_error='rollback', because each can move
+ * the document (or the cursor rollback itself depends on) in a way the
+ * history cursor cannot undo. One comment per entry, naming the mechanism —
+ * this is the single place that list is kept, checked by validation below and
+ * pinned against TOOL_TIERS by a test so a rename cannot silently drop an
+ * entry. The document-identity check `performRollback` does at rollback time
+ * is the backstop for anything this list misses.
  */
-const HISTORY_UNSAFE_TOOLS = new Set<string>([
-  'ps_open_document',
-  'ps_create_document',
-  'ps_close_document',
-  'ps_save_psd',
-  'ps_document',
+export const HISTORY_UNSAFE_TOOLS = new Set<string>([
+  'ps_open_document', // opens a different document — history is per-document
+  'ps_create_document', // creates and activates a new document — nothing to return to
+  'ps_close_document', // closes a document — the captured state may cease to exist
+  'ps_save_psd', // writes a file to disk; undoing history can't un-write it
+  'ps_document', // op=activate switches which document is active
+  'ps_execute_script', // arbitrary code — can open, close, save, or switch documents undetectably
+  'ps_batch', // runs a recipe over many files, opening and closing each in turn
+  'ps_template_apply', // may place or reference other assets while applying the recipe
+  'ps_select_subject_instance', // crops a copy to isolate one instance, briefly activating that copy
+  'ps_undo', // moves the history cursor directly, corrupting the delta rollback computes
+  'ps_redo', // moves the history cursor directly, corrupting the delta rollback computes
 ]);
+
+const HISTORY_UNSAFE_TOOLS_LIST = Array.from(HISTORY_UNSAFE_TOOLS).sort().join(', ');
 
 const stepItemSchema: JsonSchemaProperty = {
   type: 'object',
@@ -65,15 +79,14 @@ const sequenceSchema: JsonSchemaObject = {
       type: 'string',
       enum: ['stop', 'continue', 'rollback'],
       default: 'stop',
-      description:
-        'stop: halt at the first failing step and return results so far. continue: record the failure and run every remaining step anyway. rollback: on the first failing step, restore the history cursor to its state before step one and stop — refused at VALIDATION time (before any step runs) if any step opens, creates, closes, or saves a document, or switches the active one, since those sit outside what the history cursor can undo.',
+      description: `stop: halt at the first failing step and return results so far. continue: record the failure and run every remaining step anyway. rollback: on the first failing step, undo back to the history state captured before step one and VERIFY the document actually landed there (index, state name, and active document all re-checked) before reporting success — refused at VALIDATION time (before any step runs) if any step names one of: ${HISTORY_UNSAFE_TOOLS_LIST}, since those sit outside what the history cursor can undo. Assumes nothing else edits the document while the sequence runs; a manual edit interleaved between steps corrupts the undo distance rollback computes.`,
     },
     return: {
       type: 'string',
       enum: ['summary', 'full'],
       default: 'summary',
       description:
-        "summary: one line per step plus the LAST step's full result. full: every step's full result. Either way, an inline preview (image content) is stripped from every step except the last — previews are most of a result's bytes, and a sequence exists to stop paying for them on intermediate steps.",
+        "summary: one line per step plus the LAST step's full result. full: every step's full result — note this means every embedded payload (not just the last step's) lands in the logged call record. Either way, an inline preview (image content) is stripped from every step except the last — previews are most of a result's bytes, and a sequence exists to stop paying for them on intermediate steps.",
     },
   },
   required: ['steps'],
@@ -107,10 +120,14 @@ const sequenceOutputSchema = {
     on_error: { type: 'string' },
     return: { type: 'string' },
     total_steps: { type: 'number' },
-    ran_steps: { type: 'number', description: 'How many entries actually ran or were attempted.' },
+    ran_steps: {
+      type: 'number',
+      description: 'How many steps actually ran — excludes a step skipped by the time budget.',
+    },
     failed_step: {
-      type: ['object', 'null'],
-      description: 'The first failing step, or the step skipped by the overall time budget.',
+      type: 'object',
+      description:
+        'The first failing step, or the step skipped by the overall time budget. Absent when every step succeeded.',
       properties: {
         index: { type: 'number' },
         tool: { type: 'string' },
@@ -118,6 +135,12 @@ const sequenceOutputSchema = {
     },
     cap_exceeded: { type: 'boolean' },
     rolled_back: { type: 'boolean' },
+    rollback_reason: {
+      type: 'string',
+      description:
+        'Set only when on_error="rollback" and rolled_back is false: history_evicted, undo_failed, cursor_moved_backward, or document_changed.',
+      enum: ['history_evicted', 'undo_failed', 'cursor_moved_backward', 'document_changed'],
+    },
     steps: {
       type: 'array',
       description: 'One entry per step run — summary shape or full shape depending on `return`.',
@@ -147,13 +170,19 @@ interface ParsedSequenceArgs {
 
 /**
  * Full validation, run BEFORE any step is dispatched: every step's `tool` is
- * a non-empty string registered in the current edition, none is ps_sequence
+ * a non-empty string currently registered (via `hasTool`, the live registry
+ * — not a static edition table, which would pass a Pro name that fails at
+ * dispatch after earlier steps already mutated the document, or reject a
+ * Pro tool an entitled CE host actually has loaded), none is ps_sequence
  * itself, the step count is in bounds, and — only when on_error='rollback' —
  * no step names a HISTORY_UNSAFE_TOOLS entry. Throws a plain Error naming the
  * offending step; the caller turns that into an error result without running
  * anything.
  */
-function validateSequenceArgs(rawArgs: Record<string, unknown>): ParsedSequenceArgs {
+function validateSequenceArgs(
+  rawArgs: Record<string, unknown>,
+  hasTool: HasTool
+): ParsedSequenceArgs {
   const args = validateArgs(sequenceSchema, rawArgs);
   const rawSteps = args.steps;
   if (!Array.isArray(rawSteps)) {
@@ -177,8 +206,8 @@ function validateSequenceArgs(rawArgs: Record<string, unknown>): ParsedSequenceA
     if (tool === SEQUENCE_TOOL_NAME) {
       throw new Error(`step ${i + 1}: cannot nest ${SEQUENCE_TOOL_NAME} inside itself`);
     }
-    if (!Object.hasOwn(TOOL_TIERS, tool) || !isToolAllowedInEdition(tool, EDITION)) {
-      throw new Error(`step ${i + 1}: "${tool}" is not a tool registered in this edition`);
+    if (!hasTool(tool)) {
+      throw new Error(`step ${i + 1}: "${tool}" is not a tool registered right now`);
     }
     const rawStepArgs = stepObj.args;
     if (
@@ -198,7 +227,7 @@ function validateSequenceArgs(rawArgs: Record<string, unknown>): ParsedSequenceA
     if (firstUnsafe !== -1) {
       const tool = steps[firstUnsafe].tool;
       throw new Error(
-        `step ${firstUnsafe + 1}: on_error="rollback" can't be honored because "${tool}" opens, creates, closes, or saves a document, or switches the active one — outside what the history cursor can undo. Use on_error="stop" or "continue", or drop that step.`
+        `step ${firstUnsafe + 1}: on_error="rollback" can't be honored because "${tool}" is one of the tools ps_sequence treats as unsafe for rollback (${HISTORY_UNSAFE_TOOLS_LIST}) — outside what the history cursor can undo. Use on_error="stop" or "continue", or drop that step.`
       );
     }
   }
@@ -224,46 +253,153 @@ function stripImages(result: ToolResult): ToolResult {
   return kept.length === result.content.length ? result : { ...result, content: kept };
 }
 
-/** Reads `currentIndex` out of a ps_inspect(what='history') result. Null on anything unusable. */
-function extractHistoryIndex(result: ToolResult): number | null {
+/**
+ * Everything rollback needs to VERIFY it landed back where it started, read
+ * from one ps_inspect(what='history') call: the cursor's position, the NAME
+ * Photoshop reports at that position (position alone is not proof of
+ * identity — see history_evicted below), the total state count, and the
+ * active document's name (history is per-document).
+ */
+interface HistorySnapshot {
+  index: number;
+  stateName: string;
+  totalStates: number;
+  documentName: string | null;
+}
+
+/** Reads a HistorySnapshot out of a ps_inspect(what='history') result. Null on anything unusable. */
+function extractHistorySnapshot(result: ToolResult): HistorySnapshot | null {
   if (result.isError) return null;
-  const sc = result.structuredContent as { currentIndex?: unknown } | undefined;
-  const idx = sc?.currentIndex;
-  return typeof idx === 'number' && Number.isFinite(idx) ? idx : null;
+  const sc = result.structuredContent as
+    | {
+        currentIndex?: unknown;
+        currentState?: unknown;
+        totalStates?: unknown;
+        context?: { document?: { name?: unknown } };
+      }
+    | undefined;
+  const index = sc?.currentIndex;
+  const stateName = sc?.currentState;
+  const totalStates = sc?.totalStates;
+  const documentName = sc?.context?.document?.name;
+  if (
+    typeof index !== 'number' ||
+    !Number.isFinite(index) ||
+    typeof stateName !== 'string' ||
+    typeof totalStates !== 'number' ||
+    !Number.isFinite(totalStates)
+  ) {
+    return null;
+  }
+  return {
+    index,
+    stateName,
+    totalStates,
+    documentName: typeof documentName === 'string' ? documentName : null,
+  };
+}
+
+async function readHistorySnapshot(invokeTool: InvokeTool): Promise<HistorySnapshot | null> {
+  const result = await invokeTool('ps_inspect', { what: 'history' });
+  return extractHistorySnapshot(result);
+}
+
+/** Fixed set of reasons a verified rollback can fail to land — see performRollback. */
+type RollbackReason =
+  'history_evicted' | 'undo_failed' | 'cursor_moved_backward' | 'document_changed';
+
+interface RollbackOutcome {
+  ok: boolean;
+  reason?: RollbackReason;
+  message: string;
 }
 
 /**
- * Restores the history cursor captured before step one. Computes the current
- * index again (ps_inspect), then undoes exactly the distance travelled since
- * (ps_undo steps=delta) — the same index-based technique go-core's own
- * undo/redo fragments use, reached here through the ordinary tool surface
- * rather than new engine code.
+ * Restores the history cursor captured before step one, then RE-READS and
+ * COMPARES rather than trusting the undo call: `ps_undo` reports
+ * `undone: true` unconditionally and clamps at index 0 rather than erroring
+ * when Photoshop's finite history buffer has already evicted the target
+ * state, so a bare "it returned success" is not evidence the document is
+ * actually back where it started. Success requires the re-read index, state
+ * name, AND active document to all match the capture; anything else reports
+ * `ok: false` with one of the fixed reason tokens instead of a guess.
  */
 async function performRollback(
   invokeTool: InvokeTool,
-  capturedIndex: number
-): Promise<{ ok: boolean; message: string }> {
+  captured: HistorySnapshot
+): Promise<RollbackOutcome> {
   try {
-    const after = await invokeTool('ps_inspect', { what: 'history' });
-    const afterIndex = extractHistoryIndex(after);
-    if (afterIndex === null) {
-      return { ok: false, message: 'could not read the document history to compute the rollback' };
+    const before = await readHistorySnapshot(invokeTool);
+    if (before === null) {
+      return {
+        ok: false,
+        reason: 'undo_failed',
+        message: 'could not read the document history to compute the rollback distance',
+      };
     }
-    const delta = afterIndex - capturedIndex;
-    if (delta <= 0) {
-      return { ok: true, message: 'no in-document edits had occurred; nothing to roll back' };
+    if (before.documentName !== captured.documentName) {
+      return {
+        ok: false,
+        reason: 'document_changed',
+        message: `the active document changed since step 1 (captured "${captured.documentName}", now "${before.documentName}") — history is per-document, so nothing was undone`,
+      };
     }
-    const undone = await invokeTool('ps_undo', { steps: delta });
-    if (undone.isError) {
-      return { ok: false, message: `rollback failed: ${firstTextLine(undone)}` };
+    const delta = before.index - captured.index;
+    if (delta < 0) {
+      return {
+        ok: false,
+        reason: 'cursor_moved_backward',
+        message: `the history cursor is already earlier than the captured state (captured index ${captured.index}, now ${before.index}) — a step likely called undo or redo itself`,
+      };
     }
+
+    if (delta > 0) {
+      const undone = await invokeTool('ps_undo', { steps: delta });
+      if (undone.isError) {
+        return {
+          ok: false,
+          reason: 'undo_failed',
+          message: `ps_undo failed: ${firstTextLine(undone)}`,
+        };
+      }
+    }
+
+    const after = await readHistorySnapshot(invokeTool);
+    if (after === null) {
+      return {
+        ok: false,
+        reason: 'undo_failed',
+        message: 'could not re-read the document history to verify the rollback',
+      };
+    }
+    if (after.documentName !== captured.documentName) {
+      return {
+        ok: false,
+        reason: 'document_changed',
+        message: `the active document changed during rollback (captured "${captured.documentName}", now "${after.documentName}")`,
+      };
+    }
+    if (after.index !== captured.index || after.stateName !== captured.stateName) {
+      return {
+        ok: false,
+        reason: 'history_evicted',
+        message:
+          `the history state Photoshop reports at index ${after.index} ("${after.stateName}") does not match what was captured ` +
+          `(index ${captured.index}, "${captured.stateName}") — Photoshop's history buffer is finite and likely evicted it ` +
+          `(captured ${captured.totalStates} total states, now ${after.totalStates})`,
+      };
+    }
+
     return {
       ok: true,
-      message: `document restored to its state before step 1 (${delta} step${delta === 1 ? '' : 's'} undone)`,
+      message:
+        delta > 0
+          ? `document verified restored to its state before step 1 ("${captured.stateName}", ${delta} step${delta === 1 ? '' : 's'} undone)`
+          : `document verified already at its state before step 1 ("${captured.stateName}"); no edits to undo`,
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    return { ok: false, message: `rollback failed: ${msg}` };
+    return { ok: false, reason: 'undo_failed', message: `rollback failed: ${msg}` };
   }
 }
 
@@ -281,7 +417,7 @@ interface FailedStep {
 }
 
 function buildMessage(input: {
-  ranBeforeCap: number;
+  ranSteps: number;
   total: number;
   onError: OnError;
   failedStep: FailedStep | null;
@@ -289,11 +425,10 @@ function buildMessage(input: {
   rolledBack: boolean;
   rollbackMessage: string;
 }): string {
-  const { ranBeforeCap, total, onError, failedStep, capExceeded, rolledBack, rollbackMessage } =
-    input;
+  const { ranSteps, total, onError, failedStep, capExceeded, rolledBack, rollbackMessage } = input;
 
   if (capExceeded && failedStep) {
-    const base = `Sequence exceeded its overall time budget (${SEQUENCE_OVERALL_TIMEOUT_MS}ms) before step ${failedStep.index + 1} (${failedStep.tool}) could run; stopped after ${ranBeforeCap}/${total} step(s).`;
+    const base = `Sequence exceeded its overall time budget (${SEQUENCE_OVERALL_TIMEOUT_MS}ms) before step ${failedStep.index + 1} (${failedStep.tool}) could run; stopped after ${ranSteps}/${total} step(s).`;
     if (onError !== 'rollback') return base;
     return rolledBack
       ? `${base} Document rolled back: ${rollbackMessage}.`
@@ -314,37 +449,38 @@ function buildMessage(input: {
       : `Sequence stopped at step ${failedStep.index + 1} (${failedStep.tool}) after a failure; rollback did not complete: ${rollbackMessage}.`;
   }
 
-  return `Sequence stopped at step ${failedStep.index + 1} (${failedStep.tool}) after a failure; ${ranBeforeCap}/${total} step(s) ran.`;
+  return `Sequence stopped at step ${failedStep.index + 1} (${failedStep.tool}) after a failure; ${ranSteps}/${total} step(s) ran.`;
 }
 
 async function runSequence(
   invokeTool: InvokeTool,
+  hasTool: HasTool,
   rawArgs: Record<string, unknown>,
   now: () => number
 ): Promise<ToolResult> {
   let parsed: ParsedSequenceArgs;
   try {
-    parsed = validateSequenceArgs(rawArgs);
+    parsed = validateSequenceArgs(rawArgs, hasTool);
   } catch (error) {
     return toolErrorResult('Error validating sequence', error);
   }
   const { steps, onError, returnMode } = parsed;
 
-  let capturedHistoryIndex: number | null = null;
+  let capturedHistory: HistorySnapshot | null = null;
   if (onError === 'rollback') {
-    let before: ToolResult;
+    let captured: HistorySnapshot | null;
     try {
-      before = await invokeTool('ps_inspect', { what: 'history' });
+      captured = await readHistorySnapshot(invokeTool);
     } catch (error) {
       return toolErrorResult('Error capturing history state before the sequence', error);
     }
-    capturedHistoryIndex = extractHistoryIndex(before);
-    if (capturedHistoryIndex === null) {
+    if (captured === null) {
       return toolErrorResult(
         'Error capturing history state before the sequence',
-        new Error('ps_inspect(what="history") did not return a usable history index')
+        new Error('ps_inspect(what="history") did not return a usable history snapshot')
       );
     }
+    capturedHistory = captured;
   }
 
   const startedAt = now();
@@ -352,6 +488,7 @@ async function runSequence(
   let failedStep: FailedStep | null = null;
   let capExceeded = false;
   let rolledBack = false;
+  let rollbackReason: RollbackReason | undefined;
   let rollbackMessage = '';
 
   for (let i = 0; i < steps.length; i++) {
@@ -370,8 +507,9 @@ async function runSequence(
         ),
       });
       if (onError === 'rollback') {
-        const r = await performRollback(invokeTool, capturedHistoryIndex as number);
+        const r = await performRollback(invokeTool, capturedHistory as HistorySnapshot);
         rolledBack = r.ok;
+        rollbackReason = r.reason;
         rollbackMessage = r.message;
       }
       break;
@@ -395,8 +533,9 @@ async function runSequence(
       // to compare against). Every step's own `ok` still shows in `steps`.
       if (failedStep === null) failedStep = { index: i, tool: step.tool };
       if (onError === 'rollback') {
-        const r = await performRollback(invokeTool, capturedHistoryIndex as number);
+        const r = await performRollback(invokeTool, capturedHistory as HistorySnapshot);
         rolledBack = r.ok;
+        rollbackReason = r.reason;
         rollbackMessage = r.message;
         break;
       }
@@ -411,12 +550,14 @@ async function runSequence(
   const stripped = entries.map((e, idx) =>
     idx === lastIndex ? e : { ...e, result: stripImages(e.result) }
   );
-  const ranBeforeCap = capExceeded ? entries.length - 1 : entries.length;
+  // Excludes the synthetic never-run entry the overall-cap branch pushes —
+  // that step never actually ran, so it must not count as one that did.
+  const ranSteps = capExceeded ? entries.length - 1 : entries.length;
   const anyFailure = failedStep !== null;
   const isError = capExceeded || (anyFailure && onError !== 'continue');
 
   const message = buildMessage({
-    ranBeforeCap,
+    ranSteps,
     total: steps.length,
     onError,
     failedStep,
@@ -429,10 +570,11 @@ async function runSequence(
     on_error: onError,
     return: returnMode,
     total_steps: steps.length,
-    ran_steps: entries.length,
+    ran_steps: ranSteps,
     failed_step: failedStep,
     cap_exceeded: capExceeded,
     rolled_back: rolledBack,
+    ...(rollbackReason ? { rollback_reason: rollbackReason } : {}),
   };
 
   const structuredContent: Record<string, unknown> =
@@ -473,6 +615,7 @@ export interface CreateSequenceToolsOptions {
 
 export function createSequenceTools(
   invokeTool: InvokeTool,
+  hasTool: HasTool,
   opts: CreateSequenceToolsOptions = {}
 ): ToolDefinition[] {
   const { now = Date.now } = opts;
@@ -481,7 +624,7 @@ export function createSequenceTools(
       tool: {
         name: SEQUENCE_TOOL_NAME,
         description:
-          "Run an ordered list of tool calls against the current document in ONE round trip. WHEN TO REACH FOR THIS: several dependent steps you already know you want (e.g. select → adjust → merge, or a repeated resize/export pass) where you do not need to look at the result between them — each step is dispatched the same way an ordinary call is and sees the document exactly as the previous step left it. Not for exploratory work: if the next step depends on inspecting this one first, call the tools individually instead. Every step must name a tool that already exists in this edition (ps_sequence cannot call itself). An inline preview (image content) returned by a step is dropped unless that step is the LAST one in the sequence, since previews are most of a result's bytes and the point of batching calls is to stop paying for them on every intermediate step.",
+          "Run an ordered list of tool calls against the current document in ONE round trip. WHEN TO REACH FOR THIS: several dependent steps you already know you want (e.g. select → adjust → merge, or a repeated resize/export pass) where you do not need to look at the result between them — each step is dispatched the same way an ordinary call is and sees the document exactly as the previous step left it. Not for exploratory work: if the next step depends on inspecting this one first, call the tools individually instead. Every step must name a tool that already exists in this edition (ps_sequence cannot call itself). An inline preview (image content) returned by a step is dropped unless that step is the LAST one in the sequence, since previews are most of a result's bytes and the point of batching calls is to stop paying for them on every intermediate step. The overall time budget is checked BETWEEN steps only — it bounds the total across the whole sequence but does not preempt a single step already running past its own timeout. With return='full', every step's complete result (not just the last one's) lands in the logged call payload.",
         inputSchema: sequenceSchema,
         outputSchema: sequenceOutputSchema,
         annotations: {
@@ -490,7 +633,7 @@ export function createSequenceTools(
           idempotentHint: false,
         },
       },
-      handler: async (args) => runSequence(invokeTool, args, now),
+      handler: async (args) => runSequence(invokeTool, hasTool, args, now),
     },
   ];
 }

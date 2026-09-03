@@ -88,8 +88,8 @@ export const SCENE_CHANNEL_TIMEOUT_MS = 120_000;
  * sequence can't run indefinitely. Generous on purpose — firing it costs the
  * caller the whole sequence, not just one slow step.
  *
- * Seam note: a per-tool budget table is landing on a separate branch. Once it
- * merges, ps_sequence's per-step accounting should consult that table for a
- * tighter running estimate instead of only checking the total after the fact.
+ * Seam note: this constant is where a per-tool budget table, if one is added
+ * later, would be consulted for a tighter running estimate instead of only
+ * checking the total after the fact.
  */
 export const SEQUENCE_OVERALL_TIMEOUT_MS = 300_000;
