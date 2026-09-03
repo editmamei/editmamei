@@ -14,6 +14,8 @@ import {
   computeResultBytes,
   jsonEscapedLength,
   ERROR_CLASS_TABLE,
+  ALL_ERROR_CLASSES,
+  NO_ERROR_TEXT_CLASS,
   type SessionLogMetaEntry,
   type SessionLogCallEntry,
 } from '@editmamei/utils/session-log.ts';
@@ -422,19 +424,16 @@ describe('classifyError', () => {
     // A short kind/value pair still classifies the same way, not by luck of
     // fitting under invalid_argument's 30-char cap.
     expect(classifyError('Error: unknown op "x". Allowed: a, b.')).toBe('unknown_discriminator');
-
-    // Camera Raw's mode preconditions — three distinct messages sharing one
-    // noun phrase.
+    // A value longer than the OLD 60-char bound — the pattern matches the
+    // quoted value with `[^"]*`, not a length count, so it terminates on the
+    // real closing quote no matter how long an LLM's passed value is.
     expect(
       classifyError(
-        'No Camera Raw Smart Filter found on the active layer. Apply one first (mode=apply).'
+        'Error: unknown filter type "' +
+          'a'.repeat(85) +
+          '". Allowed: gaussian_blur, motion_blur, sharpen.'
       )
-    ).toBe('camera_raw_precondition');
-    expect(
-      classifyError(
-        'adjust_existing requires an existing Camera Raw Smart Filter, but the active layer is not a Smart Object.'
-      )
-    ).toBe('camera_raw_precondition');
+    ).toBe('unknown_discriminator');
 
     // Photoshop's own message from a histogram read on a non-composite
     // channel (region-precompute.ts) — a visibility STATE, not a missing
@@ -450,12 +449,21 @@ describe('classifyError', () => {
     expect(classifyError('Error converting image mode: HalftoneScreenShape is undefined')).toBe(
       'extendscript_reference_error'
     );
-    // Must not fire on prose that merely ends near the word "undefined".
+    // A trailing newline (a transport layer's own line terminator) must not
+    // demote this to `other` — the pattern allows trailing whitespace rather
+    // than relying on the `m` flag (which would also match before an
+    // INTERIOR newline, not just a trailing one).
+    expect(classifyError('Error executing custom script: JSON is undefined\n')).toBe(
+      'extendscript_reference_error'
+    );
+    // Must classify by its OWN class, not steal a wrapper that merely ends
+    // near the word "undefined" — the real go-core wording is "after 1
+    // retry", singular.
     expect(
       classifyError(
-        'Layer opacity write did not verify: requested 50 (expected readback 50), actual undefined (after 2 retry)'
+        'Layer opacity write did not verify: requested 50 (expected readback 50), actual undefined (after 1 retry)'
       )
-    ).not.toBe('extendscript_reference_error');
+    ).toBe('write_not_verified');
   });
 
   it('ERROR_CLASS_TABLE has all expected classes', () => {
@@ -472,13 +480,18 @@ describe('classifyError', () => {
     expect(classes).toContain('detection_unavailable');
     expect(classes).toContain('file_io');
     expect(classes).toContain('unknown_discriminator');
-    expect(classes).toContain('camera_raw_precondition');
     expect(classes).toContain('channel_not_visible');
     expect(classes).toContain('extendscript_reference_error');
   });
 
-  it('every class token satisfies the telemetry server error_class contract', () => {
-    for (const { errorClass } of ERROR_CLASS_TABLE) {
+  // ALL_ERROR_CLASSES, not just ERROR_CLASS_TABLE — NO_ERROR_TEXT_CLASS is a
+  // sentinel assigned outside the table (append() falls back to it directly)
+  // and must satisfy the same wire contract even though it never appears as
+  // a regex here.
+  it('every class token, table AND sentinel, satisfies the telemetry server error_class contract', () => {
+    expect(ALL_ERROR_CLASSES).toContain(NO_ERROR_TEXT_CLASS);
+    expect(ALL_ERROR_CLASSES.length).toBe(ERROR_CLASS_TABLE.length + 1);
+    for (const errorClass of ALL_ERROR_CLASSES) {
       expect(errorClass).toMatch(/^[a-z0-9_]{1,48}$/);
     }
   });
@@ -1067,7 +1080,7 @@ describe('SessionLog', () => {
     const [call] = await readCallLines(log.path);
     expect(call.error_class).toBeTruthy();
     expect(call.error_class).not.toBe('');
-    expect(call.error_class).toBe('no_error_text');
+    expect(call.error_class).toBe(NO_ERROR_TEXT_CLASS);
   });
 
   it('result is NOT included by default (privacy default off)', async () => {
