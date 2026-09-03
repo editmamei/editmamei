@@ -37,7 +37,7 @@ describe('createSelectionTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('CE factory returns 7 tools including the re-tiered Sensei pair', () => {
+  it('CE factory registers exactly these 7 tools, including the re-tiered Sensei pair', () => {
     const tools = createSelectionTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
     // get_selection_info merged into ps_inspect(what='selection_info') — Phase 1b.
@@ -745,40 +745,43 @@ describe('createSelectionTools', () => {
   });
 
   // ---------- Sensei selectors (community tier) ----------
-  // selectSubject/selectSky/focus_area each issue TWO script executions: the
-  // selection op itself, then a getSelectionState read (the same path
-  // ps_inspect(what='selection_info') uses) to report bounds/coverage without
-  // forcing the caller into a second MCP round trip. Dispatch/param
-  // assertions below read builds/executions by INDEX (not the "last" helpers)
-  // because of that second call.
+  // selectSubject/selectSky/focus_area each issue exactly ONE script
+  // execution: the go-core snippet embeds selection_info (getSelectionInfo())
+  // in its own return, computed inside that same execution right after the
+  // op, so the handler reads result.selection_info directly rather than
+  // re-reading it with a second script (which would pay getSelectionInfo's
+  // doc.channels.add() + full-canvas-histogram cost twice for an identical
+  // answer). Dispatch/param assertions below use lastBuild()/lastTimeout()
+  // as usual — there is no second call to shift them.
 
   it('select_subject dispatches the selectSubject snippet via the SnippetClient', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', {});
-    expect(snippetClient.allBuilds()[0].name).toBe('selectSubject');
+    expect(snippetClient.lastBuild().name).toBe('selectSubject');
   });
 
-  it('select_subject reads selection facts back after the op completes, via the same path ps_inspect uses', async () => {
+  it('select_subject issues exactly one script execution — no separate selection-info round trip', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', {});
-    const builds = snippetClient.allBuilds();
-    expect(builds).toHaveLength(2);
-    expect(builds[1].name).toBe('getSelectionState');
+    expect(conn.executions.length).toBe(1);
+    expect(snippetClient.allBuilds().map((b) => b.name)).toEqual(['selectSubject']);
   });
 
-  it('select_subject result carries the bounds and coverage read back after the op', async () => {
+  it('select_subject result carries the bounds and coverage embedded in the snippet result', async () => {
     const infoConn = makeConnection({
-      resultFor: (script: string) =>
-        script.includes('getSelectionState')
-          ? {
-              has_selection: true,
-              bounds: { left: 10, top: 20, right: 110, bottom: 220 },
-              area_percent: 42.5,
-            }
-          : { selected: true, method: 'subject' },
+      result: {
+        selected: true,
+        method: 'subject',
+        selection_info: {
+          has_selection: true,
+          bounds: { left: 10, top: 20, right: 110, bottom: 220 },
+          area_percent: 42.5,
+        },
+      },
     });
     const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
     const result = await callTool(tools, 'ps_select_subject', {});
+    expect(infoConn.executions.length).toBe(1);
     const structured = result.structuredContent as {
       selection_info?: { has_selection: boolean; area_percent?: number };
     };
@@ -790,10 +793,11 @@ describe('createSelectionTools', () => {
 
   it('select_subject reports an empty result explicitly, not as a completed selection with no area', async () => {
     const infoConn = makeConnection({
-      resultFor: (script: string) =>
-        script.includes('getSelectionState')
-          ? { has_selection: false }
-          : { selected: true, method: 'subject' },
+      result: {
+        selected: true,
+        method: 'subject',
+        selection_info: { has_selection: false },
+      },
     });
     const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
     const result = await callTool(tools, 'ps_select_subject', {});
@@ -802,30 +806,62 @@ describe('createSelectionTools', () => {
     expect(textOf(result)).toMatch(/empty/i);
   });
 
+  // fragments_context.go's getSelectionInfo() histogram try/catch returns
+  // `{ has_selection: true, error: '...' }` when the channel-store/histogram
+  // step itself fails — a real selection exists but was not measured. Pinned
+  // separately from the empty case: it must not read as "0.0% of canvas".
+  it('select_subject reports unmeasured facts (not 0% coverage) when has_selection is true but bounds are missing', async () => {
+    const infoConn = makeConnection({
+      result: {
+        selected: true,
+        method: 'subject',
+        selection_info: { has_selection: true, error: 'selection_info_failed: some PS error' },
+      },
+    });
+    const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
+    const result = await callTool(tools, 'ps_select_subject', {});
+    const text = textOf(result);
+    expect(text).not.toMatch(/0\.0% of canvas/);
+    expect(text).not.toMatch(/empty/i);
+    expect(text).toContain('bounds/coverage could not be measured');
+    expect(text).toContain('selection_info_failed: some PS error');
+  });
+
+  // A malformed/absent selection_info is UNKNOWN, never reported as "empty" —
+  // an unreadable result is not evidence there is no selection.
+  it('select_subject reports selection facts as unknown, not empty, when the result carries no selection_info', async () => {
+    const infoConn = makeConnection({ result: { selected: true, method: 'subject' } });
+    const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
+    const result = await callTool(tools, 'ps_select_subject', {});
+    const text = textOf(result);
+    expect(text).not.toMatch(/empty/i);
+    expect(text).toMatch(/unknown/i);
+  });
+
   // Phase 3c — pre-existing inline 120000 literal, now centralized in
   // src/utils/operation-timeouts.ts. Pins the value survived the move.
   it('select_subject forwards a 120s timeout to the executor', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', {});
-    expect(conn.executions[0].timeout).toBe(120000);
+    expect(conn.lastTimeout()).toBe(120000);
   });
 
   it('select_sky forwards a 120s timeout to the executor', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_sky', {});
-    expect(conn.executions[0].timeout).toBe(120000);
+    expect(conn.lastTimeout()).toBe(120000);
   });
 
   it('select_subject defaults sample_all_layers to TRUE (PS 2026 active-layer-only workaround)', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', {});
-    expect(snippetClient.allBuilds()[0].params.sampleAllLayers).toBe(true);
+    expect(snippetClient.lastBuild().params.sampleAllLayers).toBe(true);
   });
 
   it('select_subject with selection_type=subtract forwards the right token', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', { selection_type: 'subtract' });
-    expect(snippetClient.allBuilds()[0].params.selectionType).toBe('subtract');
+    expect(snippetClient.lastBuild().params.selectionType).toBe('subtract');
   });
 
   // Migrated from the deleted selection-tools-pro.test.ts — schema-validation paths
@@ -833,13 +869,13 @@ describe('createSelectionTools', () => {
   it('select_subject honors sample_all_layers=false', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', { sample_all_layers: false });
-    expect(snippetClient.allBuilds()[0].params.sampleAllLayers).toBe(false);
+    expect(snippetClient.lastBuild().params.sampleAllLayers).toBe(false);
   });
 
   it('select_subject accepts "add" selection_type', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', { selection_type: 'add' });
-    expect(snippetClient.allBuilds()[0].params.selectionType).toBe('add');
+    expect(snippetClient.lastBuild().params.selectionType).toBe('add');
   });
 
   it('select_subject rejects an out-of-enum selection_type', async () => {
@@ -851,22 +887,24 @@ describe('createSelectionTools', () => {
   it('select_sky dispatches the selectSky snippet via the SnippetClient', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_sky', {});
-    expect(snippetClient.allBuilds()[0].name).toBe('selectSky');
+    expect(snippetClient.lastBuild().name).toBe('selectSky');
   });
 
-  it('select_sky result carries the bounds and coverage read back after the op', async () => {
+  it('select_sky result carries the bounds and coverage embedded in the snippet result', async () => {
     const infoConn = makeConnection({
-      resultFor: (script: string) =>
-        script.includes('getSelectionState')
-          ? {
-              has_selection: true,
-              bounds: { left: 5, top: 400, right: 800, bottom: 600 },
-              area_percent: 18.2,
-            }
-          : { selected: true, method: 'sky' },
+      result: {
+        selected: true,
+        method: 'sky',
+        selection_info: {
+          has_selection: true,
+          bounds: { left: 5, top: 400, right: 800, bottom: 600 },
+          area_percent: 18.2,
+        },
+      },
     });
     const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
     const result = await callTool(tools, 'ps_select_sky', {});
+    expect(infoConn.executions.length).toBe(1);
     const structured = result.structuredContent as {
       selection_info?: { has_selection: boolean; area_percent?: number };
     };
@@ -878,10 +916,7 @@ describe('createSelectionTools', () => {
 
   it('select_sky reports an empty result explicitly, not as a completed selection with no area', async () => {
     const infoConn = makeConnection({
-      resultFor: (script: string) =>
-        script.includes('getSelectionState')
-          ? { has_selection: false }
-          : { selected: true, method: 'sky' },
+      result: { selected: true, method: 'sky', selection_info: { has_selection: false } },
     });
     const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
     const result = await callTool(tools, 'ps_select_sky', {});
@@ -905,19 +940,25 @@ describe('createSelectionTools', () => {
   it('mode=focus_area dispatches the selectFocusArea snippet', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select', { mode: 'focus_area' });
-    expect(snippetClient.allBuilds()[0].name).toBe('selectFocusArea');
+    expect(snippetClient.lastBuild().name).toBe('selectFocusArea');
+  });
+
+  it('mode=focus_area issues exactly one script execution — no separate selection-info round trip', async () => {
+    const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_select', { mode: 'focus_area' });
+    expect(conn.executions.length).toBe(1);
   });
 
   it('mode=focus_area forwards a 120s timeout to the executor', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select', { mode: 'focus_area' });
-    expect(conn.executions[0].timeout).toBe(120000);
+    expect(conn.lastTimeout()).toBe(120000);
   });
 
   it('mode=focus_area defaults to the PS dialog radius and a hard edge', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select', { mode: 'focus_area' });
-    const { params } = snippetClient.allBuilds()[0];
+    const { params } = snippetClient.lastBuild();
     expect(params.inFocusRadius).toBe(4.07);
     expect(params.softMask).toBe(false);
     expect(params.selectionType).toBe('replace');
@@ -930,7 +971,7 @@ describe('createSelectionTools', () => {
       in_focus_radius: 12.5,
       soft_mask: true,
     });
-    const { params } = snippetClient.allBuilds()[0];
+    const { params } = snippetClient.lastBuild();
     expect(params.inFocusRadius).toBe(12.5);
     expect(params.softMask).toBe(true);
   });
@@ -938,7 +979,7 @@ describe('createSelectionTools', () => {
   it('mode=focus_area combines via selection_type', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select', { mode: 'focus_area', selection_type: 'intersect' });
-    expect(snippetClient.allBuilds()[0].params.selectionType).toBe('intersect');
+    expect(snippetClient.lastBuild().params.selectionType).toBe('intersect');
   });
 
   it('mode=focus_area rejects an out-of-range in_focus_radius', async () => {
@@ -947,19 +988,23 @@ describe('createSelectionTools', () => {
     expect(result.isError).toBe(true);
   });
 
-  it('mode=focus_area result carries the bounds and coverage read back after the op', async () => {
+  it('mode=focus_area result carries the bounds and coverage embedded in the snippet result', async () => {
     const infoConn = makeConnection({
-      resultFor: (script: string) =>
-        script.includes('getSelectionState')
-          ? {
-              has_selection: true,
-              bounds: { left: 0, top: 0, right: 400, bottom: 300 },
-              area_percent: 60,
-            }
-          : { selected: true, method: 'focus_area', whole_canvas_selected: false, warning: null },
+      result: {
+        selected: true,
+        method: 'focus_area',
+        whole_canvas_selected: false,
+        warning: null,
+        selection_info: {
+          has_selection: true,
+          bounds: { left: 0, top: 0, right: 400, bottom: 300 },
+          area_percent: 60,
+        },
+      },
     });
     const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
     const result = await callTool(tools, 'ps_select', { mode: 'focus_area' });
+    expect(infoConn.executions.length).toBe(1);
     const structured = result.structuredContent as {
       selection_info?: { has_selection: boolean; area_percent?: number };
     };
@@ -971,16 +1016,59 @@ describe('createSelectionTools', () => {
 
   it('mode=focus_area reports an empty result explicitly, not as a completed selection with no area', async () => {
     const infoConn = makeConnection({
-      resultFor: (script: string) =>
-        script.includes('getSelectionState')
-          ? { has_selection: false }
-          : { selected: true, method: 'focus_area', whole_canvas_selected: false, warning: null },
+      result: {
+        selected: true,
+        method: 'focus_area',
+        whole_canvas_selected: false,
+        warning: null,
+        selection_info: { has_selection: false },
+      },
     });
     const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
     const result = await callTool(tools, 'ps_select', { mode: 'focus_area' });
     const structured = result.structuredContent as { selection_info?: { has_selection: boolean } };
     expect(structured.selection_info?.has_selection).toBe(false);
     expect(textOf(result)).toMatch(/empty/i);
+  });
+
+  // whole_canvas_selected/warning diagnose the RAW pre-combine detection — the
+  // schema tells the model to check this FIRST — so both must survive into
+  // structuredContent, AND the warning must reach the text even when the
+  // post-combine selection_info looks like an ordinary clean selection (the
+  // exact case a selection_type='subtract' against a whole-canvas raw result
+  // produces).
+  it('mode=focus_area preserves whole_canvas_selected/warning in structuredContent and surfaces the warning in the text', async () => {
+    const warningText =
+      "Focus Area's detection covered the ENTIRE canvas before any selection_type combine, which is usually a non-result.";
+    const infoConn = makeConnection({
+      result: {
+        selected: true,
+        method: 'focus_area',
+        whole_canvas_selected: true,
+        warning: warningText,
+        selection_type: 'subtract',
+        selection_info: {
+          has_selection: true,
+          bounds: { left: 0, top: 0, right: 120, bottom: 100 },
+          area_percent: 12.0,
+        },
+      },
+    });
+    const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
+    const result = await callTool(tools, 'ps_select', {
+      mode: 'focus_area',
+      selection_type: 'subtract',
+    });
+    const structured = result.structuredContent as {
+      whole_canvas_selected?: boolean;
+      warning?: string | null;
+    };
+    expect(structured.whole_canvas_selected).toBe(true);
+    expect(structured.warning).toBe(warningText);
+    const text = textOf(result);
+    expect(text).toContain('12.0% of canvas');
+    expect(text).toMatch(/WARNING/);
+    expect(text).toContain('ENTIRE canvas');
   });
 
   it('mode=focus_area surfaces connection failures as an error result', async () => {

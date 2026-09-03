@@ -748,7 +748,7 @@ export function createSelectionTools(
       tool: {
         name: 'ps_select',
         description:
-          'Create a NEW selection — choose with `mode`. (To edit the CURRENT selection instead — including growing it by colour similarity — use ps_modify_selection.) `all` selects the canvas; `none` deselects; `inverse` inverts the current selection (e.g. select the subject, then inverse to act on the background). `rectangle` (left/top/right/bottom, optional feather_px to avoid hard block-edges in smooth sky). `ellipse` (left/top/right/bottom bounding box + anti_alias — circles/ovals). `color_range` (target red/green/blue + fuzziness — "select all the red / skin tones"). `luminance_range` (highlights/shadows/midtones — foundation for glow / dodge-burn). `magic_wand` (click x/y + tolerance, contiguous). `grow` / `similar` are DEPRECATED here (they act on the CURRENT selection, not a new one) — use ps_modify_selection(op=grow|similar) instead; kept for one release for backward compatibility, identical behaviour. rectangle/ellipse/magic_wand also accept a grounded `placement` (NAME a region/point instead of guessing pixels — resolved + gate-verified). The geometric/color/wand modes take selection_type (replace|add|subtract|intersect) to combine with an existing selection and return a rich selection_info bundle — verify it (or ps_get_selection_preview) before committing to a mask.',
+          'Create a NEW selection — choose with `mode`. (To edit the CURRENT selection instead — including growing it by colour similarity — use ps_modify_selection.) `all` selects the canvas; `none` deselects; `inverse` inverts the current selection (e.g. select the subject, then inverse to act on the background). `rectangle` (left/top/right/bottom, optional feather_px to avoid hard block-edges in smooth sky). `ellipse` (left/top/right/bottom bounding box + anti_alias — circles/ovals). `color_range` (target red/green/blue + fuzziness — "select all the red / skin tones"). `luminance_range` (highlights/shadows/midtones — foundation for glow / dodge-burn). `magic_wand` (click x/y + tolerance, contiguous). `focus_area` selects by depth of field rather than subject or colour (+in_focus_radius, soft_mask) — check whole_canvas_selected/warning in the result before trusting it. `grow` / `similar` are DEPRECATED here (they act on the CURRENT selection, not a new one) — use ps_modify_selection(op=grow|similar) instead; kept for one release for backward compatibility, identical behaviour. rectangle/ellipse/magic_wand also accept a grounded `placement` (NAME a region/point instead of guessing pixels — resolved + gate-verified). The geometric/color/wand modes take selection_type (replace|add|subtract|intersect) to combine with an existing selection and return a rich selection_info bundle — verify it (or ps_get_selection_preview) before committing to a mask.',
         inputSchema: SELECT_INPUT_SCHEMA,
         outputSchema: {
           type: 'object',
@@ -1055,12 +1055,20 @@ const selectSkySchema: JsonSchemaObject = {
 };
 
 // selectSubject / selectSky / selectFocusArea hand-roll the validate → build →
-// run stereotype instead of using runSnippetTool: each needs a second read
-// (readSelectionInfo, the same path ps_inspect(what='selection_info') calls)
-// after the selection op completes, so the text and structured result report
-// the ACTUAL bounds/coverage rather than a bare "complete" — an empty result
-// (has_selection: false, e.g. a selection_type='subtract' that cancels out)
-// is reported as empty rather than as a completed selection with no area.
+// run stereotype instead of using runSnippetTool so the text can report the
+// bounds/coverage the go-core snippet ALREADY embeds as `selection_info`
+// (fragments_sensei.go computes it via getSelectionInfo() inside the same
+// script execution, right after the op). Do NOT re-read it with a second
+// script (readSelectionInfo) — getSelectionInfo() does a doc.channels.add()
+// plus a full-canvas histogram, and fragments_sensei.go:391-395 explicitly
+// avoids paying that cost twice for an identical answer; a TS-side re-read
+// would pay that cost again on every call, and — carrying no timeoutMs of its
+// own — could itself time out and report isError right after an already-
+// completed 120s Sensei op that produced a perfectly good selection. Read
+// result.selection_info straight off the snippet's own return instead.
+function selectionInfoOf(result: Record<string, unknown>): SelectionFacts | undefined {
+  return result.selection_info as SelectionFacts | undefined;
+}
 
 async function selectFocusArea(
   connection: PhotoshopConnection,
@@ -1079,15 +1087,19 @@ async function selectFocusArea(
       string,
       unknown
     >;
-    const selectionInfo = await readSelectionInfo(connection, snippetClient);
-    result.selection_info = selectionInfo;
+    let text = describeSelectionFacts(
+      `Focus Area selection (${selectionType})`,
+      selectionInfoOf(result)
+    );
+    // whole_canvas_selected/warning diagnose the RAW pre-combine detection —
+    // exactly what the schema tells the model to check first — so a warning
+    // must reach the text, not sit silently in structuredContent where a
+    // post-combine result can look like an ordinary clean selection.
+    if (result.warning) {
+      text += ` WARNING: ${String(result.warning)}`;
+    }
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: describeSelectionFacts(`Focus Area selection (${selectionType})`, selectionInfo),
-        },
-      ],
+      content: [{ type: 'text' as const, text }],
       structuredContent: result,
     };
   } catch (error) {
@@ -1111,13 +1123,14 @@ async function selectSubject(
       string,
       unknown
     >;
-    const selectionInfo = await readSelectionInfo(connection, snippetClient);
-    result.selection_info = selectionInfo;
     return {
       content: [
         {
           type: 'text' as const,
-          text: describeSelectionFacts(`Select Subject (${selectionType})`, selectionInfo),
+          text: describeSelectionFacts(
+            `Select Subject (${selectionType})`,
+            selectionInfoOf(result)
+          ),
         },
       ],
       structuredContent: result,
@@ -1143,13 +1156,11 @@ async function selectSky(
       string,
       unknown
     >;
-    const selectionInfo = await readSelectionInfo(connection, snippetClient);
-    result.selection_info = selectionInfo;
     return {
       content: [
         {
           type: 'text' as const,
-          text: describeSelectionFacts(`Select Sky (${selectionType})`, selectionInfo),
+          text: describeSelectionFacts(`Select Sky (${selectionType})`, selectionInfoOf(result)),
         },
       ],
       structuredContent: result,
@@ -1292,19 +1303,28 @@ export function normalizeSelectionType(raw: unknown): 'replace' | 'add' | 'subtr
     : 'replace';
 }
 
-// The selection-facts shape read back by 'getSelectionState' — see
-// selectionInfoFragment for the full field list. Only the fields this file's
-// text formatting needs are named; the rest ride along untyped.
+// The selection-facts shape getSelectionInfo() (go-core) computes — see
+// selectionInfoFragment for the full field list. `bounds`/`area_percent` are
+// absent when has_selection is false, and also on the has_selection:true
+// error path (fragments_context.go's histogram try/catch: `{ has_selection:
+// true, error: '...' }` when the channel-store/histogram step itself fails).
+// Only the fields this file's text formatting needs are named; the rest ride
+// along untyped.
 interface SelectionFacts {
   has_selection: boolean;
   bounds?: { left: number; top: number; right: number; bottom: number };
   area_percent?: number;
+  error?: string;
   [key: string]: unknown;
 }
 
-// The exact read ps_inspect(what='selection_info') performs (getSelectionInfoHandler,
-// below) — reused here so selectSubject/selectSky/selectFocusArea can report bounds
-// and coverage without forcing the caller into a separate ps_inspect round trip.
+// The read ps_inspect(what='selection_info') performs. Used ONLY by
+// getSelectionInfoHandler below — the AI selection tools (selectSubject /
+// selectSky / selectFocusArea) must NOT call this: their own snippet already
+// embeds the identical getSelectionInfo() computation in the same script
+// execution, and re-running it here would pay its doc.channels.add() +
+// full-canvas-histogram cost a second time for an answer that can't have
+// changed (see selectionInfoOf above).
 async function readSelectionInfo(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient
@@ -1314,16 +1334,30 @@ async function readSelectionInfo(
 }
 
 // Bounds/coverage summary shared by the AI selection tools (ps_select_subject,
-// ps_select_sky, ps_select mode=focus_area). An empty result is reported as
-// empty, never as a completed selection with no area.
-function describeSelectionFacts(label: string, info: SelectionFacts): string {
+// ps_select_sky, ps_select mode=focus_area). Three outcomes, told apart
+// explicitly rather than defaulted into one another:
+//  - info missing or has_selection not a boolean → facts could not be read at
+//    all (a malformed/absent selection_info is UNKNOWN, never reported as
+//    "empty" — an unreadable result is not evidence there is no selection).
+//  - has_selection: false → genuinely empty.
+//  - has_selection: true with no bounds → a selection exists but
+//    getSelectionInfo()'s own histogram step failed to measure it
+//    (fragments_context.go's `{ has_selection: true, error: ... }` path).
+//  - has_selection: true with bounds → the normal case.
+function describeSelectionFacts(label: string, info: SelectionFacts | undefined): string {
+  if (!info || typeof info.has_selection !== 'boolean') {
+    return `${label} complete — selection facts unknown (the result carried no readable selection_info).`;
+  }
   if (!info.has_selection) {
     return `${label} completed but the resulting selection is empty.`;
   }
+  if (!info.bounds) {
+    const reason = typeof info.error === 'string' ? ` (${info.error})` : '';
+    return `${label} complete — a selection exists but its bounds/coverage could not be measured${reason}.`;
+  }
   const b = info.bounds;
-  const bounds = b ? `(${b.left}, ${b.top}) to (${b.right}, ${b.bottom})` : 'bounds unavailable';
   const pct = (info.area_percent ?? 0).toFixed(1);
-  return `${label} complete — selection ${bounds}, ${pct}% of canvas.`;
+  return `${label} complete — selection (${b.left}, ${b.top}) to (${b.right}, ${b.bottom}), ${pct}% of canvas.`;
 }
 
 function describeMaskOutcome(result: {
