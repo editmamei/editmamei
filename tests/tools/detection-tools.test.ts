@@ -209,17 +209,6 @@ describe('createDetectionTools', () => {
     expect(sc.objects).toBeDefined();
   });
 
-  it('annotate does not change the structured result — only content[] gains the image', async () => {
-    // structuredContent is { image, backends, faces, objects, context } — none
-    // of those fields describe the annotated PICTURE itself (that only ever
-    // lands in content[]), so annotate must be a pure content[]-only switch.
-    const { tools: t1 } = make();
-    const withFalse = await callTool(t1, 'ps_detect', { target: 'both', annotate: false });
-    const { tools: t2 } = make();
-    const withTrue = await callTool(t2, 'ps_detect', { target: 'both', annotate: true });
-    expect(withTrue.structuredContent).toEqual(withFalse.structuredContent);
-  });
-
   it('surfaces a no-document export error as isError', async () => {
     const failing = makeConnection({ throwOnExecute: new Error('No active document') });
     const tools = createDetectionTools(
@@ -330,6 +319,18 @@ describe('ps_detect warm cache (2026-08-01)', () => {
     const res = await callTool(tools(), 'ps_detect', { annotate: true });
     const img = res.content.find((c) => c.type === 'image');
     expect(img).toBeDefined();
+  });
+
+  it('annotate does not change the structured result — only content[] gains the image', async () => {
+    // Must live in THIS block: only here are decoded pixels injected, so the
+    // annotate branch genuinely draws. Without deps the draw path is skipped
+    // and a parity assertion compares two identical code paths. The cold call
+    // is the annotated one so the draw runs against real inference output.
+    const withTrue = await callTool(tools(), 'ps_detect', { target: 'both', annotate: true });
+    expect(withTrue.content.find((c) => c.type === 'image')).toBeDefined();
+    const withFalse = await callTool(tools(), 'ps_detect', { target: 'both', annotate: false });
+    expect(withFalse.content.find((c) => c.type === 'image')).toBeUndefined();
+    expect(withTrue.structuredContent).toEqual(withFalse.structuredContent);
   });
 
   it('a cache HIT still draws boxes on the annotated preview', async () => {
