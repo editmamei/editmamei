@@ -2,24 +2,14 @@ import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { Logger } from '../utils/logger.js';
 import { TempDir } from '../utils/temp.js';
+import { DEFAULT_SCRIPT_TIMEOUT_MS } from '../utils/operation-timeouts.js';
 import { ScriptQueue } from './script-queue.js';
 import type { PlatformAdapter } from './ports.js';
 import { runChildWithTimeout } from './run-child.js';
 import { decodeScriptResult } from './script-result.js';
+import { waitForLaunchReady } from './launch-readiness.js';
 
 const execAsync = promisify(exec);
-
-/** Default wall-clock budget for one script, in ms. */
-const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
-
-/**
- * Pause after spawning Photoshop before letting the caller proceed, in ms.
- *
- * A courtesy pause, not a readiness check — a cold Photoshop start takes far
- * longer than this. The script that follows is what actually proves the app is
- * answering, and it fails cleanly if it is not.
- */
-const LAUNCH_GRACE_MS = 5_000;
 
 /**
  * Drives Photoshop on Windows through COM.
@@ -135,18 +125,16 @@ End If
       const child = spawn(executablePath, [], { detached: true, stdio: 'ignore' });
       child.unref();
 
-      const grace = setTimeout(() => {
-        // Unref so a pending grace period is never the only thing keeping the
-        // process alive.
-        grace.unref();
-        resolve();
-      }, LAUNCH_GRACE_MS);
-
+      // Guards against the readiness poll resolving after a spawn error
+      // already rejected this promise.
+      let aborted = false;
       child.on('error', (error) => {
-        // Clear the timer, or the promise settles a second time once the grace
-        // period elapses and the event loop stays awake until then.
-        clearTimeout(grace);
+        aborted = true;
         reject(new Error(`Could not launch Photoshop at ${executablePath}: ${error.message}`));
+      });
+
+      void waitForLaunchReady(() => this.isRunning(), { isAborted: () => aborted }).then(() => {
+        if (!aborted) resolve();
       });
     });
   }

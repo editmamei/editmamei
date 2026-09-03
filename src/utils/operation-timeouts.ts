@@ -1,8 +1,14 @@
 /**
  * Centralized per-operation timeout budgets (ms) — the third argument
  * `timeoutMs` handlers pass through `runScript()` to override the platform
- * runner's 30s default (`windows-runner.ts` / `macos-runner.ts`
- * `run()`).
+ * runner's default (`windows-runner.ts` / `macos-runner.ts` `run()`).
+ *
+ * Two layers live in this file. The overrides below predate the second layer
+ * and are a handler's own explicit choice, passed at its own `runScript`
+ * call sites. `getToolTimeoutMs()` at the bottom is the newer, coarser layer:
+ * one budget per MCP tool, applied once at dispatch (`ToolRegistry.execute`)
+ * so every script a handler runs during that call inherits it unless the
+ * call site overrides it directly — an explicit override here still wins.
  *
  * Most tools never approach 30s. A handful of Photoshop operations
  * routinely do on real-world input — most notably a large RAW file's first
@@ -22,6 +28,18 @@
  * case; a genuine hang still surfaces via the original timeout path once the
  * probe also finds nothing.
  */
+
+/**
+ * Wall-clock budget for a single script when no per-tool budget below
+ * applies and the handler didn't override it directly. Both platform
+ * runners used to each declare their own private copy of this constant;
+ * centralizing it here is what lets `getToolTimeoutMs()` reason about "the
+ * tool's budget, or this fallback" in one place.
+ */
+export const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
+
+/** No per-tool budget in the table below goes under this, however fast the tool measures. */
+export const SCRIPT_TIMEOUT_FLOOR_MS = 5_000;
 
 /** `ps_open_document` — large RAW files can exceed 30s on first ACR engine init. */
 export const OPEN_DOCUMENT_TIMEOUT_MS = 120_000;
@@ -93,3 +111,138 @@ export const SCENE_CHANNEL_TIMEOUT_MS = 120_000;
  * checking the total after the fact.
  */
 export const SEQUENCE_OVERALL_TIMEOUT_MS = 300_000;
+
+/**
+ * Per-tool dispatch budgets (ms) — see the file doc comment for how this
+ * layer relates to the overrides above.
+ *
+ * Values are derived from measured p99 execution times across real tool
+ * calls (dev-machine telemetry, PS 27.x, win32): roughly double the clean
+ * p99 (excluding calls already censored at the old flat 30s ceiling),
+ * rounded up to the nearest second, floored at `SCRIPT_TIMEOUT_FLOOR_MS`. A
+ * tool absent from this table had fewer than 10 measured calls — too little
+ * signal to derive a number from — and falls back to
+ * `DEFAULT_SCRIPT_TIMEOUT_MS` in `getToolTimeoutMs()` below.
+ *
+ * The six tools that already had a hardcoded override above keep that exact
+ * value here instead of the (smaller) number this table's formula would
+ * otherwise derive — each override already accounts for a known cliff (e.g.
+ * first Camera Raw engine init) the raw percentile doesn't fully capture at
+ * this sample size.
+ */
+const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
+  ps_open_document: OPEN_DOCUMENT_TIMEOUT_MS,
+  ps_apply_camera_raw: CAMERA_RAW_FILTER_TIMEOUT_MS,
+  ps_select_subject: SELECT_SUBJECT_TIMEOUT_MS,
+  ps_select_sky: SELECT_SKY_TIMEOUT_MS,
+  ps_select_focus_area: SELECT_FOCUS_AREA_TIMEOUT_MS,
+  ps_replace_sky: SKY_REPLACEMENT_TIMEOUT_MS,
+
+  // Genuinely long — pixel-heavy full-canvas reads or first-run-model
+  // operations, well above the shared default.
+  ps_selection_channel: 123_000,
+  ps_read_scene: 164_000,
+  ps_batch: 212_000,
+
+  // Moderately long — native-AI or multi-step operations.
+  ps_select_subject_instance: 42_000,
+  ps_select_face_feature: 38_000,
+  ps_ping: 38_000,
+  ps_template_verify: 35_000,
+  ps_select: 33_000,
+  ps_select_object: 29_000,
+  ps_get_histogram: 25_000,
+  ps_select_by_reference: 25_000,
+  ps_execute_script: 22_000,
+  ps_template_save: 20_000,
+  ps_detect: 19_000,
+  ps_template_create_evidence: 18_000,
+  ps_modify_selection: 17_000,
+  ps_resize_image: 16_000,
+  ps_save_psd: 15_000,
+  ps_stroke_face_contour: 15_000,
+  ps_get_preview: 14_000,
+  ps_get_selection_preview: 14_000,
+  ps_undo: 12_000,
+  ps_crop_document: 10_000,
+  ps_transform_canvas: 10_000,
+  ps_apply_brush_stroke: 9_000,
+  ps_play_action: 9_000,
+  ps_document: 8_000,
+  ps_path: 8_000,
+  ps_duplicate_layer: 7_000,
+  ps_warp_layer_along: 7_000,
+  ps_resolve_placement: 7_000,
+  ps_bake_layer: 6_000,
+  ps_create_document: 6_000,
+  ps_retouch: 6_000,
+  ps_warp_layer_mesh: 6_000,
+
+  // Clean p99 well under the shared default; floored at SCRIPT_TIMEOUT_FLOOR_MS.
+  ps_list_capabilities: 5_000,
+  ps_list_actions: 5_000,
+  ps_add_adjustment_layer: 5_000,
+  ps_apply_adjustment: 5_000,
+  ps_close_document: 5_000,
+  ps_export: 5_000,
+  ps_filter: 5_000,
+  ps_group: 5_000,
+  ps_clipping_mask: 5_000,
+  ps_redo: 5_000,
+  ps_place_image: 5_000,
+  ps_convert_image_mode: 5_000,
+  ps_move_layer_to_position: 5_000,
+  ps_convert_to_smart_object: 5_000,
+  ps_rasterize_layer: 5_000,
+  ps_set_layer: 5_000,
+  ps_copy_to_new_layer: 5_000,
+  ps_merge: 5_000,
+  ps_add_layer_style: 5_000,
+  ps_create_layer: 5_000,
+  ps_delete_layer: 5_000,
+  ps_fill_layer: 5_000,
+  ps_add_fill_layer: 5_000,
+  ps_select_layer: 5_000,
+  ps_transform_layer: 5_000,
+  ps_warp_layer: 5_000,
+  ps_guides: 5_000,
+  ps_inspect: 5_000,
+  ps_overview: 5_000,
+  ps_get_layer_bounds_diff: 5_000,
+  ps_compare_regions: 5_000,
+  ps_layer_mask: 5_000,
+  ps_vector_mask: 5_000,
+  ps_apply_image: 5_000,
+  ps_shape: 5_000,
+  ps_template_apply: 5_000,
+  ps_text: 5_000,
+};
+
+/**
+ * Optional global override for a machine slower than the ones the budgets
+ * above were measured on. Set to a positive number of milliseconds, every
+ * budget scales by `value / DEFAULT_SCRIPT_TIMEOUT_MS` — a tool with no
+ * table entry gets exactly this value, while a tool with a derived budget
+ * keeps its proportion relative to the others instead of collapsing to one
+ * flat number. Read fresh on every call rather than cached; nothing here is
+ * hot enough to need it.
+ */
+function scriptTimeoutScale(): number {
+  const raw = process.env.EDITMAMEI_SCRIPT_TIMEOUT_MS;
+  if (!raw) return 1;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n / DEFAULT_SCRIPT_TIMEOUT_MS : 1;
+}
+
+/**
+ * The budget for one MCP tool call — this tool's table entry if it has one,
+ * otherwise `DEFAULT_SCRIPT_TIMEOUT_MS`, scaled by
+ * `EDITMAMEI_SCRIPT_TIMEOUT_MS` if set. Applied once per dispatch by
+ * `ToolRegistry.execute` (see `tool-budget-context.ts`) so every script the
+ * handler runs inherits it, unless that particular `runScript` call passes
+ * its own explicit `timeoutMs`.
+ */
+export function getToolTimeoutMs(toolName: string): number {
+  const base = TOOL_TIMEOUT_BUDGETS_MS[toolName] ?? DEFAULT_SCRIPT_TIMEOUT_MS;
+  return Math.round(base * scriptTimeoutScale());
+}

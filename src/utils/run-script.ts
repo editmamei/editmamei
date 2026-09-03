@@ -1,5 +1,6 @@
 import { PhotoshopAPI, PhotoshopAPIFactory } from '../api/photoshop-api.js';
 import type { PhotoshopConnection } from '../platform/connection.js';
+import { currentToolBudget } from './tool-budget-context.js';
 
 /**
  * Per-connection memo of the constructed `PhotoshopAPI`.
@@ -41,6 +42,13 @@ const apiCache = new WeakMap<PhotoshopConnection, PhotoshopAPI>();
  *
  * Returns whatever the underlying ExtendScript snippet returned; callers
  * typically cast to `Record<string, unknown>` for `structuredContent`.
+ *
+ * `timeoutMs` omitted falls back to the enclosing tool call's dispatch
+ * budget (`tool-budget-context.ts`, set once per call by
+ * `ToolRegistry.execute`) rather than straight to the platform runner's flat
+ * default — an explicit `timeoutMs` here always wins over that budget. A
+ * timeout that fires is rethrown naming the tool and the budget it
+ * exceeded, on top of the runner's own message.
  */
 export async function runScript(
   connection: PhotoshopConnection,
@@ -53,5 +61,17 @@ export async function runScript(
     api = await apiFactory.createAPI();
     apiCache.set(connection, api);
   }
-  return api.executeScript(script, timeoutMs);
+  const budget = currentToolBudget();
+  const effectiveTimeoutMs = timeoutMs ?? budget?.budgetMs;
+  try {
+    return await api.executeScript(script, effectiveTimeoutMs);
+  } catch (error) {
+    if (budget && error instanceof Error && error.message.startsWith('Script execution timeout')) {
+      throw new Error(
+        `Tool '${budget.toolName}' exceeded its ${effectiveTimeoutMs}ms budget: ${error.message}`,
+        { cause: error }
+      );
+    }
+    throw error;
+  }
 }

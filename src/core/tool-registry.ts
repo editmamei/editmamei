@@ -1,5 +1,7 @@
 import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { Logger } from '../utils/logger.js';
+import { getToolTimeoutMs } from '../utils/operation-timeouts.js';
+import { runWithToolBudget } from '../utils/tool-budget-context.js';
 
 /** Runs one tool call. Owns its own input validation and error shaping. */
 export interface ToolHandler {
@@ -122,7 +124,12 @@ export class ToolRegistry {
     let error: string | undefined;
     let result: ToolResult | undefined;
     try {
-      result = await definition.handler(args);
+      // Every script the handler runs — however many — inherits this tool's
+      // budget unless its own runScript call passes an explicit timeoutMs.
+      // See tool-budget-context.ts and its read side in utils/run-script.ts.
+      result = await runWithToolBudget({ toolName: name, budgetMs: getToolTimeoutMs(name) }, () =>
+        definition.handler(args)
+      );
       // Handlers signal failure via { isError: true } rather than throwing.
       if (result?.isError) {
         success = false;
