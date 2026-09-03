@@ -14,6 +14,8 @@ import {
   computeResultBytes,
   jsonEscapedLength,
   ERROR_CLASS_TABLE,
+  ALL_ERROR_CLASSES,
+  NO_ERROR_TEXT_CLASS,
   type SessionLogMetaEntry,
   type SessionLogCallEntry,
 } from '@editmamei/utils/session-log.ts';
@@ -404,6 +406,66 @@ describe('classifyError', () => {
     expect(classifyError('')).toBe('other');
   });
 
+  // Every string below is the REAL message shape from the throw site named
+  // in its comment, not a paraphrase. The discriminator VALUE in the first
+  // two is swapped for a placeholder since the pattern must not care what
+  // the value was, only the message's structure.
+  it('classifies recurring shapes not covered by the earlier tiers', () => {
+    // unknownDiscriminator() (tool-helpers.ts) — shared by every
+    // consolidated dispatcher's unknown type/op/mode rejection.
+    expect(
+      classifyError(
+        'Error: unknown filter type "X". Allowed: gaussian_blur, motion_blur, lens_blur, radial_blur, sharpen, smart_sharpen, noise, reduce_noise, high_pass, pixelate, distort, displace, oil_paint.'
+      )
+    ).toBe('unknown_discriminator');
+    expect(
+      classifyError('Error: unknown inspect target "X". Allowed: metadata, layer_tree, history.')
+    ).toBe('unknown_discriminator');
+    // A short kind/value pair still classifies the same way, not by luck of
+    // fitting under invalid_argument's 30-char cap.
+    expect(classifyError('Error: unknown op "x". Allowed: a, b.')).toBe('unknown_discriminator');
+    // A long value: the pattern matches the quoted value with `[^"]*`, not a
+    // length count, so it terminates on the real closing quote no matter how
+    // long an LLM's passed value is. A fixed bound here would reopen the gap.
+    expect(
+      classifyError(
+        'Error: unknown filter type "' +
+          'a'.repeat(85) +
+          '". Allowed: gaussian_blur, motion_blur, sharpen.'
+      )
+    ).toBe('unknown_discriminator');
+
+    // Photoshop's own message from a histogram read on a non-composite
+    // channel (region-precompute.ts) — a visibility STATE, not a missing
+    // channel.
+    expect(classifyError('You can only get a histogram for visible channels.')).toBe(
+      'channel_not_visible'
+    );
+
+    // ExtendScript's ReferenceError shape for an undefined global.
+    expect(classifyError('Error executing custom script: JSON is undefined')).toBe(
+      'extendscript_reference_error'
+    );
+    expect(classifyError('Error converting image mode: HalftoneScreenShape is undefined')).toBe(
+      'extendscript_reference_error'
+    );
+    // A trailing newline (a transport layer's own line terminator) must not
+    // demote this to `other` — the pattern allows trailing whitespace rather
+    // than relying on the `m` flag (which would also match before an
+    // INTERIOR newline, not just a trailing one).
+    expect(classifyError('Error executing custom script: JSON is undefined\n')).toBe(
+      'extendscript_reference_error'
+    );
+    // Must classify by its OWN class, not steal a wrapper that merely ends
+    // near the word "undefined" — the real go-core wording is "after 1
+    // retry", singular.
+    expect(
+      classifyError(
+        'Layer opacity write did not verify: requested 50 (expected readback 50), actual undefined (after 1 retry)'
+      )
+    ).toBe('write_not_verified');
+  });
+
   it('ERROR_CLASS_TABLE has all expected classes', () => {
     const classes = ERROR_CLASS_TABLE.map((e) => e.errorClass);
     expect(classes).toContain('schema_validation');
@@ -417,10 +479,19 @@ describe('classifyError', () => {
     expect(classes).toContain('image_decode_failed');
     expect(classes).toContain('detection_unavailable');
     expect(classes).toContain('file_io');
+    expect(classes).toContain('unknown_discriminator');
+    expect(classes).toContain('channel_not_visible');
+    expect(classes).toContain('extendscript_reference_error');
   });
 
-  it('every class token satisfies the telemetry server error_class contract', () => {
-    for (const { errorClass } of ERROR_CLASS_TABLE) {
+  // ALL_ERROR_CLASSES, not just ERROR_CLASS_TABLE — NO_ERROR_TEXT_CLASS is a
+  // sentinel assigned outside the table (append() falls back to it directly)
+  // and must satisfy the same wire contract even though it never appears as
+  // a regex here.
+  it('every class token, table AND sentinel, satisfies the telemetry server error_class contract', () => {
+    expect(ALL_ERROR_CLASSES).toContain(NO_ERROR_TEXT_CLASS);
+    expect(ALL_ERROR_CLASSES.length).toBe(ERROR_CLASS_TABLE.length + 1);
+    for (const errorClass of ALL_ERROR_CLASSES) {
       expect(errorClass).toMatch(/^[a-z0-9_]{1,48}$/);
     }
   });
@@ -996,6 +1067,20 @@ describe('SessionLog', () => {
 
     const [call] = await readCallLines(log.path);
     expect(call.error_class).toBe('ps_command_unavailable');
+  });
+
+  // A failed call with no error text at all (e.g. a handler's isError result
+  // with no text content block) must still carry a real class — never the
+  // empty string, and never an omitted field, both of which read as "nothing
+  // to act on" to a diagnostics-bundle reader.
+  it('error_class is a real, non-empty token for a failed call with no error text', async () => {
+    const log = new SessionLog('errclass-no-text', { dir });
+    await log.append({ tool: 't', args: {}, success: false, duration_ms: 1 });
+
+    const [call] = await readCallLines(log.path);
+    expect(call.error_class).toBeTruthy();
+    expect(call.error_class).not.toBe('');
+    expect(call.error_class).toBe(NO_ERROR_TEXT_CLASS);
   });
 
   it('result is NOT included by default (privacy default off)', async () => {

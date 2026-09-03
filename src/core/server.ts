@@ -8,7 +8,7 @@ import { groupOf, GROUPS, type ToolGroup } from './tool-groups.js';
 import { EDITION } from '../edition.js';
 import { VERSION } from '../version.js';
 import { Session } from './session.js';
-import { SessionLog, classifyError } from '../utils/session-log.js';
+import { SessionLog, classifyError, NO_ERROR_TEXT_CLASS } from '../utils/session-log.js';
 import {
   loadSettings,
   applyTelemetryEnvOverrides,
@@ -314,13 +314,17 @@ export class EditmameiServer {
         // Only the ping downgrade may claim ps_not_running: it is the one path
         // that knows Photoshop did not answer. Any other classless failure —
         // reachable if a handler ever returns isError with no text block — gets
-        // 'other', which is honest. What must never happen again is null on a
-        // failure, so the ternary has no branch that produces one.
+        // NO_ERROR_TEXT_CLASS, the SAME sentinel SessionLog.append() falls back
+        // to for the local NDJSON, so a diagnostics bundle (built from the local
+        // log) and a telemetry dashboard (built from this call) agree on one
+        // class for the same event instead of naming it two different things.
+        // What must never happen again is null on a failure, so the ternary has
+        // no branch that produces one.
         const isPingDowngrade =
           entry.tool === 'ps_ping' && !telemetrySuccess && entry.error === undefined;
         const errorClass =
           classifyError(entry.error) ??
-          (telemetrySuccess ? null : isPingDowngrade ? 'ps_not_running' : 'other');
+          (telemetrySuccess ? null : isPingDowngrade ? 'ps_not_running' : NO_ERROR_TEXT_CLASS);
         this.telemetry.recordCall({
           tool: entry.tool,
           success: telemetrySuccess,
@@ -333,7 +337,7 @@ export class EditmameiServer {
         if (!telemetrySuccess) {
           this.telemetry.recordDiagnostic({
             tool: entry.tool,
-            error_class: errorClass ?? 'other',
+            error_class: errorClass ?? NO_ERROR_TEXT_CLASS,
             // `||`, not `??`: a handler can return an isError result whose text
             // block is the empty string, which `??` would pass through and
             // leave the failure just as unnamed as a missing one.

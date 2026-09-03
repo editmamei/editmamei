@@ -87,7 +87,8 @@ export interface SessionLogCallEntry {
   doc_layer_count_after?: number;
   target_was_copy?: boolean;
   background_promoted?: boolean;
-  // Error classification — null for successful calls:
+  // Error classification — omitted for successful calls; a failed call
+  // always carries a real token, never the empty string (see append()):
   error_class?: string | null;
   // True when tool + deep-equal args match the immediately preceding call line:
   retry_signal: boolean;
@@ -286,6 +287,20 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
     pattern: /\b(ENOENT|EBUSY|EACCES|EPERM|EMFILE|ENOSPC)\b/,
   },
   // ── Input errors ─────────────────────────────────────────────────────────
+  // `unknownDiscriminator()` (tool-helpers.ts) builds this exact shape for
+  // every consolidated dispatcher's unknown `type`/`op`/`mode` value: `unknown
+  // <kind> "<value>". Allowed: <list>.` Hoisted ahead of `invalid_argument`
+  // because that class's own `unknown [^:]{1,30}:` alternative only matches
+  // when the kind+value happen to fit in 30 chars before a colon. The KIND is
+  // bounded to 40 chars (it's always a short fixed word/phrase like "filter
+  // type" or "inspect target") but the VALUE is matched with `[^"]*` — not a
+  // length count, so it terminates on the actual closing quote no matter how
+  // long an LLM's passed value is. Any fixed count on the value would just
+  // relocate that cliff, so the value must never be length-bounded here.
+  {
+    errorClass: 'unknown_discriminator',
+    pattern: /unknown [^"]{1,40}"[^"]*"\. Allowed: /i,
+  },
   {
     errorClass: 'schema_validation',
     pattern:
@@ -314,6 +329,11 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
     errorClass: 'wrong_layer_kind',
     pattern: /pixel layer|text layer|smart object layer|layer kind|rasterize it first/i,
   },
+  // Photoshop's own message when a script reads doc.histogram while the
+  // active channel isn't the composite (see region-precompute.ts) — a
+  // visibility STATE, not a missing channel, so it sits apart from
+  // channel_not_found above rather than widening that pattern.
+  { errorClass: 'channel_not_visible', pattern: /histogram for visible channels/i },
   // ── PS-native outcomes ───────────────────────────────────────────────────
   { errorClass: 'ps_command_unavailable', pattern: /not currently available/i },
   { errorClass: 'timeout', pattern: /timed? ?out|Script execution timeout|exceeded.*bytes/i },
@@ -324,6 +344,18 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
   { errorClass: 'ai_selection_no_result', pattern: /returned no result/i },
   { errorClass: 'ps_general_error', pattern: /general photoshop error/i },
   { errorClass: 'ps_no_such_element', pattern: /no such element/i },
+  // ExtendScript's own ReferenceError shape for an undefined global (`JSON`
+  // inside a user script that assumes browser/Node JS, or a PS constant that
+  // doesn't exist on this version). Anchored to end-of-string and restricted
+  // to identifier characters so it can't fire on ordinary prose that happens
+  // to end differently, e.g. "...actual undefined (after 1 retry)". Allows
+  // trailing whitespace (not the `m` flag, which would also match BEFORE an
+  // interior newline, not just a trailing one) so a message a transport
+  // layer terminates with `\n` still classifies.
+  {
+    errorClass: 'extendscript_reference_error',
+    pattern: /\b[A-Za-z_$][\w$]*\s+is undefined\s*$/,
+  },
   { errorClass: 'write_not_verified', pattern: /did not verify/i },
   // ── Empty cause / generic wrapper (keep last) ────────────────────────────
   { errorClass: 'ps_empty_error', pattern: /:\s*$/ },
@@ -338,6 +370,29 @@ export function classifyError(error: string | undefined): string | null {
   }
   return 'other';
 }
+
+/**
+ * Assigned when a call FAILED but there is no error text to classify against
+ * — `classifyError` can't produce this itself (it only sees the string, and
+ * `undefined` in means "nothing to match", not "this call failed"). The one
+ * class token in the vocabulary that is not a pattern in ERROR_CLASS_TABLE;
+ * every caller that needs "some real class, even with no text" (SessionLog's
+ * local NDJSON, the telemetry tee in server.ts) uses this constant rather
+ * than each inventing — or drifting from — its own string.
+ */
+export const NO_ERROR_TEXT_CLASS = 'no_error_text';
+
+/**
+ * The full class vocabulary: every pattern's token plus every sentinel
+ * assigned outside the table (currently just `NO_ERROR_TEXT_CLASS`). Tests
+ * that assert every class satisfies the telemetry wire contract iterate this
+ * list, not `ERROR_CLASS_TABLE` alone — a sentinel obeys the same contract
+ * without ever appearing as a regex.
+ */
+export const ALL_ERROR_CLASSES: readonly string[] = [
+  ...ERROR_CLASS_TABLE.map((entry) => entry.errorClass),
+  NO_ERROR_TEXT_CLASS,
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Result sanitization (EDITMAMEI_LOG_RESULTS=1 capture)
@@ -731,7 +786,16 @@ export class SessionLog {
       /* structural surprises must never break telemetry */
     }
 
-    const errorClass = classifyError(entry.error);
+    // A failed call must always carry a class — `classifyError` alone can't
+    // promise that, because it only sees the error TEXT: a handler that
+    // reports failure with no text (e.g. an isError result with no text
+    // content block) gives it `undefined`, indistinguishable from the
+    // "no error at all" input a SUCCESSFUL call also passes. `entry.success`
+    // is the signal classifyError doesn't have, so the fallback lives here,
+    // not in the classifier. Without it, a genuine failure logs with no
+    // error_class field at all — the diagnostics bundle and any other reader
+    // then sees a failure with nothing to act on.
+    const errorClass = entry.success ? null : (classifyError(entry.error) ?? NO_ERROR_TEXT_CLASS);
 
     // Full result capture — only when EDITMAMEI_LOG_RESULTS=1 (off by default
     // for privacy). The captured copy goes through the SAME discipline as

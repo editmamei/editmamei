@@ -9,6 +9,7 @@ import {
   BACKGROUND_VERSION_PROBE_TIMEOUT_MS,
 } from '@editmamei/core/server.ts';
 import { getPendingRawDevelop, __clearRawDevelopState } from '@editmamei/core/raw-develop-state.ts';
+import { NO_ERROR_TEXT_CLASS } from '@editmamei/utils/session-log.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
@@ -1302,7 +1303,7 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
   // gates nothing — delete it and every other test still passes, while every
   // tool's classless failure gets relabelled a Photoshop-connectivity problem
   // under the wrong tool name.
-  it('classifies a classless non-ping failure as other, never as ps_not_running', async () => {
+  it('classifies a classless non-ping failure as no_error_text, never as ps_not_running', async () => {
     const server = new EditmameiServer() as unknown as {
       toolRegistry: {
         register(
@@ -1334,11 +1335,11 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       tool: 'ps_export',
       success: false,
       duration_ms: expect.any(Number),
-      error_class: 'other',
+      error_class: NO_ERROR_TEXT_CLASS,
     });
     expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
       tool: 'ps_export',
-      error_class: 'other',
+      error_class: NO_ERROR_TEXT_CLASS,
       error_message: 'tool reported failure with no message',
     });
   });
