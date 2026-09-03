@@ -817,6 +817,30 @@ describe('ps_sequence outputSchema validates its own structuredContent (the same
     assertValidAgainstOwnSchema(tools, res.structuredContent);
   });
 
+  it('a failed rollback with a rollback_reason validates', async () => {
+    let historyReads = 0;
+    const invokeTool: FakeInvoke = async (name) => {
+      if (name === 'ps_inspect') {
+        historyReads++;
+        if (historyReads === 1) return historyResult(5, { stateName: 'S5', total: 10 });
+        if (historyReads === 2) return historyResult(8, { stateName: 'S8', total: 13 });
+        return historyResult(6, { stateName: 'S-evicted', total: 13 });
+      }
+      if (name === 'ps_undo') return ok('Undo successful');
+      if (name === 'tool_fail') return fail();
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_fail', args: {} }],
+      on_error: 'rollback',
+    });
+    const sc = res.structuredContent as { rolled_back: boolean; rollback_reason: string };
+    expect(sc.rolled_back).toBe(false);
+    expect(sc.rollback_reason).toBe('history_evicted');
+    assertValidAgainstOwnSchema(tools, res.structuredContent);
+  });
+
   it('a time-budget abort validates', async () => {
     const invokeTool: FakeInvoke = async () => ok();
     let t = 0;

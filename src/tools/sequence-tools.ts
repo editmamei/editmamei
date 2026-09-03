@@ -46,6 +46,7 @@ export const HISTORY_UNSAFE_TOOLS = new Set<string>([
   'ps_create_document', // creates and activates a new document — nothing to return to
   'ps_close_document', // closes a document — the captured state may cease to exist
   'ps_save_psd', // writes a file to disk; undoing history can't un-write it
+  'ps_export', // writes a file to disk; undoing history can't un-write it
   'ps_document', // op=activate switches which document is active
   'ps_undo', // moves the history cursor directly, corrupting the delta rollback computes
   'ps_redo', // moves the history cursor directly, corrupting the delta rollback computes
@@ -510,7 +511,7 @@ async function runSequence(
 
     if (now() - startedAt > SEQUENCE_OVERALL_TIMEOUT_MS) {
       capExceeded = true;
-      failedStep = { index: i, tool: step.tool };
+      if (failedStep === null) failedStep = { index: i, tool: step.tool };
       entries.push({
         index: i,
         tool: step.tool,
