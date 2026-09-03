@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { isArchived } from '../helpers/archived-docs.ts';
+import { HYDRATED_OVERLAY } from '../helpers/overlay-tree.ts';
 
 /**
  * `isArchived` decides which docs the Node and macOS floor guards are allowed
@@ -38,11 +39,16 @@ describe('isArchived', () => {
     expect(isArchived('launch/archive/post.md')).toBe(false);
   });
 
-  it('is inert in this repository — the published docs carry no archive', () => {
-    // The filter exists for the hydrated commercial overlay. If an archive
-    // ever lands here, that is a deliberate decision worth making explicitly
-    // rather than discovering as a silently-unchecked doc.
-    const entries = readdirSync(join(ROOT, 'docs'), { recursive: true, encoding: 'utf8' });
-    expect(entries.filter((f) => isArchived(f))).toEqual([]);
-  });
+  // Only meaningful in the published tree. The overlay is the tree that HAS an
+  // archive — asserting its absence there fails by construction, which is the
+  // whole reason the filter exists.
+  it.skipIf(HYDRATED_OVERLAY)(
+    'is inert in this repository — the published docs carry no archive',
+    () => {
+      // If an archive ever lands here, that is a deliberate decision worth
+      // making explicitly rather than discovering as a silently-unchecked doc.
+      const entries = readdirSync(join(ROOT, 'docs'), { recursive: true, encoding: 'utf8' });
+      expect(entries.filter((f) => isArchived(f))).toEqual([]);
+    }
+  );
 });
