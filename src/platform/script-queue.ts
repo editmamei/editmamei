@@ -72,6 +72,7 @@ export class ScriptQueue {
         task.timeoutId = setTimeout(() => {
           this.settleTask(task, () => task.reject(new Error('Script execution timeout')));
         }, task.timeout + QUEUE_SLACK_MS);
+        task.timeoutId.unref?.();
         try {
           const result = await task.run();
           this.settleTask(task, () => task.resolve(result));

@@ -30,10 +30,14 @@ import { makeConnection } from '../fixtures/fake-connection.ts';
  * A Pro tool's own budget is its own handler's concern, in the private repo.
  */
 describe('getToolTimeoutMs — table completeness (community/dev)', () => {
-  it('every community/dev tool has an explicit table entry or a documented allowlist reason', () => {
+  it('every community tool has an explicit table entry or a documented allowlist reason', () => {
+    // Community only. A dev-tier tool ships in no build and has no field
+    // measurement, so it is not required here; the moment it is promoted it
+    // becomes community and this test fails until a budget is chosen — which
+    // is exactly when that decision should be made.
     const missing: string[] = [];
     for (const [name, tier] of Object.entries(TOOL_TIERS)) {
-      if (tier !== 'community' && tier !== 'dev') continue;
+      if (tier !== 'community') continue;
       const hasEntry = Object.hasOwn(TOOL_TIMEOUT_BUDGETS_MS, name);
       const hasReason =
         Object.hasOwn(TOOLS_WITHOUT_A_BUDGET, name) &&
@@ -104,17 +108,26 @@ describe('getToolTimeoutMs — table completeness (community/dev)', () => {
     expect(getToolTimeoutMs('ps_open_document')).toBe(OPEN_DOCUMENT_TIMEOUT_MS);
     expect(getToolTimeoutMs('ps_select_subject')).toBe(SELECT_SUBJECT_TIMEOUT_MS);
     expect(getToolTimeoutMs('ps_select_sky')).toBe(SELECT_SKY_TIMEOUT_MS);
-    expect(getToolTimeoutMs('ps_select_focus_area')).toBe(SELECT_FOCUS_AREA_TIMEOUT_MS);
     expect(getToolTimeoutMs('ps_replace_sky')).toBe(SKY_REPLACEMENT_TIMEOUT_MS);
     for (const name of [
       'ps_open_document',
       'ps_select_subject',
       'ps_select_sky',
-      'ps_select_focus_area',
       'ps_replace_sky',
     ]) {
       expect(getToolTimeoutMs(name)).toBe(120_000);
     }
+    // Focus area is a ps_select mode, not a tool; its handler passes
+    // SELECT_FOCUS_AREA_TIMEOUT_MS explicitly, and an explicit value always wins.
+    expect(SELECT_FOCUS_AREA_TIMEOUT_MS).toBe(120_000);
+  });
+
+  it('holds ps_ping at the shared default as a deliberate exception to the derivation rule', () => {
+    // The cold-start ping is the first thing a broken install does, so a
+    // longer hang there is worse than an early failure even though the
+    // measured max sits just above 30 s. The table comment records the same.
+    expect(getToolTimeoutMs('ps_ping')).toBe(DEFAULT_SCRIPT_TIMEOUT_MS);
+    expect(getToolTimeoutMs('ps_ping')).toBe(30_000);
   });
 
   it('ps_apply_camera_raw (Pro) is absent from the CE table — its override constant still stands alone', () => {

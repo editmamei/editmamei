@@ -161,9 +161,10 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // specifically to find out whether Photoshop is there at all, and a
   // broken install's first impression should be an early, clear failure,
   // not a long hang before the same failure.
+  // Deliberate exception to the derivation rule: the measured max sits just
+  // above 30 s, but the cold-start ping is a broken install's first
+  // impression, and a longer hang there is worse than an early failure.
   ps_ping: 30_000,
-
-  // Genuinely long — pixel-heavy full-canvas reads, well above the shared default.
   ps_read_scene: 164_000,
   ps_selection_channel: 123_000,
 
