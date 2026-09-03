@@ -133,9 +133,15 @@ export const ceModule: EditmameiModule = {
       // one against host.hasTool (the live registry), so it needs a shape the
       // generic (connection, snippet) factory call can't supply. hasTool is
       // optional on HostApi for cross-version compatibility; this kernel
-      // always provides it, and the fallback below just makes that explicit
-      // rather than asserting it.
-      ...createSequenceTools(host.invokeTool, (name) => host.hasTool?.(name) ?? false),
+      // always provides it. The throw below is unreachable today — it exists
+      // so a future host missing the method reports why validation refused
+      // rather than reporting every step as an unregistered tool.
+      ...createSequenceTools(host.invokeTool, (name) => {
+        if (!host.hasTool) {
+          throw new Error(`cannot validate "${name}" — this host does not expose hasTool`);
+        }
+        return host.hasTool(name);
+      }),
     ].filter((def) => isToolAllowedInEdition(def.tool.name, EDITION));
     host.registerTools(defs);
   },

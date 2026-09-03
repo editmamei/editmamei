@@ -27,13 +27,19 @@ const MIN_STEPS = 1;
 const MAX_STEPS = 25;
 
 /**
- * Tools ps_sequence refuses under on_error='rollback', because each can move
- * the document (or the cursor rollback itself depends on) in a way the
- * history cursor cannot undo. One comment per entry, naming the mechanism —
- * this is the single place that list is kept, checked by validation below and
- * pinned against TOOL_TIERS by a test so a rename cannot silently drop an
- * entry. The document-identity check `performRollback` does at rollback time
- * is the backstop for anything this list misses.
+ * Tools ps_sequence refuses BY NAME under on_error='rollback', before any
+ * step runs — each can move the document (or the cursor rollback itself
+ * depends on) in a way the history cursor cannot undo. Limited to
+ * community-tier names on purpose: a naming list can only promise coverage
+ * for tools guaranteed present in every build this file ships in, so a
+ * pro-tier name here would be a broken promise in a build that never
+ * registers it — and a test pins that no entry is 'pro' in TOOL_TIERS.
+ *
+ * This list refuses the cases it can name; anything it can't (a Pro tool,
+ * or a community tool this list missed) is caught AFTER the fact instead —
+ * `performRollback`'s document_changed and history_evicted checks catch a
+ * document switch or an evicted history state regardless of which step
+ * caused it. One comment per entry naming the mechanism.
  */
 export const HISTORY_UNSAFE_TOOLS = new Set<string>([
   'ps_open_document', // opens a different document — history is per-document
@@ -41,15 +47,13 @@ export const HISTORY_UNSAFE_TOOLS = new Set<string>([
   'ps_close_document', // closes a document — the captured state may cease to exist
   'ps_save_psd', // writes a file to disk; undoing history can't un-write it
   'ps_document', // op=activate switches which document is active
-  'ps_execute_script', // arbitrary code — can open, close, save, or switch documents undetectably
-  'ps_batch', // runs a recipe over many files, opening and closing each in turn
-  'ps_template_apply', // may place or reference other assets while applying the recipe
-  'ps_select_subject_instance', // crops a copy to isolate one instance, briefly activating that copy
   'ps_undo', // moves the history cursor directly, corrupting the delta rollback computes
   'ps_redo', // moves the history cursor directly, corrupting the delta rollback computes
 ]);
 
-const HISTORY_UNSAFE_TOOLS_LIST = Array.from(HISTORY_UNSAFE_TOOLS).sort().join(', ');
+// Declaration order, not sorted — keeps the user-facing list in the same
+// order as the per-entry comments above.
+const HISTORY_UNSAFE_TOOLS_LIST = Array.from(HISTORY_UNSAFE_TOOLS).join(', ');
 
 const stepItemSchema: JsonSchemaProperty = {
   type: 'object',
@@ -92,26 +96,31 @@ const sequenceSchema: JsonSchemaObject = {
   required: ['steps'],
 };
 
-const stepSummaryItemSchema = {
+// ONE schema covering both row shapes ('summary' rows carry `text`, 'full'
+// rows carry `result`) rather than a `oneOf` of two schemas. Neither
+// candidate sub-schema declared `required` or `additionalProperties: false`,
+// so a summary row (no `result` field) satisfied the full-row schema too —
+// nothing in it was actually required — and `oneOf` demands EXACTLY one
+// match; every row failed Ajv validation in both modes. The house position
+// (layer-transform-tools.ts) is the same: list every field in one schema and
+// let the handler own which ones a given call actually populates.
+const stepResultItemSchema = {
   type: 'object',
   properties: {
     index: { type: 'number' },
     tool: { type: 'string' },
     ok: { type: 'boolean' },
     duration_ms: { type: 'number' },
-    text: { type: 'string', description: "The first line of that step's own result text." },
+    text: {
+      type: 'string',
+      description: "The first line of that step's own result text (return='summary').",
+    },
+    result: {
+      type: 'object',
+      description: "That step's full CallToolResult (return='full').",
+    },
   },
-};
-
-const stepFullItemSchema = {
-  type: 'object',
-  properties: {
-    index: { type: 'number' },
-    tool: { type: 'string' },
-    ok: { type: 'boolean' },
-    duration_ms: { type: 'number' },
-    result: { type: 'object', description: "That step's full CallToolResult." },
-  },
+  required: ['index', 'tool', 'ok'],
 };
 
 const sequenceOutputSchema = {
@@ -125,9 +134,9 @@ const sequenceOutputSchema = {
       description: 'How many steps actually ran — excludes a step skipped by the time budget.',
     },
     failed_step: {
-      type: 'object',
+      type: ['object', 'null'],
       description:
-        'The first failing step, or the step skipped by the overall time budget. Absent when every step succeeded.',
+        'The first failing step, or the step skipped by the overall time budget. Null when every step succeeded.',
       properties: {
         index: { type: 'number' },
         tool: { type: 'string' },
@@ -143,8 +152,9 @@ const sequenceOutputSchema = {
     },
     steps: {
       type: 'array',
-      description: 'One entry per step run — summary shape or full shape depending on `return`.',
-      items: { oneOf: [stepSummaryItemSchema, stepFullItemSchema] },
+      description:
+        'One entry per step run — carries `text` in summary mode, `result` in full mode.',
+      items: stepResultItemSchema,
     },
     final: {
       type: 'object',
@@ -171,9 +181,8 @@ interface ParsedSequenceArgs {
 /**
  * Full validation, run BEFORE any step is dispatched: every step's `tool` is
  * a non-empty string currently registered (via `hasTool`, the live registry
- * — not a static edition table, which would pass a Pro name that fails at
- * dispatch after earlier steps already mutated the document, or reject a
- * Pro tool an entitled CE host actually has loaded), none is ps_sequence
+ * — checked directly rather than against a fixed list, since which names are
+ * dispatchable can differ between two running hosts), none is ps_sequence
  * itself, the step count is in bounds, and — only when on_error='rollback' —
  * no step names a HISTORY_UNSAFE_TOOLS entry. Throws a plain Error naming the
  * offending step; the caller turns that into an error result without running
@@ -259,6 +268,11 @@ function stripImages(result: ToolResult): ToolResult {
  * Photoshop reports at that position (position alone is not proof of
  * identity — see history_evicted below), the total state count, and the
  * active document's name (history is per-document).
+ *
+ * `documentName` is the best document-identity signal this read exposes —
+ * ps_inspect(what='history') reports only doc.name (via getContextInfo()),
+ * no document id, so two simultaneously open documents sharing a name could
+ * in principle defeat this specific check.
  */
 interface HistorySnapshot {
   index: number;
@@ -546,9 +560,15 @@ async function runSequence(
     }
   }
 
-  const lastIndex = entries.length - 1;
+  // The overall-cap branch pushes one synthetic "never ran" entry as the
+  // LAST entry in `entries` — it must not be treated as "the last step" for
+  // either purpose below: it never ran, so it never had a preview to keep,
+  // and it isn't the result callers actually want back. `lastRealIndex`
+  // points at the last step that actually executed; -1 when the cap fired
+  // before any step ran at all.
+  const lastRealIndex = capExceeded ? entries.length - 2 : entries.length - 1;
   const stripped = entries.map((e, idx) =>
-    idx === lastIndex ? e : { ...e, result: stripImages(e.result) }
+    idx === lastRealIndex ? e : { ...e, result: stripImages(e.result) }
   );
   // Excludes the synthetic never-run entry the overall-cap branch pushes —
   // that step never actually ran, so it must not count as one that did.
@@ -598,7 +618,7 @@ async function runSequence(
             duration_ms: e.duration_ms,
             text: firstTextLine(e.result),
           })),
-          final: stripped[lastIndex]?.result,
+          final: lastRealIndex >= 0 ? stripped[lastRealIndex].result : undefined,
         };
 
   return {

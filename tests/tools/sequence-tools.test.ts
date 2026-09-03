@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import { createSequenceTools, HISTORY_UNSAFE_TOOLS } from '@editmamei/tools/sequence-tools.ts';
 import { tierOf, TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
@@ -60,6 +61,19 @@ describe('createSequenceTools', () => {
     // silently drop a guard entry with no test ever noticing.
     for (const name of HISTORY_UNSAFE_TOOLS) {
       expect(Object.keys(TOOL_TIERS), `${name} is not in TOOL_TIERS`).toContain(name);
+    }
+  });
+
+  it('no HISTORY_UNSAFE_TOOLS entry is Pro-tier', () => {
+    // A pro-tier name here would compile into CE dist as a string literal —
+    // in the description, the validation error, and the Set itself — and
+    // trip the leak guard (tests/integration/build-output.test.ts), since
+    // this file ships in every edition (dev-tier gating happens at
+    // registration, not at compile time). Community-only is the ceiling this
+    // list can safely name; anything else is caught after the fact by
+    // performRollback's document_changed/history_evicted checks instead.
+    for (const name of HISTORY_UNSAFE_TOOLS) {
+      expect(TOOL_TIERS[name], `${name} must not be pro-tier`).not.toBe('pro');
     }
   });
 
@@ -486,6 +500,95 @@ describe('createSequenceTools', () => {
     expect(textOf(res)).toMatch(/rollback did not complete/);
   });
 
+  it("rollback_reason=undo_failed when performRollback's first read (before undoing) is unusable", async () => {
+    let historyReads = 0;
+    const invokeTool: FakeInvoke = async (name) => {
+      if (name === 'ps_inspect') {
+        historyReads++;
+        if (historyReads === 1) return historyResult(5); // capture succeeds
+        return { content: [{ type: 'text' as const, text: 'history' }] }; // performRollback's own read fails
+      }
+      if (name === 'tool_fail') return fail();
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_fail', args: {} }],
+      on_error: 'rollback',
+    });
+    const sc = res.structuredContent as { rolled_back: boolean; rollback_reason: string };
+    expect(sc.rolled_back).toBe(false);
+    expect(sc.rollback_reason).toBe('undo_failed');
+    expect(textOf(res)).toMatch(/rollback did not complete/);
+  });
+
+  it("rollback_reason=undo_failed when performRollback's second read (after undoing) is unusable", async () => {
+    let historyReads = 0;
+    const invokeTool: FakeInvoke = async (name) => {
+      if (name === 'ps_inspect') {
+        historyReads++;
+        if (historyReads === 1) return historyResult(5); // capture
+        if (historyReads === 2) return historyResult(8); // pre-undo read, delta=3
+        // Post-undo verification read comes back unusable.
+        return { content: [{ type: 'text' as const, text: 'history' }] };
+      }
+      if (name === 'ps_undo') return ok('Undo successful');
+      if (name === 'tool_fail') return fail();
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_fail', args: {} }],
+      on_error: 'rollback',
+    });
+    const sc = res.structuredContent as { rolled_back: boolean; rollback_reason: string };
+    expect(sc.rolled_back).toBe(false);
+    expect(sc.rollback_reason).toBe('undo_failed');
+  });
+
+  it('on_error=rollback also runs performRollback from the time-budget branch, and the message reports both the cap and the rollback', async () => {
+    let historyReads = 0;
+    const invokeTool: FakeInvoke = async (name) => {
+      if (name === 'ps_inspect') {
+        historyReads++;
+        // 1: capture (index 5, 1 edit already happened from tool_a).
+        // 2: pre-undo re-read after the cap fires (index 6).
+        // 3: post-undo verification re-read (back to 5 — matches).
+        if (historyReads === 1) return historyResult(5, { stateName: 'S5', total: 10 });
+        if (historyReads === 2) return historyResult(6, { stateName: 'S6', total: 11 });
+        return historyResult(5, { stateName: 'S5', total: 11 });
+      }
+      if (name === 'ps_undo') return ok('Undo successful');
+      return ok();
+    };
+    let t = 0;
+    const now = () => {
+      const v = t;
+      t += 200_000;
+      return v;
+    };
+    const tools = createSequenceTools(invokeTool, allow, { now });
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_b', args: {} }, // cap fires before this one runs
+        { tool: 'tool_c', args: {} },
+      ],
+      on_error: 'rollback',
+    });
+    const sc = res.structuredContent as {
+      cap_exceeded: boolean;
+      rolled_back: boolean;
+      failed_step: unknown;
+    };
+    expect(sc.cap_exceeded).toBe(true);
+    expect(sc.rolled_back).toBe(true);
+    expect(sc.failed_step).toEqual({ index: 1, tool: 'tool_b' });
+    // buildMessage's capExceeded-and-rolledBack arm names both the cap AND the rollback.
+    expect(textOf(res)).toMatch(/exceeded its overall time budget/);
+    expect(textOf(res)).toMatch(/Document rolled back/);
+  });
+
   // ---------- return modes + image stripping ----------
 
   it("return=summary carries a per-step summary line plus the last step's full result", async () => {
@@ -621,5 +724,115 @@ describe('createSequenceTools', () => {
     expect(sc.ran_steps).toBe(1);
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/exceeded its overall time budget/);
+  });
+
+  it("a time-budget abort makes `final` the last REAL step's result, not the synthetic cap stub, and keeps its image", async () => {
+    const image = { type: 'image' as const, data: 'AAAA', mimeType: 'image/jpeg' };
+    const invokeTool: FakeInvoke = async (name) => ({
+      content: [{ type: 'text' as const, text: `${name} ok` }, image],
+    });
+    let t = 0;
+    const now = () => {
+      const v = t;
+      t += 200_000;
+      return v;
+    };
+    const tools = createSequenceTools(invokeTool, allow, { now });
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_b', args: {} },
+      ],
+      return: 'summary',
+    });
+    const sc = res.structuredContent as { cap_exceeded: boolean; final: ToolResult };
+    expect(sc.cap_exceeded).toBe(true);
+    // `final` is tool_a's result (the last one that actually ran) — not the
+    // "budget exceeded" stub for the never-run tool_b — and still carries the
+    // image, since it's the real last step, not the synthetic one.
+    expect(sc.final.content).toEqual([{ type: 'text', text: 'tool_a ok' }, image]);
+    // The cap notice still surfaces in the text and status fields.
+    expect(textOf(res)).toMatch(/exceeded its overall time budget/);
+  });
+});
+
+/**
+ * A tool's outputSchema is not documentation-only: an MCP client validates
+ * every structuredContent it gets back against it (Ajv, via
+ * AjvJsonSchemaValidator — @modelcontextprotocol/sdk/client/index.js
+ * callTool()). A schema that no real call output can satisfy — the `oneOf`
+ * that caused HIGH 2 — fails every call at the CLIENT, not in this repo's own
+ * tests, so this exercises the exact validator a real client uses against the
+ * exact shapes runSequence produces.
+ */
+describe('ps_sequence outputSchema validates its own structuredContent (the same Ajv path an MCP client uses)', () => {
+  const ajvValidator = new AjvJsonSchemaValidator();
+
+  function assertValidAgainstOwnSchema(
+    tools: ReturnType<typeof createSequenceTools>,
+    structuredContent: unknown
+  ): void {
+    const schema = tools[0].tool.outputSchema as Record<string, unknown>;
+    const check = ajvValidator.getValidator(schema);
+    const result = check(structuredContent);
+    expect(result.valid, result.errorMessage).toBe(true);
+  }
+
+  it('summary success validates', async () => {
+    const invokeTool: FakeInvoke = async (name) => ok(`${name} ok`);
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_b', args: {} },
+      ],
+      return: 'summary',
+    });
+    assertValidAgainstOwnSchema(tools, res.structuredContent);
+  });
+
+  it('full success validates', async () => {
+    const invokeTool: FakeInvoke = async (name) => ok(`${name} ok`);
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_b', args: {} },
+      ],
+      return: 'full',
+    });
+    assertValidAgainstOwnSchema(tools, res.structuredContent);
+  });
+
+  it('stop-on-error with a failed step validates', async () => {
+    const invokeTool: FakeInvoke = async (name) => (name === 'tool_fail' ? fail() : ok());
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_fail', args: {} },
+      ],
+      on_error: 'stop',
+    });
+    assertValidAgainstOwnSchema(tools, res.structuredContent);
+  });
+
+  it('a time-budget abort validates', async () => {
+    const invokeTool: FakeInvoke = async () => ok();
+    let t = 0;
+    const now = () => {
+      const v = t;
+      t += 200_000;
+      return v;
+    };
+    const tools = createSequenceTools(invokeTool, allow, { now });
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_a', args: {} },
+        { tool: 'tool_b', args: {} },
+        { tool: 'tool_c', args: {} },
+      ],
+    });
+    assertValidAgainstOwnSchema(tools, res.structuredContent);
   });
 });
