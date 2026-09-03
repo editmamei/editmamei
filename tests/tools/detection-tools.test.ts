@@ -88,6 +88,14 @@ describe('createDetectionTools', () => {
     expect(schema.properties.target.default).toBe('both');
   });
 
+  it('annotate defaults to false — the boxes are the product, the picture is opt-in', () => {
+    const { tools } = make();
+    const schema = tools[0].tool.inputSchema as unknown as {
+      properties: { annotate: { default: boolean } };
+    };
+    expect(schema.properties.annotate.default).toBe(false);
+  });
+
   it('dispatches a bounded export script (duplicate → resize → save)', async () => {
     const { tools } = make();
     await callTool(tools, 'ps_detect', { annotate: false });
@@ -298,6 +306,31 @@ describe('ps_detect warm cache (2026-08-01)', () => {
     await callTool(tools(), 'ps_detect', { annotate: false });
     await callTool(tools(), 'ps_detect', { annotate: false, object_threshold: 0.9 });
     expect(client.calls).toBe(2);
+  });
+
+  it('omitting annotate returns no image, structured detections unaffected', async () => {
+    const withDefault = await callTool(tools(), 'ps_detect', {});
+    expect(withDefault.content.some((c) => c.type === 'image')).toBe(false);
+    const withExplicitFalse = await callTool(tools(), 'ps_detect', { annotate: false });
+    expect(withExplicitFalse.structuredContent).toEqual(withDefault.structuredContent);
+  });
+
+  it('annotate:true is opt-in and returns the annotated preview', async () => {
+    const res = await callTool(tools(), 'ps_detect', { annotate: true });
+    const img = res.content.find((c) => c.type === 'image');
+    expect(img).toBeDefined();
+  });
+
+  it('annotate does not change the structured result — only content[] gains the image', async () => {
+    // Must live in THIS block: only here are decoded pixels injected, so the
+    // annotate branch genuinely draws. Without deps the draw path is skipped
+    // and a parity assertion compares two identical code paths. The cold call
+    // is the annotated one so the draw runs against real inference output.
+    const withTrue = await callTool(tools(), 'ps_detect', { target: 'both', annotate: true });
+    expect(withTrue.content.find((c) => c.type === 'image')).toBeDefined();
+    const withFalse = await callTool(tools(), 'ps_detect', { target: 'both', annotate: false });
+    expect(withFalse.content.find((c) => c.type === 'image')).toBeUndefined();
+    expect(withTrue.structuredContent).toEqual(withFalse.structuredContent);
   });
 
   it('a cache HIT still draws boxes on the annotated preview', async () => {

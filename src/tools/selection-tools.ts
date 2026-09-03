@@ -455,6 +455,13 @@ const selectionPreviewSchema: JsonSchemaObject = {
       maximum: 4096,
       default: 800,
     },
+    image: {
+      type: 'string',
+      enum: ['overlay', 'mask', 'both'],
+      default: 'overlay',
+      description:
+        "Which rendered image(s) to return inline. 'overlay' (default): a 50% red wash over the selected area (Quick Mask-style — most intuitive). 'mask': a B/W mask (black=selected, white=not) instead. 'both': the overlay followed by the mask, for when you need to compare them side by side. selection_info is returned regardless of this choice.",
+    },
   },
 };
 
@@ -806,7 +813,7 @@ export function createSelectionTools(
       tool: {
         name: 'ps_get_selection_preview',
         description:
-          'Render TWO inline JPEGs so the agent can visually verify what is currently selected: (1) an OVERLAY of the document with a 50% red wash over the selected area (Quick Mask-style — most intuitive); (2) a B/W MASK where black = selected, white = not. Heavier than the selection_info bundle (~2-4s) — call this when the stats look off or before committing a mask. Does NOT modify the source document.',
+          "Render an inline JPEG so the agent can visually verify what is currently selected: by default a red-wash OVERLAY (50% red over the selected area, Quick Mask-style — most intuitive); pass `image:'mask'` for a B/W MASK (black = selected, white = not) instead, or `image:'both'` for both. selection_info is always returned regardless of `image`. Heavier than the selection_info bundle alone (~2-4s) — call this when the stats look off or before committing a mask. Does NOT modify the source document.",
         inputSchema: selectionPreviewSchema,
         outputSchema: {
           type: 'object',
@@ -819,7 +826,7 @@ export function createSelectionTools(
           },
         },
         annotations: {
-          title: 'Get Selection Preview (overlay + mask)',
+          title: 'Get Selection Preview',
           readOnlyHint: true,
           idempotentHint: true,
         },
@@ -1779,6 +1786,7 @@ async function getSelectionPreview(
   try {
     const args = validateArgs(selectionPreviewSchema, rawArgs);
     const maxDimension = (args.max_dimension as number) ?? 800;
+    const image = (args.image as 'overlay' | 'mask' | 'both') ?? 'overlay';
 
     const dir = await TempDir.create('editmamei-sel-preview-');
     try {
@@ -1813,18 +1821,34 @@ async function getSelectionPreview(
 
       const overlayBytes = await readFile(overlayPath);
       const maskBytes = await readFile(maskPath);
-      const overlayB64 = overlayBytes.toString('base64');
-      const maskB64 = maskBytes.toString('base64');
+
+      // `image` picks which rendered JPEG(s) go inline; selection_info (and the
+      // byte counts below) are returned every time regardless of the choice.
+      const text =
+        image === 'both'
+          ? `Selection preview rendered. Image 1 = overlay (red wash on selected area). Image 2 = mask (black=selected, white=not).`
+          : image === 'mask'
+            ? `Selection preview rendered. Image 1 = mask (black=selected, white=not).`
+            : `Selection preview rendered. Image 1 = overlay (red wash on selected area).`;
+
+      const content: ToolResult['content'] = [{ type: 'text' as const, text }];
+      if (image === 'overlay' || image === 'both') {
+        content.push({
+          type: 'image' as const,
+          data: overlayBytes.toString('base64'),
+          mimeType: 'image/jpeg',
+        });
+      }
+      if (image === 'mask' || image === 'both') {
+        content.push({
+          type: 'image' as const,
+          data: maskBytes.toString('base64'),
+          mimeType: 'image/jpeg',
+        });
+      }
 
       return {
-        content: [
-          {
-            type: 'text' as const,
-            text: `Selection preview rendered. Image 1 = overlay (red wash on selected area). Image 2 = mask (black=selected, white=not).`,
-          },
-          { type: 'image' as const, data: overlayB64, mimeType: 'image/jpeg' },
-          { type: 'image' as const, data: maskB64, mimeType: 'image/jpeg' },
-        ],
+        content,
         structuredContent: {
           rendered: true,
           max_dimension: result.max_dimension ?? maxDimension,

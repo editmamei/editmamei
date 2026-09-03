@@ -177,6 +177,14 @@ describe('createSceneTools', () => {
     expect(schema.required).toContain('target');
   });
 
+  it('ps_read_scene annotate defaults to false — the structured model is complete on its own', () => {
+    const t = tools();
+    const schema = t[0].tool.inputSchema as unknown as {
+      properties: { annotate: { default: boolean } };
+    };
+    expect(schema.properties.annotate.default).toBe(false);
+  });
+
   // ---------- ps_read_scene ----------
 
   it('scene builds a structured model with subjects, faces, horizon, tonal zones, composition', async () => {
@@ -239,6 +247,57 @@ describe('createSceneTools', () => {
     // The export+decode freshness probe itself still ran on both calls.
     const detectScripts = conn.allScripts().filter((s) => s.includes('__mcp_detect__')).length;
     expect(detectScripts).toBe(2);
+  });
+
+  it('omitting annotate returns no preview image, structured model unaffected', async () => {
+    const t = createSceneTools(conn.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      detectDeps: fakeDetectDeps(),
+    });
+    const withDefault = await callTool(t, 'ps_read_scene', {});
+    expect(withDefault.content.some((c) => c.type === 'image')).toBe(false);
+    const withExplicitFalse = await callTool(t, 'ps_read_scene', {
+      annotate: false,
+      refresh: true,
+    });
+    expect(withExplicitFalse.content.some((c) => c.type === 'image')).toBe(false);
+    expect((withDefault.structuredContent as { doc: unknown }).doc).toEqual(
+      (withExplicitFalse.structuredContent as { doc: unknown }).doc
+    );
+  });
+
+  it('annotate:true is opt-in and returns the annotated preview image', async () => {
+    const t = createSceneTools(conn.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      detectDeps: fakeDetectDeps(),
+    });
+    const res = await callTool(t, 'ps_read_scene', { annotate: true });
+    const img = res.content.find((c) => c.type === 'image');
+    expect(img).toBeDefined();
+  });
+
+  it('annotate does not change the structured model — only content[] gains the image', async () => {
+    // No field of the model (doc/subjects/faces/regions/horizon/tonal_zones/
+    // composition/provenance) describes the annotated PICTURE itself — that
+    // only ever lands in content[] — so annotate must be a pure content[]-only
+    // switch. Each call gets its own fresh scene-cache clear (rather than two
+    // calls on one tool instance) so provenance.cached reads the same (false)
+    // on both sides and isn't a spurious source of drift here.
+    __clearSceneCache();
+    const t1 = createSceneTools(conn.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      detectDeps: fakeDetectDeps(),
+    });
+    const withFalse = await callTool(t1, 'ps_read_scene', { annotate: false });
+
+    __clearSceneCache();
+    const t2 = createSceneTools(conn.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      detectDeps: fakeDetectDeps(),
+    });
+    const withTrue = await callTool(t2, 'ps_read_scene', { annotate: true });
+
+    expect(withTrue.structuredContent).toEqual(withFalse.structuredContent);
   });
 
   it('scene refresh:true forces a fresh detection pass', async () => {

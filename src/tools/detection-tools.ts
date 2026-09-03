@@ -3,9 +3,10 @@
  *
  * Exports a bounded-size JPEG of the active doc, runs local ONNX detectors
  * (Ultraface faces + D-FINE-S COCO-80 objects) on it, and returns labeled boxes
- * in DOCUMENT-pixel space plus an annotated preview so the result is visually
- * verifiable. Read-only — it renders a throwaway duplicate, never touches the
- * working document.
+ * in DOCUMENT-pixel space. The boxes are complete on their own; pass
+ * `annotate: true` for an annotated preview when the result needs visual
+ * confirmation. Read-only — it renders a throwaway duplicate, never touches
+ * the working document.
  *
  * This is the "seeing" primitive: it gives the model semantic scene awareness
  * (what's in the frame) with real coordinates, a far stronger spatial basis than
@@ -81,9 +82,9 @@ const detectSchema: JsonSchemaObject = {
     },
     annotate: {
       type: 'boolean',
-      default: true,
+      default: false,
       description:
-        'Return an annotated preview with the detected boxes drawn (faces cyan, objects magenta) so you can visually confirm the detections.',
+        'Also return an annotated preview JPEG with the detected boxes drawn (faces cyan, objects magenta). Default false: the labeled boxes returned by this call are already complete on their own — ask for the image only when you actually need to visually confirm a detection.',
     },
   },
 };
@@ -147,7 +148,7 @@ async function detect(
   try {
     const args = validateArgs(detectSchema, rawArgs);
     const target = (args.target as string) ?? 'both';
-    const annotate = (args.annotate as boolean) ?? true;
+    const annotate = (args.annotate as boolean) ?? false;
     const wantFaces = target === 'faces' || target === 'both';
     const wantObjects = target === 'objects' || target === 'both';
 
@@ -297,7 +298,7 @@ export function createDetectionTools(
       tool: {
         name: 'ps_detect',
         description:
-          'The cheap, narrow read: labeled bounding boxes only — faces and/or COCO-80 objects (person, dog, car, chair, sofa, …) in DOCUMENT-pixel space, plus an annotated preview for visual confirmation. LOCAL on-device computer vision; the image is never sent anywhere. Use this for real coordinates before a spatially-targeted edit when boxes are all you need — far more reliable than estimating positions from a preview. For the full scene model (regions, horizon, tonal zones, composition, and a menu of selectable named regions), use ps_read_scene instead. `target` selects faces / objects / both. Read-only: renders a throwaway duplicate, never modifies the working document. Boxes are [x1, y1, x2, y2]. Validate surprising results against the annotated image before acting on them.',
+          'The cheap, narrow read: labeled bounding boxes only — faces and/or COCO-80 objects (person, dog, car, chair, sofa, …) in DOCUMENT-pixel space. LOCAL on-device computer vision; the image is never sent anywhere. Use this for real coordinates before a spatially-targeted edit when boxes are all you need — far more reliable than estimating positions from a preview. For the full scene model (regions, horizon, tonal zones, composition, and a menu of selectable named regions), use ps_read_scene instead. `target` selects faces / objects / both. Read-only: renders a throwaway duplicate, never modifies the working document. Boxes are [x1, y1, x2, y2]. Pass `annotate:true` for an annotated preview JPEG (faces cyan, objects magenta) when you need to visually confirm a surprising result.',
         inputSchema: detectSchema,
         outputSchema: {
           type: 'object',
