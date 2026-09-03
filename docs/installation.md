@@ -170,6 +170,10 @@ Editmamei auto-detects Photoshop. If you have multiple versions installed and wa
 }
 ```
 
+### Optional: raise script timeouts on a slow machine
+
+Each tool has its own timeout budget, tuned from typical execution times. If Photoshop is routinely slower than that on your machine — an older CPU, a heavily loaded system, a very large document — set `EDITMAMEI_SCRIPT_TIMEOUT_MS` in the same `env` block to scale every tool's budget up together, rather than each one failing early on your machine specifically. The value is milliseconds for what would otherwise be a 30-second budget; `"60000"` doubles every timeout, `"90000"` triples them. It's capped at 10x and ignored (with a warning in the server's logs) if it isn't a positive number.
+
 ---
 
 ## Verify
