@@ -75,19 +75,19 @@
     "@modelcontextprotocol/sdk": "^1.0.4",
     "adm-zip": "^0.6.0",
     "jpeg-js": "^0.4.4",
-    "onnxruntime-web": "1.27.0"
+    "onnxruntime-web": "1.29.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.20.1",
-    "@typescript-eslint/eslint-plugin": "^8.67.0",
+    "@typescript-eslint/eslint-plugin": "^8.68.0",
     "@typescript-eslint/parser": "^8.20.0",
     "@vitest/coverage-v8": "^4.1.11",
     "esbuild": "^0.28.2",
-    "eslint": "^10.9.0",
+    "eslint": "^10.9.1",
     "globals": "^17.11.0",
     "prettier": "^3.9.6",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "^5.7.3",
     "vitest": "^4.1.7"
   }
