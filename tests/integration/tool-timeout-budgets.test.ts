@@ -23,13 +23,12 @@ import { makeConnection } from '../fixtures/fake-connection.ts';
  * its structural contract without pinning the exact derived numbers, which
  * are expected to be re-derived as usage evolves.
  *
- * Scoped to COMMUNITY (and dev) tools only. Pro-tier tools are deliberately
- * excluded from both `TOOL_TIMEOUT_BUDGETS_MS` and `TOOLS_WITHOUT_A_BUDGET`
- * — this file ships in the CE bundle, and naming a Pro tool here, even as an
- * allowlist comment, leaks its identity into a build that must not carry it.
- * A Pro tool's own budget is its own handler's concern, in the private repo.
+ * The table and its allowlist name community tools only. A tool absent from
+ * both takes `DEFAULT_SCRIPT_TIMEOUT_MS`, and a handler that needs more than
+ * its budget passes its own `timeoutMs`, which always wins. This file ships
+ * in the community bundle, so it must not carry any other tool's name.
  */
-describe('getToolTimeoutMs — table completeness (community/dev)', () => {
+describe('getToolTimeoutMs — table completeness (community)', () => {
   it('every community tool has an explicit table entry or a documented allowlist reason', () => {
     // Community only. A dev-tier tool ships in no build and has no field
     // measurement, so it is not required here; the moment it is promoted it

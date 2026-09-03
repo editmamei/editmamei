@@ -112,6 +112,19 @@ describe('runScript — deadline fallback and timeout enrichment', () => {
     expect(conn.lastTimeout()).toBe(999_000);
   });
 
+  it('the deadline is absolute: time spent before a script runs comes off what it gets', async () => {
+    // A budget is a deadline fixed at dispatch, not a fresh allowance per
+    // script. Time the call spends queued, or in an earlier script, is gone.
+    // Here the context was created 3 s ago with a 5 s budget, so the script
+    // that runs now gets roughly the 2 s that remain, not the full 5 s.
+    const conn = makeConnection();
+    const startedEarlier = budgetContextFor('ps_fake_tool', 5_000, Date.now() - 3_000);
+    await runWithToolBudget(startedEarlier, () => runScript(conn.asConnection(), 'return 1;'));
+    const got = conn.lastTimeout() as number;
+    expect(got).toBeLessThanOrEqual(2_000);
+    expect(got).toBeGreaterThan(1_500);
+  });
+
   it('an explicit timeoutMs escapes an ALREADY-EXHAUSTED deadline — the post-timeout re-probe shape', async () => {
     // Mirrors document-tools.ts's reprobeOpenDocument: it fires from the
     // CATCH of a runScript call whose deadline (ps_open_document's own 120s
