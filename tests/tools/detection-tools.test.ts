@@ -209,6 +209,17 @@ describe('createDetectionTools', () => {
     expect(sc.objects).toBeDefined();
   });
 
+  it('annotate does not change the structured result — only content[] gains the image', async () => {
+    // structuredContent is { image, backends, faces, objects, context } — none
+    // of those fields describe the annotated PICTURE itself (that only ever
+    // lands in content[]), so annotate must be a pure content[]-only switch.
+    const { tools: t1 } = make();
+    const withFalse = await callTool(t1, 'ps_detect', { target: 'both', annotate: false });
+    const { tools: t2 } = make();
+    const withTrue = await callTool(t2, 'ps_detect', { target: 'both', annotate: true });
+    expect(withTrue.structuredContent).toEqual(withFalse.structuredContent);
+  });
+
   it('surfaces a no-document export error as isError', async () => {
     const failing = makeConnection({ throwOnExecute: new Error('No active document') });
     const tools = createDetectionTools(

@@ -2,10 +2,12 @@
  * Scene Model v1 tools (Layer 1 perception).
  *
  *   ps_read_scene               — the "look before you select" read: returns
- *                                   the structured scene model + an annotated
- *                                   preview (subject boxes, horizon line, region
- *                                   tints, tonal-zone hint). Content-free beyond
- *                                   the downscaled preview.
+ *                                   the structured scene model (subject boxes,
+ *                                   horizon line, region tints, tonal-zone
+ *                                   hint), complete on its own — pass
+ *                                   annotate:true for an annotated preview
+ *                                   drawn from the same data. Content-free
+ *                                   beyond that optional downscaled preview.
  *   ps_select_by_reference — the headline: resolve a SEMANTIC target
  *                                   (sky / ground / subject / shadows / … ) to a
  *                                   real pixel selection on the ORIGINAL in

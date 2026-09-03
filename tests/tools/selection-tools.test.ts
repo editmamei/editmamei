@@ -858,24 +858,36 @@ describe('createSelectionTools', () => {
 
   // ---------- get_selection_preview (kept) ----------
 
+  // DISTINCT bytes per file — a test that writes the same bytes to both paths
+  // can't tell an overlay from a mask, so it still passes if the handler swaps
+  // overlayBytes/maskBytes or pushes the overlay twice for 'both'. These must
+  // differ so the assertions below actually pin which file landed where.
+  const FAKE_OVERLAY_JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x01]);
+  const FAKE_MASK_JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x02]);
+
   /** A fake connection that renders the (fake) overlay + mask JPEGs to disk,
    *  same as PS would, so getSelectionPreview's readFile calls succeed
-   *  regardless of which `image` the tool actually asks for. */
+   *  regardless of which `image` the tool actually asks for. Overlay and mask
+   *  get DIFFERENT bytes so a test can assert which one actually came back,
+   *  not just that some image did. */
   function makeRenderedPreviewConn(): FakePhotoshopConnection {
-    const fakeJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
     const resultFor = ((script: string) => {
       const paths = Array.from(script.matchAll(/"([^"]+\.jpg)"/g))
         .map((m) => m[1].replace(/\\\\/g, '\\'))
         .filter((p, i, arr) => arr.indexOf(p) === i);
-      const writes = paths.map((p) =>
-        mkdir(dirname(p), { recursive: true })
+      const [overlayPath, maskPath] = paths;
+      const writes = [
+        mkdir(dirname(overlayPath), { recursive: true })
           .catch(() => undefined)
-          .then(() => writeFile(p, fakeJpeg))
-      );
+          .then(() => writeFile(overlayPath, FAKE_OVERLAY_JPEG)),
+        mkdir(dirname(maskPath), { recursive: true })
+          .catch(() => undefined)
+          .then(() => writeFile(maskPath, FAKE_MASK_JPEG)),
+      ];
       return Promise.all(writes).then(() => ({
         rendered: true,
-        overlay_path: paths[0],
-        mask_path: paths[1],
+        overlay_path: overlayPath,
+        mask_path: maskPath,
         max_dimension: 800,
         selection_info: {
           has_selection: true,
@@ -906,7 +918,11 @@ describe('createSelectionTools', () => {
     const result = await callTool(tools, 'ps_get_selection_preview', {});
     expect(result.isError).toBeUndefined();
     expect(result.content).toHaveLength(2);
-    expect(result.content[1]).toMatchObject({ type: 'image', mimeType: 'image/jpeg' });
+    expect(result.content[1]).toMatchObject({
+      type: 'image',
+      mimeType: 'image/jpeg',
+      data: FAKE_OVERLAY_JPEG.toString('base64'),
+    });
     expect(result.structuredContent).toMatchObject({ rendered: true });
   });
 
@@ -917,18 +933,30 @@ describe('createSelectionTools', () => {
     const result = await callTool(tools, 'ps_get_selection_preview', { image: 'mask' });
     expect(result.isError).toBeUndefined();
     expect(result.content).toHaveLength(2);
-    expect(result.content[1]).toMatchObject({ type: 'image', mimeType: 'image/jpeg' });
+    expect(result.content[1]).toMatchObject({
+      type: 'image',
+      mimeType: 'image/jpeg',
+      data: FAKE_MASK_JPEG.toString('base64'),
+    });
   });
 
-  it("get_selection_preview image:'both' returns both overlay + mask images", async () => {
+  it("get_selection_preview image:'both' returns overlay THEN mask, each with its own bytes", async () => {
     conn = makeRenderedPreviewConn();
     snippetClient = makeSnippetClient();
     const tools = createSelectionTools(conn.asConnection(), snippetClient);
     const result = await callTool(tools, 'ps_get_selection_preview', { image: 'both' });
     expect(result.isError).toBeUndefined();
     expect(result.content).toHaveLength(3);
-    expect(result.content[1]).toMatchObject({ type: 'image', mimeType: 'image/jpeg' });
-    expect(result.content[2]).toMatchObject({ type: 'image', mimeType: 'image/jpeg' });
+    expect(result.content[1]).toMatchObject({
+      type: 'image',
+      mimeType: 'image/jpeg',
+      data: FAKE_OVERLAY_JPEG.toString('base64'),
+    });
+    expect(result.content[2]).toMatchObject({
+      type: 'image',
+      mimeType: 'image/jpeg',
+      data: FAKE_MASK_JPEG.toString('base64'),
+    });
   });
 
   it('get_selection_preview returns text-only when no active selection', async () => {

@@ -460,7 +460,7 @@ const selectionPreviewSchema: JsonSchemaObject = {
       enum: ['overlay', 'mask', 'both'],
       default: 'overlay',
       description:
-        "Which rendered image(s) to return inline. 'overlay' (default): a 50% red wash over the selected area (Quick Mask-style — most intuitive). 'mask': a B/W mask (black=selected, white=not) instead. 'both': both images, the old always-both behavior. selection_info is returned regardless of this choice.",
+        "Which rendered image(s) to return inline. 'overlay' (default): a 50% red wash over the selected area (Quick Mask-style — most intuitive). 'mask': a B/W mask (black=selected, white=not) instead. 'both': the overlay followed by the mask, for when you need to compare them side by side. selection_info is returned regardless of this choice.",
     },
   },
 };
@@ -826,7 +826,7 @@ export function createSelectionTools(
           },
         },
         annotations: {
-          title: 'Get Selection Preview (overlay + mask)',
+          title: 'Get Selection Preview',
           readOnlyHint: true,
           idempotentHint: true,
         },

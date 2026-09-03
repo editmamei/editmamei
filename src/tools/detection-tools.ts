@@ -3,9 +3,10 @@
  *
  * Exports a bounded-size JPEG of the active doc, runs local ONNX detectors
  * (Ultraface faces + D-FINE-S COCO-80 objects) on it, and returns labeled boxes
- * in DOCUMENT-pixel space plus an annotated preview so the result is visually
- * verifiable. Read-only — it renders a throwaway duplicate, never touches the
- * working document.
+ * in DOCUMENT-pixel space. The boxes are complete on their own; pass
+ * `annotate: true` for an annotated preview when the result needs visual
+ * confirmation. Read-only — it renders a throwaway duplicate, never touches
+ * the working document.
  *
  * This is the "seeing" primitive: it gives the model semantic scene awareness
  * (what's in the frame) with real coordinates, a far stronger spatial basis than
