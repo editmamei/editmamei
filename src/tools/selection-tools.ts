@@ -386,6 +386,30 @@ const selectPolygonSchema: JsonSchemaObject = {
   required: ['points'],
 };
 
+// Focus Area takes no coordinates and no sample_all_layers — the descriptor has
+// no such field, so the PS 2026 active-layer workaround that selectSubject /
+// selectSky carry does not apply here and is deliberately absent.
+const selectFocusAreaSchema: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    in_focus_radius: {
+      type: 'number',
+      description:
+        'How much blur still counts as "in focus", in pixels. Higher pulls more of the soft transition zone into the selection; lower keeps only the crisply resolved plane. 4.07 is the Photoshop dialog default and a sane starting point. The useful band is narrow, and a radius well above the default selects the entire frame — so move in small steps and CHECK the returned area_percent and whole_canvas_selected: a selection covering essentially everything means the radius is too high and the result is worthless, even though the call reports success.',
+      default: 4.07,
+      minimum: 0.1,
+      maximum: 15,
+    },
+    soft_mask: {
+      type: 'boolean',
+      description:
+        'False (default) yields a hard-edged selection — every pixel fully in or fully out, which is what you want before ps_modify_selection feathering. True lets Photoshop feather the focus falloff itself, useful when the subject edge is genuinely gradual (hair, fur, motion).',
+      default: false,
+    },
+    selection_type: selectionTypeFragment,
+  },
+};
+
 // modify_selection edge ops (expand/contract/border/smooth). `amount` is the
 // pixel distance/radius/width; `at_canvas_bounds` applies to expand/contract/
 // smooth (ignored by border).
@@ -538,6 +562,7 @@ const SELECT_MODES = [
   'skin_tones',
   'out_of_gamut',
   'polygon',
+  'focus_area',
 ] as const;
 
 // ps_select merges the geometric/color/wand selectors + all/none/inverse.
@@ -561,8 +586,9 @@ const SELECT_INPUT_SCHEMA: JsonSchemaObject = {
         'skin_tones: select skin-coloured pixels (+fuzziness; use_faces=true adds face-aware refinement). ' +
         'out_of_gamut: select colours outside the printable CMYK gamut (no params). ' +
         'polygon: points [{x,y},...] in ABSOLUTE document pixels (min 3, auto-closes) — covers polygonal/freehand lasso. Coordinate-driven: you must know the pixel positions (use ps_inspect / ps_get_preview to aim, or ps_path create_from_placement → load_as_selection for a grounded outline). ' +
+        'focus_area: select what the lens rendered SHARP by depth of field, not by subject or colour (+in_focus_radius, soft_mask) — takes no coordinates; check whole_canvas_selected in the result before trusting it. ' +
         'rectangle/ellipse/magic_wand also take a grounded `placement` instead of raw coords (region → the bbox; point → the wand click). ' +
-        'rectangle/ellipse/polygon/color_range/luminance_range/magic_wand/skin_tones/out_of_gamut also take selection_type to combine with an existing selection.',
+        'rectangle/ellipse/polygon/focus_area/color_range/luminance_range/magic_wand/skin_tones/out_of_gamut also take selection_type to combine with an existing selection.',
     },
     ...selectRectangleSchema.properties,
     ...selectColorRangeSchema.properties,
@@ -570,6 +596,7 @@ const SELECT_INPUT_SCHEMA: JsonSchemaObject = {
     ...magicWandSchema.properties,
     ...colorPresetSchema.properties,
     ...selectPolygonSchema.properties,
+    ...selectFocusAreaSchema.properties,
     // Unified `placement` for the consolidated view (the per-mode spreads above each
     // carry their own; this overrides so the tool-level description covers all three:
     // rectangle/ellipse → a REGION bbox, magic_wand → a POINT click).
@@ -728,7 +755,7 @@ export function createSelectionTools(
       tool: {
         name: 'ps_select',
         description:
-          'Create a NEW selection — choose with `mode`. (To edit the CURRENT selection instead — including growing it by colour similarity — use ps_modify_selection.) `all` selects the canvas; `none` deselects; `inverse` inverts the current selection (e.g. select the subject, then inverse to act on the background). `rectangle` (left/top/right/bottom, optional feather_px to avoid hard block-edges in smooth sky). `ellipse` (left/top/right/bottom bounding box + anti_alias — circles/ovals). `color_range` (target red/green/blue + fuzziness — "select all the red / skin tones"). `luminance_range` (highlights/shadows/midtones — foundation for glow / dodge-burn). `magic_wand` (click x/y + tolerance, contiguous). `grow` / `similar` are DEPRECATED here (they act on the CURRENT selection, not a new one) — use ps_modify_selection(op=grow|similar) instead; kept for one release for backward compatibility, identical behaviour. rectangle/ellipse/magic_wand also accept a grounded `placement` (NAME a region/point instead of guessing pixels — resolved + gate-verified). The geometric/color/wand modes take selection_type (replace|add|subtract|intersect) to combine with an existing selection and return a rich selection_info bundle — verify it (or ps_get_selection_preview) before committing to a mask.',
+          'Create a NEW selection — choose with `mode`. (To edit the CURRENT selection instead — including growing it by colour similarity — use ps_modify_selection.) `all` selects the canvas; `none` deselects; `inverse` inverts the current selection (e.g. select the subject, then inverse to act on the background). `rectangle` (left/top/right/bottom, optional feather_px to avoid hard block-edges in smooth sky). `ellipse` (left/top/right/bottom bounding box + anti_alias — circles/ovals). `color_range` (target red/green/blue + fuzziness — "select all the red / skin tones"). `luminance_range` (highlights/shadows/midtones — foundation for glow / dodge-burn). `magic_wand` (click x/y + tolerance, contiguous). `focus_area` selects by depth of field rather than subject or colour (+in_focus_radius, soft_mask) — check whole_canvas_selected/warning in the result before trusting it. `grow` / `similar` are DEPRECATED here (they act on the CURRENT selection, not a new one) — use ps_modify_selection(op=grow|similar) instead; kept for one release for backward compatibility, identical behaviour. rectangle/ellipse/magic_wand also accept a grounded `placement` (NAME a region/point instead of guessing pixels — resolved + gate-verified). The geometric/color/wand modes take selection_type (replace|add|subtract|intersect) to combine with an existing selection and return a rich selection_info bundle — verify it (or ps_get_selection_preview) before committing to a mask.',
         inputSchema: SELECT_INPUT_SCHEMA,
         outputSchema: {
           type: 'object',
@@ -754,6 +781,26 @@ export function createSelectionTools(
             preset: { type: 'string' },
             point_count: { type: 'number' },
             placement: { type: 'object' },
+            strategy_used: {
+              type: 'string',
+              description: 'mode=focus_area: "executeAction:focusMask".',
+            },
+            in_focus_radius: { type: 'number', description: 'mode=focus_area: radius used.' },
+            soft_mask: { type: 'boolean', description: 'mode=focus_area: soft_mask used.' },
+            active_layer_temporarily_changed: {
+              type: 'boolean',
+              description:
+                'mode=focus_area: true if the active layer was not an ordinary pixel layer and detection was temporarily retargeted to the bottom layer. Restored before return.',
+            },
+            whole_canvas_selected: {
+              type: 'boolean',
+              description:
+                'mode=focus_area: true when the RAW detection (before any selection_type combine) covered essentially the entire canvas — usually a non-result. selection_info reports the FINAL, post-combine selection and the two can legitimately disagree.',
+            },
+            warning: {
+              type: ['string', 'null'],
+              description: 'mode=focus_area: set when whole_canvas_selected is true.',
+            },
             selection_info: selectionInfoFragment,
           },
         },
@@ -981,50 +1028,6 @@ export function createSelectionTools(
       },
       handler: async (args) => selectSky(connection, snippetClient, args),
     },
-    // ps_select_focus_area — dev tier. Standalone on purpose: a parameter
-    // cannot be tiered, so it ships as its own gated tool and folds into
-    // ps_select as mode=focus_area at promotion (the ps_smart_filter → ps_filter
-    // precedent). Delete this entry in the same commit as the fold.
-    {
-      tool: {
-        name: 'ps_select_focus_area',
-        description:
-          "Run Photoshop's \"Focus Area\" — select what the lens rendered SHARP, by depth of field rather than by subject or colour. Use it when the thing you want is defined by focus and not by what it is: lifting a subject off a bokeh background, masking the in-focus plane of a macro shot, or grabbing a shallow-depth foreground that Select Subject splits badly. Takes NO coordinates. in_focus_radius widens (higher) or narrows (lower) what counts as sharp; soft_mask=true gives feathered edges instead of a hard boundary. Analyses the ACTIVE layer, so target the photographic pixels you mean. If the active layer is not a raster layer at all (adjustment, smart object, text, shape), detection is retargeted to the bottom layer and active_layer_temporarily_changed comes back true — check it, because the analysed layer was then NOT the one you selected. An EMPTY raster layer cannot be told apart by kind, so it is not retargeted; it surfaces instead as an error or as whole_canvas_selected. whole_canvas_selected and warning diagnose Focus Area's RAW detection, measured BEFORE any selection_type combine — a uniformly sharp image (or too high an in_focus_radius) trips them even when combining then folds the result down to something small. Check whole_canvas_selected first; selection_info separately reports the FINAL, post-combine selection and can disagree with it by design (e.g. selection_type='subtract' against an existing selection), so read selection_info for what actually got selected, not as a substitute for whole_canvas_selected.",
-        inputSchema: selectFocusAreaSchema,
-        outputSchema: {
-          type: 'object',
-          properties: {
-            selected: { type: 'boolean' },
-            method: { type: 'string' },
-            strategy_used: { type: 'string' },
-            in_focus_radius: { type: 'number' },
-            soft_mask: { type: 'boolean' },
-            active_layer_temporarily_changed: {
-              type: 'boolean',
-              description:
-                'True if the active layer was not an ordinary pixel layer and detection was temporarily retargeted to the bottom layer. The original active layer is restored before return.',
-            },
-            whole_canvas_selected: {
-              type: 'boolean',
-              description:
-                "True when Focus Area's RAW detection covered essentially the entire canvas — usually a non-result (radius too high, or nothing photographic to analyse). Measured BEFORE combining with any prior selection, so it describes the detection step, not the final selection: selection_info reports the FINAL, post-combine result and the two can legitimately disagree, e.g. selection_type='subtract' against an existing selection can leave this true while selection_info.area_percent is well under 100.",
-            },
-            warning: {
-              type: ['string', 'null'],
-              description:
-                'Set when whole_canvas_selected is true. Also describes the RAW detection, not the final post-combine selection.',
-            },
-            selection_type: { type: 'string' },
-            selection_info: selectionInfoFragment,
-          },
-        },
-        annotations: {
-          title: 'Select Focus Area',
-          idempotentHint: true,
-        },
-      },
-      handler: async (args) => selectFocusArea(connection, snippetClient, args),
-    },
   ];
 }
 
@@ -1058,51 +1061,57 @@ const selectSkySchema: JsonSchemaObject = {
   },
 };
 
-// Focus Area takes no coordinates and no sample_all_layers — the descriptor has
-// no such field, so the PS 2026 active-layer workaround that selectSubject /
-// selectSky carry does not apply here and is deliberately absent.
-const selectFocusAreaSchema: JsonSchemaObject = {
-  type: 'object',
-  properties: {
-    in_focus_radius: {
-      type: 'number',
-      description:
-        'How much blur still counts as "in focus", in pixels. Higher pulls more of the soft transition zone into the selection; lower keeps only the crisply resolved plane. 4.07 is the Photoshop dialog default and a sane starting point. The useful band is narrow, and a radius well above the default selects the entire frame — so move in small steps and CHECK the returned area_percent and whole_canvas_selected: a selection covering essentially everything means the radius is too high and the result is worthless, even though the call reports success.',
-      default: 4.07,
-      minimum: 0.1,
-      maximum: 15,
-    },
-    soft_mask: {
-      type: 'boolean',
-      description:
-        'False (default) yields a hard-edged selection — every pixel fully in or fully out, which is what you want before ps_modify_selection feathering. True lets Photoshop feather the focus falloff itself, useful when the subject edge is genuinely gradual (hair, fur, motion).',
-      default: false,
-    },
-    selection_type: selectionTypeFragment,
-  },
-};
+// selectSubject / selectSky / selectFocusArea hand-roll the validate → build →
+// run stereotype instead of using runSnippetTool so the text can report the
+// bounds/coverage the go-core snippet ALREADY embeds as `selection_info`
+// (fragments_sensei.go computes it via getSelectionInfo() inside the same
+// script execution, right after the op). Do NOT re-read it with a second
+// script (readSelectionInfo) — getSelectionInfo() does a doc.channels.add()
+// plus a full-canvas histogram, and fragments_sensei.go:391-395 explicitly
+// avoids paying that cost twice for an identical answer; a TS-side re-read
+// would pay that cost again on every call, and — carrying no timeoutMs of its
+// own — could itself time out and report isError right after an already-
+// completed 120s Sensei op that produced a perfectly good selection. Read
+// result.selection_info straight off the snippet's own return instead.
+function selectionInfoOf(result: Record<string, unknown>): SelectionFacts | undefined {
+  return result.selection_info as SelectionFacts | undefined;
+}
 
 async function selectFocusArea(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
-  return runSnippetTool({
-    connection,
-    snippetClient,
-    rawArgs,
-    schema: selectFocusAreaSchema,
-    snippet: 'selectFocusArea',
-    errorPrefix: 'Error running Focus Area selection',
-    timeoutMs: SELECT_FOCUS_AREA_TIMEOUT_MS,
-    params: (args) => ({
+  try {
+    const args = validateArgs(selectFocusAreaSchema, rawArgs);
+    const selectionType = normalizeSelectionType(args.selection_type);
+    const script = await snippetClient.build('selectFocusArea', {
       inFocusRadius: (args.in_focus_radius as number) ?? 4.07,
       softMask: (args.soft_mask as boolean) ?? false,
-      selectionType: normalizeSelectionType(args.selection_type),
-    }),
-    successText: (_result, args) =>
-      `Focus Area selection (${normalizeSelectionType(args.selection_type)}) complete`,
-  });
+      selectionType,
+    });
+    const result = (await runScript(connection, script, SELECT_FOCUS_AREA_TIMEOUT_MS)) as Record<
+      string,
+      unknown
+    >;
+    let text = describeSelectionFacts(
+      `Focus Area selection (${selectionType})`,
+      selectionInfoOf(result)
+    );
+    // whole_canvas_selected/warning diagnose the RAW pre-combine detection —
+    // exactly what the schema tells the model to check first — so a warning
+    // must reach the text, not sit silently in structuredContent where a
+    // post-combine result can look like an ordinary clean selection.
+    if (result.warning) {
+      text += ` WARNING: ${String(result.warning)}`;
+    }
+    return {
+      content: [{ type: 'text' as const, text }],
+      structuredContent: result,
+    };
+  } catch (error) {
+    return toolErrorResult('Error running Focus Area selection', error);
+  }
 }
 
 async function selectSubject(
@@ -1110,21 +1119,32 @@ async function selectSubject(
   snippetClient: SnippetClient,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
-  return runSnippetTool({
-    connection,
-    snippetClient,
-    rawArgs,
-    schema: selectSubjectSchema,
-    snippet: 'selectSubject',
-    errorPrefix: 'Error running Select Subject',
-    timeoutMs: SELECT_SUBJECT_TIMEOUT_MS,
-    params: (args) => ({
+  try {
+    const args = validateArgs(selectSubjectSchema, rawArgs);
+    const selectionType = normalizeSelectionType(args.selection_type);
+    const script = await snippetClient.build('selectSubject', {
       sampleAllLayers: (args.sample_all_layers as boolean) ?? true,
-      selectionType: normalizeSelectionType(args.selection_type),
-    }),
-    successText: (_result, args) =>
-      `Select Subject (${normalizeSelectionType(args.selection_type)}) complete`,
-  });
+      selectionType,
+    });
+    const result = (await runScript(connection, script, SELECT_SUBJECT_TIMEOUT_MS)) as Record<
+      string,
+      unknown
+    >;
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: describeSelectionFacts(
+            `Select Subject (${selectionType})`,
+            selectionInfoOf(result)
+          ),
+        },
+      ],
+      structuredContent: result,
+    };
+  } catch (error) {
+    return toolErrorResult('Error running Select Subject', error);
+  }
 }
 
 async function selectSky(
@@ -1132,21 +1152,29 @@ async function selectSky(
   snippetClient: SnippetClient,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
-  return runSnippetTool({
-    connection,
-    snippetClient,
-    rawArgs,
-    schema: selectSkySchema,
-    snippet: 'selectSky',
-    errorPrefix: 'Error running Select Sky',
-    timeoutMs: SELECT_SKY_TIMEOUT_MS,
-    params: (args) => ({
+  try {
+    const args = validateArgs(selectSkySchema, rawArgs);
+    const selectionType = normalizeSelectionType(args.selection_type);
+    const script = await snippetClient.build('selectSky', {
       sampleAllLayers: (args.sample_all_layers as boolean) ?? true,
-      selectionType: normalizeSelectionType(args.selection_type),
-    }),
-    successText: (_result, args) =>
-      `Select Sky (${normalizeSelectionType(args.selection_type)}) complete`,
-  });
+      selectionType,
+    });
+    const result = (await runScript(connection, script, SELECT_SKY_TIMEOUT_MS)) as Record<
+      string,
+      unknown
+    >;
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: describeSelectionFacts(`Select Sky (${selectionType})`, selectionInfoOf(result)),
+        },
+      ],
+      structuredContent: result,
+    };
+  } catch (error) {
+    return toolErrorResult('Error running Select Sky', error);
+  }
 }
 
 // ---------- Consolidated dispatchers (Phase 1, 2026-06-20) ----------
@@ -1193,6 +1221,8 @@ async function select(
       return selectColorPreset(connection, snippetClient, 'out_of_gamut', rest);
     case 'polygon':
       return selectPolygon(connection, snippetClient, rest);
+    case 'focus_area':
+      return selectFocusArea(connection, snippetClient, rest);
     default:
       return unknownDiscriminator('select mode', mode, SELECT_MODES);
   }
@@ -1278,6 +1308,63 @@ export function normalizeSelectionType(raw: unknown): 'replace' | 'add' | 'subtr
   return (SELECTION_TYPE_ENUM as readonly string[]).includes(v)
     ? (v as 'replace' | 'add' | 'subtract' | 'intersect')
     : 'replace';
+}
+
+// The selection-facts shape getSelectionInfo() (go-core) computes — see
+// selectionInfoFragment for the full field list. `bounds`/`area_percent` are
+// absent when has_selection is false, and also on the has_selection:true
+// error path (fragments_context.go's histogram try/catch: `{ has_selection:
+// true, error: '...' }` when the channel-store/histogram step itself fails).
+// Only the fields this file's text formatting needs are named; the rest ride
+// along untyped.
+interface SelectionFacts {
+  has_selection: boolean;
+  bounds?: { left: number; top: number; right: number; bottom: number };
+  area_percent?: number;
+  error?: string;
+  [key: string]: unknown;
+}
+
+// The read ps_inspect(what='selection_info') performs. Used ONLY by
+// getSelectionInfoHandler below — the AI selection tools (selectSubject /
+// selectSky / selectFocusArea) must NOT call this: their own snippet already
+// embeds the identical getSelectionInfo() computation in the same script
+// execution, and re-running it here would pay its doc.channels.add() +
+// full-canvas-histogram cost a second time for an answer that can't have
+// changed (see selectionInfoOf above).
+async function readSelectionInfo(
+  connection: PhotoshopConnection,
+  snippetClient: SnippetClient
+): Promise<SelectionFacts> {
+  const script = await snippetClient.build('getSelectionState');
+  return (await runScript(connection, script)) as SelectionFacts;
+}
+
+// Bounds/coverage summary shared by the AI selection tools (ps_select_subject,
+// ps_select_sky, ps_select mode=focus_area). Three outcomes, told apart
+// explicitly rather than defaulted into one another:
+//  - info missing or has_selection not a boolean → facts could not be read at
+//    all (a malformed/absent selection_info is UNKNOWN, never reported as
+//    "empty" — an unreadable result is not evidence there is no selection).
+//  - has_selection: false → genuinely empty.
+//  - has_selection: true with no bounds → a selection exists but
+//    getSelectionInfo()'s own histogram step failed to measure it
+//    (fragments_context.go's `{ has_selection: true, error: ... }` path).
+//  - has_selection: true with bounds → the normal case.
+function describeSelectionFacts(label: string, info: SelectionFacts | undefined): string {
+  if (!info || typeof info.has_selection !== 'boolean') {
+    return `${label} complete — selection facts unknown (the result carried no readable selection_info).`;
+  }
+  if (!info.has_selection) {
+    return `${label} completed but the resulting selection is empty.`;
+  }
+  if (!info.bounds) {
+    const reason = typeof info.error === 'string' ? ` (${info.error})` : '';
+    return `${label} complete — a selection exists but its bounds/coverage could not be measured${reason}.`;
+  }
+  const b = info.bounds;
+  const pct = (info.area_percent ?? 0).toFixed(1);
+  return `${label} complete — selection (${b.left}, ${b.top}) to (${b.right}, ${b.bottom}), ${pct}% of canvas.`;
 }
 
 function describeMaskOutcome(result: {
@@ -1756,8 +1843,7 @@ export async function getSelectionInfoHandler(
   snippetClient: SnippetClient
 ): Promise<ToolResult> {
   try {
-    const script = await snippetClient.build('getSelectionState');
-    const result = (await runScript(connection, script)) as {
+    const result = (await readSelectionInfo(connection, snippetClient)) as {
       has_selection: boolean;
       area_percent?: number;
       pixel_count?: number;

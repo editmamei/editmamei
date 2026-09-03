@@ -45,7 +45,7 @@ export const SELECT_SUBJECT_TIMEOUT_MS = 120_000;
 export const SELECT_SKY_TIMEOUT_MS = 120_000;
 
 /**
- * `ps_select_focus_area` (Focus Area). Measured 3.4s on a 4000x6000 frame,
+ * `ps_select` mode=focus_area (Focus Area). Measured 3.4s on a 4000x6000 frame,
  * 2026-08-15; the ceiling matches the other native-AI selections because the
  * first call in a session pays a one-off model load.
  */
