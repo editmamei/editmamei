@@ -41,6 +41,7 @@ import { createVectorMaskTools } from '../../tools/vector-mask-tools.js';
 import { createChannelComposeTools } from '../../tools/channel-compose-tools.js';
 import { createShapeTools } from '../../tools/shape-tools.js';
 import { createSkyTools } from '../../tools/sky-tools.js';
+import { createSequenceTools } from '../../tools/sequence-tools.js';
 
 // CE-tier factories; each takes (connection, snippetClient). Exported so the
 // leak-guard test (tests/integration/readme-leak-guard.test.ts) can derive
@@ -127,6 +128,11 @@ export const ceModule: EditmameiModule = {
       // so subject can refine through the Pro select_subject_instance (Sensei)
       // when entitled, else CE fallback.
       ...createSceneTools(connection, snippet, { invokeTool: host.invokeTool }),
+      // ps_sequence — runs an ordered list of already-registered tool calls
+      // through host.invokeTool (the cross-module broker), so it needs the
+      // same broker scene reading does; the generic (connection, snippet)
+      // factory shape the rest of ceFactories share can't supply it.
+      ...createSequenceTools(host.invokeTool),
     ].filter((def) => isToolAllowedInEdition(def.tool.name, EDITION));
     host.registerTools(defs);
   },

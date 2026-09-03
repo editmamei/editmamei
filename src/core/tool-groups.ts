@@ -147,8 +147,9 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   },
   automation: {
     id: 'automation',
-    label: 'Automation (Pro)',
-    purpose: 'Batch files, play recorded Actions, and the ExtendScript escape hatch (Pro).',
+    label: 'Automation',
+    purpose:
+      'Run an ordered sequence of already-registered tool calls in one round trip (community); batch files, play recorded Actions, and the ExtendScript escape hatch (Pro).',
   },
 };
 
@@ -283,7 +284,8 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_template_recall: 'templates',
   ps_template_delete: 'templates',
 
-  // automation (Pro)
+  // automation (ps_sequence is community-destined; the rest are Pro)
+  ps_sequence: 'automation',
   ps_list_actions: 'automation',
   ps_play_action: 'automation',
   ps_execute_script: 'automation',

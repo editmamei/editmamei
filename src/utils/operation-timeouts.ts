@@ -80,3 +80,16 @@ export const ANNOTATED_PREVIEW_TIMEOUT_MS = 90_000;
  * work. Matching the Sensei budgets keeps one number for "pixel-heavy PS op".
  */
 export const SCENE_CHANNEL_TIMEOUT_MS = 120_000;
+
+/**
+ * `ps_sequence` — the overall wall-clock budget for one sequence call, checked
+ * between steps. Each step already inherits its own tool's timeout (the
+ * budgets above); this bounds the SUM across up to 25 steps so a runaway
+ * sequence can't run indefinitely. Generous on purpose — firing it costs the
+ * caller the whole sequence, not just one slow step.
+ *
+ * Seam note: a per-tool budget table is landing on a separate branch. Once it
+ * merges, ps_sequence's per-step accounting should consult that table for a
+ * tighter running estimate instead of only checking the total after the fact.
+ */
+export const SEQUENCE_OVERALL_TIMEOUT_MS = 300_000;

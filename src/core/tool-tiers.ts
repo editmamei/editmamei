@@ -67,6 +67,12 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // module, stripped from CE.
   ps_batch: 'pro',
 
+  // sequence-tools — runs an ordered list of already-registered tool calls in
+  // one round trip via the kernel's invokeTool broker. Composes only tools the
+  // caller already has (unlike ps_execute_script) against the current
+  // document (unlike ps_batch's file fan-out). New; not yet verified live.
+  ps_sequence: 'dev',
+
   // adjustment-tools — bakes consolidated into ps_apply_adjustment
   ps_add_adjustment_layer: 'community',
   ps_apply_adjustment: 'community',
