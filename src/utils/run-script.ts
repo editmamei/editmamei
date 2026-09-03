@@ -44,19 +44,21 @@ const apiCache = new WeakMap<PhotoshopConnection, PhotoshopAPI>();
  * typically cast to `Record<string, unknown>` for `structuredContent`.
  *
  * Inside a tool dispatch (`tool-budget-context.ts`, set once per call by
- * `ToolRegistry.execute`), this script's own timeout is capped at however
- * much of the call's DEADLINE remains, so a handler that runs several
- * scripts spends its budget once across all of them rather than getting it
- * fresh per script. With no explicit `timeoutMs`, a script gets the FULL
- * remaining deadline (not the platform's flat default) — a tool whose whole
- * budget is one big script must get that whole budget for it, not an extra
- * 30s ceiling layered on top that would silently undercut a much larger
- * configured budget. An explicit `timeoutMs` is still honored in full
- * whenever the deadline has room for it; it only gets shortened when the
- * deadline is closer than the request. A timeout that fires is rethrown
- * naming the tool and the budget it exceeded, on top of the runner's own
- * message; a call that starts with no time left fails the same way without
- * ever reaching Photoshop.
+ * `ToolRegistry.execute`), a script with NO explicit `timeoutMs` is bounded
+ * by however much of the call's DEADLINE remains, so a handler that runs
+ * several such scripts spends its budget once across all of them rather
+ * than getting it fresh per script. An explicit `timeoutMs` ALWAYS wins,
+ * unchanged, in both directions — above the tool's configured budget as
+ * well as below it, and even when the deadline has already passed. That is
+ * deliberate: a caller passing its own timeout (an annotated preview
+ * needing more than its tool's typical budget, a post-timeout re-probe
+ * that must still run after the original call's deadline is spent) knows
+ * something the generic per-tool number doesn't, and the deadline exists to
+ * fill the gap for calls that DIDN'T make that choice, not to overrule the
+ * ones that did. A timeout that fires is rethrown naming the tool and the
+ * bound that fired, on top of the runner's own message; a deadline-bound
+ * call that starts with no time left fails the same way without ever
+ * reaching Photoshop.
  */
 export async function runScript(
   connection: PhotoshopConnection,
@@ -72,14 +74,14 @@ export async function runScript(
 
   const budget = currentToolBudget();
   let effectiveTimeoutMs = timeoutMs;
-  if (budget) {
+  if (timeoutMs === undefined && budget) {
     const remaining = budget.deadline - Date.now();
     if (remaining <= 0) {
       throw new Error(
         `Tool '${budget.toolName}' exceeded its ${budget.budgetMs}ms budget before this script could run.`
       );
     }
-    effectiveTimeoutMs = timeoutMs === undefined ? remaining : Math.min(timeoutMs, remaining);
+    effectiveTimeoutMs = remaining;
   }
 
   try {

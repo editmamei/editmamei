@@ -135,35 +135,32 @@ export const SEQUENCE_OVERALL_TIMEOUT_MS = 300_000;
  * term exists specifically to keep the budget at or above every duration
  * already observed for that tool, not just its percentile.
  *
- * A community/dev tool absent from this table is on the `TOOLS_WITHOUT_A_BUDGET`
- * allowlist below (fewer than 10 measured calls in every row it maps to —
- * too little signal to derive a number from) and falls back to
- * `DEFAULT_SCRIPT_TIMEOUT_MS`. `getToolTimeoutMs()`'s own completeness is
+ * This table lists Community tools. A Community tool absent from it is on
+ * the `TOOLS_WITHOUT_A_BUDGET` allowlist below (fewer than 10 measured
+ * calls in every row it maps to — too little signal to derive a number
+ * from) and falls back to `DEFAULT_SCRIPT_TIMEOUT_MS`, exactly like a tool
+ * this table has never heard of. `getToolTimeoutMs()`'s own completeness is
  * pinned by `tests/integration/tool-timeout-budgets.test.ts`.
  *
- * Pro-tier tools are deliberately absent from BOTH this table and the
- * allowlist, with no exception — not even the one pre-existing override
- * (`ps_apply_camera_raw`) that would cost nothing to include. This file
- * ships in the CE bundle, and an object key compiles to a plain, unquoted
- * property name — invisible to a leak-guard that scans compiled output for
- * quoted Pro tool name literals, but just as readable to a person as a
- * quoted string would be. A Pro tool's own handler (in the private repo)
- * is responsible for passing its own explicit `timeoutMs` at its own
- * `runScript` call sites when it needs more than the shared default, the
- * same way the community overrides above already do.
+ * A tool that needs a bigger budget than whatever this table (or the
+ * default) resolves to isn't stuck with it: its own handler passes its own
+ * explicit `timeoutMs` at its own `runScript` call site instead, which
+ * always wins — see `run-script.ts`. The overrides above this table already
+ * do exactly that.
  */
 export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   ps_open_document: OPEN_DOCUMENT_TIMEOUT_MS,
   ps_select_subject: SELECT_SUBJECT_TIMEOUT_MS,
   ps_select_sky: SELECT_SKY_TIMEOUT_MS,
-  ps_select_focus_area: SELECT_FOCUS_AREA_TIMEOUT_MS,
   ps_replace_sky: SKY_REPLACEMENT_TIMEOUT_MS,
 
-  // Held at the shared default deliberately: measured p99 (~18.6s, doubled
-  // would clear 30s) would otherwise raise this, but ps_ping already has a
-  // known first-impression cost when Photoshop is slow to answer, and this
-  // is the one tool where a caller is actively waiting to find out if
-  // Photoshop is there at all.
+  // DELIBERATE EXCEPTION to the derivation rule above: measured max_clean
+  // (33893ms, with 2 calls censored at the old ceiling) would put this well
+  // over 30s under the same formula every other row uses. Held at the
+  // shared default anyway — ps_ping is the tool a caller reaches for
+  // specifically to find out whether Photoshop is there at all, and a
+  // broken install's first impression should be an early, clear failure,
+  // not a long hang before the same failure.
   ps_ping: 30_000,
 
   // Genuinely long — pixel-heavy full-canvas reads, well above the shared default.
@@ -180,11 +177,9 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   ps_detect: 19_000,
   ps_get_preview: 17_000,
   ps_resize_image: 16_000,
-  ps_stroke_face_contour: 15_000,
   ps_get_selection_preview: 14_000,
   ps_undo: 12_000,
   ps_export: 9_000,
-  ps_apply_brush_stroke: 9_000,
   ps_path: 10_000,
   ps_crop_document: 10_000,
   ps_inspect: 7_000,
@@ -233,9 +228,9 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
 };
 
 /**
- * Community/dev tools with no `TOOL_TIMEOUT_BUDGETS_MS` entry — every row
- * they map to had fewer than 10 measured calls, too little signal to derive
- * a number from — mapped to why the shared default is the deliberate choice
+ * Community tools with no `TOOL_TIMEOUT_BUDGETS_MS` entry — every row they
+ * map to had fewer than 10 measured calls, too little signal to derive a
+ * number from — mapped to why the shared default is the deliberate choice
  * here rather than an oversight. `getToolTimeoutMs()` falls back to
  * `DEFAULT_SCRIPT_TIMEOUT_MS` for these exactly as it does for an
  * unrecognized name.
@@ -243,7 +238,6 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
 export const TOOLS_WITHOUT_A_BUDGET: Record<string, string> = {
   ps_report_problem: 'n=3 measured calls',
   ps_calculations: 'n=8 measured calls',
-  ps_portrait_touchup: 'n=9 measured calls',
 };
 
 /**
@@ -259,11 +253,16 @@ export const TOOLS_WITHOUT_A_BUDGET: Record<string, string> = {
  * scales by `value / DEFAULT_SCRIPT_TIMEOUT_MS` — a tool with no table entry
  * gets exactly this value; a tool with a derived budget keeps its
  * proportion relative to the others instead of collapsing to one flat
- * number. `getToolTimeoutMs()` clamps its RESULT to `SCRIPT_TIMEOUT_FLOOR_MS`
- * separately, so a small value here can't push a tool below the floor. A
- * malformed value (not a positive number) is ignored with a warning rather
- * than silently taken as 1x or crashing the process.
+ * number. The scale is capped at 10x (documented alongside the variable
+ * itself — see docs/installation.md) so a typo'd extra zero doesn't turn every timeout in
+ * the process into a multi-hour hang; `getToolTimeoutMs()` clamps its
+ * RESULT to `SCRIPT_TIMEOUT_FLOOR_MS` separately, so a small value here
+ * can't push a tool below the floor either. A malformed value (not a
+ * positive number) is ignored with a warning rather than silently taken as
+ * 1x or crashing the process.
  */
+const MAX_SCRIPT_TIMEOUT_SCALE = 10;
+
 function resolveScriptTimeoutScale(): number {
   const raw = process.env.EDITMAMEI_SCRIPT_TIMEOUT_MS;
   if (!raw) return 1;
@@ -272,7 +271,7 @@ function resolveScriptTimeoutScale(): number {
     logger.warn(`EDITMAMEI_SCRIPT_TIMEOUT_MS="${raw}" is not a positive number — ignoring it.`);
     return 1;
   }
-  return n / DEFAULT_SCRIPT_TIMEOUT_MS;
+  return Math.min(n / DEFAULT_SCRIPT_TIMEOUT_MS, MAX_SCRIPT_TIMEOUT_SCALE);
 }
 
 const SCRIPT_TIMEOUT_SCALE = resolveScriptTimeoutScale();

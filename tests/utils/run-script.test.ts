@@ -90,14 +90,41 @@ describe('runScript — deadline fallback and timeout enrichment', () => {
     expect(conn.lastTimeout()).toBe(999);
   });
 
-  it('clamps an explicit timeoutMs down to the remaining deadline when the deadline is closer', async () => {
+  it('an explicit timeoutMs ABOVE the tool budget still wins, unclamped — annotated-preview shape', async () => {
+    // Mirrors ps_get_preview (17s budget) passing ANNOTATED_PREVIEW_TIMEOUT_MS
+    // (90s) for an annotated call: the explicit request is what the caller
+    // knows it needs, and it must not be silently cut down to the tool's
+    // typical-case budget.
     const conn = makeConnection();
-    // budgetMs is smaller than the explicit request, so the deadline wins.
+    await runWithToolBudget(budgetContextFor('ps_get_preview', 17_000), () =>
+      runScript(conn.asConnection(), 'return 1;', 90_000)
+    );
+    expect(conn.lastTimeout()).toBe(90_000);
+  });
+
+  it('an explicit timeoutMs still wins even when the deadline is much tighter than it', async () => {
+    const conn = makeConnection();
+    // budgetMs is far smaller than the explicit request; the request must
+    // still be honored in full, not clamped down to the ~500ms remaining.
     await runWithToolBudget(budgetContextFor('ps_fake_tool', 500), () =>
       runScript(conn.asConnection(), 'return 1;', 999_000)
     );
-    expect(conn.lastTimeout()).toBeLessThanOrEqual(500);
-    expect(conn.lastTimeout()).toBeGreaterThan(0);
+    expect(conn.lastTimeout()).toBe(999_000);
+  });
+
+  it('an explicit timeoutMs escapes an ALREADY-EXHAUSTED deadline — the post-timeout re-probe shape', async () => {
+    // Mirrors document-tools.ts's reprobeOpenDocument: it fires from the
+    // CATCH of a runScript call whose deadline (ps_open_document's own 120s
+    // budget) has already been fully consumed by the failed attempt, and
+    // must still run its own OPEN_DOCUMENT_REPROBE_TIMEOUT_MS — not be
+    // refused before it ever reaches Photoshop.
+    const conn = makeConnection();
+    const exhausted = { toolName: 'ps_open_document', budgetMs: 120_000, deadline: Date.now() - 1 };
+    await runWithToolBudget(exhausted, () =>
+      runScript(conn.asConnection(), 'probe script', 10_000)
+    );
+    expect(conn.lastTimeout()).toBe(10_000);
+    expect(conn.executions).toHaveLength(1);
   });
 
   it('passes undefined (the platform default) with no enclosing budget and no override', async () => {

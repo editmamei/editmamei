@@ -4,11 +4,20 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  * Threads one MCP tool call's ABSOLUTE deadline to every script that call's
  * handler runs, however many, without changing a single handler's signature.
  *
- * The deadline — not a per-script timeout — is what bounds the whole call: a
- * tool that runs several scripts must finish all of them within its own
- * budget, not get that budget fresh for each one. `runScript()` derives each
- * script's own timeout from however much of the deadline remains when that
- * particular script starts (see its doc comment).
+ * The deadline — not a per-script timeout — is what bounds a script that
+ * doesn't specify its own: a tool that runs several such scripts must
+ * finish all of them within its own budget, not get that budget fresh for
+ * each one. An explicit `timeoutMs` a caller passes to `runScript()` always
+ * wins over this deadline instead, in both directions — see its doc comment
+ * for why.
+ *
+ * The deadline counts ALL elapsed wall-clock time from dispatch, including
+ * time a script spends queued behind an earlier one on the shared
+ * `ScriptQueue` — there is no separate carve-out for queue wait. (The
+ * per-task WATCHDOG inside `ScriptQueue` is different: it is armed only at
+ * exec start, specifically so queue wait doesn't trip THAT timer early. The
+ * deadline here is the caller-facing total-time contract; the watchdog is
+ * an internal backstop against a single script hanging once it starts.)
  *
  * `ToolRegistry.execute()` sets this once per dispatch, wrapping the handler
  * invocation; `runScript()` reads it as the fallback for a call that didn't
