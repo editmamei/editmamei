@@ -144,10 +144,11 @@ describe('TOOL_TIERS classification table', () => {
     expect(tierOf('ps_replace_sky')).toBe('community');
   });
 
-  // Parked deliberately: it needs aiming precision no tier can supply yet, and
-  // it folds into ps_select as mode=focus_area whenever it does promote.
-  it('keeps ps_select_focus_area at dev tier', () => {
-    expect(tierOf('ps_select_focus_area')).toBe('dev');
+  // Folded into ps_select as mode=focus_area — no standalone tool exists for
+  // the old name, so no tier or group row should either.
+  it('has no tier or group entry for the retired ps_select_focus_area', () => {
+    expect('ps_select_focus_area' in TOOL_TIERS).toBe(false);
+    expect('ps_select_focus_area' in TOOL_GROUPS).toBe(false);
   });
 });
 

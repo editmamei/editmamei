@@ -18,7 +18,8 @@ import { FakeDetectionClient, CANNED, EXPORT_RESULT } from '../fixtures/fake-det
  * get_selection_info merged into ps_inspect(what='selection_info') in
  * Phase 1b (2026-06-26); get_selection_preview stays separate (image-returning
  * verification primitive). The Sensei selectors (select_subject / select_sky) were
- * are community tier and live in createSelectionTools. Per-mode/op
+ * are community tier and live in createSelectionTools. select_focus_area folded
+ * into ps_select(mode='focus_area') — no standalone tool remains. Per-mode/op
  * handlers are unchanged; these tests pin the (name, params) forwarded to the
  * SnippetClient, reached via the discriminator.
  */
@@ -49,8 +50,15 @@ describe('createSelectionTools', () => {
       'ps_selection_channel',
       'ps_select_subject',
       'ps_select_sky',
-      'ps_select_focus_area',
     ]);
+  });
+
+  // ps_select_focus_area folded into ps_select as mode=focus_area — a
+  // standalone dev-tier tool never appeared in a shipped edition, so there is
+  // no alias and no deprecation window.
+  it('ps_select_focus_area is no longer a registered tool', () => {
+    const tools = createSelectionTools(conn.asConnection(), snippetClient);
+    expect(tools.map((t) => t.tool.name)).not.toContain('ps_select_focus_area');
   });
 
   it('the re-tiered Sensei pair advertises idempotent + Sensei title', () => {
@@ -66,7 +74,7 @@ describe('createSelectionTools', () => {
     }
   });
 
-  it('the select mode field enumerates all thirteen modes', () => {
+  it('the select mode field enumerates all fourteen modes', () => {
     const tools = createSelectionTools(conn.asConnection(), snippetClient);
     const tool = tools.find((t) => t.tool.name === 'ps_select')!;
     const schema = tool.tool.inputSchema as unknown as {
@@ -86,6 +94,7 @@ describe('createSelectionTools', () => {
       'skin_tones',
       'out_of_gamut',
       'polygon',
+      'focus_area',
     ]);
   });
 
@@ -736,11 +745,61 @@ describe('createSelectionTools', () => {
   });
 
   // ---------- Sensei selectors (community tier) ----------
+  // selectSubject/selectSky/focus_area each issue TWO script executions: the
+  // selection op itself, then a getSelectionState read (the same path
+  // ps_inspect(what='selection_info') uses) to report bounds/coverage without
+  // forcing the caller into a second MCP round trip. Dispatch/param
+  // assertions below read builds/executions by INDEX (not the "last" helpers)
+  // because of that second call.
 
   it('select_subject dispatches the selectSubject snippet via the SnippetClient', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', {});
-    expect(snippetClient.lastBuild().name).toBe('selectSubject');
+    expect(snippetClient.allBuilds()[0].name).toBe('selectSubject');
+  });
+
+  it('select_subject reads selection facts back after the op completes, via the same path ps_inspect uses', async () => {
+    const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_select_subject', {});
+    const builds = snippetClient.allBuilds();
+    expect(builds).toHaveLength(2);
+    expect(builds[1].name).toBe('getSelectionState');
+  });
+
+  it('select_subject result carries the bounds and coverage read back after the op', async () => {
+    const infoConn = makeConnection({
+      resultFor: (script: string) =>
+        script.includes('getSelectionState')
+          ? {
+              has_selection: true,
+              bounds: { left: 10, top: 20, right: 110, bottom: 220 },
+              area_percent: 42.5,
+            }
+          : { selected: true, method: 'subject' },
+    });
+    const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
+    const result = await callTool(tools, 'ps_select_subject', {});
+    const structured = result.structuredContent as {
+      selection_info?: { has_selection: boolean; area_percent?: number };
+    };
+    expect(structured.selection_info?.has_selection).toBe(true);
+    expect(structured.selection_info?.area_percent).toBe(42.5);
+    expect(textOf(result)).toContain('(10, 20) to (110, 220)');
+    expect(textOf(result)).toContain('42.5%');
+  });
+
+  it('select_subject reports an empty result explicitly, not as a completed selection with no area', async () => {
+    const infoConn = makeConnection({
+      resultFor: (script: string) =>
+        script.includes('getSelectionState')
+          ? { has_selection: false }
+          : { selected: true, method: 'subject' },
+    });
+    const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
+    const result = await callTool(tools, 'ps_select_subject', {});
+    const structured = result.structuredContent as { selection_info?: { has_selection: boolean } };
+    expect(structured.selection_info?.has_selection).toBe(false);
+    expect(textOf(result)).toMatch(/empty/i);
   });
 
   // Phase 3c — pre-existing inline 120000 literal, now centralized in
@@ -748,25 +807,25 @@ describe('createSelectionTools', () => {
   it('select_subject forwards a 120s timeout to the executor', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', {});
-    expect(conn.lastTimeout()).toBe(120000);
+    expect(conn.executions[0].timeout).toBe(120000);
   });
 
   it('select_sky forwards a 120s timeout to the executor', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_sky', {});
-    expect(conn.lastTimeout()).toBe(120000);
+    expect(conn.executions[0].timeout).toBe(120000);
   });
 
   it('select_subject defaults sample_all_layers to TRUE (PS 2026 active-layer-only workaround)', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', {});
-    expect(snippetClient.lastBuild().params.sampleAllLayers).toBe(true);
+    expect(snippetClient.allBuilds()[0].params.sampleAllLayers).toBe(true);
   });
 
   it('select_subject with selection_type=subtract forwards the right token', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', { selection_type: 'subtract' });
-    expect(snippetClient.lastBuild().params.selectionType).toBe('subtract');
+    expect(snippetClient.allBuilds()[0].params.selectionType).toBe('subtract');
   });
 
   // Migrated from the deleted selection-tools-pro.test.ts — schema-validation paths
@@ -774,13 +833,13 @@ describe('createSelectionTools', () => {
   it('select_subject honors sample_all_layers=false', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', { sample_all_layers: false });
-    expect(snippetClient.lastBuild().params.sampleAllLayers).toBe(false);
+    expect(snippetClient.allBuilds()[0].params.sampleAllLayers).toBe(false);
   });
 
   it('select_subject accepts "add" selection_type', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_subject', { selection_type: 'add' });
-    expect(snippetClient.lastBuild().params.selectionType).toBe('add');
+    expect(snippetClient.allBuilds()[0].params.selectionType).toBe('add');
   });
 
   it('select_subject rejects an out-of-enum selection_type', async () => {
@@ -792,7 +851,43 @@ describe('createSelectionTools', () => {
   it('select_sky dispatches the selectSky snippet via the SnippetClient', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_select_sky', {});
-    expect(snippetClient.lastBuild().name).toBe('selectSky');
+    expect(snippetClient.allBuilds()[0].name).toBe('selectSky');
+  });
+
+  it('select_sky result carries the bounds and coverage read back after the op', async () => {
+    const infoConn = makeConnection({
+      resultFor: (script: string) =>
+        script.includes('getSelectionState')
+          ? {
+              has_selection: true,
+              bounds: { left: 5, top: 400, right: 800, bottom: 600 },
+              area_percent: 18.2,
+            }
+          : { selected: true, method: 'sky' },
+    });
+    const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
+    const result = await callTool(tools, 'ps_select_sky', {});
+    const structured = result.structuredContent as {
+      selection_info?: { has_selection: boolean; area_percent?: number };
+    };
+    expect(structured.selection_info?.has_selection).toBe(true);
+    expect(structured.selection_info?.area_percent).toBe(18.2);
+    expect(textOf(result)).toContain('(5, 400) to (800, 600)');
+    expect(textOf(result)).toContain('18.2%');
+  });
+
+  it('select_sky reports an empty result explicitly, not as a completed selection with no area', async () => {
+    const infoConn = makeConnection({
+      resultFor: (script: string) =>
+        script.includes('getSelectionState')
+          ? { has_selection: false }
+          : { selected: true, method: 'sky' },
+    });
+    const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
+    const result = await callTool(tools, 'ps_select_sky', {});
+    const structured = result.structuredContent as { selection_info?: { has_selection: boolean } };
+    expect(structured.selection_info?.has_selection).toBe(false);
+    expect(textOf(result)).toMatch(/empty/i);
   });
 
   it('select_sky surfaces connection failures as an error result', async () => {
@@ -803,55 +898,95 @@ describe('createSelectionTools', () => {
     expect(textOf(result)).toMatch(/parameters not valid/);
   });
 
-  // ---------- select_focus_area (dev tier, 2026-08-15) ----------
-  // Depth-of-field selection. Live-verified against PS 27.2.0 the same day:
-  // 12,344,844 px / 0 partial pixels at the defaults below.
+  // ---------- mode=focus_area (folded from the retired ps_select_focus_area) ----------
+  // Depth-of-field selection. Live-verified against PS 27.2.0: 12,344,844 px /
+  // 0 partial pixels at the defaults below.
 
-  it('select_focus_area dispatches the selectFocusArea snippet', async () => {
+  it('mode=focus_area dispatches the selectFocusArea snippet', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_select_focus_area', {});
-    expect(snippetClient.lastBuild().name).toBe('selectFocusArea');
+    await callTool(tools, 'ps_select', { mode: 'focus_area' });
+    expect(snippetClient.allBuilds()[0].name).toBe('selectFocusArea');
   });
 
-  it('select_focus_area forwards a 120s timeout to the executor', async () => {
+  it('mode=focus_area forwards a 120s timeout to the executor', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_select_focus_area', {});
-    expect(conn.lastTimeout()).toBe(120000);
+    await callTool(tools, 'ps_select', { mode: 'focus_area' });
+    expect(conn.executions[0].timeout).toBe(120000);
   });
 
-  it('select_focus_area defaults to the PS dialog radius and a hard edge', async () => {
+  it('mode=focus_area defaults to the PS dialog radius and a hard edge', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_select_focus_area', {});
-    const { params } = snippetClient.lastBuild();
+    await callTool(tools, 'ps_select', { mode: 'focus_area' });
+    const { params } = snippetClient.allBuilds()[0];
     expect(params.inFocusRadius).toBe(4.07);
     expect(params.softMask).toBe(false);
     expect(params.selectionType).toBe('replace');
   });
 
-  it('select_focus_area forwards in_focus_radius and soft_mask', async () => {
+  it('mode=focus_area forwards in_focus_radius and soft_mask', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_select_focus_area', { in_focus_radius: 12.5, soft_mask: true });
-    const { params } = snippetClient.lastBuild();
+    await callTool(tools, 'ps_select', {
+      mode: 'focus_area',
+      in_focus_radius: 12.5,
+      soft_mask: true,
+    });
+    const { params } = snippetClient.allBuilds()[0];
     expect(params.inFocusRadius).toBe(12.5);
     expect(params.softMask).toBe(true);
   });
 
-  it('select_focus_area combines via selection_type', async () => {
+  it('mode=focus_area combines via selection_type', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_select_focus_area', { selection_type: 'intersect' });
-    expect(snippetClient.lastBuild().params.selectionType).toBe('intersect');
+    await callTool(tools, 'ps_select', { mode: 'focus_area', selection_type: 'intersect' });
+    expect(snippetClient.allBuilds()[0].params.selectionType).toBe('intersect');
   });
 
-  it('select_focus_area rejects an out-of-range in_focus_radius', async () => {
+  it('mode=focus_area rejects an out-of-range in_focus_radius', async () => {
     const tools = createAllSelectionTools(conn.asConnection(), snippetClient);
-    const result = await callTool(tools, 'ps_select_focus_area', { in_focus_radius: 999 });
+    const result = await callTool(tools, 'ps_select', { mode: 'focus_area', in_focus_radius: 999 });
     expect(result.isError).toBe(true);
   });
 
-  it('select_focus_area surfaces connection failures as an error result', async () => {
+  it('mode=focus_area result carries the bounds and coverage read back after the op', async () => {
+    const infoConn = makeConnection({
+      resultFor: (script: string) =>
+        script.includes('getSelectionState')
+          ? {
+              has_selection: true,
+              bounds: { left: 0, top: 0, right: 400, bottom: 300 },
+              area_percent: 60,
+            }
+          : { selected: true, method: 'focus_area', whole_canvas_selected: false, warning: null },
+    });
+    const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
+    const result = await callTool(tools, 'ps_select', { mode: 'focus_area' });
+    const structured = result.structuredContent as {
+      selection_info?: { has_selection: boolean; area_percent?: number };
+    };
+    expect(structured.selection_info?.has_selection).toBe(true);
+    expect(structured.selection_info?.area_percent).toBe(60);
+    expect(textOf(result)).toContain('(0, 0) to (400, 300)');
+    expect(textOf(result)).toContain('60.0%');
+  });
+
+  it('mode=focus_area reports an empty result explicitly, not as a completed selection with no area', async () => {
+    const infoConn = makeConnection({
+      resultFor: (script: string) =>
+        script.includes('getSelectionState')
+          ? { has_selection: false }
+          : { selected: true, method: 'focus_area', whole_canvas_selected: false, warning: null },
+    });
+    const tools = createAllSelectionTools(infoConn.asConnection(), makeSnippetClient());
+    const result = await callTool(tools, 'ps_select', { mode: 'focus_area' });
+    const structured = result.structuredContent as { selection_info?: { has_selection: boolean } };
+    expect(structured.selection_info?.has_selection).toBe(false);
+    expect(textOf(result)).toMatch(/empty/i);
+  });
+
+  it('mode=focus_area surfaces connection failures as an error result', async () => {
     const errConn = makeConnection({ throwOnExecute: new Error('parameters not valid') });
     const tools = createSelectionTools(errConn.asConnection(), makeSnippetClient());
-    const result = await callTool(tools, 'ps_select_focus_area', {});
+    const result = await callTool(tools, 'ps_select', { mode: 'focus_area' });
     expect(result.isError).toBe(true);
     expect(textOf(result)).toMatch(/parameters not valid/);
   });
