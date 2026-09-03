@@ -295,8 +295,8 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
   // bounded to 40 chars (it's always a short fixed word/phrase like "filter
   // type" or "inspect target") but the VALUE is matched with `[^"]*` — not a
   // length count, so it terminates on the actual closing quote no matter how
-  // long an LLM's passed value is. An earlier version of this pattern bounded
-  // the value at 60 chars too, which only moved the same cliff from 30 to 60.
+  // long an LLM's passed value is. Any fixed count on the value would just
+  // relocate that cliff, so the value must never be length-bounded here.
   {
     errorClass: 'unknown_discriminator',
     pattern: /unknown [^"]{1,40}"[^"]*"\. Allowed: /i,

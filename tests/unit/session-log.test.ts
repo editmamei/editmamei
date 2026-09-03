@@ -424,9 +424,9 @@ describe('classifyError', () => {
     // A short kind/value pair still classifies the same way, not by luck of
     // fitting under invalid_argument's 30-char cap.
     expect(classifyError('Error: unknown op "x". Allowed: a, b.')).toBe('unknown_discriminator');
-    // A value longer than the OLD 60-char bound — the pattern matches the
-    // quoted value with `[^"]*`, not a length count, so it terminates on the
-    // real closing quote no matter how long an LLM's passed value is.
+    // A long value: the pattern matches the quoted value with `[^"]*`, not a
+    // length count, so it terminates on the real closing quote no matter how
+    // long an LLM's passed value is. A fixed bound here would reopen the gap.
     expect(
       classifyError(
         'Error: unknown filter type "' +
