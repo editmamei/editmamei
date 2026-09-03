@@ -12,6 +12,16 @@ import { waitForLaunchReady } from './launch-readiness.js';
 const execAsync = promisify(exec);
 
 /**
+ * Per-attempt cap for the launch readiness probe — a real script round trip
+ * (see `launch()`), short enough that a few failed attempts still fit inside
+ * `LAUNCH_READY_MAX_WAIT_MS`.
+ */
+const LAUNCH_PROBE_TIMEOUT_MS = 2_000;
+
+/** Hard cap on the pgrep check itself, so a wedged process table can't hang isRunning(). */
+const IS_RUNNING_EXEC_TIMEOUT_MS = 3_000;
+
+/**
  * Characters that cannot appear in an application name we compose into an
  * AppleScript string literal. Quote and backslash would terminate or escape the
  * literal; carriage return, newline and tab are all treated as statement
@@ -172,10 +182,13 @@ end timeout`;
 
   async isRunning(): Promise<boolean> {
     try {
-      const { stdout } = await execAsync('pgrep -f "Adobe Photoshop"');
+      const { stdout } = await execAsync('pgrep -f "Adobe Photoshop"', {
+        timeout: IS_RUNNING_EXEC_TIMEOUT_MS,
+      });
       return stdout.trim().length > 0;
     } catch {
-      // pgrep exits non-zero when nothing matches.
+      // pgrep exits non-zero when nothing matches, or the check itself
+      // exceeded its own timeout; both read as "cannot confirm".
       return false;
     }
   }
@@ -194,9 +207,22 @@ end timeout`;
         reject(new Error(`Could not launch Photoshop at ${executablePath}: ${error.message}`));
       });
 
-      void waitForLaunchReady(() => this.isRunning(), { isAborted: () => aborted }).then(() => {
-        if (!aborted) resolve();
-      });
+      // The probe is a real script round trip, not a process-existence
+      // check: Photoshop's process exists within milliseconds of spawning,
+      // long before AppleEvents are ready to accept a `do javascript` call,
+      // so isRunning() would report "up" while every real script still
+      // fails to attach. A rejecting attempt means "not ready yet", not
+      // failure.
+      const probe = (): Promise<boolean> =>
+        this.run("'pong';", LAUNCH_PROBE_TIMEOUT_MS)
+          .then(() => true)
+          .catch(() => false);
+
+      waitForLaunchReady(probe, { isAborted: () => aborted })
+        .catch(() => false) // a probe chain that somehow rejects must not leave this promise unsettled
+        .then(() => {
+          if (!aborted) resolve();
+        });
     });
   }
 }

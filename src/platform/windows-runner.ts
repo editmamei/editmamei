@@ -12,6 +12,16 @@ import { waitForLaunchReady } from './launch-readiness.js';
 const execAsync = promisify(exec);
 
 /**
+ * Per-attempt cap for the launch readiness probe — a real script round trip
+ * (see `launch()`), short enough that a few failed attempts still fit inside
+ * `LAUNCH_READY_MAX_WAIT_MS`.
+ */
+const LAUNCH_PROBE_TIMEOUT_MS = 2_000;
+
+/** Hard cap on the tasklist check itself, so a wedged process table can't hang isRunning(). */
+const IS_RUNNING_EXEC_TIMEOUT_MS = 3_000;
+
+/**
  * Drives Photoshop on Windows through COM.
  *
  * There is no direct COM binding in this process. Each call writes the script
@@ -111,10 +121,13 @@ End If
 
   async isRunning(): Promise<boolean> {
     try {
-      const { stdout } = await execAsync('tasklist /FI "IMAGENAME eq Photoshop.exe"');
+      const { stdout } = await execAsync('tasklist /FI "IMAGENAME eq Photoshop.exe"', {
+        timeout: IS_RUNNING_EXEC_TIMEOUT_MS,
+      });
       return stdout.toLowerCase().includes('photoshop.exe');
     } catch {
-      // tasklist is missing or refused to run; treat as "cannot confirm".
+      // tasklist is missing, refused to run, or exceeded its own timeout;
+      // treat as "cannot confirm".
       return false;
     }
   }
@@ -133,9 +146,21 @@ End If
         reject(new Error(`Could not launch Photoshop at ${executablePath}: ${error.message}`));
       });
 
-      void waitForLaunchReady(() => this.isRunning(), { isAborted: () => aborted }).then(() => {
-        if (!aborted) resolve();
-      });
+      // The probe is a real script round trip, not a process-existence
+      // check: Photoshop's process exists within milliseconds of spawning,
+      // long before COM is ready to accept a DoJavaScript call, so
+      // isRunning() would report "up" while every real script still fails
+      // to attach. A rejecting attempt means "not ready yet", not failure.
+      const probe = (): Promise<boolean> =>
+        this.run("'pong';", LAUNCH_PROBE_TIMEOUT_MS)
+          .then(() => true)
+          .catch(() => false);
+
+      waitForLaunchReady(probe, { isAborted: () => aborted })
+        .catch(() => false) // a probe chain that somehow rejects must not leave this promise unsettled
+        .then(() => {
+          if (!aborted) resolve();
+        });
     });
   }
 }

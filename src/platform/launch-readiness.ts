@@ -3,9 +3,13 @@
  * reports true — replacing a fixed post-launch sleep that was paid in full on
  * every cold start regardless of how quickly Photoshop actually came up.
  *
- * Capped at `maxWaitMs`, never shorter than the fixed sleep this replaces: if
- * Photoshop hasn't answered by then, the caller proceeds anyway exactly as
- * before, and the first script that follows is what actually proves it's up.
+ * Bounded by real elapsed time against `maxWaitMs`, not by an iteration
+ * count: the probe itself (a trivial script round trip — see the runners'
+ * `launch()`) can take non-trivial time on its own, especially while COM /
+ * AppleEvents aren't answering yet, so a count derived from `maxWaitMs /
+ * intervalMs` would let slow, repeatedly-failing attempts blow well past the
+ * intended cap. Tracking `now()` directly keeps the wall-clock budget honest
+ * regardless of how long each attempt takes.
  */
 
 const DEFAULT_POLL_INTERVAL_MS = 250;
@@ -20,6 +24,8 @@ export interface LaunchReadinessOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Checked before each probe; once true, the loop stops without polling further. */
   isAborted?: () => boolean;
+  /** Test seam: injectable clock. Defaults to Date.now. */
+  now?: () => number;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -29,8 +35,8 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
- * Probe `isReady` at `intervalMs` until it resolves true or `maxWaitMs`
- * elapses. Returns whether it ever reported ready.
+ * Probe `isReady` until it resolves true or `maxWaitMs` of real elapsed time
+ * (per `now`) passes. Returns whether it ever reported ready.
  */
 export async function waitForLaunchReady(
   isReady: () => Promise<boolean>,
@@ -40,12 +46,14 @@ export async function waitForLaunchReady(
   const maxWaitMs = options.maxWaitMs ?? LAUNCH_READY_MAX_WAIT_MS;
   const sleep = options.sleep ?? defaultSleep;
   const isAborted = options.isAborted ?? (() => false);
-  const attempts = Math.max(1, Math.ceil(maxWaitMs / intervalMs));
+  const now = options.now ?? Date.now;
+  const deadline = now() + maxWaitMs;
 
-  for (let i = 0; i < attempts; i++) {
+  while (now() < deadline) {
     if (isAborted()) return false;
     if (await isReady()) return true;
-    if (i < attempts - 1) await sleep(intervalMs);
+    if (now() >= deadline) break;
+    await sleep(intervalMs);
   }
   return false;
 }
