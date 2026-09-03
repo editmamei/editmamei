@@ -858,7 +858,10 @@ describe('createSelectionTools', () => {
 
   // ---------- get_selection_preview (kept) ----------
 
-  it('get_selection_preview returns both overlay + mask images when rendered', async () => {
+  /** A fake connection that renders the (fake) overlay + mask JPEGs to disk,
+   *  same as PS would, so getSelectionPreview's readFile calls succeed
+   *  regardless of which `image` the tool actually asks for. */
+  function makeRenderedPreviewConn(): FakePhotoshopConnection {
     const fakeJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
     const resultFor = ((script: string) => {
       const paths = Array.from(script.matchAll(/"([^"]+\.jpg)"/g))
@@ -883,11 +886,45 @@ describe('createSelectionTools', () => {
         },
       }));
     }) as unknown as (script: string) => unknown;
+    return makeConnection({ resultFor });
+  }
 
-    conn = makeConnection({ resultFor });
+  it('image defaults to overlay — one image is returned, not two', () => {
+    const tools = createSelectionTools(conn.asConnection(), snippetClient);
+    const preview = tools.find((t) => t.tool.name === 'ps_get_selection_preview');
+    const schema = preview?.tool.inputSchema as unknown as {
+      properties: { image: { enum: string[]; default: string } };
+    };
+    expect(schema.properties.image.enum).toEqual(['overlay', 'mask', 'both']);
+    expect(schema.properties.image.default).toBe('overlay');
+  });
+
+  it('get_selection_preview DEFAULTS to a single overlay image (no image param)', async () => {
+    conn = makeRenderedPreviewConn();
     snippetClient = makeSnippetClient();
     const tools = createSelectionTools(conn.asConnection(), snippetClient);
     const result = await callTool(tools, 'ps_get_selection_preview', {});
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toHaveLength(2);
+    expect(result.content[1]).toMatchObject({ type: 'image', mimeType: 'image/jpeg' });
+    expect(result.structuredContent).toMatchObject({ rendered: true });
+  });
+
+  it("get_selection_preview image:'mask' returns a single mask image", async () => {
+    conn = makeRenderedPreviewConn();
+    snippetClient = makeSnippetClient();
+    const tools = createSelectionTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_get_selection_preview', { image: 'mask' });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toHaveLength(2);
+    expect(result.content[1]).toMatchObject({ type: 'image', mimeType: 'image/jpeg' });
+  });
+
+  it("get_selection_preview image:'both' returns both overlay + mask images", async () => {
+    conn = makeRenderedPreviewConn();
+    snippetClient = makeSnippetClient();
+    const tools = createSelectionTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_get_selection_preview', { image: 'both' });
     expect(result.isError).toBeUndefined();
     expect(result.content).toHaveLength(3);
     expect(result.content[1]).toMatchObject({ type: 'image', mimeType: 'image/jpeg' });

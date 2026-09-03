@@ -166,9 +166,9 @@ const sceneSchema: JsonSchemaObject = {
   properties: {
     annotate: {
       type: 'boolean',
-      default: true,
+      default: false,
       description:
-        'Return an annotated preview with subject boxes (magenta), faces (cyan), and the horizon line (yellow) drawn so you can visually confirm the scene model.',
+        'Also return an annotated preview JPEG with subject boxes (magenta), faces (cyan), and the horizon line (yellow) drawn. Default false: the structured scene model returned by this call is already complete on its own — ask for the image only when you actually need to see the annotation drawn.',
     },
     refresh: {
       type: 'boolean',
@@ -263,7 +263,7 @@ async function scene(
 ): Promise<ToolResult> {
   try {
     const args = validateArgs(sceneSchema, rawArgs);
-    const annotate = (args.annotate as boolean) ?? true;
+    const annotate = (args.annotate as boolean) ?? false;
     const refresh = (args.refresh as boolean) ?? false;
     // Must match the schema default. Asserting the opposite here is harmless
     // only while validateArgs fills defaults in; deleting `default: false` from
@@ -750,7 +750,7 @@ export function createSceneTools(
       tool: {
         name: 'ps_read_scene',
         description:
-          'The full scene model — run this before a spatially-targeted edit, not the cheaper ps_detect: detected subjects (with the main one flagged) and faces in document pixels, a coarse sky/ground region map, the horizon line (y + placement + confidence), tonal zones (shadow/midtone/highlight bands + coverage), composition geometry (which thirds cell the subject sits in, balance, headroom), plus an annotated preview and the menu of selectable named regions. Built using LOCAL on-device vision + classical CV; the image never leaves the machine. Select regions by name with ps_select_by_reference instead of guessing a rectangle. Read-only: renders a throwaway duplicate. Perception is cached per document state, so repeated reads are cheap.',
+          'The full scene model — run this before a spatially-targeted edit, not the cheaper ps_detect: detected subjects (with the main one flagged) and faces in document pixels, a coarse sky/ground region map, the horizon line (y + placement + confidence), tonal zones (shadow/midtone/highlight bands + coverage), composition geometry (which thirds cell the subject sits in, balance, headroom), and the menu of selectable named regions. The structured model is complete on its own — pass `annotate:true` for an annotated preview JPEG when you actually need to see it drawn. Built using LOCAL on-device vision + classical CV; the image never leaves the machine. Select regions by name with ps_select_by_reference instead of guessing a rectangle. Read-only: renders a throwaway duplicate. Perception is cached per document state, so repeated reads are cheap.',
         inputSchema: sceneSchema,
         outputSchema: {
           type: 'object',
