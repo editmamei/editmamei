@@ -87,7 +87,8 @@ export interface SessionLogCallEntry {
   doc_layer_count_after?: number;
   target_was_copy?: boolean;
   background_promoted?: boolean;
-  // Error classification — null for successful calls:
+  // Error classification — omitted for successful calls; a failed call
+  // always carries a real token, never the empty string (see append()):
   error_class?: string | null;
   // True when tool + deep-equal args match the immediately preceding call line:
   retry_signal: boolean;
@@ -286,6 +287,17 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
     pattern: /\b(ENOENT|EBUSY|EACCES|EPERM|EMFILE|ENOSPC)\b/,
   },
   // ── Input errors ─────────────────────────────────────────────────────────
+  // `unknownDiscriminator()` (tool-helpers.ts) builds this exact shape for
+  // every consolidated dispatcher's unknown `type`/`op`/`mode` value: `unknown
+  // <kind> "<value>". Allowed: <list>.` Hoisted ahead of `invalid_argument`
+  // because that class's own `unknown [^:]{1,30}:` alternative only matches
+  // when the kind+value happen to fit in 30 chars before a colon — this
+  // message has no colon there at all (it closes on `". Allowed:`), so a long
+  // kind or value silently fell to `other` depending on string length alone.
+  {
+    errorClass: 'unknown_discriminator',
+    pattern: /unknown [\s\S]{1,60}"\. Allowed: /i,
+  },
   {
     errorClass: 'schema_validation',
     pattern:
@@ -314,6 +326,14 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
     errorClass: 'wrong_layer_kind',
     pattern: /pixel layer|text layer|smart object layer|layer kind|rasterize it first/i,
   },
+  // Camera Raw's mode preconditions (apply / adjust_existing) — three distinct
+  // messages, one shared noun phrase.
+  { errorClass: 'camera_raw_precondition', pattern: /camera raw smart filter/i },
+  // Photoshop's own message when a script reads doc.histogram while the
+  // active channel isn't the composite (see region-precompute.ts) — a
+  // visibility STATE, not a missing channel, so it sits apart from
+  // channel_not_found above rather than widening that pattern.
+  { errorClass: 'channel_not_visible', pattern: /histogram for visible channels/i },
   // ── PS-native outcomes ───────────────────────────────────────────────────
   { errorClass: 'ps_command_unavailable', pattern: /not currently available/i },
   { errorClass: 'timeout', pattern: /timed? ?out|Script execution timeout|exceeded.*bytes/i },
@@ -324,6 +344,12 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
   { errorClass: 'ai_selection_no_result', pattern: /returned no result/i },
   { errorClass: 'ps_general_error', pattern: /general photoshop error/i },
   { errorClass: 'ps_no_such_element', pattern: /no such element/i },
+  // ExtendScript's own ReferenceError shape for an undefined global (`JSON`
+  // inside a user script that assumes browser/Node JS, or a PS constant that
+  // doesn't exist on this version). Anchored to end-of-string and restricted
+  // to identifier characters so it can't fire on ordinary prose that happens
+  // to end differently, e.g. "...actual undefined (after 2 retries)".
+  { errorClass: 'extendscript_reference_error', pattern: /\b[A-Za-z_$][\w$]*\s+is undefined$/ },
   { errorClass: 'write_not_verified', pattern: /did not verify/i },
   // ── Empty cause / generic wrapper (keep last) ────────────────────────────
   { errorClass: 'ps_empty_error', pattern: /:\s*$/ },
@@ -731,7 +757,16 @@ export class SessionLog {
       /* structural surprises must never break telemetry */
     }
 
-    const errorClass = classifyError(entry.error);
+    // A failed call must always carry a class — `classifyError` alone can't
+    // promise that, because it only sees the error TEXT: a handler that
+    // reports failure with no text (e.g. an isError result with no text
+    // content block) gives it `undefined`, indistinguishable from the
+    // "no error at all" input a SUCCESSFUL call also passes. `entry.success`
+    // is the signal classifyError doesn't have, so the fallback lives here,
+    // not in the classifier. Without it, a genuine failure logs with no
+    // error_class field at all — the diagnostics bundle and any other reader
+    // then sees a failure with nothing to act on.
+    const errorClass = entry.success ? null : (classifyError(entry.error) ?? 'no_error_text');
 
     // Full result capture — only when EDITMAMEI_LOG_RESULTS=1 (off by default
     // for privacy). The captured copy goes through the SAME discipline as
