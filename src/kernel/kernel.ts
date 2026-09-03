@@ -108,6 +108,7 @@ export class Kernel {
       abi: KERNEL_ABI,
       registerTools: (defs) => this.registry.registerAll(defs),
       invokeTool: (name, args) => this.invokeTool(name, args),
+      hasTool: (name) => this.registry.get(name) !== undefined,
       connection: this.connection,
       executeScript: (innerBody, timeoutMs) => runScript(this.connection, innerBody, timeoutMs),
       snippet: this.snippetFor(manifest),

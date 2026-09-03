@@ -282,7 +282,8 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_template_recall: 'templates',
   ps_template_delete: 'templates',
 
-  // automation (Pro)
+  // automation — ps_sequence is dev-tier; the rest are pro (see tool-tiers.ts)
+  ps_sequence: 'automation',
   ps_list_actions: 'automation',
   ps_play_action: 'automation',
   ps_execute_script: 'automation',

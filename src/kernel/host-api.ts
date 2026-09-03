@@ -82,6 +82,19 @@ export interface HostApi {
    */
   invokeTool(name: string, args: Record<string, unknown>): Promise<ToolResult>;
 
+  /**
+   * Whether `name` is registered right now — answers "would
+   * invokeTool(name, …) dispatch?" without dispatching it. Backed directly by
+   * the registry, so the answer always matches the live tool surface rather
+   * than a fixed list computed some other way. Optional and additive: it does
+   * not raise `KERNEL_ABI`, because a module that calls it defensively
+   * (checking for the method before relying on it) works unchanged against an
+   * older host that lacks it. A module that comes to depend on it
+   * unconditionally should raise its manifest's required ABI when a future
+   * kernel bump promises it outright.
+   */
+  hasTool?(name: string): boolean;
+
   /** The live Photoshop connection (Windows COM / macOS AppleScript). */
   readonly connection: PhotoshopConnection;
 
