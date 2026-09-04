@@ -6,13 +6,11 @@ import { describe, expect, it } from 'vitest';
 import { isArchived } from '../helpers/archived-docs.ts';
 import { HYDRATED_OVERLAY } from '../helpers/overlay-tree.ts';
 
-/**
- * `isArchived` decides which docs the Node and macOS floor guards are allowed
- * to skip. Too loose and a live doc stops being checked — which is how a stale
- * floor ships. So the exemption gets pinned as precisely as the guards it feeds.
- */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+// `isArchived` decides which docs the Node and macOS floor guards are allowed
+// to skip. Too loose and a live doc stops being checked — which is how a stale
+// floor ships. So the exemption gets pinned as precisely as the guards it feeds.
 describe('isArchived', () => {
   it('exempts entries under archive/, with either separator', () => {
     // readdirSync(recursive) yields backslashes on Windows and slashes on POSIX;
@@ -22,15 +20,13 @@ describe('isArchived', () => {
     expect(isArchived('archive/2026/nested/deeper.md')).toBe(true);
   });
 
-  it('keeps every live doc, including ones merely mentioning archive', () => {
+  it('keeps every live doc', () => {
     expect(isArchived('installation.md')).toBe(false);
-    expect(isArchived('launch/product-description.md')).toBe(false);
+    expect(isArchived('getting-started.md')).toBe(false);
     expect(isArchived('engineering/tool-design.md')).toBe(false);
-    // The outbound copy that a stale macOS floor was actually found in.
-    expect(isArchived('launch/product-description.md')).toBe(false);
   });
 
-  it('matches a whole path segment, not a prefix', () => {
+  it('matches only the LEADING segment — not a prefix, not a nested archive', () => {
     // `archive` as a prefix of a longer name is a different directory, and a
     // startsWith() implementation would silently stop checking it.
     expect(isArchived('archived-notes/plan.md')).toBe(false);

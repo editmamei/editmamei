@@ -10,22 +10,25 @@
  * doc is not an install path, and holding it to today's floor would force a
  * choice between falsifying history and living with a permanently red suite.
  *
- * This only bites in the hydrated commercial tree, which is the one with an
+ * This only bites in the hydrated overlay, which is the tree that has a
  * `docs/archive/`. The published docs here have none — so the filter is inert
  * in this repo and load-bearing in the overlay.
  *
  * Deliberately narrow: it exempts the archive, NOT the rest of the overlay's
- * docs. Live private copy (the outbound product description, for one) states
- * floors a user acts on and stays covered — a stale macOS claim was found
- * there exactly this way.
+ * docs. Everything else there stays covered, which matters — a live doc is
+ * where a floor claim can still send someone at an install that will not run.
  */
 
 /**
- * True for a `readdirSync(..., { recursive: true })` entry under `archive/`.
- * Compares path segments rather than a prefix string so it behaves the same
- * with either separator, and so a sibling like `archived-notes/` is not caught
- * by an accidental prefix match.
+ * True for a `readdirSync(..., { recursive: true })` entry directly under a
+ * TOP-LEVEL `archive/`. The path is relative to the docs root being walked, so
+ * `archive/x.md` is exempt while `engineering/archive/x.md` is not.
+ *
+ * Compares the leading path segment rather than testing a prefix string, so it
+ * behaves the same with either separator and a sibling like `archived-notes/`
+ * cannot be caught by an accidental prefix match. Widening this to match any
+ * segment is the dangerous direction: it silently drops coverage.
  */
-export function isArchived(relativePath: string): boolean {
-  return relativePath.split(/[\\/]/)[0] === 'archive';
+export function isArchived(docsRelativePath: string): boolean {
+  return docsRelativePath.split(/[\\/]/)[0] === 'archive';
 }
