@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import { createSequenceTools, HISTORY_UNSAFE_TOOLS } from '@editmamei/tools/sequence-tools.ts';
 import { tierOf, TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
@@ -16,7 +16,11 @@ import {
   runWithToolBudget,
 } from '@editmamei/utils/tool-budget-context.ts';
 import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
-import type { ToolResult } from '@editmamei/core/tool-registry.ts';
+import {
+  ToolRegistry,
+  type ToolDefinition,
+  type ToolResult,
+} from '@editmamei/core/tool-registry.ts';
 
 // ps_sequence never talks to Photoshop itself — every step is dispatched
 // through an injected invokeTool and validated through an injected hasTool,
@@ -29,6 +33,14 @@ type HasTool = (name: string) => boolean;
 
 /** Accepts any tool name — the injected registry-lookup stand-in for tests that don't care about it. */
 const allow: HasTool = () => true;
+
+/** Minimal registrable tool, for the tests that need a real ToolRegistry dispatch. */
+function fakeTool(name: string, handler: ToolDefinition['handler']): ToolDefinition {
+  return {
+    tool: { name, description: `${name} description`, inputSchema: { type: 'object' } },
+    handler,
+  };
+}
 
 const ok = (text = 'ok'): ToolResult => ({ content: [{ type: 'text' as const, text }] });
 const fail = (text = 'boom'): ToolResult => ({
@@ -97,42 +109,91 @@ describe('createSequenceTools', () => {
     expect(cap).toBe(SEQUENCE_OVERALL_TIMEOUT_MS);
   });
 
-  it('rollback still has budget when the cap fires at the end of the dispatch deadline', async () => {
-    // The behavioural half of the ordering pinned above, and the regression
-    // that matters: performRollback's own invokeTool calls nest inside this
-    // dispatch, so they are bounded by whatever is left of its deadline. The
-    // context below is built as production reaches this point — the cap has
-    // just elapsed — so the only thing standing between rollback and a
-    // guaranteed `undo_failed` is the headroom. With cap == budget every
-    // reading here is <= 0.
-    const cap = sequenceStepCapMs();
-    const remainingAtEachCall: number[] = [];
-    const invoke: FakeInvoke = async (name) => {
-      const budget = currentToolBudget();
-      remainingAtEachCall.push(budget ? budget.deadline - Date.now() : Number.NaN);
-      return name === 'ps_inspect' ? historyResult(5, { stateName: 'S5' }) : ok();
+  it('refuses a step it cannot afford, and rolls back with real budget left', async () => {
+    // Driven through a REAL ToolRegistry so every step and every rollback call
+    // gets a genuine nested budget context — budgetContextFor caps an inner
+    // deadline at min(own, outer.remaining), which is the mechanism under test
+    // and the one a direct handler call cannot exercise at all.
+    //
+    // The outer context leaves far less than a step plus the reserve, standing
+    // in for a sequence whose earlier steps overran. The elapsed-time cap
+    // cannot see that; only comparing the step's own bound against what the
+    // deadline actually has left can.
+    const registry = new ToolRegistry();
+    const seenRemaining: number[] = [];
+
+    const record = (name: string) => {
+      const b = currentToolBudget();
+      seenRemaining.push(b ? b.deadline - Date.now() : Number.NaN);
+      return name;
     };
-
-    // Injected clock: startedAt on the first read, already past the cap on
-    // the next, so the loop takes the cap branch before running any step.
-    let tick = 0;
-    const now = () => (tick++ === 0 ? 0 : cap + 1);
-
-    const tools = createSequenceTools(invoke, allow, { now });
-    await runWithToolBudget(
-      budgetContextFor('ps_sequence', getToolTimeoutMs('ps_sequence'), Date.now() - cap),
-      () =>
-        callTool(tools, 'ps_sequence', {
-          on_error: 'rollback',
-          steps: [{ tool: 'ps_create_layer', args: { name: 'a' } }],
-        })
+    registry.register(
+      'ps_inspect',
+      fakeTool('ps_inspect', async () => {
+        record('ps_inspect');
+        return historyResult(5, { stateName: 'S5' });
+      })
+    );
+    registry.register(
+      'ps_undo',
+      fakeTool('ps_undo', async () => {
+        record('ps_undo');
+        return ok();
+      })
+    );
+    registry.register(
+      'ps_create_layer',
+      fakeTool('ps_create_layer', async () => {
+        record('ps_create_layer');
+        return ok();
+      })
     );
 
-    // The pre-sequence capture plus the rollback's own reads.
-    expect(remainingAtEachCall.length).toBeGreaterThan(1);
-    for (const remaining of remainingAtEachCall) {
-      expect(remaining).toBeGreaterThan(0);
+    const invoke: FakeInvoke = (name, args) => registry.execute(name, args) as Promise<ToolResult>;
+    const [seq] = createSequenceTools(invoke, allow);
+    registry.register('ps_sequence', seq);
+
+    const result = (await runWithToolBudget(budgetContextFor('outer', 1_500), () =>
+      registry.execute('ps_sequence', {
+        on_error: 'rollback',
+        steps: [{ tool: 'ps_create_layer', args: { name: 'a' } }],
+      })
+    )) as ToolResult & { structuredContent?: Record<string, unknown> };
+
+    // The step never ran: refused on affordability, not attempted and failed.
+    expect(seenRemaining.length).toBeGreaterThan(0);
+    expect(result.structuredContent?.ran_steps).toBe(0);
+    expect(result.structuredContent?.cap_exceeded).toBe(true);
+    // The point of the reserve: rollback did not merely get attempted, it
+    // VERIFIED. Under the old equal-budget arrangement its nested reads find
+    // zero remaining, runScript throws before reaching Photoshop, and this
+    // comes back false with reason undo_failed.
+    expect(result.structuredContent?.rolled_back).toBe(true);
+    for (const remaining of seenRemaining) expect(remaining).toBeGreaterThan(0);
+  });
+
+  it('keeps the cap strictly below the dispatch budget at every scale', async () => {
+    // The scale is resolved once at module load, so each value needs a fresh
+    // module. This is the regime a fixed subtraction broke: scaled far down,
+    // budget and cap both clamped to the floor and became EQUAL, which is
+    // exactly the starvation the reserve exists to prevent — and no test
+    // reached it, because the suite runs with the variable unset.
+    for (const env of ['400', '500', '5000', '30000', '300000']) {
+      vi.resetModules();
+      vi.stubEnv('EDITMAMEI_SCRIPT_TIMEOUT_MS', env);
+      const mod = await import('@editmamei/utils/operation-timeouts.ts');
+      const dispatch = mod.getToolTimeoutMs('ps_sequence');
+      const cap = mod.sequenceStepCapMs();
+      expect(
+        cap,
+        `EDITMAMEI_SCRIPT_TIMEOUT_MS=${env}: cap must stay under the budget`
+      ).toBeLessThan(dispatch);
+      expect(cap, `EDITMAMEI_SCRIPT_TIMEOUT_MS=${env}: cap must leave room to run`).toBeGreaterThan(
+        0
+      );
     }
+    vi.unstubAllEnvs();
+    vi.resetModules();
   });
 
   it('every HISTORY_UNSAFE_TOOLS entry names a real, currently classified tool', () => {
@@ -664,7 +725,7 @@ describe('createSequenceTools', () => {
     expect(sc.rolled_back).toBe(true);
     expect(sc.failed_step).toEqual({ index: 1, tool: 'tool_b' });
     // buildMessage's capExceeded-and-rolledBack arm names both the cap AND the rollback.
-    expect(textOf(res)).toMatch(/exceeded its overall time budget/);
+    expect(textOf(res)).toMatch(/ran out of time .* step budget was spent/);
     expect(textOf(res)).toMatch(/Document rolled back/);
   });
 
@@ -802,7 +863,7 @@ describe('createSequenceTools', () => {
     // The never-run synthetic cap entry must not count as a step that ran.
     expect(sc.ran_steps).toBe(1);
     expect(res.isError).toBe(true);
-    expect(textOf(res)).toMatch(/exceeded its overall time budget/);
+    expect(textOf(res)).toMatch(/ran out of time .* step budget was spent/);
   });
 
   it("a time-budget abort makes `final` the last REAL step's result, not the synthetic cap stub, and keeps its image", async () => {
@@ -831,7 +892,7 @@ describe('createSequenceTools', () => {
     // image, since it's the real last step, not the synthetic one.
     expect(sc.final.content).toEqual([{ type: 'text', text: 'tool_a ok' }, image]);
     // The cap notice still surfaces in the text and status fields.
-    expect(textOf(res)).toMatch(/exceeded its overall time budget/);
+    expect(textOf(res)).toMatch(/ran out of time .* step budget was spent/);
   });
 });
 
