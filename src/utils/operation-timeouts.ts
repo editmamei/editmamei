@@ -226,6 +226,23 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   ps_layer_mask: 5_000,
   ps_vector_mask: 5_000,
   ps_apply_image: 5_000,
+
+  // Not a measured budget, and not one script's: ps_sequence runs no script of
+  // its own beyond the history probes, and every step it dispatches nests
+  // inside this call — budgetContextFor caps an inner deadline at the outer's
+  // remaining time. So THIS number is the ceiling on the whole sequence, and it
+  // has to be the same one the tool documents and enforces between steps, or
+  // the two disagree and the smaller silently wins.
+  //
+  // It did. At the shared 30s default a long sequence starved: each step got
+  // whatever was left, and the step that crossed the line was killed
+  // mid-execution and reported as that TOOL failing ("timeout after 1026ms" on
+  // a blur needing ~1900ms) rather than as the sequence running out of time.
+  // Measured live 2026-09-04: 25 gaussian blurs on an 8000x8000 document died
+  // at step 18, 30058ms in. Worse than a wrong number, a killed script leaves
+  // Photoshop still executing (run-child.ts), which is the one state rollback
+  // must not compute an undo distance against.
+  ps_sequence: SEQUENCE_OVERALL_TIMEOUT_MS,
 };
 
 /**

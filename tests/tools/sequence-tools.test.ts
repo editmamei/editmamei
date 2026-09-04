@@ -3,6 +3,11 @@ import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv
 import { createSequenceTools, HISTORY_UNSAFE_TOOLS } from '@editmamei/tools/sequence-tools.ts';
 import { tierOf, TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
+import {
+  getToolTimeoutMs,
+  DEFAULT_SCRIPT_TIMEOUT_MS,
+  SEQUENCE_OVERALL_TIMEOUT_MS,
+} from '@editmamei/utils/operation-timeouts.ts';
 import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
 import type { ToolResult } from '@editmamei/core/tool-registry.ts';
 
@@ -51,9 +56,18 @@ describe('createSequenceTools', () => {
     expect(tools.map((t) => t.tool.name)).toEqual(['ps_sequence']);
   });
 
-  it('is registered at dev tier and appears in the automation group', () => {
-    expect(tierOf('ps_sequence')).toBe('dev');
+  it('is registered at community tier and appears in the automation group', () => {
+    expect(tierOf('ps_sequence')).toBe('community');
     expect(groupOf('ps_sequence')).toBe('automation');
+  });
+
+  it('its dispatch budget is the whole-sequence budget, not the shared default', () => {
+    // Every step nests inside this one call, so the dispatch deadline bounds
+    // all of them together. If it were the shared default a long sequence
+    // would starve its later steps and kill one mid-script, well before the
+    // between-steps budget this tool documents ever applied.
+    expect(getToolTimeoutMs('ps_sequence')).toBe(SEQUENCE_OVERALL_TIMEOUT_MS);
+    expect(getToolTimeoutMs('ps_sequence')).toBeGreaterThan(DEFAULT_SCRIPT_TIMEOUT_MS);
   });
 
   it('every HISTORY_UNSAFE_TOOLS entry names a real, currently classified tool', () => {

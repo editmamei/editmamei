@@ -455,6 +455,7 @@ describe('overview tool markdown leak guard', () => {
  */
 import { ceFactories } from '@editmamei/modules/ce/index.ts';
 import { createSceneTools } from '@editmamei/tools/scene-tools.ts';
+import { createSequenceTools } from '@editmamei/tools/sequence-tools.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { isToolAllowedInEdition, toolsInTier } from '@editmamei/core/tool-tiers.ts';
@@ -755,6 +756,12 @@ describe('CE tool surface leak guard', () => {
   // the production text variant, not the CE-fallback one.
   const sceneInvokeTool = async () => ({ content: [{ type: 'text' as const, text: 'unused' }] });
   const sceneCandidates = createSceneTools(conn, sc, { invokeTool: sceneInvokeTool });
+  // Same split, same reason: createSequenceTools takes the invokeTool broker
+  // and a hasTool predicate rather than (connection, snippetClient), so it is
+  // registered on its own line in register() and has to be mirrored here.
+  // hasTool answers yes — the description this scans must be the one a fully
+  // populated registry produces, not a degraded variant.
+  const sequenceCandidates = createSequenceTools(sceneInvokeTool, () => true);
 
   it('scans every factory ce/index.ts itself registers (secondary regression guard; see the name-set completeness check below for the primary one)', () => {
     // ce/index.ts has 28 CE-tier factories today. This is a floor, not an
@@ -770,7 +777,7 @@ describe('CE tool surface leak guard', () => {
   // factories should already register only community tools, but if a
   // dev-tier tool shipped without being moved out, the filter catches
   // it before scanning.
-  const ceTools = [...ceCandidates, ...sceneCandidates].filter((def) =>
+  const ceTools = [...ceCandidates, ...sceneCandidates, ...sequenceCandidates].filter((def) =>
     isToolAllowedInEdition(def.tool.name, 'community')
   );
 

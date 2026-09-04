@@ -75,7 +75,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**81 tools across 16 capability groups** (61 Community, 20 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
+**82 tools across 16 capability groups** (62 Community, 20 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
 
 | Group | Edition | Tools |
 | --- | --- | --- |
@@ -92,6 +92,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 | **Type** | Community | `text` |
 | **Perception** | Community | `detect` · `read_scene` · `select_by_reference` |
 | **AI selection** | Community | `select_subject` · `select_sky` · `replace_sky` |
+| **Automation** | Community | `sequence` |
 | **AI selection** | Pro | `select_subject_instance` · `select_object` |
 | **Filters** | Pro | `apply_camera_raw` |
 | **Layers (warp)** | Pro | `warp_layer` |

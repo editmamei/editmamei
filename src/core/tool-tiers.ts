@@ -69,8 +69,10 @@ export const TOOL_TIERS: Record<string, Tier> = {
 
   // sequence-tools — runs an ordered list of already-registered tool calls in
   // one round trip via the kernel's invokeTool broker, against the current
-  // document. New; not yet verified live.
-  ps_sequence: 'dev',
+  // document. Its budget in operation-timeouts.ts is the whole sequence's, not
+  // one script's: every step nests inside this call, so the dispatch deadline
+  // is the real ceiling on all of them together.
+  ps_sequence: 'community',
 
   // adjustment-tools — bakes consolidated into ps_apply_adjustment
   ps_add_adjustment_layer: 'community',
