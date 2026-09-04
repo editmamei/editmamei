@@ -5,9 +5,16 @@ import { tierOf, TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
 import {
   getToolTimeoutMs,
+  sequenceStepCapMs,
   DEFAULT_SCRIPT_TIMEOUT_MS,
   SEQUENCE_OVERALL_TIMEOUT_MS,
+  SEQUENCE_ROLLBACK_HEADROOM_MS,
 } from '@editmamei/utils/operation-timeouts.ts';
+import {
+  budgetContextFor,
+  currentToolBudget,
+  runWithToolBudget,
+} from '@editmamei/utils/tool-budget-context.ts';
 import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
 import type { ToolResult } from '@editmamei/core/tool-registry.ts';
 
@@ -66,8 +73,66 @@ describe('createSequenceTools', () => {
     // all of them together. If it were the shared default a long sequence
     // would starve its later steps and kill one mid-script, well before the
     // between-steps budget this tool documents ever applied.
-    expect(getToolTimeoutMs('ps_sequence')).toBe(SEQUENCE_OVERALL_TIMEOUT_MS);
     expect(getToolTimeoutMs('ps_sequence')).toBeGreaterThan(DEFAULT_SCRIPT_TIMEOUT_MS);
+    expect(getToolTimeoutMs('ps_sequence')).toBeGreaterThanOrEqual(SEQUENCE_OVERALL_TIMEOUT_MS);
+  });
+
+  it('the step cap sits strictly BELOW the dispatch budget, by the rollback headroom', () => {
+    // The load-bearing ordering. The cap is checked between steps, so it
+    // fires when the sequence is already at its limit — and the rollback
+    // that follows runs through invokeTool, nested inside this same dispatch
+    // and bounded by whatever is left of its deadline. Equal values put that
+    // rollback at exactly zero remaining, so it fails every time on the one
+    // path whose whole purpose is leaving the document clean.
+    const dispatch = getToolTimeoutMs('ps_sequence');
+    const cap = sequenceStepCapMs();
+    expect(cap).toBeLessThan(dispatch);
+    expect(dispatch - cap).toBeGreaterThanOrEqual(SEQUENCE_ROLLBACK_HEADROOM_MS);
+
+    // The ordering above holds however the table is set, because the cap is
+    // derived by subtraction. What the TABLE controls is where the cap
+    // actually lands — set the entry to the documented budget rather than
+    // budget-plus-headroom and every sequence silently loses the headroom's
+    // worth of running time. Pin the cap to the number the tool documents.
+    expect(cap).toBe(SEQUENCE_OVERALL_TIMEOUT_MS);
+  });
+
+  it('rollback still has budget when the cap fires at the end of the dispatch deadline', async () => {
+    // The behavioural half of the ordering pinned above, and the regression
+    // that matters: performRollback's own invokeTool calls nest inside this
+    // dispatch, so they are bounded by whatever is left of its deadline. The
+    // context below is built as production reaches this point — the cap has
+    // just elapsed — so the only thing standing between rollback and a
+    // guaranteed `undo_failed` is the headroom. With cap == budget every
+    // reading here is <= 0.
+    const cap = sequenceStepCapMs();
+    const remainingAtEachCall: number[] = [];
+    const invoke: FakeInvoke = async (name) => {
+      const budget = currentToolBudget();
+      remainingAtEachCall.push(budget ? budget.deadline - Date.now() : Number.NaN);
+      return name === 'ps_inspect' ? historyResult(5, { stateName: 'S5' }) : ok();
+    };
+
+    // Injected clock: startedAt on the first read, already past the cap on
+    // the next, so the loop takes the cap branch before running any step.
+    let tick = 0;
+    const now = () => (tick++ === 0 ? 0 : cap + 1);
+
+    const tools = createSequenceTools(invoke, allow, { now });
+    await runWithToolBudget(
+      budgetContextFor('ps_sequence', getToolTimeoutMs('ps_sequence'), Date.now() - cap),
+      () =>
+        callTool(tools, 'ps_sequence', {
+          on_error: 'rollback',
+          steps: [{ tool: 'ps_create_layer', args: { name: 'a' } }],
+        })
+    );
+
+    // The pre-sequence capture plus the rollback's own reads.
+    expect(remainingAtEachCall.length).toBeGreaterThan(1);
+    for (const remaining of remainingAtEachCall) {
+      expect(remaining).toBeGreaterThan(0);
+    }
   });
 
   it('every HISTORY_UNSAFE_TOOLS entry names a real, currently classified tool', () => {

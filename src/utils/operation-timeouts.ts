@@ -120,6 +120,20 @@ export const SCENE_CHANNEL_TIMEOUT_MS = 120_000;
 export const SEQUENCE_OVERALL_TIMEOUT_MS = 300_000;
 
 /**
+ * Time reserved for `ps_sequence`'s rollback AFTER its step cap has fired.
+ *
+ * The cap is checked between steps, so it necessarily fires once the sequence
+ * is already at its limit — and rollback then has real work to do (re-read the
+ * history state, undo back to it, re-read to verify). All of that runs through
+ * `invokeTool`, which nests inside the sequence's own dispatch and so is capped
+ * by whatever is left of its deadline. Give the dispatch budget headroom above
+ * the cap and that work has somewhere to run; make the two equal and rollback
+ * is guaranteed to find nothing left, failing every time on the one path that
+ * exists to leave the document clean.
+ */
+export const SEQUENCE_ROLLBACK_HEADROOM_MS = 60_000;
+
+/**
  * Per-tool dispatch budgets (ms) — see the file doc comment for how this
  * layer relates to the overrides above.
  *
@@ -227,22 +241,18 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   ps_vector_mask: 5_000,
   ps_apply_image: 5_000,
 
-  // Not a measured budget, and not one script's: ps_sequence runs no script of
+  // Not a measured budget, and not one script's. ps_sequence runs no script of
   // its own beyond the history probes, and every step it dispatches nests
   // inside this call — budgetContextFor caps an inner deadline at the outer's
-  // remaining time. So THIS number is the ceiling on the whole sequence, and it
-  // has to be the same one the tool documents and enforces between steps, or
-  // the two disagree and the smaller silently wins.
+  // remaining time — so this number is the ceiling on the whole sequence, and
+  // the shared default would silently cap every step to a fraction of it.
   //
-  // It did. At the shared 30s default a long sequence starved: each step got
-  // whatever was left, and the step that crossed the line was killed
-  // mid-execution and reported as that TOOL failing ("timeout after 1026ms" on
-  // a blur needing ~1900ms) rather than as the sequence running out of time.
-  // Measured live 2026-09-04: 25 gaussian blurs on an 8000x8000 document died
-  // at step 18, 30058ms in. Worse than a wrong number, a killed script leaves
-  // Photoshop still executing (run-child.ts), which is the one state rollback
-  // must not compute an undo distance against.
-  ps_sequence: SEQUENCE_OVERALL_TIMEOUT_MS,
+  // Deliberately ABOVE the tool's own step cap, by the rollback headroom: the
+  // cap fires between steps, and the rollback that follows still needs budget
+  // to run. `sequenceStepCapMs()` derives the cap back out of this, so the two
+  // stay in lockstep under EDITMAMEI_SCRIPT_TIMEOUT_MS scaling instead of
+  // drifting apart into the starvation this entry exists to prevent.
+  ps_sequence: SEQUENCE_OVERALL_TIMEOUT_MS + SEQUENCE_ROLLBACK_HEADROOM_MS,
 };
 
 /**
@@ -310,4 +320,27 @@ export function getToolTimeoutMs(toolName: string): number {
     ? TOOL_TIMEOUT_BUDGETS_MS[toolName]
     : DEFAULT_SCRIPT_TIMEOUT_MS;
   return Math.max(Math.round(base * SCRIPT_TIMEOUT_SCALE), SCRIPT_TIMEOUT_FLOOR_MS);
+}
+
+/**
+ * How long `ps_sequence` may keep starting steps: its dispatch budget less the
+ * rollback headroom.
+ *
+ * Derived rather than a constant of its own so the cap and the deadline that
+ * actually enforces it cannot drift. `getToolTimeoutMs` applies
+ * `EDITMAMEI_SCRIPT_TIMEOUT_MS`; reading the raw table constant here instead
+ * would let a scale below 1 shrink the deadline while the sequence still
+ * believed it had the full budget — reinstating, silently, the starvation the
+ * table entry exists to prevent.
+ *
+ * Floored at `SCRIPT_TIMEOUT_FLOOR_MS` so an aggressive scale-down yields a
+ * small cap rather than a negative one that would refuse the very first step.
+ * At that floor the headroom is no longer a meaningful reserve — a scale that
+ * extreme has bigger problems — but the ordering (cap below deadline) holds.
+ */
+export function sequenceStepCapMs(): number {
+  return Math.max(
+    getToolTimeoutMs('ps_sequence') - SEQUENCE_ROLLBACK_HEADROOM_MS,
+    SCRIPT_TIMEOUT_FLOOR_MS
+  );
 }
