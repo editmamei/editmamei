@@ -307,22 +307,18 @@ const SCRIPT_TIMEOUT_SCALE = resolveScriptTimeoutScale();
  * `Object.hasOwn` guards a lookup name that collides with an inherited
  * `Object.prototype` member (e.g. `'toString'`), which would otherwise read
  * back a function instead of `undefined` and multiply to `NaN`.
+ *
+ * A non-finite entry (the deliberate opt-out — see `ps_sequence`) returns
+ * unchanged. Scaling it would not: a small enough `EDITMAMEI_SCRIPT_TIMEOUT_MS`
+ * underflows the scale to exactly 0, and `Infinity * 0` is `NaN`, which the
+ * floor's `Math.max` propagates rather than catching. A `NaN` deadline compares
+ * false against every bound, so it would reach a platform runner as a timeout
+ * and fail every script instantly.
  */
 export function getToolTimeoutMs(toolName: string): number {
   const base = Object.hasOwn(TOOL_TIMEOUT_BUDGETS_MS, toolName)
     ? TOOL_TIMEOUT_BUDGETS_MS[toolName]
     : DEFAULT_SCRIPT_TIMEOUT_MS;
+  if (!Number.isFinite(base)) return base;
   return Math.max(Math.round(base * SCRIPT_TIMEOUT_SCALE), SCRIPT_TIMEOUT_FLOOR_MS);
-}
-
-/**
- * True for a tool that opts out of a dispatch deadline entirely — currently
- * only `ps_sequence`, which dispatches other tools rather than running scripts.
- *
- * Exposed so the callers that reason about a budget as a duration (a message
- * quoting it, a test asserting an ordering) can tell the two kinds apart rather
- * than formatting `Infinity` at a user.
- */
-export function hasUnboundedBudget(toolName: string): boolean {
-  return !Number.isFinite(getToolTimeoutMs(toolName));
 }

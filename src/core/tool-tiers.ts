@@ -74,9 +74,9 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // a history-unsafe step, self-nesting), with rollback confirmed by reading
   // the document back rather than trusting its own report.
   //
-  // Its budget in operation-timeouts.ts is the whole sequence's, not one
-  // script's: every step nests inside this call, so the dispatch deadline is
-  // the real ceiling on all of them together.
+  // It carries no dispatch deadline of its own (operation-timeouts.ts). Each
+  // step it dispatches keeps its own timeout; the sequence as a whole is
+  // limited between steps instead.
   ps_sequence: 'community',
 
   // adjustment-tools — bakes consolidated into ps_apply_adjustment

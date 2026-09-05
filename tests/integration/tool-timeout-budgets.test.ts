@@ -46,6 +46,18 @@ describe('getToolTimeoutMs — table completeness (community)', () => {
     expect(missing, `no explicit entry or allowlist reason for: ${missing.join(', ')}`).toEqual([]);
   });
 
+  it('ps_sequence is the ONLY non-finite entry', () => {
+    // The sentinel opts a tool out of having a dispatch deadline, which is only
+    // ever right for a tool that runs no script of its own. On any tool that
+    // does, it would silently un-bound every script that tool runs. The floor
+    // check below passes vacuously for Infinity, so without this a typo'd
+    // sentinel on another row would clear the whole file.
+    for (const [name, ms] of Object.entries(TOOL_TIMEOUT_BUDGETS_MS)) {
+      if (name === 'ps_sequence') continue;
+      expect(Number.isFinite(ms), `${name}: only ps_sequence may opt out of a deadline`).toBe(true);
+    }
+  });
+
   it('a table entry never dips below the floor', () => {
     for (const [name, ms] of Object.entries(TOOL_TIMEOUT_BUDGETS_MS)) {
       expect(ms, `${name}: ${ms}ms is below the floor`).toBeGreaterThanOrEqual(

@@ -5,15 +5,12 @@ import { tierOf, TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
 import {
   getToolTimeoutMs,
-  hasUnboundedBudget,
   DEFAULT_SCRIPT_TIMEOUT_MS,
   SEQUENCE_OVERALL_TIMEOUT_MS,
 } from '@editmamei/utils/operation-timeouts.ts';
-import {
-  budgetContextFor,
-  currentToolBudget,
-  runWithToolBudget,
-} from '@editmamei/utils/tool-budget-context.ts';
+import { currentToolBudget } from '@editmamei/utils/tool-budget-context.ts';
+import { runScript } from '@editmamei/utils/run-script.ts';
+import { makeConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
 import {
   ToolRegistry,
@@ -83,24 +80,55 @@ describe('createSequenceTools', () => {
     // The tool runs no script itself; it dispatches other tools that are each
     // already bounded. A finite budget here would be inherited by every one of
     // them through budgetContextFor's min(own, outer.remaining) and become
-    // their real ceiling, which is the whole defect this entry avoids.
+    // their real ceiling.
     expect(getToolTimeoutMs('ps_sequence')).toBe(Number.POSITIVE_INFINITY);
-    expect(hasUnboundedBudget('ps_sequence')).toBe(true);
     // Every other community tool stays finite — this is a deliberate exception,
     // not a licence for the table to hold sentinels generally.
     expect(getToolTimeoutMs('ps_create_layer')).toBeLessThanOrEqual(DEFAULT_SCRIPT_TIMEOUT_MS);
-    expect(hasUnboundedBudget('ps_create_layer')).toBe(false);
+    expect(Number.isFinite(getToolTimeoutMs('ps_create_layer'))).toBe(true);
+  });
+
+  it('hands a step a real, finite script timeout — no sentinel reaches the runner', async () => {
+    // The assertion the whole design rests on. Every other budget test reads
+    // `deadline - Date.now()`, which is a proxy; only this one follows a value
+    // all the way to what a platform runner is actually given. If the sentinel
+    // ever survived getToolTimeoutMs's scaling — Infinity * 0 is NaN, and NaN
+    // compares false against every bound in run-script — it would arrive here
+    // as a script timeout and fail every step instantly.
+    const conn = makeConnection();
+    const registry = new ToolRegistry();
+    registry.register(
+      'ps_create_layer',
+      fakeTool('ps_create_layer', async () => {
+        await runScript(conn.asConnection(), 'inner script');
+        return ok();
+      })
+    );
+
+    const invoke: FakeInvoke = (name, args) => registry.execute(name, args) as Promise<ToolResult>;
+    const [seq] = createSequenceTools(invoke, allow);
+    registry.register('ps_sequence', seq);
+
+    await registry.execute('ps_sequence', {
+      steps: [{ tool: 'ps_create_layer', args: { name: 'a' } }],
+    });
+
+    expect(conn.executions).toHaveLength(1);
+    const timeout = conn.executions[0].timeout;
+    expect(Number.isFinite(timeout), `runner got a non-finite timeout: ${timeout}`).toBe(true);
+    expect(timeout).toBeGreaterThan(0);
+    // And it is the STEP's budget that arrived, not the sequence's absence of one.
+    expect(timeout).toBeLessThanOrEqual(getToolTimeoutMs('ps_create_layer'));
   });
 
   it('gives every nested step its own full budget, however long the sequence has run', async () => {
-    // The property the Infinity entry buys, and the one that made all the
-    // reserve arithmetic unnecessary: min(own, Infinity) === own, so a step
-    // dispatched last sees exactly what it would see standing alone. Driven
-    // through a real ToolRegistry so a genuine nested budgetContextFor exists.
+    // min(own, Infinity) === own, so a step dispatched last sees exactly what
+    // it would see standing alone. Driven through a real ToolRegistry so a
+    // genuine nested budgetContextFor exists.
     const registry = new ToolRegistry();
     const seen = new Map<string, number>();
 
-    for (const name of ['ps_inspect', 'ps_undo', 'ps_create_layer', 'ps_read_scene']) {
+    for (const name of ['ps_inspect', 'ps_undo', 'ps_read_scene']) {
       registry.register(
         name,
         fakeTool(name, async () => {
@@ -155,10 +183,10 @@ describe('createSequenceTools', () => {
   });
 
   it('leaves rollback a full budget even after the sequence has run its cap', async () => {
-    // The failure that survived three fixes: with a finite deadline the cap
-    // could only fire once that deadline was spent, so performRollback's own
-    // probes found nothing left and returned undo_failed every time. With no
-    // deadline to inherit there is nothing to run out of.
+    // A finite deadline here would be spent by the time the cap fires, since
+    // the cap is only checked between steps — performRollback's own probes
+    // would then find nothing left and report undo_failed. With no deadline to
+    // inherit there is nothing to run out of.
     const registry = new ToolRegistry();
     let inspectRemaining = 0;
 
@@ -220,9 +248,8 @@ describe('createSequenceTools', () => {
 
   it('stays unbounded at every EDITMAMEI_SCRIPT_TIMEOUT_MS scale', async () => {
     // The scale is resolved once at module load, so each value needs a fresh
-    // module. Scaling multiplies the table entry, and Infinity is invariant
-    // under that — which is what removes the whole floor-clamp regime that
-    // broke two earlier attempts, rather than making it merely survivable.
+    // module. Scaling multiplies the table entry, and a non-finite one is
+    // returned unscaled, so no clamp or underflow regime applies to it.
     for (const env of ['400', '5000', '30000', '300000']) {
       vi.resetModules();
       vi.stubEnv('EDITMAMEI_SCRIPT_TIMEOUT_MS', env);
