@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi } from 'vitest';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import { createSequenceTools, HISTORY_UNSAFE_TOOLS } from '@editmamei/tools/sequence-tools.ts';
@@ -21,8 +24,9 @@ import {
 // ps_sequence never talks to Photoshop itself — every step is dispatched
 // through an injected invokeTool and validated through an injected hasTool,
 // exactly the seams the real CE module wires to host.invokeTool / host.hasTool
-// (src/modules/ce/index.ts). These tests drive both directly, never a real
-// registry or connection.
+// (src/modules/ce/index.ts). Most tests drive those seams directly. The budget
+// tests instead go through a real ToolRegistry — and one through a fake
+// connection — because the nested dispatch is the thing under test there.
 
 type FakeInvoke = (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
 type HasTool = (name: string) => boolean;
@@ -97,9 +101,13 @@ describe('createSequenceTools', () => {
     // as a script timeout and fail every step instantly.
     const conn = makeConnection();
     const registry = new ToolRegistry();
+    // ps_export deliberately: its budget differs from DEFAULT_SCRIPT_TIMEOUT_MS,
+    // so the bounds below can tell the step's own budget apart from a fallback
+    // to the shared default. A tool whose budget happens to equal the default
+    // could not.
     registry.register(
-      'ps_create_layer',
-      fakeTool('ps_create_layer', async () => {
+      'ps_export',
+      fakeTool('ps_export', async () => {
         await runScript(conn.asConnection(), 'inner script');
         return ok();
       })
@@ -110,15 +118,50 @@ describe('createSequenceTools', () => {
     registry.register('ps_sequence', seq);
 
     await registry.execute('ps_sequence', {
-      steps: [{ tool: 'ps_create_layer', args: { name: 'a' } }],
+      steps: [{ tool: 'ps_export', args: {} }],
     });
 
+    // Exactly one script ran, and it was the STEP's — ps_sequence itself runs
+    // none, which is what makes an unbounded budget safe for it.
     expect(conn.executions).toHaveLength(1);
     const timeout = conn.executions[0].timeout;
     expect(Number.isFinite(timeout), `runner got a non-finite timeout: ${timeout}`).toBe(true);
-    expect(timeout).toBeGreaterThan(0);
-    // And it is the STEP's budget that arrived, not the sequence's absence of one.
-    expect(timeout).toBeLessThanOrEqual(getToolTimeoutMs('ps_create_layer'));
+    const own = getToolTimeoutMs('ps_export');
+    expect(own).not.toBe(DEFAULT_SCRIPT_TIMEOUT_MS);
+    const TOLERANCE_MS = 500;
+    expect(timeout).toBeGreaterThan(own - TOLERANCE_MS);
+    expect(timeout).toBeLessThanOrEqual(own);
+  });
+
+  it('runs no script of its own — the invariant the unbounded budget depends on', () => {
+    // An unbounded budget is only safe while ps_sequence dispatches other tools
+    // and executes nothing itself. If it ever ran its own script without an
+    // explicit timeoutMs, the sentinel would reach a platform runner, where
+    // setTimeout coerces it and the script is killed almost immediately.
+    //
+    // Scanned from source rather than exercised: the handler holds no
+    // connection today, so a behavioural check could never fail — it would pass
+    // by construction and guard nothing. What can regress is someone giving it
+    // one, and that shows up here.
+    const src = readFileSync(
+      join(
+        dirname(fileURLToPath(import.meta.url)),
+        '..',
+        '..',
+        'src',
+        'tools',
+        'sequence-tools.ts'
+      ),
+      'utf8'
+    );
+    // Anti-vacuity: a mis-resolved path would read something else (or nothing)
+    // and the scan below would pass while guarding nothing.
+    expect(src, 'did not read sequence-tools.ts').toContain('SEQUENCE_TOOL_NAME');
+    expect(
+      /runScript\s*\(/.test(src),
+      'sequence-tools.ts now runs a script directly — pass that call an explicit timeoutMs, ' +
+        'because ps_sequence has no dispatch deadline to inherit one from'
+    ).toBe(false);
   });
 
   it('gives every nested step its own full budget, however long the sequence has run', async () => {
@@ -250,7 +293,12 @@ describe('createSequenceTools', () => {
     // The scale is resolved once at module load, so each value needs a fresh
     // module. Scaling multiplies the table entry, and a non-finite one is
     // returned unscaled, so no clamp or underflow regime applies to it.
-    for (const env of ['400', '5000', '30000', '300000']) {
+    // '1e-320' is the load-bearing one: it passes resolveScriptTimeoutScale's
+    // positive-and-finite check but underflows the scale to exactly 0, and
+    // Infinity * 0 is NaN. Without the non-finite early return in
+    // getToolTimeoutMs this iteration fails; the larger values cannot catch it,
+    // because Infinity survives any non-zero scale unchanged.
+    for (const env of ['1e-320', '400', '5000', '30000', '300000']) {
       vi.resetModules();
       vi.stubEnv('EDITMAMEI_SCRIPT_TIMEOUT_MS', env);
       try {

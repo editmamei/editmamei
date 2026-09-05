@@ -103,9 +103,9 @@ describe('getToolTimeoutMs — table completeness (community)', () => {
   });
 
   it('a Pro-tier tool still resolves to a sane fallback budget', () => {
-    // Weaker, by design: a Pro tool's real budget lives in its own handler
-    // (private repo), not here. This only proves the CE-side mechanism
-    // doesn't misbehave for a name it has deliberately never seen.
+    // Weaker, by design: a Pro tool's real budget lives in its own handler,
+    // which does not ship in this repository. This only proves the CE-side
+    // mechanism doesn't misbehave for a name it has deliberately never seen.
     const aProTool = Object.entries(TOOL_TIERS).find(([, tier]) => tier === 'pro')?.[0];
     expect(aProTool).toBeDefined();
     expect(getToolTimeoutMs(aProTool!)).toBe(DEFAULT_SCRIPT_TIMEOUT_MS);
@@ -143,9 +143,9 @@ describe('getToolTimeoutMs — table completeness (community)', () => {
 
   it('ps_apply_camera_raw (Pro) is absent from the CE table — its override constant still stands alone', () => {
     // CAMERA_RAW_FILTER_TIMEOUT_MS remains exported at 120s for its own
-    // handler's explicit runScript call site (in the private repo); it is
-    // simply never routed through the CE dispatch table, per the Pro
-    // exclusion above.
+    // handler's explicit runScript call site, which does not ship in this
+    // repository; it is simply never routed through the CE dispatch table,
+    // per the Pro exclusion above.
     expect(CAMERA_RAW_FILTER_TIMEOUT_MS).toBe(120_000);
     expect(getToolTimeoutMs('ps_apply_camera_raw')).toBe(DEFAULT_SCRIPT_TIMEOUT_MS);
   });
