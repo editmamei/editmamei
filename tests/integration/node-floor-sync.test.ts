@@ -3,6 +3,8 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { isArchived } from '../helpers/archived-docs.ts';
+
 // The sibling of macos-floor-sync: same failure class, different requirement.
 // `engines.node` in package.json is the real Node floor, and every prose
 // statement of it is a mirror that drifts silently. It already had — the
@@ -37,6 +39,7 @@ function claims(): { file: string; major: number }[] {
     join(ROOT, 'CONTRIBUTING.md'),
     ...readdirSync(join(ROOT, 'docs'), { recursive: true, encoding: 'utf8' })
       .filter((f) => f.endsWith('.md'))
+      .filter((f) => !isArchived(f))
       .map((f) => join(ROOT, 'docs', f)),
   ];
   const found: { file: string; major: number }[] = [];

@@ -1,0 +1,50 @@
+import { readdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+
+import { isArchived } from '../helpers/archived-docs.ts';
+import { HYDRATED_OVERLAY } from '../helpers/overlay-tree.ts';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+// `isArchived` decides which docs the Node and macOS floor guards are allowed
+// to skip. Too loose and a live doc stops being checked — which is how a stale
+// floor ships. So the exemption gets pinned as precisely as the guards it feeds.
+describe('isArchived', () => {
+  it('exempts entries under archive/, with either separator', () => {
+    // readdirSync(recursive) yields backslashes on Windows and slashes on POSIX;
+    // the guards run on both, so neither form may leak through.
+    expect(isArchived('archive/old-description.md')).toBe(true);
+    expect(isArchived('archive\\old-description.md')).toBe(true);
+    expect(isArchived('archive/2026/nested/deeper.md')).toBe(true);
+  });
+
+  it('keeps every live doc', () => {
+    expect(isArchived('installation.md')).toBe(false);
+    expect(isArchived('getting-started.md')).toBe(false);
+    expect(isArchived('engineering/tool-design.md')).toBe(false);
+  });
+
+  it('matches only the LEADING segment — not a prefix, not a nested archive', () => {
+    // `archive` as a prefix of a longer name is a different directory, and a
+    // startsWith() implementation would silently stop checking it.
+    expect(isArchived('archived-notes/plan.md')).toBe(false);
+    expect(isArchived('archive-2025/plan.md')).toBe(false);
+    // Only the FIRST segment is the archive root; a nested one is still live.
+    expect(isArchived('launch/archive/post.md')).toBe(false);
+  });
+
+  // Only meaningful in the published tree. The overlay is the tree that HAS an
+  // archive — asserting its absence there fails by construction, which is the
+  // whole reason the filter exists.
+  it.skipIf(HYDRATED_OVERLAY)(
+    'is inert in this repository — the published docs carry no archive',
+    () => {
+      // If an archive ever lands here, that is a deliberate decision worth
+      // making explicitly rather than discovering as a silently-unchecked doc.
+      const entries = readdirSync(join(ROOT, 'docs'), { recursive: true, encoding: 'utf8' });
+      expect(entries.filter((f) => isArchived(f))).toEqual([]);
+    }
+  );
+});

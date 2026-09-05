@@ -3,6 +3,8 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { isArchived } from '../helpers/archived-docs.ts';
+
 // The minimum macOS we support is not a policy choice — it is whatever the Go
 // toolchain stamps into the cross-compiled darwin binaries as
 // LC_BUILD_VERSION.minos. Raising the toolchain silently raises that floor, and
@@ -59,6 +61,7 @@ function goVersion(): string {
 function docFiles(): string[] {
   const files = readdirSync(join(ROOT, 'docs'), { recursive: true, encoding: 'utf8' })
     .filter((f) => f.endsWith('.md'))
+    .filter((f) => !isArchived(f))
     .map((f) => join(ROOT, 'docs', f));
   if (!IS_PRO_TREE) files.push(join(ROOT, 'README.md'));
   return files;
