@@ -509,6 +509,11 @@ async function runSequence(
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
 
+    // Checked between steps only, so it never preempts a step already running
+    // and never leaves one killed mid-script. Stopping here is safe in a way it
+    // was not when this call carried a deadline of its own: the rollback below
+    // dispatches through invokeTool, and with no outer deadline to inherit each
+    // of its probes gets its own full budget however long the sequence has run.
     if (now() - startedAt > SEQUENCE_OVERALL_TIMEOUT_MS) {
       capExceeded = true;
       if (failedStep === null) failedStep = { index: i, tool: step.tool };
@@ -645,7 +650,7 @@ export function createSequenceTools(
       tool: {
         name: SEQUENCE_TOOL_NAME,
         description:
-          "Run an ordered list of tool calls against the current document in ONE round trip. WHEN TO REACH FOR THIS: several dependent steps you already know you want (e.g. select → adjust → merge, or a repeated resize/export pass) where you do not need to look at the result between them — each step is dispatched the same way an ordinary call is and sees the document exactly as the previous step left it. Not for exploratory work: if the next step depends on inspecting this one first, call the tools individually instead. Every step must name a tool that already exists in this edition (ps_sequence cannot call itself). An inline preview (image content) returned by a step is dropped unless that step is the LAST one in the sequence, since previews are most of a result's bytes and the point of batching calls is to stop paying for them on every intermediate step. The overall time budget is checked BETWEEN steps only — it bounds the total across the whole sequence but does not preempt a single step already running past its own timeout. With return='full', every step's complete result (not just the last one's) lands in the logged call payload.",
+          "Run an ordered list of tool calls against the current document in ONE round trip. WHEN TO REACH FOR THIS: several dependent steps you already know you want (e.g. select → adjust → merge, or a repeated resize/export pass) where you do not need to look at the result between them — each step is dispatched the same way an ordinary call is and sees the document exactly as the previous step left it. Not for exploratory work: if the next step depends on inspecting this one first, call the tools individually instead. Every step must name a tool that already exists in this edition (ps_sequence cannot call itself). An inline preview (image content) returned by a step is dropped unless that step is the LAST one in the sequence, since previews are most of a result's bytes and the point of batching calls is to stop paying for them on every intermediate step. Each step keeps its own time limit, exactly as it would if you called it on its own. The sequence's overall budget only decides whether to START another step, so it never cuts one off mid-run — a call can therefore finish after that ceiling by however long the in-flight step still needs, plus the undo and its verification reads when on_error='rollback'. With return='full', every step's complete result (not just the last one's) lands in the logged call payload.",
         inputSchema: sequenceSchema,
         outputSchema: sequenceOutputSchema,
         annotations: {

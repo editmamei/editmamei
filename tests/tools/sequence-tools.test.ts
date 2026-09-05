@@ -1,22 +1,46 @@
-import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, it, expect, vi } from 'vitest';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import { createSequenceTools, HISTORY_UNSAFE_TOOLS } from '@editmamei/tools/sequence-tools.ts';
 import { tierOf, TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
+import {
+  getToolTimeoutMs,
+  DEFAULT_SCRIPT_TIMEOUT_MS,
+  SEQUENCE_OVERALL_TIMEOUT_MS,
+} from '@editmamei/utils/operation-timeouts.ts';
+import { currentToolBudget } from '@editmamei/utils/tool-budget-context.ts';
+import { runScript } from '@editmamei/utils/run-script.ts';
+import { makeConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
-import type { ToolResult } from '@editmamei/core/tool-registry.ts';
+import {
+  ToolRegistry,
+  type ToolDefinition,
+  type ToolResult,
+} from '@editmamei/core/tool-registry.ts';
 
 // ps_sequence never talks to Photoshop itself — every step is dispatched
 // through an injected invokeTool and validated through an injected hasTool,
 // exactly the seams the real CE module wires to host.invokeTool / host.hasTool
-// (src/modules/ce/index.ts). These tests drive both directly, never a real
-// registry or connection.
+// (src/modules/ce/index.ts). Most tests drive those seams directly. The budget
+// tests instead go through a real ToolRegistry — and one through a fake
+// connection — because the nested dispatch is the thing under test there.
 
 type FakeInvoke = (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
 type HasTool = (name: string) => boolean;
 
 /** Accepts any tool name — the injected registry-lookup stand-in for tests that don't care about it. */
 const allow: HasTool = () => true;
+
+/** Minimal registrable tool, for the tests that need a real ToolRegistry dispatch. */
+function fakeTool(name: string, handler: ToolDefinition['handler']): ToolDefinition {
+  return {
+    tool: { name, description: `${name} description`, inputSchema: { type: 'object' } },
+    handler,
+  };
+}
 
 const ok = (text = 'ok'): ToolResult => ({ content: [{ type: 'text' as const, text }] });
 const fail = (text = 'boom'): ToolResult => ({
@@ -51,9 +75,256 @@ describe('createSequenceTools', () => {
     expect(tools.map((t) => t.tool.name)).toEqual(['ps_sequence']);
   });
 
-  it('is registered at dev tier and appears in the automation group', () => {
-    expect(tierOf('ps_sequence')).toBe('dev');
+  it('is registered at community tier and appears in the automation group', () => {
+    expect(tierOf('ps_sequence')).toBe('community');
     expect(groupOf('ps_sequence')).toBe('automation');
+  });
+
+  it('carries no dispatch deadline of its own', () => {
+    // The tool runs no script itself; it dispatches other tools that are each
+    // already bounded. A finite budget here would be inherited by every one of
+    // them through budgetContextFor's min(own, outer.remaining) and become
+    // their real ceiling.
+    expect(getToolTimeoutMs('ps_sequence')).toBe(Number.POSITIVE_INFINITY);
+    // Every other community tool stays finite — this is a deliberate exception,
+    // not a licence for the table to hold sentinels generally.
+    expect(getToolTimeoutMs('ps_create_layer')).toBeLessThanOrEqual(DEFAULT_SCRIPT_TIMEOUT_MS);
+    expect(Number.isFinite(getToolTimeoutMs('ps_create_layer'))).toBe(true);
+  });
+
+  it('hands a step a real, finite script timeout — no sentinel reaches the runner', async () => {
+    // The assertion the whole design rests on. Every other budget test reads
+    // `deadline - Date.now()`, which is a proxy; only this one follows a value
+    // all the way to what a platform runner is actually given. If the sentinel
+    // ever survived getToolTimeoutMs's scaling — Infinity * 0 is NaN, and NaN
+    // compares false against every bound in run-script — it would arrive here
+    // as a script timeout and fail every step instantly.
+    const conn = makeConnection();
+    const registry = new ToolRegistry();
+    // ps_get_histogram deliberately: its budget differs from
+    // DEFAULT_SCRIPT_TIMEOUT_MS, so the bounds below can tell the step's own
+    // budget apart from a fallback to the shared default — a tool whose budget
+    // happens to equal the default could not. It is also absent from
+    // HISTORY_UNSAFE_TOOLS, so extending this test to on_error='rollback'
+    // later fails on a budget assertion rather than at validation.
+    registry.register(
+      'ps_get_histogram',
+      fakeTool('ps_get_histogram', async () => {
+        await runScript(conn.asConnection(), 'inner script');
+        return ok();
+      })
+    );
+
+    const invoke: FakeInvoke = (name, args) => registry.execute(name, args) as Promise<ToolResult>;
+    const [seq] = createSequenceTools(invoke, allow);
+    registry.register('ps_sequence', seq);
+
+    await registry.execute('ps_sequence', {
+      steps: [{ tool: 'ps_get_histogram', args: {} }],
+    });
+
+    // One execution, and the bounds below show it carried the STEP's budget.
+    // This length check cannot fail today — ps_sequence holds no connection, so
+    // it cannot add one — but it would catch a future regression that gave it
+    // one. The invariant itself is pinned by the source scan below, not here.
+    expect(conn.executions).toHaveLength(1);
+    const timeout = conn.executions[0].timeout;
+    expect(Number.isFinite(timeout), `runner got a non-finite timeout: ${timeout}`).toBe(true);
+    const own = getToolTimeoutMs('ps_get_histogram');
+    expect(own).not.toBe(DEFAULT_SCRIPT_TIMEOUT_MS);
+    const TOLERANCE_MS = 500;
+    expect(timeout).toBeGreaterThan(own - TOLERANCE_MS);
+    expect(timeout).toBeLessThanOrEqual(own);
+  });
+
+  it('runs no script of its own — the invariant the unbounded budget depends on', () => {
+    // An unbounded budget is only safe while ps_sequence dispatches other tools
+    // and executes nothing itself. If it ever ran its own script without an
+    // explicit timeoutMs, the sentinel would reach a platform runner, where
+    // setTimeout coerces it and the script is killed almost immediately.
+    //
+    // Scanned from source rather than exercised: the handler holds no
+    // connection today, so a behavioural check could never fail — it would pass
+    // by construction and guard nothing. What can regress is someone giving it
+    // one, and that shows up here.
+    const src = readFileSync(
+      join(
+        dirname(fileURLToPath(import.meta.url)),
+        '..',
+        '..',
+        'src',
+        'tools',
+        'sequence-tools.ts'
+      ),
+      'utf8'
+    );
+    // Anti-vacuity: a mis-resolved path would read something else (or nothing)
+    // and the scan below would pass while guarding nothing.
+    expect(src, 'did not read sequence-tools.ts').toContain('createSequenceTools');
+    expect(
+      /\brunScript\s*\(|\bexecuteScript\s*\(|PhotoshopAPIFactory|PhotoshopConnection/.test(src),
+      'sequence-tools.ts now runs a script directly — pass that call an explicit timeoutMs, ' +
+        'because ps_sequence has no dispatch deadline to inherit one from'
+    ).toBe(false);
+  });
+
+  it('gives every nested step its own full budget, however long the sequence has run', async () => {
+    // min(own, Infinity) === own, so a step dispatched last sees exactly what
+    // it would see standing alone. Driven through a real ToolRegistry so a
+    // genuine nested budgetContextFor exists.
+    const registry = new ToolRegistry();
+    const seen = new Map<string, number>();
+
+    for (const name of ['ps_inspect', 'ps_undo', 'ps_read_scene']) {
+      registry.register(
+        name,
+        fakeTool(name, async () => {
+          const b = currentToolBudget();
+          seen.set(name, b ? b.deadline - Date.now() : Number.NaN);
+          return name === 'ps_inspect' ? historyResult(5, { stateName: 'S5' }) : ok();
+        })
+      );
+    }
+
+    const invoke: FakeInvoke = (name, args) => registry.execute(name, args) as Promise<ToolResult>;
+    const [seq] = createSequenceTools(invoke, allow);
+    registry.register('ps_sequence', seq);
+
+    // The clock has to actually MOVE for this to discriminate: a sequence that
+    // finishes instantly is under every finite budget too. Step one jumps it
+    // 200s, so a finite deadline would have only ~160s left when step two is
+    // dispatched and would clamp ps_read_scene's 164s below its own budget.
+    vi.useFakeTimers();
+    try {
+      const start = Date.now();
+      registry.register(
+        'ps_create_layer',
+        fakeTool('ps_create_layer', async () => {
+          const b = currentToolBudget();
+          seen.set('ps_create_layer', b ? b.deadline - Date.now() : Number.NaN);
+          vi.setSystemTime(start + 200_000);
+          return ok();
+        })
+      );
+
+      await registry.execute('ps_sequence', {
+        on_error: 'rollback',
+        steps: [
+          { tool: 'ps_create_layer', args: { name: 'a' } },
+          { tool: 'ps_read_scene', args: {} },
+        ],
+      });
+
+      // Each step's remaining time is its OWN budget, not a slice of a shared
+      // one — including the step dispatched 200s in.
+      const TOLERANCE_MS = 500;
+      for (const tool of ['ps_create_layer', 'ps_read_scene']) {
+        const remaining = seen.get(tool)!;
+        const own = getToolTimeoutMs(tool);
+        expect(remaining, `${tool} should see its own budget`).toBeGreaterThan(own - TOLERANCE_MS);
+        expect(remaining).toBeLessThanOrEqual(own);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves rollback a full budget even after the sequence has run its cap', async () => {
+    // A finite deadline here would be spent by the time the cap fires, since
+    // the cap is only checked between steps — performRollback's own probes
+    // would then find nothing left and report undo_failed. With no deadline to
+    // inherit there is nothing to run out of.
+    const registry = new ToolRegistry();
+    let inspectRemaining = 0;
+
+    registry.register(
+      'ps_inspect',
+      fakeTool('ps_inspect', async () => {
+        const b = currentToolBudget();
+        inspectRemaining = b ? b.deadline - Date.now() : Number.NaN;
+        return historyResult(5, { stateName: 'S5' });
+      })
+    );
+    registry.register(
+      'ps_undo',
+      fakeTool('ps_undo', async () => ok())
+    );
+
+    const invoke: FakeInvoke = (name, args) => registry.execute(name, args) as Promise<ToolResult>;
+    // `now` must resolve Date.now at CALL time: the default binds the function
+    // reference when the factory runs, which here is before the timers are
+    // faked, so the cap would read a clock the test never moves.
+    const [seq] = createSequenceTools(invoke, allow, { now: () => Date.now() });
+    registry.register('ps_sequence', seq);
+
+    vi.useFakeTimers();
+    let result: ToolResult & { structuredContent?: Record<string, unknown> };
+    try {
+      const start = Date.now();
+      // Step one burns the whole allowance, exactly as a real slow step does,
+      // so the cap fires on the next iteration with the deadline genuinely
+      // aged. Advancing the clock BEFORE dispatch would not work: the deadline
+      // is computed at dispatch, so it would simply start late and the test
+      // could not tell a finite budget from an absent one.
+      registry.register(
+        'ps_create_layer',
+        fakeTool('ps_create_layer', async () => {
+          vi.setSystemTime(start + SEQUENCE_OVERALL_TIMEOUT_MS + 1_000);
+          return ok();
+        })
+      );
+      result = (await registry.execute('ps_sequence', {
+        on_error: 'rollback',
+        steps: [
+          { tool: 'ps_create_layer', args: { name: 'a' } },
+          { tool: 'ps_create_layer', args: { name: 'b' } },
+        ],
+      })) as ToolResult & { structuredContent?: Record<string, unknown> };
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(result.structuredContent?.cap_exceeded).toBe(true);
+    expect(result.structuredContent?.ran_steps).toBe(1);
+    expect(result.structuredContent?.rolled_back).toBe(true);
+    // Rollback's probe got ps_inspect's whole budget, not a remainder. Under a
+    // finite sequence deadline this is what came back <= 0, producing
+    // undo_failed on every cap-path rollback.
+    expect(inspectRemaining).toBeGreaterThan(getToolTimeoutMs('ps_inspect') - 500);
+  });
+
+  it('stays unbounded at every EDITMAMEI_SCRIPT_TIMEOUT_MS scale', async () => {
+    // The scale is resolved once at module load, so each value needs a fresh
+    // module. Scaling multiplies the table entry, and a non-finite one is
+    // returned unscaled, so no clamp or underflow regime applies to it.
+    // '1e-320' is the load-bearing one: it passes resolveScriptTimeoutScale's
+    // positive-and-finite check but underflows the scale to exactly 0, and
+    // Infinity * 0 is NaN. Without the non-finite early return in
+    // getToolTimeoutMs this iteration fails; the larger values cannot catch it,
+    // because Infinity survives any non-zero scale unchanged.
+    for (const env of ['1e-320', '400', '5000', '30000', '300000']) {
+      vi.resetModules();
+      vi.stubEnv('EDITMAMEI_SCRIPT_TIMEOUT_MS', env);
+      try {
+        const mod = await import('@editmamei/utils/operation-timeouts.ts');
+        // The sweep's teeth rest on one entry resolving to a scale of exactly
+        // 0, where Infinity * scale is NaN. Read that off the module rather
+        // than recomputing it here: a clamp added to resolveScriptTimeoutScale
+        // would otherwise leave this loop passing while covering nothing.
+        if (env === '1e-320') {
+          expect(mod.SCRIPT_TIMEOUT_SCALE, 'this entry must underflow the scale to 0').toBe(0);
+        }
+        expect(mod.getToolTimeoutMs('ps_sequence'), `EDITMAMEI_SCRIPT_TIMEOUT_MS=${env}`).toBe(
+          Number.POSITIVE_INFINITY
+        );
+        // And a scaled ordinary tool stays finite, so the sentinel isn't
+        // leaking into the rest of the table through the scale arithmetic.
+        expect(Number.isFinite(mod.getToolTimeoutMs('ps_create_layer'))).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+        vi.resetModules();
+      }
+    }
   });
 
   it('every HISTORY_UNSAFE_TOOLS entry names a real, currently classified tool', () => {

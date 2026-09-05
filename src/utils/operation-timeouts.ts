@@ -107,15 +107,14 @@ export const ANNOTATED_PREVIEW_TIMEOUT_MS = 90_000;
 export const SCENE_CHANNEL_TIMEOUT_MS = 120_000;
 
 /**
- * `ps_sequence` — the overall wall-clock budget for one sequence call, checked
- * between steps. Each step already inherits its own tool's timeout (the
- * budgets above); this bounds the SUM across up to 25 steps so a runaway
- * sequence can't run indefinitely. Generous on purpose — firing it costs the
- * caller the whole sequence, not just one slow step.
+ * How long `ps_sequence` may keep STARTING steps, measured from its first one
+ * and checked only between them. A soft ceiling on the sequence as a whole: it
+ * never preempts a step already running, and it is not a bound on any script.
  *
- * Seam note: this constant is where a per-tool budget table, if one is added
- * later, would be consulted for a tighter running estimate instead of only
- * checking the total after the fact.
+ * Each step carries its own timeout regardless — that is the point of the
+ * `ps_sequence: Infinity` table entry below. This number exists so a long
+ * sequence of individually-legitimate calls still stops somewhere, not because
+ * anything downstream needs bounding.
  */
 export const SEQUENCE_OVERALL_TIMEOUT_MS = 300_000;
 
@@ -226,6 +225,27 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   ps_layer_mask: 5_000,
   ps_vector_mask: 5_000,
   ps_apply_image: 5_000,
+
+  // No deadline of its own, deliberately — the one entry here that is not a
+  // duration. ps_sequence dispatches other tools and runs no script itself, so
+  // there is nothing for a deadline to bound that is not already bounded.
+  //
+  // A finite value here is actively harmful rather than merely unnecessary.
+  // budgetContextFor caps a NESTED deadline at min(own, outer.remaining), so
+  // whatever number sits here silently becomes the ceiling on every step too:
+  // a step late in the sequence gets a fraction of its own budget, and the
+  // rollback after a failure gets whatever is left, which is nothing. Infinity
+  // makes min(own, Infinity) === own, so every step and every rollback probe
+  // gets exactly the budget it would get standing alone. Nothing is unbounded
+  // that was ever bounded.
+  //
+  // The sequence as a whole is still limited, by SEQUENCE_OVERALL_TIMEOUT_MS,
+  // checked between steps where stopping is safe.
+  //
+  // Safe because ps_sequence calls no runScript: an Infinity deadline reaching
+  // one would be handed to a platform runner as a timeout. If this tool ever
+  // gains a direct script, give that call an explicit timeoutMs.
+  ps_sequence: Number.POSITIVE_INFINITY,
 };
 
 /**
@@ -275,7 +295,15 @@ function resolveScriptTimeoutScale(): number {
   return Math.min(n / DEFAULT_SCRIPT_TIMEOUT_MS, MAX_SCRIPT_TIMEOUT_SCALE);
 }
 
-const SCRIPT_TIMEOUT_SCALE = resolveScriptTimeoutScale();
+/**
+ * The resolved `EDITMAMEI_SCRIPT_TIMEOUT_MS` multiplier, fixed at module load.
+ *
+ * Exported for tests that need to pin scale-DEPENDENT behaviour rather than
+ * re-deriving the arithmetic themselves: a value computed in a test tracks what
+ * the test author believed, not what this function returns, so it goes on
+ * agreeing after the function changes.
+ */
+export const SCRIPT_TIMEOUT_SCALE = resolveScriptTimeoutScale();
 
 /**
  * The budget for one MCP tool call — this tool's table entry if it has one,
@@ -287,10 +315,18 @@ const SCRIPT_TIMEOUT_SCALE = resolveScriptTimeoutScale();
  * `Object.hasOwn` guards a lookup name that collides with an inherited
  * `Object.prototype` member (e.g. `'toString'`), which would otherwise read
  * back a function instead of `undefined` and multiply to `NaN`.
+ *
+ * A non-finite entry (the deliberate opt-out — see `ps_sequence`) returns
+ * unchanged. Scaling it would not: a small enough `EDITMAMEI_SCRIPT_TIMEOUT_MS`
+ * underflows the scale to exactly 0, and `Infinity * 0` is `NaN`, which the
+ * floor's `Math.max` propagates rather than catching. A `NaN` deadline compares
+ * false against every bound, so it would reach a platform runner as a timeout
+ * and fail every script instantly.
  */
 export function getToolTimeoutMs(toolName: string): number {
   const base = Object.hasOwn(TOOL_TIMEOUT_BUDGETS_MS, toolName)
     ? TOOL_TIMEOUT_BUDGETS_MS[toolName]
     : DEFAULT_SCRIPT_TIMEOUT_MS;
+  if (!Number.isFinite(base)) return base;
   return Math.max(Math.round(base * SCRIPT_TIMEOUT_SCALE), SCRIPT_TIMEOUT_FLOOR_MS);
 }

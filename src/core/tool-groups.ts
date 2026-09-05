@@ -147,8 +147,9 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   },
   automation: {
     id: 'automation',
-    label: 'Automation (Pro)',
-    purpose: 'Batch files, play recorded Actions, and the ExtendScript escape hatch (Pro).',
+    label: 'Automation',
+    purpose:
+      'Run several tool calls in one round trip (community), plus batch files, recorded Actions, and the ExtendScript escape hatch (Pro).',
   },
 };
 
@@ -282,7 +283,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_template_recall: 'templates',
   ps_template_delete: 'templates',
 
-  // automation — ps_sequence is dev-tier; the rest are pro (see tool-tiers.ts)
+  // automation — ps_sequence is community; the rest are pro (see tool-tiers.ts)
   ps_sequence: 'automation',
   ps_list_actions: 'automation',
   ps_play_action: 'automation',

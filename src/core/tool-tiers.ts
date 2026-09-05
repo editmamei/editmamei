@@ -69,8 +69,15 @@ export const TOOL_TIERS: Record<string, Tier> = {
 
   // sequence-tools — runs an ordered list of already-registered tool calls in
   // one round trip via the kernel's invokeTool broker, against the current
-  // document. New; not yet verified live.
-  ps_sequence: 'dev',
+  // document. Verified against Photoshop 27.10 before promotion: multi-step
+  // runs, all three on_error modes, and the validation refusals (rollback over
+  // a history-unsafe step, self-nesting), with rollback confirmed by reading
+  // the document back rather than trusting its own report.
+  //
+  // It carries no dispatch deadline of its own (operation-timeouts.ts). Each
+  // step it dispatches keeps its own timeout; the sequence as a whole is
+  // limited between steps instead.
+  ps_sequence: 'community',
 
   // adjustment-tools — bakes consolidated into ps_apply_adjustment
   ps_add_adjustment_layer: 'community',
