@@ -101,13 +101,15 @@ describe('createSequenceTools', () => {
     // as a script timeout and fail every step instantly.
     const conn = makeConnection();
     const registry = new ToolRegistry();
-    // ps_export deliberately: its budget differs from DEFAULT_SCRIPT_TIMEOUT_MS,
-    // so the bounds below can tell the step's own budget apart from a fallback
-    // to the shared default. A tool whose budget happens to equal the default
-    // could not.
+    // ps_get_histogram deliberately: its budget differs from
+    // DEFAULT_SCRIPT_TIMEOUT_MS, so the bounds below can tell the step's own
+    // budget apart from a fallback to the shared default — a tool whose budget
+    // happens to equal the default could not. It is also absent from
+    // HISTORY_UNSAFE_TOOLS, so extending this test to on_error='rollback'
+    // later fails on a budget assertion rather than at validation.
     registry.register(
-      'ps_export',
-      fakeTool('ps_export', async () => {
+      'ps_get_histogram',
+      fakeTool('ps_get_histogram', async () => {
         await runScript(conn.asConnection(), 'inner script');
         return ok();
       })
@@ -118,15 +120,17 @@ describe('createSequenceTools', () => {
     registry.register('ps_sequence', seq);
 
     await registry.execute('ps_sequence', {
-      steps: [{ tool: 'ps_export', args: {} }],
+      steps: [{ tool: 'ps_get_histogram', args: {} }],
     });
 
-    // Exactly one script ran, and it was the STEP's — ps_sequence itself runs
-    // none, which is what makes an unbounded budget safe for it.
+    // One execution, and the bounds below show it carried the STEP's budget.
+    // This length check cannot fail today — ps_sequence holds no connection, so
+    // it cannot add one — but it would catch a future regression that gave it
+    // one. The invariant itself is pinned by the source scan below, not here.
     expect(conn.executions).toHaveLength(1);
     const timeout = conn.executions[0].timeout;
     expect(Number.isFinite(timeout), `runner got a non-finite timeout: ${timeout}`).toBe(true);
-    const own = getToolTimeoutMs('ps_export');
+    const own = getToolTimeoutMs('ps_get_histogram');
     expect(own).not.toBe(DEFAULT_SCRIPT_TIMEOUT_MS);
     const TOLERANCE_MS = 500;
     expect(timeout).toBeGreaterThan(own - TOLERANCE_MS);
@@ -156,9 +160,9 @@ describe('createSequenceTools', () => {
     );
     // Anti-vacuity: a mis-resolved path would read something else (or nothing)
     // and the scan below would pass while guarding nothing.
-    expect(src, 'did not read sequence-tools.ts').toContain('SEQUENCE_TOOL_NAME');
+    expect(src, 'did not read sequence-tools.ts').toContain('createSequenceTools');
     expect(
-      /runScript\s*\(/.test(src),
+      /\brunScript\s*\(|\bexecuteScript\s*\(|PhotoshopAPIFactory|PhotoshopConnection/.test(src),
       'sequence-tools.ts now runs a script directly — pass that call an explicit timeoutMs, ' +
         'because ps_sequence has no dispatch deadline to inherit one from'
     ).toBe(false);
@@ -303,6 +307,13 @@ describe('createSequenceTools', () => {
       vi.stubEnv('EDITMAMEI_SCRIPT_TIMEOUT_MS', env);
       try {
         const mod = await import('@editmamei/utils/operation-timeouts.ts');
+        // The sweep's teeth rest on one entry resolving to a scale of exactly
+        // 0, where Infinity * scale is NaN. Read that off the module rather
+        // than recomputing it here: a clamp added to resolveScriptTimeoutScale
+        // would otherwise leave this loop passing while covering nothing.
+        if (env === '1e-320') {
+          expect(mod.SCRIPT_TIMEOUT_SCALE, 'this entry must underflow the scale to 0').toBe(0);
+        }
         expect(mod.getToolTimeoutMs('ps_sequence'), `EDITMAMEI_SCRIPT_TIMEOUT_MS=${env}`).toBe(
           Number.POSITIVE_INFINITY
         );

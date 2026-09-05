@@ -295,7 +295,15 @@ function resolveScriptTimeoutScale(): number {
   return Math.min(n / DEFAULT_SCRIPT_TIMEOUT_MS, MAX_SCRIPT_TIMEOUT_SCALE);
 }
 
-const SCRIPT_TIMEOUT_SCALE = resolveScriptTimeoutScale();
+/**
+ * The resolved `EDITMAMEI_SCRIPT_TIMEOUT_MS` multiplier, fixed at module load.
+ *
+ * Exported for tests that need to pin scale-DEPENDENT behaviour rather than
+ * re-deriving the arithmetic themselves: a value computed in a test tracks what
+ * the test author believed, not what this function returns, so it goes on
+ * agreeing after the function changes.
+ */
+export const SCRIPT_TIMEOUT_SCALE = resolveScriptTimeoutScale();
 
 /**
  * The budget for one MCP tool call — this tool's table entry if it has one,
