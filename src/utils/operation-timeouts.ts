@@ -107,48 +107,16 @@ export const ANNOTATED_PREVIEW_TIMEOUT_MS = 90_000;
 export const SCENE_CHANNEL_TIMEOUT_MS = 120_000;
 
 /**
- * `ps_sequence`'s NOMINAL step cap — how long it may keep starting steps, at
- * default scaling. The effective value is `sequenceStepCapMs()`, which is what
- * the handler actually reads; under `EDITMAMEI_SCRIPT_TIMEOUT_MS` the two
- * differ. This constant is the anchor the table entry and the cap are both
- * derived from, not a number anything compares against at runtime.
+ * How long `ps_sequence` may keep STARTING steps, measured from its first one
+ * and checked only between them. A soft ceiling on the sequence as a whole: it
+ * never preempts a step already running, and it is not a bound on any script.
+ *
+ * Each step carries its own timeout regardless — that is the point of the
+ * `ps_sequence: Infinity` table entry below. This number exists so a long
+ * sequence of individually-legitimate calls still stops somewhere, not because
+ * anything downstream needs bounding.
  */
 export const SEQUENCE_OVERALL_TIMEOUT_MS = 300_000;
-
-/**
- * Nominal time reserved for `ps_sequence`'s rollback after its cap fires.
- *
- * The cap is checked between steps, so it fires once the sequence is already
- * at its limit — and rollback then has real work to do (re-read the history
- * state, undo back to it, re-read to verify), all through `invokeTool`, which
- * nests inside the sequence's own dispatch and is bounded by what is left of
- * its deadline. With no reserve that is zero, and rollback fails every time on
- * the one path whose purpose is leaving the document clean.
- *
- * A reserve is necessary but NOT sufficient, and the difference matters: it is
- * only ever consulted between steps, so a step that overruns can still spend
- * it. Two ways that happens — a step whose own budget is large, and a step
- * passing an explicit `timeoutMs`, which by design ignores the dispatch
- * deadline entirely (`run-script.ts`). `ps_sequence` therefore also refuses to
- * START a step it cannot afford; see `sequenceStepAffordable()`. Even that is
- * an estimate for the explicit-timeout tools, whose real bound is not in any
- * table. Treat this as narrowing the window, not closing it.
- */
-export const SEQUENCE_ROLLBACK_HEADROOM_MS = 60_000;
-
-/**
- * The reserve as a fraction of the whole dispatch budget.
- *
- * Derived from the two constants above so they stay linked, and applied
- * proportionally rather than as a fixed subtraction. A fixed one breaks at
- * both ends of `EDITMAMEI_SCRIPT_TIMEOUT_MS`: scaled far down, budget and cap
- * both clamp to `SCRIPT_TIMEOUT_FLOOR_MS` and become EQUAL, reinstating the
- * starvation exactly; scaled far up, every nested budget grows while a fixed
- * reserve does not, so the reserve shrinks precisely where rollback needs
- * most. A fraction holds the ordering strictly at every scale.
- */
-const SEQUENCE_HEADROOM_FRACTION =
-  SEQUENCE_ROLLBACK_HEADROOM_MS / (SEQUENCE_OVERALL_TIMEOUT_MS + SEQUENCE_ROLLBACK_HEADROOM_MS);
 
 /**
  * Per-tool dispatch budgets (ms) — see the file doc comment for how this
@@ -258,18 +226,26 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   ps_vector_mask: 5_000,
   ps_apply_image: 5_000,
 
-  // Not a measured budget, and not one script's. ps_sequence runs no script of
-  // its own beyond the history probes, and every step it dispatches nests
-  // inside this call — budgetContextFor caps an inner deadline at the outer's
-  // remaining time — so this number is the ceiling on the whole sequence, and
-  // the shared default would silently cap every step to a fraction of it.
+  // No deadline of its own, deliberately — the one entry here that is not a
+  // duration. ps_sequence dispatches other tools and runs no script itself, so
+  // there is nothing for a deadline to bound that is not already bounded.
   //
-  // Deliberately ABOVE the tool's own step cap, by the rollback headroom: the
-  // cap fires between steps, and the rollback that follows still needs budget
-  // to run. `sequenceStepCapMs()` derives the cap back out of this, so the two
-  // stay in lockstep under EDITMAMEI_SCRIPT_TIMEOUT_MS scaling instead of
-  // drifting apart into the starvation this entry exists to prevent.
-  ps_sequence: SEQUENCE_OVERALL_TIMEOUT_MS + SEQUENCE_ROLLBACK_HEADROOM_MS,
+  // A finite value here is actively harmful rather than merely unnecessary.
+  // budgetContextFor caps a NESTED deadline at min(own, outer.remaining), so
+  // whatever number sits here silently becomes the ceiling on every step too:
+  // a step late in the sequence gets a fraction of its own budget, and the
+  // rollback after a failure gets whatever is left, which is nothing. Infinity
+  // makes min(own, Infinity) === own, so every step and every rollback probe
+  // gets exactly the budget it would get standing alone. Nothing is unbounded
+  // that was ever bounded.
+  //
+  // The sequence as a whole is still limited, by SEQUENCE_OVERALL_TIMEOUT_MS,
+  // checked between steps where stopping is safe.
+  //
+  // Safe because ps_sequence calls no runScript: an Infinity deadline reaching
+  // one would be handed to a platform runner as a timeout. If this tool ever
+  // gains a direct script, give that call an explicit timeoutMs.
+  ps_sequence: Number.POSITIVE_INFINITY,
 };
 
 /**
@@ -340,47 +316,13 @@ export function getToolTimeoutMs(toolName: string): number {
 }
 
 /**
- * How long `ps_sequence` may keep starting steps: its dispatch budget less the
- * rollback headroom.
+ * True for a tool that opts out of a dispatch deadline entirely — currently
+ * only `ps_sequence`, which dispatches other tools rather than running scripts.
  *
- * Derived rather than a constant of its own so the cap and the deadline that
- * actually enforces it cannot drift. `getToolTimeoutMs` applies
- * `EDITMAMEI_SCRIPT_TIMEOUT_MS`; reading the raw table constant here instead
- * would let a scale below 1 shrink the deadline while the sequence still
- * believed it had the full budget — reinstating, silently, the starvation the
- * table entry exists to prevent.
- *
- * `cap < dispatch` holds at EVERY scale, including where `getToolTimeoutMs`
- * clamps to `SCRIPT_TIMEOUT_FLOOR_MS`, because the reserve is a fraction of
- * the budget rather than a fixed subtraction from it. At default scaling the
- * cap is exactly `SEQUENCE_OVERALL_TIMEOUT_MS`.
+ * Exposed so the callers that reason about a budget as a duration (a message
+ * quoting it, a test asserting an ordering) can tell the two kinds apart rather
+ * than formatting `Infinity` at a user.
  */
-export function sequenceStepCapMs(): number {
-  return getToolTimeoutMs('ps_sequence') - sequenceRollbackHeadroomMs();
-}
-
-/**
- * The reserve, in ms, at the scale currently in force. At least 1ms so the cap
- * is strictly below the dispatch budget even when the budget is at its floor.
- */
-export function sequenceRollbackHeadroomMs(): number {
-  return Math.max(Math.round(getToolTimeoutMs('ps_sequence') * SEQUENCE_HEADROOM_FRACTION), 1);
-}
-
-/**
- * Whether `ps_sequence` can afford to START a step bounded by `stepBudgetMs`
- * and still have its reserve intact, given `remainingMs` of dispatch deadline.
- *
- * This is the check the cap alone cannot make. The cap is elapsed-time-based
- * and consulted only between steps, so it happily green-lights a step that
- * will run past the deadline and leave rollback nothing. Comparing the step's
- * own bound against what is actually left refuses that step instead.
- *
- * It is an ESTIMATE, deliberately named as one. A tool passing its own
- * explicit `timeoutMs` may run longer than any table entry predicts — that is
- * `run-script.ts`'s documented contract, not a bug — so a step can still
- * overrun what this reserved. It narrows the window; it does not close it.
- */
-export function sequenceStepAffordable(remainingMs: number, stepBudgetMs: number): boolean {
-  return remainingMs >= stepBudgetMs + sequenceRollbackHeadroomMs();
+export function hasUnboundedBudget(toolName: string): boolean {
+  return !Number.isFinite(getToolTimeoutMs(toolName));
 }

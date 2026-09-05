@@ -8,12 +8,7 @@
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import { validateArgs, type JsonSchemaObject, type JsonSchemaProperty } from '../utils/validate.js';
 import { toolErrorResult } from '../utils/tool-helpers.js';
-import {
-  getToolTimeoutMs,
-  sequenceStepAffordable,
-  sequenceStepCapMs,
-} from '../utils/operation-timeouts.js';
-import { currentToolBudget } from '../utils/tool-budget-context.js';
+import { SEQUENCE_OVERALL_TIMEOUT_MS } from '../utils/operation-timeouts.js';
 
 type InvokeTool = (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
 
@@ -444,13 +439,11 @@ function buildMessage(input: {
   capExceeded: boolean;
   rolledBack: boolean;
   rollbackMessage: string;
-  capMs: number;
 }): string {
-  const { ranSteps, total, onError, failedStep, capExceeded, rolledBack, rollbackMessage, capMs } =
-    input;
+  const { ranSteps, total, onError, failedStep, capExceeded, rolledBack, rollbackMessage } = input;
 
   if (capExceeded && failedStep) {
-    const base = `Sequence ran out of time before step ${failedStep.index + 1} (${failedStep.tool}); its ${capMs}ms step budget was spent, stopped after ${ranSteps}/${total} step(s).`;
+    const base = `Sequence exceeded its overall time budget (${SEQUENCE_OVERALL_TIMEOUT_MS}ms) before step ${failedStep.index + 1} (${failedStep.tool}) could run; stopped after ${ranSteps}/${total} step(s).`;
     if (onError !== 'rollback') return base;
     return rolledBack
       ? `${base} Document rolled back: ${rollbackMessage}.`
@@ -505,14 +498,6 @@ async function runSequence(
     capturedHistory = captured;
   }
 
-  // Read once: the cap must not move mid-sequence. It sits below this call's
-  // dispatch deadline so rollback still has budget when it fires — but note
-  // startedAt is LATER than the dispatch itself, because the history capture
-  // above ran first. The cap is measured from here while the deadline was
-  // measured from dispatch, so the capture's cost comes out of the reserve,
-  // narrowing it. That is one reason the elapsed-time cap alone is not enough
-  // and the affordability check below consults the real deadline.
-  const capMs = sequenceStepCapMs();
   const startedAt = now();
   const entries: StepEntry[] = [];
   let failedStep: FailedStep | null = null;
@@ -524,17 +509,12 @@ async function runSequence(
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
 
-    // Two independent stops. The first is elapsed time against the cap. The
-    // second asks the deadline itself whether this step still fits alongside
-    // the rollback reserve — the cap cannot answer that, because a previous
-    // step may have overrun (a large per-tool budget, or an explicit timeoutMs
-    // that ignores the deadline by design) and spent time the cap never saw.
-    const budget = currentToolBudget();
-    const unaffordable =
-      budget !== undefined &&
-      !sequenceStepAffordable(budget.deadline - Date.now(), getToolTimeoutMs(step.tool));
-
-    if (now() - startedAt > capMs || unaffordable) {
+    // Checked between steps only, so it never preempts a step already running
+    // and never leaves one killed mid-script. Stopping here is safe in a way it
+    // was not when this call carried a deadline of its own: the rollback below
+    // dispatches through invokeTool, and with no outer deadline to inherit each
+    // of its probes gets its own full budget however long the sequence has run.
+    if (now() - startedAt > SEQUENCE_OVERALL_TIMEOUT_MS) {
       capExceeded = true;
       if (failedStep === null) failedStep = { index: i, tool: step.tool };
       entries.push({
@@ -543,9 +523,7 @@ async function runSequence(
         ok: false,
         duration_ms: 0,
         result: syntheticError(
-          unaffordable
-            ? `Sequence stopped before this step: too little of its ${budget?.budgetMs}ms budget remained to run it and still roll back if it failed.`
-            : `Sequence exceeded its step budget (${capMs}ms) before this step could run.`
+          `Sequence exceeded its overall time budget (${SEQUENCE_OVERALL_TIMEOUT_MS}ms) before this step could run.`
         ),
       });
       if (onError === 'rollback') {
@@ -612,7 +590,6 @@ async function runSequence(
     capExceeded,
     rolledBack,
     rollbackMessage,
-    capMs,
   });
 
   const common = {

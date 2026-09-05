@@ -5,10 +5,9 @@ import { tierOf, TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
 import {
   getToolTimeoutMs,
-  sequenceStepCapMs,
+  hasUnboundedBudget,
   DEFAULT_SCRIPT_TIMEOUT_MS,
   SEQUENCE_OVERALL_TIMEOUT_MS,
-  SEQUENCE_ROLLBACK_HEADROOM_MS,
 } from '@editmamei/utils/operation-timeouts.ts';
 import {
   budgetContextFor,
@@ -80,120 +79,166 @@ describe('createSequenceTools', () => {
     expect(groupOf('ps_sequence')).toBe('automation');
   });
 
-  it('its dispatch budget is the whole-sequence budget, not the shared default', () => {
-    // Every step nests inside this one call, so the dispatch deadline bounds
-    // all of them together. If it were the shared default a long sequence
-    // would starve its later steps and kill one mid-script, well before the
-    // between-steps budget this tool documents ever applied.
-    expect(getToolTimeoutMs('ps_sequence')).toBeGreaterThan(DEFAULT_SCRIPT_TIMEOUT_MS);
-    expect(getToolTimeoutMs('ps_sequence')).toBeGreaterThanOrEqual(SEQUENCE_OVERALL_TIMEOUT_MS);
+  it('carries no dispatch deadline of its own', () => {
+    // The tool runs no script itself; it dispatches other tools that are each
+    // already bounded. A finite budget here would be inherited by every one of
+    // them through budgetContextFor's min(own, outer.remaining) and become
+    // their real ceiling, which is the whole defect this entry avoids.
+    expect(getToolTimeoutMs('ps_sequence')).toBe(Number.POSITIVE_INFINITY);
+    expect(hasUnboundedBudget('ps_sequence')).toBe(true);
+    // Every other community tool stays finite — this is a deliberate exception,
+    // not a licence for the table to hold sentinels generally.
+    expect(getToolTimeoutMs('ps_create_layer')).toBeLessThanOrEqual(DEFAULT_SCRIPT_TIMEOUT_MS);
+    expect(hasUnboundedBudget('ps_create_layer')).toBe(false);
   });
 
-  it('the step cap sits strictly BELOW the dispatch budget, by the rollback headroom', () => {
-    // The load-bearing ordering. The cap is checked between steps, so it
-    // fires when the sequence is already at its limit — and the rollback
-    // that follows runs through invokeTool, nested inside this same dispatch
-    // and bounded by whatever is left of its deadline. Equal values put that
-    // rollback at exactly zero remaining, so it fails every time on the one
-    // path whose whole purpose is leaving the document clean.
-    const dispatch = getToolTimeoutMs('ps_sequence');
-    const cap = sequenceStepCapMs();
-    expect(cap).toBeLessThan(dispatch);
-    expect(dispatch - cap).toBeGreaterThanOrEqual(SEQUENCE_ROLLBACK_HEADROOM_MS);
-
-    // The ordering above holds however the table is set, because the cap is
-    // derived by subtraction. What the TABLE controls is where the cap
-    // actually lands — set the entry to the documented budget rather than
-    // budget-plus-headroom and every sequence silently loses the headroom's
-    // worth of running time. Pin the cap to the number the tool documents.
-    expect(cap).toBe(SEQUENCE_OVERALL_TIMEOUT_MS);
-  });
-
-  it('refuses a step it cannot afford, and rolls back with real budget left', async () => {
-    // Driven through a REAL ToolRegistry so every step and every rollback call
-    // gets a genuine nested budget context — budgetContextFor caps an inner
-    // deadline at min(own, outer.remaining), which is the mechanism under test
-    // and the one a direct handler call cannot exercise at all.
-    //
-    // The outer context leaves far less than a step plus the reserve, standing
-    // in for a sequence whose earlier steps overran. The elapsed-time cap
-    // cannot see that; only comparing the step's own bound against what the
-    // deadline actually has left can.
+  it('gives every nested step its own full budget, however long the sequence has run', async () => {
+    // The property the Infinity entry buys, and the one that made all the
+    // reserve arithmetic unnecessary: min(own, Infinity) === own, so a step
+    // dispatched last sees exactly what it would see standing alone. Driven
+    // through a real ToolRegistry so a genuine nested budgetContextFor exists.
     const registry = new ToolRegistry();
-    const seenRemaining: number[] = [];
+    const seen = new Map<string, number>();
 
-    const record = (name: string) => {
-      const b = currentToolBudget();
-      seenRemaining.push(b ? b.deadline - Date.now() : Number.NaN);
-      return name;
-    };
-    registry.register(
-      'ps_inspect',
-      fakeTool('ps_inspect', async () => {
-        record('ps_inspect');
-        return historyResult(5, { stateName: 'S5' });
-      })
-    );
-    registry.register(
-      'ps_undo',
-      fakeTool('ps_undo', async () => {
-        record('ps_undo');
-        return ok();
-      })
-    );
-    registry.register(
-      'ps_create_layer',
-      fakeTool('ps_create_layer', async () => {
-        record('ps_create_layer');
-        return ok();
-      })
-    );
+    for (const name of ['ps_inspect', 'ps_undo', 'ps_create_layer', 'ps_read_scene']) {
+      registry.register(
+        name,
+        fakeTool(name, async () => {
+          const b = currentToolBudget();
+          seen.set(name, b ? b.deadline - Date.now() : Number.NaN);
+          return name === 'ps_inspect' ? historyResult(5, { stateName: 'S5' }) : ok();
+        })
+      );
+    }
 
     const invoke: FakeInvoke = (name, args) => registry.execute(name, args) as Promise<ToolResult>;
     const [seq] = createSequenceTools(invoke, allow);
     registry.register('ps_sequence', seq);
 
-    const result = (await runWithToolBudget(budgetContextFor('outer', 1_500), () =>
-      registry.execute('ps_sequence', {
-        on_error: 'rollback',
-        steps: [{ tool: 'ps_create_layer', args: { name: 'a' } }],
-      })
-    )) as ToolResult & { structuredContent?: Record<string, unknown> };
+    // The clock has to actually MOVE for this to discriminate: a sequence that
+    // finishes instantly is under every finite budget too. Step one jumps it
+    // 200s, so a finite deadline would have only ~160s left when step two is
+    // dispatched and would clamp ps_read_scene's 164s below its own budget.
+    vi.useFakeTimers();
+    try {
+      const start = Date.now();
+      registry.register(
+        'ps_create_layer',
+        fakeTool('ps_create_layer', async () => {
+          const b = currentToolBudget();
+          seen.set('ps_create_layer', b ? b.deadline - Date.now() : Number.NaN);
+          vi.setSystemTime(start + 200_000);
+          return ok();
+        })
+      );
 
-    // The step never ran: refused on affordability, not attempted and failed.
-    expect(seenRemaining.length).toBeGreaterThan(0);
-    expect(result.structuredContent?.ran_steps).toBe(0);
-    expect(result.structuredContent?.cap_exceeded).toBe(true);
-    // The point of the reserve: rollback did not merely get attempted, it
-    // VERIFIED. Under the old equal-budget arrangement its nested reads find
-    // zero remaining, runScript throws before reaching Photoshop, and this
-    // comes back false with reason undo_failed.
-    expect(result.structuredContent?.rolled_back).toBe(true);
-    for (const remaining of seenRemaining) expect(remaining).toBeGreaterThan(0);
+      await registry.execute('ps_sequence', {
+        on_error: 'rollback',
+        steps: [
+          { tool: 'ps_create_layer', args: { name: 'a' } },
+          { tool: 'ps_read_scene', args: {} },
+        ],
+      });
+
+      // Each step's remaining time is its OWN budget, not a slice of a shared
+      // one — including the step dispatched 200s in.
+      const TOLERANCE_MS = 500;
+      for (const tool of ['ps_create_layer', 'ps_read_scene']) {
+        const remaining = seen.get(tool)!;
+        const own = getToolTimeoutMs(tool);
+        expect(remaining, `${tool} should see its own budget`).toBeGreaterThan(own - TOLERANCE_MS);
+        expect(remaining).toBeLessThanOrEqual(own);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('keeps the cap strictly below the dispatch budget at every scale', async () => {
+  it('leaves rollback a full budget even after the sequence has run its cap', async () => {
+    // The failure that survived three fixes: with a finite deadline the cap
+    // could only fire once that deadline was spent, so performRollback's own
+    // probes found nothing left and returned undo_failed every time. With no
+    // deadline to inherit there is nothing to run out of.
+    const registry = new ToolRegistry();
+    let inspectRemaining = 0;
+
+    registry.register(
+      'ps_inspect',
+      fakeTool('ps_inspect', async () => {
+        const b = currentToolBudget();
+        inspectRemaining = b ? b.deadline - Date.now() : Number.NaN;
+        return historyResult(5, { stateName: 'S5' });
+      })
+    );
+    registry.register(
+      'ps_undo',
+      fakeTool('ps_undo', async () => ok())
+    );
+
+    const invoke: FakeInvoke = (name, args) => registry.execute(name, args) as Promise<ToolResult>;
+    // `now` must resolve Date.now at CALL time: the default binds the function
+    // reference when the factory runs, which here is before the timers are
+    // faked, so the cap would read a clock the test never moves.
+    const [seq] = createSequenceTools(invoke, allow, { now: () => Date.now() });
+    registry.register('ps_sequence', seq);
+
+    vi.useFakeTimers();
+    let result: ToolResult & { structuredContent?: Record<string, unknown> };
+    try {
+      const start = Date.now();
+      // Step one burns the whole allowance, exactly as a real slow step does,
+      // so the cap fires on the next iteration with the deadline genuinely
+      // aged. Advancing the clock BEFORE dispatch would not work: the deadline
+      // is computed at dispatch, so it would simply start late and the test
+      // could not tell a finite budget from an absent one.
+      registry.register(
+        'ps_create_layer',
+        fakeTool('ps_create_layer', async () => {
+          vi.setSystemTime(start + SEQUENCE_OVERALL_TIMEOUT_MS + 1_000);
+          return ok();
+        })
+      );
+      result = (await registry.execute('ps_sequence', {
+        on_error: 'rollback',
+        steps: [
+          { tool: 'ps_create_layer', args: { name: 'a' } },
+          { tool: 'ps_create_layer', args: { name: 'b' } },
+        ],
+      })) as ToolResult & { structuredContent?: Record<string, unknown> };
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(result.structuredContent?.cap_exceeded).toBe(true);
+    expect(result.structuredContent?.ran_steps).toBe(1);
+    expect(result.structuredContent?.rolled_back).toBe(true);
+    // Rollback's probe got ps_inspect's whole budget, not a remainder. Under a
+    // finite sequence deadline this is what came back <= 0, producing
+    // undo_failed on every cap-path rollback.
+    expect(inspectRemaining).toBeGreaterThan(getToolTimeoutMs('ps_inspect') - 500);
+  });
+
+  it('stays unbounded at every EDITMAMEI_SCRIPT_TIMEOUT_MS scale', async () => {
     // The scale is resolved once at module load, so each value needs a fresh
-    // module. This is the regime a fixed subtraction broke: scaled far down,
-    // budget and cap both clamped to the floor and became EQUAL, which is
-    // exactly the starvation the reserve exists to prevent — and no test
-    // reached it, because the suite runs with the variable unset.
-    for (const env of ['400', '500', '5000', '30000', '300000']) {
+    // module. Scaling multiplies the table entry, and Infinity is invariant
+    // under that — which is what removes the whole floor-clamp regime that
+    // broke two earlier attempts, rather than making it merely survivable.
+    for (const env of ['400', '5000', '30000', '300000']) {
       vi.resetModules();
       vi.stubEnv('EDITMAMEI_SCRIPT_TIMEOUT_MS', env);
-      const mod = await import('@editmamei/utils/operation-timeouts.ts');
-      const dispatch = mod.getToolTimeoutMs('ps_sequence');
-      const cap = mod.sequenceStepCapMs();
-      expect(
-        cap,
-        `EDITMAMEI_SCRIPT_TIMEOUT_MS=${env}: cap must stay under the budget`
-      ).toBeLessThan(dispatch);
-      expect(cap, `EDITMAMEI_SCRIPT_TIMEOUT_MS=${env}: cap must leave room to run`).toBeGreaterThan(
-        0
-      );
+      try {
+        const mod = await import('@editmamei/utils/operation-timeouts.ts');
+        expect(mod.getToolTimeoutMs('ps_sequence'), `EDITMAMEI_SCRIPT_TIMEOUT_MS=${env}`).toBe(
+          Number.POSITIVE_INFINITY
+        );
+        // And a scaled ordinary tool stays finite, so the sentinel isn't
+        // leaking into the rest of the table through the scale arithmetic.
+        expect(Number.isFinite(mod.getToolTimeoutMs('ps_create_layer'))).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+        vi.resetModules();
+      }
     }
-    vi.unstubAllEnvs();
-    vi.resetModules();
   });
 
   it('every HISTORY_UNSAFE_TOOLS entry names a real, currently classified tool', () => {
@@ -725,7 +770,7 @@ describe('createSequenceTools', () => {
     expect(sc.rolled_back).toBe(true);
     expect(sc.failed_step).toEqual({ index: 1, tool: 'tool_b' });
     // buildMessage's capExceeded-and-rolledBack arm names both the cap AND the rollback.
-    expect(textOf(res)).toMatch(/ran out of time .* step budget was spent/);
+    expect(textOf(res)).toMatch(/exceeded its overall time budget/);
     expect(textOf(res)).toMatch(/Document rolled back/);
   });
 
@@ -863,7 +908,7 @@ describe('createSequenceTools', () => {
     // The never-run synthetic cap entry must not count as a step that ran.
     expect(sc.ran_steps).toBe(1);
     expect(res.isError).toBe(true);
-    expect(textOf(res)).toMatch(/ran out of time .* step budget was spent/);
+    expect(textOf(res)).toMatch(/exceeded its overall time budget/);
   });
 
   it("a time-budget abort makes `final` the last REAL step's result, not the synthetic cap stub, and keeps its image", async () => {
@@ -892,7 +937,7 @@ describe('createSequenceTools', () => {
     // image, since it's the real last step, not the synthetic one.
     expect(sc.final.content).toEqual([{ type: 'text', text: 'tool_a ok' }, image]);
     // The cap notice still surfaces in the text and status fields.
-    expect(textOf(res)).toMatch(/ran out of time .* step budget was spent/);
+    expect(textOf(res)).toMatch(/exceeded its overall time budget/);
   });
 });
 
