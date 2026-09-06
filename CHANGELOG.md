@@ -10,6 +10,79 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-09-06
+
+### Added
+
+- **Run a whole series of edits in one request.** Several tool calls you already know you want can
+  now be sent together and run in order against the current document, instead of one round trip
+  each.
+  - `ps_sequence` moves out of development into the shipped surface.
+  - Best for dependent steps you do not need to look at in between — select, adjust, then merge.
+    If the next step depends on inspecting this one, keep calling the tools individually.
+  - On a failure it can stop, carry on, or undo the whole series back to where it started. The undo
+    is checked against the document afterwards rather than assumed, and it reports plainly when it
+    could not restore — for instance when Photoshop's history buffer has already discarded the
+    state it was aiming for.
+  - When you ask for undo-on-failure, steps that fall outside what an undo can reach are refused
+    before anything runs: writing a file, opening or closing documents, switching the active
+    document, and moving the history cursor directly.
+  - A series runs at most 25 steps, cannot contain another series, and stops starting new steps
+    after five minutes. Each step keeps its own time limit exactly as it would on its own.
+
+- **Select the in-focus part of an image.** Photoshop's Focus Area selects by depth-of-field
+  sharpness, which is the fastest way to separate a subject from a blurred background.
+  - Available as `ps_select` with `mode: "focus_area"`. It was never a shipped tool before, so
+    nothing you were using has moved.
+
+### Changed
+
+- **Results no longer carry a preview image unless you ask for one.** The annotated picture was
+  most of what a result weighed, and it was being returned whether or not anyone looked at it.
+  - `ps_detect` and `ps_read_scene` now take `annotate: true` when you want the marked-up image.
+    The measurements they return are unchanged.
+  - Inside a series of calls, an inline preview is kept only for the last step.
+
+- **The AI selection tools now say what they actually selected.** Instead of reporting only that a
+  selection was made, they return its measured extent, so the next decision is based on the
+  document rather than an assumption.
+
+- **Each tool now has its own time limit, replacing the flat thirty seconds.** The limits come from
+  how long each tool really takes, so a legitimately slow operation is no longer cut off — but most
+  tools are now held to less than thirty seconds, not more.
+  - Six tools were raised, the largest being scene reading and channel work, which could previously
+    fail on a big document even when Photoshop had finished.
+  - Around half were lowered, so a fast tool now reports a genuine hang sooner. If an operation
+    that used to succeed starts timing out on your machine, raise every limit at once by setting
+    `EDITMAMEI_SCRIPT_TIMEOUT_MS` — see the install guide.
+  - Where a tool asks for a specific amount of time for a particular step, that request is honoured
+    exactly, above or below its own limit.
+
+- **macOS 13 or later is now required.** The Mac binaries are built with a newer toolchain that
+  will not load on macOS 12.
+  - Photoshop 2026 itself requires macOS 13, so no supported Photoshop install is affected.
+  - Windows requirements are unchanged.
+
+### Fixed
+
+- **Brightness readings taken from the histogram were wrong on saturated images.** Clipping,
+  percentile, median and spread readings were computed from a mixture of the colour channels rather
+  than from actual pixel brightness, and were furthest off exactly where colour is strongest.
+  - Those readings are now taken from the per-pixel brightness Photoshop itself reports.
+  - The average was correct before and stays correct, but it does move slightly: the weighting is
+    0.30/0.59/0.11, so it will not match an average computed as Rec. 709.
+  - Where the horizon cannot be established from the image, it is now refused rather than estimated.
+
+- **Bug reports now identify what kind of failure occurred.** Every failure recorded in your local
+  session log is classified — no document open, layer not found, Photoshop busy, timed out —
+  instead of some being left unlabelled.
+  - This is what a diagnostic bundle carries, so a report distinguishes a genuine defect from a
+    call that simply asked for something that was not there. The error text a tool returns to your
+    assistant is unchanged.
+
+- **A session's summary is filed under the day the work happened.** Work spanning midnight, or a
+  session that ended unexpectedly, is no longer attributed to the wrong day.
+
 ## [1.3.0] — 2026-08-29
 
 ### Added
