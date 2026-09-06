@@ -10,6 +10,66 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-09-06
+
+### Added
+
+- **Run a whole series of edits in one request.** Several tool calls you already know you want can
+  now be sent together and run in order against the current document, instead of one round trip
+  each.
+  - `ps_sequence` moves out of development into the shipped surface.
+  - Best for dependent steps you do not need to look at in between — select, adjust, merge, or a
+    repeated resize-and-export pass. If the next step depends on inspecting this one, keep calling
+    the tools individually.
+  - On a failure it can stop, carry on, or undo the whole series back to where it started. The undo
+    is checked against the document afterwards rather than assumed, and it reports plainly when it
+    could not restore — for instance when Photoshop's history buffer has already discarded the
+    state it was aiming for.
+  - Steps that write a file to disk, open or close documents, or move the history cursor are
+    refused up front when undo-on-failure is requested, because those sit outside what an undo can
+    reach.
+  - Each step keeps its own time limit exactly as it would on its own, and the series as a whole
+    stops starting new steps after five minutes.
+
+### Changed
+
+- **Results no longer carry a preview image unless you ask for one.** Read-only tools return their
+  measurements and leave the picture out by default, which is most of what a result used to weigh.
+  - Ask for a preview when you want to look at something; the numbers you steer by are unaffected.
+  - In a sequence, an inline preview is kept only for the last step.
+
+- **The AI selection tools now say what they actually selected.** Instead of reporting only that a
+  selection was made, they return its measured extent, so the next decision is based on the
+  document rather than an assumption.
+  - Focus Area is now a mode on the general selection tool rather than a separate tool.
+
+- **Each tool now has its own time limit, derived from how long it really takes.** A slow but
+  legitimate operation is no longer cut off at a flat thirty seconds, and a genuinely stuck one
+  still surfaces.
+  - Where a tool already asked for more time for a specific step, that request still wins.
+
+- **macOS 13 or later is now required.** The Mac binaries are built with a newer toolchain that
+  will not load on macOS 12.
+  - Photoshop 2026 itself already requires macOS 13, so no supported Photoshop install is affected.
+  - Windows requirements are unchanged.
+
+### Fixed
+
+- **Perception no longer presents a calculated guess as something it measured.** Values that were
+  inferred rather than read from the document are no longer reported as measurements.
+  - The brightness reading is now the per-pixel luminance Photoshop itself reports. Note the
+    weighting is not Rec. 709, so a brightness average will not match one computed that way.
+  - Where the horizon cannot be established from the image, it is now refused rather than
+    estimated.
+
+- **A failed call now says what kind of failure it was.** Every failure carries a class — the
+  document was not open, the layer was not found, Photoshop was busy — instead of a bare message.
+  - This makes a genuine defect distinguishable from a call that was simply asking for something
+    that was not there.
+
+- **A session's summary is filed under the day the work happened.** Work spanning midnight, or a
+  session that ended unexpectedly, is no longer attributed to the wrong day.
+
 ## [1.3.0] — 2026-08-29
 
 ### Added
