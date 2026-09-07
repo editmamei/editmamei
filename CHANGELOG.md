@@ -10,7 +10,7 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
-## [1.4.0] — 2026-09-06
+## [1.4.0] — 2026-09-07
 
 ### Added
 
@@ -25,8 +25,8 @@ earlier versions are preserved in the archived wiki repository's
     could not restore — for instance when Photoshop's history buffer has already discarded the
     state it was aiming for.
   - When you ask for undo-on-failure, steps that fall outside what an undo can reach are refused
-    before anything runs: writing a file, opening or closing documents, switching the active
-    document, and moving the history cursor directly.
+    before anything runs: writing a file, creating, opening or closing documents, switching the
+    active document, and moving the history cursor directly.
   - A series runs at most 25 steps, cannot contain another series, and stops starting new steps
     after five minutes. Each step keeps its own time limit exactly as it would on its own.
 
@@ -46,6 +46,7 @@ earlier versions are preserved in the archived wiki repository's
 - **The AI selection tools now say what they actually selected.** Instead of reporting only that a
   selection was made, they return its measured extent, so the next decision is based on the
   document rather than an assumption.
+  - `ps_select_subject`, `ps_select_sky`, and `ps_select` with `mode: "focus_area"`.
 
 - **Each tool now has its own time limit, replacing the flat thirty seconds.** The limits come from
   how long each tool really takes, so a legitimately slow operation is no longer cut off — but most
@@ -58,6 +59,13 @@ earlier versions are preserved in the archived wiki repository's
   - Where a tool asks for a specific amount of time for a particular step, that request is honoured
     exactly, above or below its own limit.
 
+- **A horizon that cannot be established is now reported as absent, not estimated.** Scene reads
+  used to return a guessed horizon line; they now say when the image does not support one.
+  - The horizon in a scene read carries whether it was detected, and a reason when it was not, so
+    code that reads its position should check that first.
+  - `ps_select_by_reference` targets that lean on the horizon — `above_horizon` among them — now
+    report honest absence instead of scoring against a guess.
+
 - **macOS 13 or later is now required.** The Mac binaries are built with a newer toolchain that
   will not load on macOS 12.
   - Photoshop 2026 itself requires macOS 13, so no supported Photoshop install is affected.
@@ -65,13 +73,14 @@ earlier versions are preserved in the archived wiki repository's
 
 ### Fixed
 
-- **Brightness readings taken from the histogram were wrong on saturated images.** Clipping,
+- **Brightness readings from the histogram were wrong on saturated images.** Clipping,
   percentile, median and spread readings were computed from a mixture of the colour channels rather
   than from actual pixel brightness, and were furthest off exactly where colour is strongest.
-  - Those readings are now taken from the per-pixel brightness Photoshop itself reports.
-  - The average was correct before and stays correct, but it does move slightly: the weighting is
-    0.30/0.59/0.11, so it will not match an average computed as Rec. 709.
-  - Where the horizon cannot be established from the image, it is now refused rather than estimated.
+  - Affects `ps_get_histogram` with `channel: "luminosity"` or `"composite"`. Those readings
+    are now taken from the per-pixel brightness Photoshop itself reports.
+  - The average was correct before and stays correct, but on an RGB document it moves slightly:
+    the weighting is 0.30/0.59/0.11, so it will not match an average computed as Rec. 709. Lab and
+    Grayscale documents read their own lightness channel and are unaffected.
 
 - **Bug reports now identify what kind of failure occurred.** Every failure recorded in your local
   session log is classified — no document open, layer not found, Photoshop busy, timed out —
