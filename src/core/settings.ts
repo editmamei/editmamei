@@ -25,7 +25,7 @@ export interface TelemetrySettings {
   usage: boolean;
   /** Category B (diagnostic detail) — opt-in: defaults false. */
   diagnostics: boolean;
-  /** Anonymous salted random id, minted once on first run. Never derived from PII. */
+  /** Salted random id, minted once on first run. Never derived from PII, but stable — pseudonymous, not anonymous. */
   install_id: string;
 }
 
@@ -70,7 +70,7 @@ export function settingsPath(opts: LoadSettingsOptions = {}): string {
   return join(settingsDir(opts), SETTINGS_FILENAME);
 }
 
-/** Mint an anonymous install id: 32 hex chars. Matches the server's id pattern. */
+/** Mint an install id: 32 hex chars, salted and random but stable — pseudonymous, not anonymous. Matches the server's id pattern. */
 export function mintInstallId(): string {
   return randomBytes(16).toString('hex');
 }

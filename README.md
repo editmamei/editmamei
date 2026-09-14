@@ -131,7 +131,7 @@ Settings live in `~/.editmamei/settings.json`, managed by the `editmamei config`
 
 ```bash
 editmamei config list
-editmamei config set telemetry.usage false      # turn off anonymous usage telemetry
+editmamei config set telemetry.usage false      # turn off usage telemetry
 editmamei config set ps_path "/path/to/Photoshop"
 ```
 
@@ -139,7 +139,7 @@ editmamei config set ps_path "/path/to/Photoshop"
 
 ## Privacy
 
-Editmamei runs on your computer and edits in your own Photoshop. No image content, document data, or file paths are sent to Editmamei's servers. It reports anonymous, content-free usage telemetry (on by default, turn it off with `editmamei config set telemetry.usage false`). When your AI assistant needs to see a result, Editmamei sends it a downscaled preview, the same as dropping a photo into a chat with that assistant. Every field is documented in [privacy.md](docs/privacy.md).
+Editmamei runs on your computer and edits in your own Photoshop. No image content, document data, or file paths are sent to Editmamei's servers. It reports content-free usage telemetry (on by default, turn it off with `editmamei config set telemetry.usage false`). When your AI assistant needs to see a result, Editmamei sends it a downscaled preview, the same as dropping a photo into a chat with that assistant. Every field is documented in [privacy.md](docs/privacy.md), including [your rights, and the legal basis](docs/privacy.md#your-rights-and-the-legal-basis).
 
 The source in this repository is the same code published to npm, so none of the above has to be taken on trust.
 

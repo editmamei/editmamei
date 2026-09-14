@@ -8,8 +8,8 @@ install (the `editmamei` MCP server), not about the
 [privacy policy](https://editmamei.com/privacy).
 
 The short version: your photos aren't uploaded to us. The only thing Editmamei sends to its own
-servers is anonymous, content-free usage data; it's documented field-for-field below, and you can
-switch it off with one command. (When your AI assistant needs to see an edit, a downscaled preview
+servers is content-free usage data, tied to a random install ID; it's documented field-for-field
+below, and you can switch it off with one command. (When your AI assistant needs to see an edit, a downscaled preview
 goes to that assistant; covered under "Your AI assistant is a cloud service" below.)
 
 ---
@@ -40,7 +40,7 @@ uploads it. You review the file and attach it to a bug report yourself.
 The bundle is sanitized to the same hard line as everything above:
 
 - **No image or document content**, **no tool arguments**, and file paths reduced to basenames.
-- It holds recent server log lines, your OS / Editmamei / Photoshop versions, your anonymous
+- It holds recent server log lines, your OS / Editmamei / Photoshop versions, your
   `install_id`, and a content-free summary of recent tool calls (name, success, duration, error
   class — never the arguments). If a Claude Desktop log is present, a redacted tail is included
   with every request and response **body** removed — only method names and timing are kept.
@@ -56,9 +56,9 @@ run. These are the keys:
 
 | Key | Type | Default | What it does |
 |---|---|---|---|
-| `telemetry.usage` | boolean | `true` (on) | Anonymous, content-free usage and reliability data. The opt-out tier. |
+| `telemetry.usage` | boolean | `true` (on) | Content-free usage and reliability data. The opt-out tier. |
 | `telemetry.diagnostics` | boolean | `false` (off) | Extra sanitized error detail for bug-hunting. The opt-in tier. |
-| `telemetry.install_id` | string | random | Anonymous random ID, minted once, so installs can be counted without identifying you. **Read-only**: you can see it, but it isn't something you set. |
+| `telemetry.install_id` | string | random | A random ID, minted once, so installs can be counted without knowing who you are. It is not derived from anything about you, but it is stable, so it is still personal data and you have rights over it — see [Your rights, and the legal basis](#your-rights-and-the-legal-basis). **Read-only**: you can see it, but it isn't something you set. |
 | `privacy.send_previews_to_llm` | boolean | `true` | Reserved for an upcoming per-feature control over sending visual previews to your AI assistant. **Not yet enforced**: setting it has no effect in the current build. |
 | `ps_path` | string \| null | `null` | Pin a specific Photoshop binary. `null` = auto-detect (the `PHOTOSHOP_PATH` env var still wins if set). |
 | `update_check` | boolean | `true` (on) | Check the public npm registry at startup for a newer version (see "Update check" below). The opt-out tier. |
@@ -108,7 +108,7 @@ Claude Desktop without editing any file.
 **First-run notice.** The first time Editmamei creates the settings file, it prints this to its
 log so the default is never a surprise:
 
-> First run: Editmamei collects anonymous, content-free usage telemetry (tool name, success,
+> First run: Editmamei collects content-free usage telemetry (tool name, success,
 > duration, bytes returned, version/edition/OS/PS-version, install channel, which AI client
 > connected, Node/OS/architecture versions, and per-session counts like edits made and retries)
 > to find what breaks. It never sends image content, file paths, or personal data. Opt out
@@ -150,7 +150,7 @@ hidden fields.
 |---|---|
 | `v` | Schema version (currently `2`). |
 | `type` | `"usage"`. |
-| `install_id` | Your anonymous random install ID. |
+| `install_id` | Your random install ID. |
 | `ts_bucket` | The **day** only (`YYYY-MM-DD`), never a precise timestamp. |
 | `editmamei_version` | Which Editmamei version you're on. |
 | `edition` | `community` or `pro`. |
@@ -344,7 +344,7 @@ content.
 - Full file paths.
 - A precise timestamp (day-granularity only).
 - A session ID or anything that links events back to a specific editing session beyond the
-  anonymous install ID.
+  install ID.
 
 ---
 
@@ -375,9 +375,11 @@ Events that fail to send — offline, a network hiccup, the endpoint unreachable
 small, bounded local queue and retried at the next launch; they are never queued indefinitely.
 
 Per-install daily counts derived from Category A events (calls, failures, edits, exports, and
-the like) are kept indefinitely against your anonymous install ID, so trends over the life of an
-install stay visible. Opt-in diagnostic rows (Category B — the sanitized error detail) are
-deleted after 90 days.
+the like) are kept against your install ID for **24 months**, then deleted automatically by a
+nightly job — long enough to see how usage changes over the life of an install, and no longer.
+Opt-in diagnostic rows (Category B, the sanitized error detail) are deleted after **90 days**.
+The day-by-day totals that carry no install ID at all — how many times a tool ran across
+everyone, and whether it worked — are not tied to you and are not on that clock.
 
 ---
 
@@ -428,6 +430,61 @@ and a device identifier (Pro covers two devices per license) to the licensing se
 any document, image, or path data. Activation also downloads the signed, encrypted Pro module
 itself from Editmamei's delivery endpoint; that request carries your license entitlement and no
 document data. Your photos stay on your machine, exactly as with the rest of Editmamei.
+
+---
+
+## Your rights, and the legal basis
+
+Who is responsible for this data, the basis for collecting each kind, how long it is kept, and
+what you can require us to do. This applies to everyone, not only to people in the EU or UK.
+
+**Controller.** Editmamei. Contact: [editmamei.com/contact](https://editmamei.com/contact).
+
+**The install ID.** A random value generated on your machine. It is not derived from your name,
+account, email, hardware, or anything else about you, and on its own it identifies nobody. It is
+stable across sessions, and stable identifiers can be correlated with other information, so data
+protection law classifies it as *pseudonymous* rather than anonymous: personal data, and subject
+to the rights below.
+
+**Lawful basis.**
+
+- **Usage and reliability data** (on by default) — legitimate interests: identifying defects, and
+  establishing which features are used and on which Photoshop versions. You have the right to
+  object, and the setting is the mechanism.
+- **Diagnostic detail** (off by default) — consent, given by enabling it and withdrawn by
+  disabling it.
+
+The two settings are independent. Disabling usage telemetry stops that stream entirely, including
+anything already queued on disk; it does not disable diagnostics.
+
+```sh
+editmamei config set telemetry.usage false
+editmamei config set telemetry.diagnostics false
+```
+
+**Retention.** Per-install records: 24 months, deleted automatically. Opt-in diagnostic records:
+90 days, deleted automatically. Aggregate daily totals carry no install ID and are not subject to
+these windows.
+
+**Your rights.** Access, rectification, erasure, and objection. Your install ID is the reference
+for all of them:
+
+```sh
+editmamei config get telemetry.install_id
+```
+
+Send it via [the contact page](https://editmamei.com/contact) with your request. Two limits apply:
+
+- Erasure removes the stored records. It does not stop collection, because the same ID remains in
+  your settings file. Disable telemetry first if you want both.
+- Aggregate daily totals were summed on arrival with no ID attached, and cannot be recalculated to
+  exclude a single install.
+
+Without an install ID we cannot locate your records. No email address, account, or IP address is
+stored alongside it.
+
+**Processing.** Editmamei's own Cloudflare infrastructure. No third-party analytics processor.
+Telemetry is not sold, shared, or used for advertising.
 
 ---
 

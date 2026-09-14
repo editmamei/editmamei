@@ -88,7 +88,7 @@ function hashRetryKey(tool: string, args: unknown): string | null {
  * mechanism keeping them in sync.
  */
 export const FIRST_RUN_DISCLOSURE =
-  'First run: Editmamei collects anonymous, content-free usage telemetry (tool name, ' +
+  'First run: Editmamei collects content-free usage telemetry (tool name, ' +
   'success, duration, bytes returned, version/edition/OS/PS-version, install channel, ' +
   'which AI client connected, Node/OS/architecture versions, and per-session counts like ' +
   'edits made and retries) to find what breaks. It never sends image content, file paths, ' +
@@ -267,8 +267,9 @@ export class EditmameiServer {
     this.logger.info(`Session ${this.session.getSessionId()} → ${this.sessionLog.path}`);
 
     // Telemetry client (content-free, consent-gated, fire-and-forget). loadSettings mints
-    // the anonymous install_id on first run and never throws; the client is inert in the
-    // dev edition and under the test runner, so this is a no-op outside CE/Pro builds.
+    // the install_id on first run (salted random, never derived from PII, but stable —
+    // pseudonymous, not anonymous) and never throws; the client is inert in the dev edition
+    // and under the test runner, so this is a no-op outside CE/Pro builds.
     const { settings, created } = loadSettings();
     // In Claude Desktop (no terminal for `editmamei config`), the .mcpb manifest's telemetry
     // toggles arrive as env vars and override consent for this process; settings.json still
