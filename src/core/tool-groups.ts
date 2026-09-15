@@ -214,6 +214,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   // filters
   ps_filter: 'filter',
   ps_apply_camera_raw: 'filter',
+  ps_develop_raw: 'filter',
 
   // retouch
   ps_retouch: 'retouch',
