@@ -318,6 +318,12 @@ func init() {
       if (rawExts[i] === ext) { isRaw = true; break; }
     }
 
+    // Requested open-time bit depth (0 = caller did not ask). Only meaningful
+    // for raw sources: Camera Raw's workflow options are the sole scripted
+    // route to it, and the depth must be chosen AT OPEN because converting
+    // afterwards flattens the document.
+    var __mcpRawBits = %s;
+
     var prevDialogs = app.displayDialogs;
     if (%s) {
       app.displayDialogs = DialogModes.NO;
@@ -342,6 +348,24 @@ func init() {
         }
         doc = __mcpAlready;
         __mcpWasAlreadyOpen = true;
+      } else if (isRaw && __mcpRawBits > 0) {
+        // CameraRAWOpenOptions is the only scripted way to set a raw's open
+        // depth. Its DEVELOP properties are inert on current Camera Raw
+        // (measured: exposure moves nothing), so nothing here relies on them —
+        // only bitsPerChannel, which is honoured. A host that rejects the
+        // object falls back to a plain open rather than failing the call;
+        // the returned bits_per_channel always reports what was ACTUALLY
+        // opened, so a silent fallback stays visible to the caller.
+        var __mcpRawOpts = null;
+        try {
+          __mcpRawOpts = new CameraRAWOpenOptions();
+          __mcpRawOpts.bitsPerChannel = (__mcpRawBits === 32)
+            ? BitsPerChannelType.THIRTYTWO
+            : (__mcpRawBits === 16 ? BitsPerChannelType.SIXTEEN : BitsPerChannelType.EIGHT);
+        } catch (eRawOpts) {
+          __mcpRawOpts = null;
+        }
+        doc = __mcpRawOpts ? app.open(imageFile, __mcpRawOpts) : app.open(imageFile);
       } else {
         doc = app.open(imageFile);
       }
