@@ -438,7 +438,8 @@ document data. Your photos stay on your machine, exactly as with the rest of Edi
 Who is responsible for this data, the basis for collecting each kind, how long it is kept, and
 what you can require us to do. This applies to everyone, not only to people in the EU or UK.
 
-**Controller.** Editmamei. Contact: [editmamei.com/contact](https://editmamei.com/contact).
+**Controller.** EMBD Artifacts LLC, doing business as Editmamei. Contact:
+[editmamei.com/contact](https://editmamei.com/contact).
 
 **The install ID.** A random value generated on your machine. It is not derived from your name,
 account, email, hardware, or anything else about you, and on its own it identifies nobody. It is
