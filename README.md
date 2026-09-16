@@ -75,7 +75,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**82 tools across 16 capability groups** (62 Community, 20 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
+**83 tools across 16 capability groups** (62 Community, 21 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
 
 | Group | Edition | Tools |
 | --- | --- | --- |

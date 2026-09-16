@@ -177,7 +177,7 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // above, which operates on already-rasterised pixels and so cannot reach
   // geometry, crop or lens correction at all. Implemented in the Pro module;
   // this table is CE-owned, which is why the entry lives here.
-  ps_develop_raw: 'dev',
+  ps_develop_raw: 'pro',
   ps_transform_canvas: 'community',
   ps_guides: 'community',
 
