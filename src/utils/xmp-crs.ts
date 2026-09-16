@@ -365,6 +365,14 @@ export interface CrsChanges {
   readonly fields?: Readonly<Record<string, number | boolean | string>>;
   /** Tone curves keyed by the names in CRS_CURVES. */
   readonly curves?: Readonly<Record<string, CurvePoints>>;
+  /**
+   * Whole `crs:` child elements to carry across VERBATIM, keyed by tag name
+   * (e.g. `Look`). Used when copying a block out of a preset: a Look only
+   * applies when its full payload travels with it — naming one resolves
+   * nothing — and its text must not be re-serialised, since a `LookTable`
+   * hash that no longer matches degrades it to the embedded parameters.
+   */
+  readonly blocks?: Readonly<Record<string, string>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +565,129 @@ function renderCurve(key: string, points: CurvePoints): string {
   return `   <crs:${key}>\n    <rdf:Seq>\n${items}\n    </rdf:Seq>\n   </crs:${key}>`;
 }
 
+/** Re-indent a block lifted from another file so it sits neatly in this one. */
+function indentBlock(block: string): string {
+  const lines = block.trim().split('\n');
+  const lead = /^\s*/.exec(lines[0])?.[0].length ?? 0;
+  return lines
+    .map((l) => '   ' + l.slice(Math.min(lead, /^\s*/.exec(l)?.[0].length ?? 0)))
+    .join('\n');
+}
+
+/**
+ * Pull one whole `crs:` child element out of an XMP document, tag included.
+ *
+ * Returns null when absent. Non-greedy to the first matching close tag, which
+ * is correct for the `crs:` blocks Camera Raw writes — none of them nest a
+ * second element of the same name.
+ */
+export function extractChildBlock(xmp: string, tagName: string): string | null {
+  const m = new RegExp(`<crs:${tagName}>[\\s\\S]*?</crs:${tagName}>`).exec(xmp);
+  return m ? m[0] : null;
+}
+
+/**
+ * Replace a `crs:` child element if present, otherwise insert it inside the
+ * top-level `rdf:Description` — opening a self-closing tag when there is no
+ * room for children yet.
+ */
+function upsertChildBlock(xmp: string, tagName: string, blockText: string): string {
+  const existing = new RegExp(`[ \\t]*<crs:${tagName}>[\\s\\S]*?</crs:${tagName}>`);
+  if (existing.test(xmp)) return xmp.replace(existing, blockText);
+
+  const tag = findTopLevelDescription(xmp);
+  if (!tag) throw new Error('Sidecar structure changed unexpectedly during merge.');
+  if (tag.selfClosing) {
+    return (
+      xmp.slice(0, tag.attrsEnd) +
+      '>\n' +
+      blockText +
+      '\n  </rdf:Description>' +
+      xmp.slice(tag.tagEnd)
+    );
+  }
+  return xmp.slice(0, tag.tagEnd) + '\n' + blockText + xmp.slice(tag.tagEnd);
+}
+
+/** Blocks a preset can carry across intact, because we measured that they
+ *  apply when their full payload travels with them. */
+const CARRYABLE_BLOCKS = [
+  'Look',
+  'ToneCurvePV2012',
+  'ToneCurvePV2012Red',
+  'ToneCurvePV2012Green',
+  'ToneCurvePV2012Blue',
+] as const;
+
+/** Blocks we deliberately do NOT carry, with the reason surfaced to the user. */
+const UNCARRYABLE_BLOCKS: ReadonlyArray<readonly [string, string]> = [
+  [
+    'MaskGroupBasedCorrections',
+    'local/AI-mask adjustments — hand-moved mask blocks are discarded by Camera Raw, so carrying them would promise an edit that silently would not happen',
+  ],
+  ['PointColors', 'point-colour adjustments — untested through a written sidecar'],
+  ['RetouchAreas', 'healing/spot removal — untested through a written sidecar'],
+];
+
+export interface PresetImport {
+  readonly changes: CrsChanges;
+  /** Friendly names of the scalar settings taken from the preset. */
+  readonly applied: string[];
+  /** Blocks carried across verbatim, by tag name. */
+  readonly carried: string[];
+  /** Human-readable notes about parts of the preset that were NOT applied. */
+  readonly skipped: string[];
+}
+
+/**
+ * Turn a Camera Raw preset (`.xmp`) into develop changes.
+ *
+ * A preset is structurally the same `crs:` document as a sidecar, so this is
+ * mostly reuse: take its top-level scalar settings that the registry knows,
+ * carry its Look and tone curves across intact, and report by name anything
+ * left behind rather than quietly dropping it.
+ *
+ * Preset identity fields (`Name`, `UUID`, `PresetType`, `Cluster`…) are not
+ * develop settings and are deliberately not copied into an image's sidecar.
+ */
+export function readPresetChanges(presetXmp: string): PresetImport {
+  const raw = readTopLevelCrs(presetXmp);
+  const byKey = new Map(Object.entries(CRS_FIELDS).map(([name, spec]) => [spec.key, name]));
+
+  const fields: Record<string, number | boolean | string> = {};
+  const applied: string[] = [];
+  for (const [key, value] of Object.entries(raw)) {
+    const name = byKey.get(key);
+    if (!name) continue;
+    const spec = CRS_FIELDS[name];
+    if (spec.format === 'bool') fields[name] = value === 'True';
+    else if (spec.format === 'text') fields[name] = value;
+    else {
+      const n = Number(value);
+      if (!Number.isFinite(n)) continue;
+      fields[name] = n;
+    }
+    applied.push(name);
+  }
+
+  const blocks: Record<string, string> = {};
+  const carried: string[] = [];
+  for (const tagName of CARRYABLE_BLOCKS) {
+    const block = extractChildBlock(presetXmp, tagName);
+    if (block) {
+      blocks[tagName] = block;
+      carried.push(tagName);
+    }
+  }
+
+  const skipped: string[] = [];
+  for (const [tagName, why] of UNCARRYABLE_BLOCKS) {
+    if (extractChildBlock(presetXmp, tagName)) skipped.push(`${tagName}: ${why}`);
+  }
+
+  return { changes: { fields, blocks }, applied: applied.sort(), carried, skipped };
+}
+
 /**
  * Merge develop settings into a sidecar, preserving everything we do not
  * explicitly manage.
@@ -608,29 +739,13 @@ export function mergeCrsIntoSidecar(original: string | null, changes: CrsChanges
   xmp = xmp.slice(0, tag.attrsStart) + region + xmp.slice(tag.attrsEnd);
 
   // --- 2. curve child elements ---------------------------------------------
-  const curves = Object.entries(changes.curves ?? {});
-  if (curves.length > 0) {
-    for (const [name, points] of curves) {
-      const key = CRS_CURVES[name];
-      const block = renderCurve(key, points);
-      const existing = new RegExp(`[ \\t]*<crs:${key}>[\\s\\S]*?</crs:${key}>`);
-      const reTag = findTopLevelDescription(xmp);
-      if (!reTag) throw new Error('Sidecar structure changed unexpectedly during merge.');
+  for (const [name, points] of Object.entries(changes.curves ?? {})) {
+    xmp = upsertChildBlock(xmp, CRS_CURVES[name], renderCurve(CRS_CURVES[name], points));
+  }
 
-      if (existing.test(xmp)) {
-        xmp = xmp.replace(existing, block);
-      } else if (reTag.selfClosing) {
-        // `<rdf:Description .../>` has no room for children — open it up.
-        xmp =
-          xmp.slice(0, reTag.attrsEnd) +
-          '>\n' +
-          block +
-          '\n  </rdf:Description>' +
-          xmp.slice(reTag.tagEnd);
-      } else {
-        xmp = xmp.slice(0, reTag.tagEnd) + '\n' + block + xmp.slice(reTag.tagEnd);
-      }
-    }
+  // --- 3. whole blocks carried across verbatim (e.g. a preset's Look) -------
+  for (const [tagName, blockText] of Object.entries(changes.blocks ?? {})) {
+    xmp = upsertChildBlock(xmp, tagName, indentBlock(blockText));
   }
 
   return xmp;

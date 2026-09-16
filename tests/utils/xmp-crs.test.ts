@@ -7,6 +7,7 @@ import {
   findTopLevelDescription,
   formatCrsValue,
   mergeCrsIntoSidecar,
+  readPresetChanges,
   readTopLevelCrs,
   validateCrsChanges,
 } from '../../src/utils/xmp-crs.js';
@@ -247,6 +248,80 @@ describe('xmp-crs — tone curves (child elements)', () => {
     const before = blockOf(REAL, 'ToneCurvePV2012');
     expect(before).toContain('<rdf:li>');
     const after = blockOf(mergeCrsIntoSidecar(REAL, { fields: { dehaze: 20 } }), 'ToneCurvePV2012');
+    expect(after).toBe(before);
+  });
+});
+
+describe('xmp-crs — Camera Raw preset import', () => {
+  const PRESET = readFileSync(join(FIXTURES, 'preset-user.xmp'), 'utf8');
+
+  it("takes the preset's develop settings as changes", () => {
+    const { changes, applied } = readPresetChanges(PRESET);
+    expect(changes.fields!.exposure).toBe(0.35);
+    expect(changes.fields!.contrast).toBe(12);
+    expect(changes.fields!.highlights).toBe(-40);
+    expect(changes.fields!.vibrance).toBe(14);
+    expect(applied).toContain('split_shadow_hue');
+    expect(applied).toContain('post_crop_vignette');
+  });
+
+  it('does NOT copy preset identity fields into an image sidecar', () => {
+    // Scoped to the TOP-LEVEL attributes on purpose: a carried Look carries
+    // its own crs:UUID as part of its payload, and that one must survive.
+    const { changes } = readPresetChanges(PRESET);
+    const top = readTopLevelCrs(mergeCrsIntoSidecar(null, changes));
+    for (const identity of [
+      'UUID',
+      'PresetType',
+      'Cluster',
+      'CameraModelRestriction',
+      'SupportsAmount',
+    ]) {
+      expect(top).not.toHaveProperty(identity);
+    }
+    expect(mergeCrsIntoSidecar(null, changes)).not.toContain('Kodak Portra Warm');
+  });
+
+  it('carries the Look across verbatim, hash intact', () => {
+    // A Look only applies when its full payload travels with it — naming one
+    // resolves nothing — and the LookTable hash must survive byte-for-byte.
+    const { changes, carried } = readPresetChanges(PRESET);
+    expect(carried).toContain('Look');
+    const merged = mergeCrsIntoSidecar(null, changes);
+    const sourceLook = /<crs:Look>[\s\S]*?<\/crs:Look>/.exec(PRESET)![0];
+    const mergedLook = /<crs:Look>[\s\S]*?<\/crs:Look>/.exec(merged)![0];
+    const strip = (s: string) => s.replace(/\s+/g, ' ').trim();
+    expect(strip(mergedLook)).toBe(strip(sourceLook));
+    expect(mergedLook).toContain('crs:LookTable="E1095149FDB39D7A057BAB208837E2E1"');
+  });
+
+  it('reports what it could not carry instead of dropping it silently', () => {
+    // The real sidecar has mask-based corrections; a preset carrying those
+    // cannot be honoured, and saying so is the difference between a partial
+    // import and a wrong one.
+    const { skipped } = readPresetChanges(REAL);
+    expect(skipped.join(' ')).toContain('MaskGroupBasedCorrections');
+    expect(skipped.join(' ')).toContain('silently would not happen');
+  });
+
+  it('a clean preset reports nothing skipped', () => {
+    expect(readPresetChanges(PRESET).skipped).toEqual([]);
+  });
+
+  it('explicit settings layer over the preset rather than under it', () => {
+    const { changes } = readPresetChanges(PRESET);
+    const merged = mergeCrsIntoSidecar(null, {
+      ...changes,
+      fields: { ...changes.fields, exposure: -2 },
+    });
+    expect(merged).toContain('crs:Exposure2012="-2.00"');
+    expect(merged).toContain('crs:Contrast2012="+12"'); // preset value survives
+  });
+
+  it("applying a preset preserves the image's own masks", () => {
+    const { changes } = readPresetChanges(PRESET);
+    const before = blockOf(REAL, 'MaskGroupBasedCorrections');
+    const after = blockOf(mergeCrsIntoSidecar(REAL, changes), 'MaskGroupBasedCorrections');
     expect(after).toBe(before);
   });
 });
