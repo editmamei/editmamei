@@ -439,3 +439,34 @@ describe('xmp-crs — hardening found in QA', () => {
     expect(changes.fields).toEqual({ exposure: 1 });
   });
 });
+
+describe('xmp-crs — coherence is scoped to caller intent', () => {
+  it('does not refuse Temperature alongside "As Shot" when neither came from the caller', () => {
+    // Camera Raw writes exactly this pair itself: the temperature records what
+    // as-shot WAS. Refusing it would reject the user's own working presets.
+    const fromFile = { fields: { temperature: 5550, tint: 8, exposure: 0 } };
+    expect(() => applyCrsCoherence(fromFile, new Set())).not.toThrow();
+    const { changes, notes } = applyCrsCoherence(
+      { fields: { temperature: 5550, white_balance: 'As Shot' } },
+      new Set()
+    );
+    expect(changes.fields!.white_balance).toBe('As Shot');
+    expect(notes).toEqual([]);
+  });
+
+  it('still refuses when the caller typed both halves of the contradiction', () => {
+    expect(() =>
+      applyCrsCoherence(
+        { fields: { temperature: 8000, white_balance: 'Daylight' } },
+        new Set(['temperature', 'white_balance'])
+      )
+    ).toThrow(/white_balance="Custom"/);
+  });
+
+  it('the real ACR sidecar imports as a preset without throwing', () => {
+    // Regression guard for the above: this fixture carries Temperature with
+    // WhiteBalance="As Shot".
+    const { changes } = readPresetChanges(REAL);
+    expect(() => applyCrsCoherence(changes, new Set())).not.toThrow();
+  });
+});

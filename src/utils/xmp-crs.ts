@@ -462,8 +462,16 @@ export function validateCrsChanges(changes: CrsChanges): string[] {
  * added. The one case that IS refused is a real contradiction — asking for a
  * colour temperature while explicitly pinning white balance to something else,
  * where guessing which the caller meant would be inventing intent.
+ *
+ * `callerFields` scopes that refusal to settings the caller actually typed.
+ * Camera Raw itself writes `Temperature` alongside `WhiteBalance="As Shot"` —
+ * the temperature there records what as-shot WAS, and is not a contradiction —
+ * so refusing on it would reject the user's own working presets.
  */
-export function applyCrsCoherence(changes: CrsChanges): { changes: CrsChanges; notes: string[] } {
+export function applyCrsCoherence(
+  changes: CrsChanges,
+  callerFields: ReadonlySet<string> = new Set(Object.keys(changes.fields ?? {}))
+): { changes: CrsChanges; notes: string[] } {
   const fields = { ...(changes.fields ?? {}) };
   const notes: string[] = [];
 
@@ -482,10 +490,17 @@ export function applyCrsCoherence(changes: CrsChanges): { changes: CrsChanges; n
         'Set white_balance="Custom": Camera Raw ignores temperature/tint under any other white-balance mode.'
       );
     } else if (wb !== 'Custom') {
-      throw new Error(
-        `temperature/tint only take effect with white_balance="Custom", but white_balance="${String(wb)}" was given. ` +
-          `Pass white_balance="Custom", or drop the temperature/tint values.`
-      );
+      const callerAsked =
+        (callerFields.has('temperature') || callerFields.has('tint')) &&
+        callerFields.has('white_balance');
+      if (callerAsked) {
+        throw new Error(
+          `temperature/tint only take effect with white_balance="Custom", but white_balance="${String(wb)}" was given. ` +
+            `Pass white_balance="Custom", or drop the temperature/tint values.`
+        );
+      }
+      // Both came from a file rather than the caller — Camera Raw's own
+      // normal output. Leave it exactly as the file has it.
     }
   }
 
