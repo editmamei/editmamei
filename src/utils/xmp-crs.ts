@@ -738,14 +738,17 @@ export function mergeCrsIntoSidecar(original: string | null, changes: CrsChanges
 
   xmp = xmp.slice(0, tag.attrsStart) + region + xmp.slice(tag.attrsEnd);
 
-  // --- 2. curve child elements ---------------------------------------------
-  for (const [name, points] of Object.entries(changes.curves ?? {})) {
-    xmp = upsertChildBlock(xmp, CRS_CURVES[name], renderCurve(CRS_CURVES[name], points));
-  }
-
-  // --- 3. whole blocks carried across verbatim (e.g. a preset's Look) -------
+  // --- 2. whole blocks carried across verbatim (e.g. a preset's Look) -------
+  // BEFORE curves, deliberately: a carried block is base material, an explicit
+  // curve is an instruction. Applying blocks second would let a preset's tone
+  // curve overwrite the one the caller just asked for.
   for (const [tagName, blockText] of Object.entries(changes.blocks ?? {})) {
     xmp = upsertChildBlock(xmp, tagName, indentBlock(blockText));
+  }
+
+  // --- 3. curve child elements ---------------------------------------------
+  for (const [name, points] of Object.entries(changes.curves ?? {})) {
+    xmp = upsertChildBlock(xmp, CRS_CURVES[name], renderCurve(CRS_CURVES[name], points));
   }
 
   return xmp;

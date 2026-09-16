@@ -325,3 +325,32 @@ describe('xmp-crs — Camera Raw preset import', () => {
     expect(after).toBe(before);
   });
 });
+
+describe('xmp-crs — precedence between carried blocks and explicit settings', () => {
+  const PRESET = readFileSync(join(FIXTURES, 'preset-user.xmp'), 'utf8');
+
+  it('an explicit curve beats a curve carried in from a preset', () => {
+    // A carried block is base material; an explicit curve is an instruction.
+    // If ordering ever flips, the caller's curve silently loses.
+    const withCurveBlock = mergeCrsIntoSidecar(null, {
+      blocks: {
+        ToneCurvePV2012:
+          '<crs:ToneCurvePV2012><rdf:Seq><rdf:li>0, 99</rdf:li><rdf:li>255, 255</rdf:li></rdf:Seq></crs:ToneCurvePV2012>',
+      },
+      curves: {
+        curve: [
+          [0, 7],
+          [255, 255],
+        ],
+      },
+    });
+    expect(withCurveBlock).toContain('<rdf:li>0, 7</rdf:li>');
+    expect(withCurveBlock).not.toContain('<rdf:li>0, 99</rdf:li>');
+    expect(withCurveBlock.match(/<crs:ToneCurvePV2012>/g)).toHaveLength(1);
+  });
+
+  it('a carried Look still lands when no explicit curve competes with it', () => {
+    const { changes } = readPresetChanges(PRESET);
+    expect(mergeCrsIntoSidecar(null, changes)).toContain('crs:LookTable=');
+  });
+});
