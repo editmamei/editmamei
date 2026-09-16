@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   CRS_FIELDS,
+  applyCrsCoherence,
   describeSidecar,
   findTopLevelDescription,
   formatCrsValue,
@@ -282,7 +283,7 @@ describe('xmp-crs — Camera Raw preset import', () => {
     expect(mergeCrsIntoSidecar(null, changes)).not.toContain('Kodak Portra Warm');
   });
 
-  it('carries the Look across verbatim, hash intact', () => {
+  it('carries the Look across with every attribute and value intact', () => {
     // A Look only applies when its full payload travels with it — naming one
     // resolves nothing — and the LookTable hash must survive byte-for-byte.
     const { changes, carried } = readPresetChanges(PRESET);
@@ -290,9 +291,15 @@ describe('xmp-crs — Camera Raw preset import', () => {
     const merged = mergeCrsIntoSidecar(null, changes);
     const sourceLook = /<crs:Look>[\s\S]*?<\/crs:Look>/.exec(PRESET)![0];
     const mergedLook = /<crs:Look>[\s\S]*?<\/crs:Look>/.exec(merged)![0];
-    const strip = (s: string) => s.replace(/\s+/g, ' ').trim();
-    expect(strip(mergedLook)).toBe(strip(sourceLook));
+    // Only leading indentation is renormalised when a block is carried, so
+    // compare the ATTRIBUTES — that is the real invariant, and the LookTable
+    // hash is the one that decides whether the Look resolves at all.
+    const attrs = (x: string) => (x.match(/crs:[A-Za-z0-9_]+="[^"]*"/g) ?? []).sort();
+    expect(attrs(mergedLook)).toEqual(attrs(sourceLook));
     expect(mergedLook).toContain('crs:LookTable="E1095149FDB39D7A057BAB208837E2E1"');
+    // ...and the element structure is unchanged, not just the attributes.
+    const tags = (x: string) => (x.match(/<\/?[A-Za-z:]+/g) ?? []).join(',');
+    expect(tags(mergedLook)).toBe(tags(sourceLook));
   });
 
   it('reports what it could not carry instead of dropping it silently', () => {
@@ -352,5 +359,83 @@ describe('xmp-crs — precedence between carried blocks and explicit settings', 
   it('a carried Look still lands when no explicit curve competes with it', () => {
     const { changes } = readPresetChanges(PRESET);
     expect(mergeCrsIntoSidecar(null, changes)).toContain('crs:LookTable=');
+  });
+});
+
+describe('xmp-crs — hardening found in QA', () => {
+  const PRESET = readFileSync(join(FIXTURES, 'preset-user.xmp'), 'utf8');
+
+  it('a value containing $-substitution syntax is written literally', () => {
+    // `$&`, `$'`, `` $` `` and `$n` are replacement-string syntax. Used as a
+    // template they would splice surrounding document text into the attribute
+    // and corrupt the sidecar; escapeXmlAttr does not neutralise them.
+    const once = mergeCrsIntoSidecar(null, { fields: { camera_profile: 'Plain' } });
+    // No `&` here on purpose: that is XML-escaped (correctly) and would mask
+    // the thing under test, which is `$`-sequence splicing.
+    const nasty = "Kodak $' $1 $` Warm";
+    const merged = mergeCrsIntoSidecar(once, { fields: { camera_profile: nasty } });
+    expect(readTopLevelCrs(merged).CameraProfile).toBe(nasty);
+    expect(merged.match(/crs:CameraProfile=/g)).toHaveLength(1);
+    // And `&` still escapes properly on the same path.
+    const amp = mergeCrsIntoSidecar(once, { fields: { camera_profile: 'A & B' } });
+    expect(amp).toContain('crs:CameraProfile="A &amp; B"');
+  });
+
+  it('a block text containing $-substitution syntax survives a replace', () => {
+    const first = mergeCrsIntoSidecar(null, {
+      blocks: { Look: '<crs:Look><rdf:Description crs:Name="a"/></crs:Look>' },
+    });
+    const second = mergeCrsIntoSidecar(first, {
+      blocks: { Look: `<crs:Look><rdf:Description crs:Name="$' $&"/></crs:Look>` },
+    });
+    expect(second).toContain(`crs:Name="$' $&"`);
+    expect(second.match(/<crs:Look>/g)).toHaveLength(1);
+  });
+
+  it('refuses a block tag name that is not a plain XML identifier', () => {
+    // The tag name is interpolated into a RegExp; anything else could change
+    // what the pattern matches.
+    expect(() => mergeCrsIntoSidecar(null, { blocks: { 'Look[a-z]+': '<crs:X/>' } })).toThrow(
+      /non-identifier tag name/
+    );
+  });
+
+  it('drops an out-of-range preset value instead of failing the whole import', () => {
+    // Only `rotate` has a measured bound; the rest are UI guesses, so one
+    // guessed-too-narrow range must not reject a user's working preset.
+    const broken = PRESET.replace('crs:Contrast2012="+12"', 'crs:Contrast2012="+400"');
+    const { changes, applied, skipped } = readPresetChanges(broken);
+    expect(applied).not.toContain('contrast');
+    expect(skipped.join(' ')).toContain('contrast');
+    expect(changes.fields!.vibrance).toBe(14); // the rest still imports
+    expect(() => mergeCrsIntoSidecar(null, changes)).not.toThrow();
+  });
+
+  it('a caller-supplied out-of-range value still throws — they asked for it', () => {
+    expect(() => mergeCrsIntoSidecar(null, { fields: { rotate: 30 } })).toThrow();
+  });
+
+  it('completes has_crop when only crop edges are given', () => {
+    const { changes, notes } = applyCrsCoherence({ fields: { crop_top: 0.1, crop_bottom: 0.9 } });
+    expect(changes.fields!.has_crop).toBe(true);
+    expect(notes.join(' ')).toContain('has_crop');
+  });
+
+  it('completes white_balance when temperature is given', () => {
+    const { changes, notes } = applyCrsCoherence({ fields: { temperature: 8000 } });
+    expect(changes.fields!.white_balance).toBe('Custom');
+    expect(notes.join(' ')).toContain('Custom');
+  });
+
+  it('refuses temperature under an explicitly non-Custom white balance', () => {
+    expect(() =>
+      applyCrsCoherence({ fields: { temperature: 8000, white_balance: 'Daylight' } })
+    ).toThrow(/only take effect with white_balance="Custom"/);
+  });
+
+  it('leaves a coherent change set alone', () => {
+    const { changes, notes } = applyCrsCoherence({ fields: { exposure: 1 } });
+    expect(notes).toEqual([]);
+    expect(changes.fields).toEqual({ exposure: 1 });
   });
 });

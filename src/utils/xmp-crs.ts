@@ -366,11 +366,17 @@ export interface CrsChanges {
   /** Tone curves keyed by the names in CRS_CURVES. */
   readonly curves?: Readonly<Record<string, CurvePoints>>;
   /**
-   * Whole `crs:` child elements to carry across VERBATIM, keyed by tag name
-   * (e.g. `Look`). Used when copying a block out of a preset: a Look only
-   * applies when its full payload travels with it — naming one resolves
-   * nothing — and its text must not be re-serialised, since a `LookTable`
-   * hash that no longer matches degrades it to the embedded parameters.
+   * Whole `crs:` child elements to carry across, keyed by tag name (e.g.
+   * `Look`). Used when copying a block out of a preset: a Look only applies
+   * when its full payload travels with it — naming one resolves nothing — and
+   * it must not be re-serialised, since a `LookTable` hash that no longer
+   * matches degrades it to the block's embedded parameters.
+   *
+   * Precisely: every element, attribute and value is preserved; only each
+   * line's LEADING INDENTATION is normalised to sit in the destination file.
+   * That is not byte-identical, and the distinction matters — do not restate
+   * this as "verbatim". Blocks already present in the file being merged INTO
+   * are a different path and genuinely are untouched.
    */
   readonly blocks?: Readonly<Record<string, string>>;
 }
@@ -443,6 +449,47 @@ export function validateCrsChanges(changes: CrsChanges): string[] {
   }
 
   return errors;
+}
+
+/**
+ * Camera Raw ignores some settings unless an enabling field accompanies them —
+ * a crop box does nothing without `HasCrop`, and Temperature/Tint do nothing
+ * unless white balance is `Custom`. Written alone they produce exactly the
+ * silent no-op the range guard exists to prevent: a written sidecar, a
+ * settings echo, and no visible change.
+ *
+ * So complete the obvious dependency rather than refusing, and report what was
+ * added. The one case that IS refused is a real contradiction — asking for a
+ * colour temperature while explicitly pinning white balance to something else,
+ * where guessing which the caller meant would be inventing intent.
+ */
+export function applyCrsCoherence(changes: CrsChanges): { changes: CrsChanges; notes: string[] } {
+  const fields = { ...(changes.fields ?? {}) };
+  const notes: string[] = [];
+
+  const cropEdges = ['crop_top', 'crop_left', 'crop_bottom', 'crop_right', 'crop_angle'];
+  if (cropEdges.some((k) => k in fields) && fields.has_crop === undefined) {
+    fields.has_crop = true;
+    notes.push('Set has_crop=true: Camera Raw ignores a crop box without it.');
+  }
+
+  const wbDriven = 'temperature' in fields || 'tint' in fields;
+  if (wbDriven) {
+    const wb = fields.white_balance;
+    if (wb === undefined) {
+      fields.white_balance = 'Custom';
+      notes.push(
+        'Set white_balance="Custom": Camera Raw ignores temperature/tint under any other white-balance mode.'
+      );
+    } else if (wb !== 'Custom') {
+      throw new Error(
+        `temperature/tint only take effect with white_balance="Custom", but white_balance="${String(wb)}" was given. ` +
+          `Pass white_balance="Custom", or drop the temperature/tint values.`
+      );
+    }
+  }
+
+  return { changes: { ...changes, fields }, notes };
 }
 
 function rangeError(name: string, spec: CrsFieldSpec, got: number): string {
@@ -592,8 +639,15 @@ export function extractChildBlock(xmp: string, tagName: string): string | null {
  * room for children yet.
  */
 function upsertChildBlock(xmp: string, tagName: string, blockText: string): string {
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(tagName)) {
+    // The tag name is interpolated into a RegExp below; anything but a plain
+    // XML name could change what the pattern matches.
+    throw new Error(`Refusing to write a block with a non-identifier tag name: '${tagName}'.`);
+  }
   const existing = new RegExp(`[ \\t]*<crs:${tagName}>[\\s\\S]*?</crs:${tagName}>`);
-  if (existing.test(xmp)) return xmp.replace(existing, blockText);
+  // Replacer function for the same reason as the attribute path: `$` sequences
+  // in the block text would otherwise be treated as substitution syntax.
+  if (existing.test(xmp)) return xmp.replace(existing, () => blockText);
 
   const tag = findTopLevelDescription(xmp);
   if (!tag) throw new Error('Sidecar structure changed unexpectedly during merge.');
@@ -656,17 +710,29 @@ export function readPresetChanges(presetXmp: string): PresetImport {
 
   const fields: Record<string, number | boolean | string> = {};
   const applied: string[] = [];
+  const rangeSkips: string[] = [];
   for (const [key, value] of Object.entries(raw)) {
     const name = byKey.get(key);
     if (!name) continue;
     const spec = CRS_FIELDS[name];
-    if (spec.format === 'bool') fields[name] = value === 'True';
-    else if (spec.format === 'text') fields[name] = value;
+    let candidate: number | boolean | string;
+    if (spec.format === 'bool') candidate = value === 'True';
+    else if (spec.format === 'text') candidate = value;
     else {
       const n = Number(value);
       if (!Number.isFinite(n)) continue;
-      fields[name] = n;
+      candidate = n;
     }
+    // A preset is the user's own file, not something the caller typed, and our
+    // ranges outside `rotate` are taken from Camera Raw's UI rather than
+    // measured. Throwing on one guessed-too-narrow bound would fail the whole
+    // import of a working preset, so drop the single value and say which.
+    const problems = validateCrsChanges({ fields: { [name]: candidate } });
+    if (problems.length > 0) {
+      rangeSkips.push(`${name}: ${problems[0]}`);
+      continue;
+    }
+    fields[name] = candidate;
     applied.push(name);
   }
 
@@ -680,12 +746,12 @@ export function readPresetChanges(presetXmp: string): PresetImport {
     }
   }
 
-  const skipped: string[] = [];
+  const skipped: string[] = [...rangeSkips];
   for (const [tagName, why] of UNCARRYABLE_BLOCKS) {
     if (extractChildBlock(presetXmp, tagName)) skipped.push(`${tagName}: ${why}`);
   }
 
-  return { changes: { fields, blocks }, applied: applied.sort(), carried, skipped };
+  return { changes: { fields, blocks }, applied: applied.sort(), carried: carried.sort(), skipped };
 }
 
 /**
@@ -725,7 +791,14 @@ export function mergeCrsIntoSidecar(original: string | null, changes: CrsChanges
   for (const [key, rendered] of attrs) {
     const existing = new RegExp(`(\\scrs:${key}=")[^"]*(")`);
     if (existing.test(region)) {
-      region = region.replace(existing, `$1${rendered}$2`);
+      // Replacer FUNCTION, not a template string: in a replacement string
+      // `$&`, `$\``, `$'` and `$n` are substitution syntax, so a value
+      // containing one would splice surrounding document text into the
+      // attribute. Escaping for XML does not neutralise those.
+      region = region.replace(
+        existing,
+        (_m, open: string, close: string) => open + rendered + close
+      );
     } else {
       region = `${region}\n   crs:${key}="${rendered}"`;
     }
