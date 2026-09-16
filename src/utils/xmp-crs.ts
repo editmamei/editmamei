@@ -42,13 +42,10 @@
  */
 
 /**
- * Extensions Camera Raw develops, and therefore the ones a `.xmp` sidecar
- * means anything for.
+ * Extensions the go-core `openDocumentPipeline` fragment reports as
+ * `is_raw_source`. Pinned against that fragment by `xmp-crs.test.ts`.
  *
- * SINGLE SOURCE. The go-core `openDocumentPipeline` fragment decides
- * `is_raw_source` from the same set, and `tests/utils/xmp-crs.test.ts` pins
- * the two together — a divergence would mean one half develops a file the
- * other half does not consider raw.
+ * NOT the same as the set a sidecar can develop — see below.
  */
 export const RAW_EXTENSIONS = [
   'heic',
@@ -65,6 +62,25 @@ export const RAW_EXTENSIONS = [
   'pef',
   'srw',
 ] as const;
+
+/**
+ * Extensions a `crs:` sidecar actually develops.
+ *
+ * HEIC/HEIF are deliberately absent, and the distinction is not cosmetic:
+ * MEASURED on ACR 18.6, the same HEIC opened with `Exposure2012="-3.00"` and
+ * `"+3.00"` gave an identical histogram mean (120.64 both). Photoshop routes
+ * HEIC through a different path, so the sidecar is simply never read — writing
+ * one would be the exact silent no-op this module exists to prevent, on what
+ * is often a user's most common format.
+ *
+ * Measured working: CR2 (16.1 / 208.6), NEF (54.1 / 243.7), ARW (30.2 /
+ * 221.7), DNG (146.6 / 227.2). The remaining camera-raw formats are included
+ * on the strength of being the same class of file through the same Camera Raw
+ * pipeline, but are NOT individually measured.
+ */
+export const SIDECAR_DEVELOPABLE_EXTENSIONS = RAW_EXTENSIONS.filter(
+  (e) => e !== 'heic' && e !== 'heif'
+);
 
 /** Groups mirror the `ps_apply_camera_raw` parameter groups, plus the four
  *  that only the raw-file path can reach: geometry, crop, lens, auto. */

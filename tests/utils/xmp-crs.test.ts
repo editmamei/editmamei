@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   CRS_FIELDS,
   RAW_EXTENSIONS,
+  SIDECAR_DEVELOPABLE_EXTENSIONS,
   applyCrsCoherence,
   describeSidecar,
   findTopLevelDescription,
@@ -485,5 +486,29 @@ describe('xmp-crs — RAW_EXTENSIONS is the single source', () => {
     expect(block).not.toBeNull();
     const fromFragment = Array.from(block![1].matchAll(/'([a-z0-9]+)'/g)).map((m) => m[1]);
     expect(fromFragment.sort()).toEqual([...RAW_EXTENSIONS].sort());
+  });
+});
+
+describe('xmp-crs — sidecar-developable is NOT the same set as is_raw_source', () => {
+  it('excludes HEIC/HEIF, which a sidecar measurably does not reach', () => {
+    // Measured on ACR 18.6: the same HEIC at -3 and +3 EV gave an identical
+    // histogram mean. Photoshop routes HEIC through a different path, so a
+    // sidecar written for one is never read.
+    expect(RAW_EXTENSIONS).toContain('heic');
+    expect(SIDECAR_DEVELOPABLE_EXTENSIONS).not.toContain('heic');
+    expect(SIDECAR_DEVELOPABLE_EXTENSIONS).not.toContain('heif');
+  });
+
+  it('keeps every measured-working camera raw format', () => {
+    for (const ext of ['cr2', 'nef', 'arw', 'dng']) {
+      expect(SIDECAR_DEVELOPABLE_EXTENSIONS).toContain(ext);
+    }
+  });
+
+  it('is a strict subset of the is_raw_source set', () => {
+    for (const ext of SIDECAR_DEVELOPABLE_EXTENSIONS) {
+      expect(RAW_EXTENSIONS).toContain(ext);
+    }
+    expect(SIDECAR_DEVELOPABLE_EXTENSIONS.length).toBeLessThan(RAW_EXTENSIONS.length);
   });
 });
