@@ -41,6 +41,31 @@
  * `verified: false` — see the T2 entry in the open-tests list.
  */
 
+/**
+ * Extensions Camera Raw develops, and therefore the ones a `.xmp` sidecar
+ * means anything for.
+ *
+ * SINGLE SOURCE. The go-core `openDocumentPipeline` fragment decides
+ * `is_raw_source` from the same set, and `tests/utils/xmp-crs.test.ts` pins
+ * the two together — a divergence would mean one half develops a file the
+ * other half does not consider raw.
+ */
+export const RAW_EXTENSIONS = [
+  'heic',
+  'heif',
+  'raw',
+  'cr2',
+  'cr3',
+  'nef',
+  'arw',
+  'orf',
+  'rw2',
+  'dng',
+  'raf',
+  'pef',
+  'srw',
+] as const;
+
 /** Groups mirror the `ps_apply_camera_raw` parameter groups, plus the four
  *  that only the raw-file path can reach: geometry, crop, lens, auto. */
 export type CrsGroup =

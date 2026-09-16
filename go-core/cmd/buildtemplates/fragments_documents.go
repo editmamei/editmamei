@@ -356,16 +356,25 @@ func init() {
         // object falls back to a plain open rather than failing the call;
         // the returned bits_per_channel always reports what was ACTUALLY
         // opened, so a silent fallback stays visible to the caller.
+        // 8 or 16 only — Camera Raw's workflow options have no 32-bit raw
+        // open (measured: asking for 32 opened at 8).
         var __mcpRawOpts = null;
         try {
           __mcpRawOpts = new CameraRAWOpenOptions();
-          __mcpRawOpts.bitsPerChannel = (__mcpRawBits === 32)
-            ? BitsPerChannelType.THIRTYTWO
-            : (__mcpRawBits === 16 ? BitsPerChannelType.SIXTEEN : BitsPerChannelType.EIGHT);
+          __mcpRawOpts.bitsPerChannel = (__mcpRawBits === 16)
+            ? BitsPerChannelType.SIXTEEN
+            : BitsPerChannelType.EIGHT;
         } catch (eRawOpts) {
           __mcpRawOpts = null;
         }
-        doc = __mcpRawOpts ? app.open(imageFile, __mcpRawOpts) : app.open(imageFile);
+        // The open itself is inside the try so a host that accepts the options
+        // object but rejects it at open falls back rather than failing the
+        // whole call — which is what the caller is told happens.
+        try {
+          doc = __mcpRawOpts ? app.open(imageFile, __mcpRawOpts) : app.open(imageFile);
+        } catch (eRawOpen) {
+          doc = app.open(imageFile);
+        }
       } else {
         doc = app.open(imageFile);
       }

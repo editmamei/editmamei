@@ -110,7 +110,10 @@ const openDocumentSchema: JsonSchemaObject = {
     },
     bit_depth: {
       type: 'number',
-      enum: [8, 16, 32],
+      // 8 and 16 only: Camera Raw's workflow options offer no 32-bit raw open.
+      // Measured — asking for 32 opened at 8, so advertising it would promise
+      // a depth that never arrives.
+      enum: [8, 16],
       description:
         'Open-time bits per channel, RAW sources only. Set this here rather than converting later: ps_convert_image_mode FLATTENS the document, so depth cannot be changed once an edit stack exists. Prefer 16 for anything with heavy gradients (skies, skin, long tonal moves). Ignored for non-raw files, and the returned bits_per_channel always reports what was actually opened.',
     },

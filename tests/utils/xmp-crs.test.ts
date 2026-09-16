@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   CRS_FIELDS,
+  RAW_EXTENSIONS,
   applyCrsCoherence,
   describeSidecar,
   findTopLevelDescription,
@@ -468,5 +469,21 @@ describe('xmp-crs — coherence is scoped to caller intent', () => {
     // WhiteBalance="As Shot".
     const { changes } = readPresetChanges(REAL);
     expect(() => applyCrsCoherence(changes, new Set())).not.toThrow();
+  });
+});
+
+describe('xmp-crs — RAW_EXTENSIONS is the single source', () => {
+  it('matches the go-core openDocumentPipeline fragment', () => {
+    // The fragment decides is_raw_source from the same set. If they diverge,
+    // one half develops a file the other half does not consider raw. Pinned on
+    // the CE side so a CE-only edit fails CE's own suite.
+    const fragment = readFileSync(
+      join(__dirname, '..', '..', 'go-core', 'cmd', 'buildtemplates', 'fragments_documents.go'),
+      'utf8'
+    );
+    const block = /var rawExts = \[([\s\S]*?)\];/.exec(fragment);
+    expect(block).not.toBeNull();
+    const fromFragment = Array.from(block![1].matchAll(/'([a-z0-9]+)'/g)).map((m) => m[1]);
+    expect(fromFragment.sort()).toEqual([...RAW_EXTENSIONS].sort());
   });
 });
