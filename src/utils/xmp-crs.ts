@@ -537,24 +537,36 @@ export function applyCrsCoherence(
   const notes: string[] = [];
 
   const cropEdges = ['crop_top', 'crop_left', 'crop_bottom', 'crop_right', 'crop_angle'];
-  if (cropEdges.some((k) => k in fields)) {
+  const anyCropEdge = cropEdges.some((k) => k in fields);
+  const callerTypedCropEdge = cropEdges.some((k) => callerFields.has(k));
+  if (anyCropEdge) {
     if (fields.has_crop === undefined) {
       fields.has_crop = true;
       notes.push('Set has_crop=true: Camera Raw ignores a crop box without it.');
-    } else if (fields.has_crop === false && callerFields.has('has_crop')) {
-      // Symmetric with the white-balance case below: a caller asking for a
-      // crop box while explicitly disabling cropping gets a written sidecar
-      // and no visible change, which is the failure this function exists to
-      // stop. Only refuse when they typed it; a file may legitimately carry
-      // stale crop edges alongside HasCrop=False.
-      throw new Error(
-        'Crop edges only take effect with has_crop=true, but has_crop=false was given. ' +
-          'Pass has_crop=true, or drop the crop edge values.'
-      );
+    } else if (fields.has_crop === false) {
+      if (callerTypedCropEdge && callerFields.has('has_crop')) {
+        // The caller typed both halves — genuine contradiction, and guessing
+        // which they meant would be inventing intent.
+        throw new Error(
+          'Crop edges only take effect with has_crop=true, but has_crop=false was given. ' +
+            'Pass has_crop=true, or drop the crop edge values.'
+        );
+      }
+      if (callerTypedCropEdge) {
+        // The caller asked for a crop; the `false` came from the file (a real
+        // ACR sidecar routinely carries HasCrop="False"). Honouring the file
+        // would write the caller's edges and let Camera Raw ignore them.
+        fields.has_crop = true;
+        notes.push(
+          'Set has_crop=true: the file had has_crop=false, which would have made the crop values you passed do nothing.'
+        );
+      }
+      // Neither half came from the caller — leave the file exactly as it is.
     }
   }
 
   const wbDriven = 'temperature' in fields || 'tint' in fields;
+  const callerTypedWbValue = callerFields.has('temperature') || callerFields.has('tint');
   if (wbDriven) {
     const wb = fields.white_balance;
     if (wb === undefined) {
@@ -563,17 +575,22 @@ export function applyCrsCoherence(
         'Set white_balance="Custom": Camera Raw ignores temperature/tint under any other white-balance mode.'
       );
     } else if (wb !== 'Custom') {
-      const callerAsked =
-        (callerFields.has('temperature') || callerFields.has('tint')) &&
-        callerFields.has('white_balance');
-      if (callerAsked) {
+      if (callerTypedWbValue && callerFields.has('white_balance')) {
         throw new Error(
           `temperature/tint only take effect with white_balance="Custom", but white_balance="${String(wb)}" was given. ` +
             `Pass white_balance="Custom", or drop the temperature/tint values.`
         );
       }
-      // Both came from a file rather than the caller — Camera Raw's own
-      // normal output. Leave it exactly as the file has it.
+      if (callerTypedWbValue) {
+        // Same shape as the crop case: the caller asked for a temperature and
+        // the mode came from the file, where Camera Raw writes Temperature
+        // alongside WhiteBalance="As Shot" as a matter of course.
+        fields.white_balance = 'Custom';
+        notes.push(
+          `Set white_balance="Custom": the file had white_balance="${String(wb)}", under which the temperature/tint you passed would be ignored.`
+        );
+      }
+      // Neither came from the caller — Camera Raw's own normal output.
     }
   }
 
@@ -655,16 +672,15 @@ interface DescriptionTag {
 }
 
 /**
- * Locate the FIRST `<rdf:Description>` — the top-level one carrying the
- * document's own develop settings.
+ * Scan one `<rdf:Description` tag starting at `open`, quote-aware so an
+ * attribute value containing `>` cannot end the tag early.
  *
- * Scoping to this tag is what protects nested `<crs:Look>` and
- * `<crs:MaskGroupBasedCorrections>` blocks, which contain their own
+ * Scoping edits to a single Description is what protects nested `<crs:Look>`
+ * and `<crs:MaskGroupBasedCorrections>` blocks, which carry their own
  * `rdf:Description` elements with colliding attribute names (a Look has its
  * own `crs:Saturation`; a mask correction has `crs:LocalExposure2012`). A
- * naive document-wide regex would rewrite those and invalidate their digests.
+ * document-wide regex would rewrite those and invalidate their digests.
  */
-/** Scan one `<rdf:Description` tag starting at `open`, quote-aware. */
 function scanDescriptionAt(xmp: string, open: number): DescriptionTag | null {
   const attrsStart = open + '<rdf:Description'.length;
   let i = attrsStart;
@@ -689,24 +705,47 @@ function scanDescriptionAt(xmp: string, open: number): DescriptionTag | null {
   return null;
 }
 
+/**
+ * The `rdf:Description` that carries — or should carry — the document's own
+ * develop settings.
+ *
+ * Prefers the first Description declaring `crs:`, not simply the first one.
+ * Split-namespace XMP is legal and common: exiftool, older Bridge and some
+ * asset managers put `dc`/`xmp` in one Description and `crs` in a sibling.
+ * Taking the first would write develop settings onto the metadata-only element
+ * and leave the user's real develop block untouched in the sibling.
+ *
+ * Candidates are restricted to Descriptions that are NOT inside a `crs:`
+ * element. A `crs:Look` wraps its payload in its own `rdf:Description` bearing
+ * `crs:Name` and `crs:LookTable`, so when namespace declarations are hoisted
+ * to `rdf:RDF` — also legal — a bare container Description carries no marker
+ * and a naive scan would walk straight past it into the Look, writing settings
+ * into a LookTable-hashed payload. Document order alone does not protect
+ * against this; depth does.
+ */
 export function findTopLevelDescription(xmp: string): DescriptionTag | null {
-  // Prefer the first Description that already carries `crs:`, not simply the
-  // first one. Split-namespace XMP is legal and common — exiftool, older
-  // Bridge and some asset managers put `dc`/`xmp` in one Description and `crs`
-  // in a sibling. Taking the first would write develop settings onto the
-  // metadata-only element and leave the user's real develop block untouched in
-  // the sibling, producing two competing crs blocks and an edit that may never
-  // apply. Document order makes this safe: a nested Description (inside a
-  // Look) can only appear after the crs-bearing one that contains it.
   let first: DescriptionTag | null = null;
-  let idx = xmp.indexOf('<rdf:Description');
-  while (idx >= 0) {
-    const tag = scanDescriptionAt(xmp, idx);
+  const re = /<(\/?)(crs:[A-Za-z0-9_]+|rdf:Description)([^>]*?)(\/?)>/g;
+  let crsDepth = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xmp)) !== null) {
+    const [, closing, qname, , selfClosing] = m;
+    if (qname.startsWith('crs:')) {
+      if (closing === '/') crsDepth--;
+      else if (selfClosing !== '/') crsDepth++;
+      continue;
+    }
+    if (closing === '/') continue; // </rdf:Description>
+    if (crsDepth > 0) continue; // nested inside a crs: block — not ours
+
+    const tag = scanDescriptionAt(xmp, m.index);
     if (!tag) break;
     if (!first) first = tag;
     const attrs = xmp.slice(tag.attrsStart, tag.attrsEnd);
     if (/\scrs:[A-Za-z0-9_]+=/.test(attrs) || /xmlns:crs=/.test(attrs)) return tag;
-    idx = xmp.indexOf('<rdf:Description', tag.tagEnd);
+    // scanDescriptionAt is quote-aware; resume past the whole tag so an
+    // attribute value containing '>' cannot make us re-match inside it.
+    re.lastIndex = Math.max(re.lastIndex, tag.tagEnd);
   }
   // No Description declares crs: yet — the first is where it will go.
   return first;

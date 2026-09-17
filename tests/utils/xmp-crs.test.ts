@@ -676,3 +676,62 @@ describe('xmp-crs — split-namespace sidecars and entity round-trips', () => {
     ).toContain('0-255');
   });
 });
+
+describe('xmp-crs — regressions caught in the second QA round', () => {
+  it('never selects a Description nested inside a crs: block', () => {
+    // Namespace declarations hoisted to rdf:RDF are legal, and a container
+    // Description whose only crs content is child ELEMENTS carries no crs:
+    // marker. Preferring "the first Description declaring crs:" would then
+    // walk past the container into the Look's own Description and write
+    // settings into a LookTable-hashed payload.
+    const hoisted = [
+      '<x:xmpmeta xmlns:x="adobe:ns:meta/">',
+      ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"',
+      '   xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">',
+      '  <rdf:Description rdf:about="">',
+      '   <crs:Look>',
+      '    <rdf:Description crs:Name="X" crs:LookTable="E1095149FDB39D7A057BAB208837E2E1"/>',
+      '   </crs:Look>',
+      '  </rdf:Description>',
+      ' </rdf:RDF>',
+      '</x:xmpmeta>',
+    ].join('\n');
+    const merged = mergeCrsIntoSidecar(hoisted, { fields: { exposure: -2 } });
+    const look = /<crs:Look>[\s\S]*?<\/crs:Look>/.exec(merged)![0];
+    expect(look).not.toContain('crs:Exposure2012');
+    expect(look).toContain('crs:LookTable="E1095149FDB39D7A057BAB208837E2E1"');
+    expect(merged).toContain('crs:Exposure2012="-2.00"');
+  });
+
+  it('completes has_crop when the FILE disabled it and the caller asked for a crop', () => {
+    // A real ACR sidecar routinely carries HasCrop="False". Honouring it would
+    // write the caller's crop edges and let Camera Raw ignore them.
+    const { changes, notes } = applyCrsCoherence(
+      { fields: { crop_top: 0.1, crop_bottom: 0.9, has_crop: false } },
+      new Set(['crop_top', 'crop_bottom'])
+    );
+    expect(changes.fields!.has_crop).toBe(true);
+    expect(notes.join(' ')).toContain('do nothing');
+  });
+
+  it('completes white_balance when the FILE set a mode and the caller asked for a temperature', () => {
+    const { changes, notes } = applyCrsCoherence(
+      { fields: { temperature: 8000, white_balance: 'As Shot' } },
+      new Set(['temperature'])
+    );
+    expect(changes.fields!.white_balance).toBe('Custom');
+    expect(notes.join(' ')).toContain('would be ignored');
+  });
+
+  it('does not refuse a caller who disabled cropping over edges they never passed', () => {
+    // The edges came from a preset; "drop the crop edge values" would be
+    // advice the caller cannot act on.
+    expect(() =>
+      applyCrsCoherence({ fields: { crop_top: 0.1, has_crop: false } }, new Set(['has_crop']))
+    ).not.toThrow();
+  });
+
+  it('extractChildBlock refuses a non-identifier tag name, like its write-side twin', () => {
+    expect(() => extractChildBlock(REAL, 'Look[a-z]+')).toThrow(/non-identifier tag name/);
+  });
+});

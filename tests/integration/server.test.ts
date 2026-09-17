@@ -1576,12 +1576,10 @@ describe('raw develop pending flag (dispatch-level)', () => {
     expect(getPendingRawDevelop()).toBeNull();
   });
 
-  it('a ps_develop_raw dispatch clears the flag its own inner open just set', async () => {
-    // ps_develop_raw develops the FILE and then opens it, so the open it makes
-    // internally sets the flag a moment before develop_raw returns. Without
-    // this the advisory tells the model to run a Camera Raw pass on a document
-    // that was just developed — a redundant 120s filter pass on exactly the
-    // workflow the tool provides.
+  it('a ps_develop_raw that opened the file clears the flag', async () => {
+    // A raw the model opened earlier is now developed, so the advisory would
+    // otherwise send it into a redundant Camera Raw pass on exactly the
+    // workflow ps_develop_raw provides.
     const server = new EditmameiServer() as unknown as FlagServer;
     server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
     server.toolRegistry.register(
@@ -1593,6 +1591,24 @@ describe('raw develop pending flag (dispatch-level)', () => {
     expect(getPendingRawDevelop()).not.toBeNull();
     await server.handleToolCall('ps_develop_raw', {});
     expect(getPendingRawDevelop()).toBeNull();
+  });
+
+  it('a ps_develop_raw that only READ the sidecar leaves the flag alone', async () => {
+    // mode='read' inspects and develops nothing, so clearing on the tool name
+    // alone would suppress an advisory that is still correct.
+    const server = new EditmameiServer() as unknown as FlagServer;
+    server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: true, document_name: 'a.dng' })
+    );
+    server.toolRegistry.register(
+      'ps_develop_raw',
+      stub('ps_develop_raw', { mode: 'read', opened: false })
+    );
+    await server.handleToolCall('ps_open_document', {});
+    await server.handleToolCall('ps_develop_raw', { mode: 'read' });
+    expect(getPendingRawDevelop()).not.toBeNull();
   });
 
   it('an isError open result never sets the flag', async () => {
