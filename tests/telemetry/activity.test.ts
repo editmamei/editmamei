@@ -50,8 +50,10 @@ describe('READ_ONLY_TOOLS / KEPT_WORK_TOOLS', () => {
     }
   });
 
-  it('is exactly the original sixteen plus the six template/document additions (22 total)', () => {
-    expect(READ_ONLY_TOOLS.size).toBe(22);
+  it('is exactly the original sixteen, six template/document additions, and two orchestration wrappers (24 total)', () => {
+    // A size pin is deliberately brittle: it forces anyone adding an entry to
+    // state why that tool does not count as an edit.
+    expect(READ_ONLY_TOOLS.size).toBe(24);
   });
 });
 
@@ -260,14 +262,16 @@ describe('classification of the orchestration wrappers and raw develop', () => {
   // passes whichever set these land in. These pin the actual decision, because
   // both carry a live correctness argument against where they currently sit —
   // see the KNOWN BIAS comments in activity.ts.
-  it('counts ps_sequence and ps_batch as mutating, the documented over-count', () => {
-    // Their inner steps are each recorded separately (host.invokeTool ->
-    // registry.execute fires onCall for nested dispatches too), so counting the
-    // wrapper adds one phantom edit per call. Kept for now only because the
-    // aggregation service mirrors this classification and must move in step.
+  it('does not count an orchestration wrapper as an edit of its own', () => {
+    // edits_ok counts any successful call OUTSIDE READ_ONLY_TOOLS. These
+    // wrappers' steps dispatch through host.invokeTool into registry.execute,
+    // whose `finally` fires onCall for nested dispatches too, so each inner
+    // step is already counted. Counting the wrapper as well inflated edits_ok
+    // by an amount that scaled with step count.
     for (const tool of ['ps_sequence', 'ps_batch']) {
-      expect(MUTATING_TOOLS.has(tool)).toBe(true);
-      expect(READ_ONLY_TOOLS.has(tool)).toBe(false);
+      expect(READ_ONLY_TOOLS.has(tool)).toBe(true);
+      expect(MUTATING_TOOLS.has(tool)).toBe(false);
+      expect(KEPT_WORK_TOOLS.has(tool)).toBe(false);
     }
   });
 

@@ -26,6 +26,16 @@
  * server-sync + exhaustiveness discipline this list is held to.
  */
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  // Orchestration wrappers. NOT reads — but neutral for edits_ok, which counts
+  // any successful call OUTSIDE this set. Their steps dispatch through
+  // host.invokeTool into registry.execute, whose `finally` fires onCall for
+  // nested dispatches too, so every inner step is already counted on its own.
+  // Counting the wrapper as well added one phantom edit per call, inflating by
+  // an amount that scaled with step count rather than a constant offset.
+  // The telemetry aggregation service mirrors this list and must carry the same
+  // two entries, or the session summary and the server-side rollups disagree.
+  'ps_sequence',
+  'ps_batch',
   'ps_ping',
   'ps_overview',
   'ps_list_capabilities',
@@ -71,21 +81,6 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   // action / batch / scripting
   'ps_play_action',
   'ps_execute_script',
-  // KNOWN BIAS, deliberate for now. Both of these are ORCHESTRATION WRAPPERS:
-  // their steps dispatch through host.invokeTool -> registry.execute, whose
-  // `finally` fires onCall for every dispatch including nested ones, so each
-  // inner step is already recorded on its own. Counting the wrapper too adds
-  // one phantom edit per call, and the inflation scales with step count rather
-  // than being a constant bias. Under this module's own rule an orchestrator
-  // changes nothing itself, so READ_ONLY_TOOLS is the arithmetically correct
-  // home. Left as-is because moving them requires the aggregation service's
-  // mirrored copy to move in the same deploy, and ps_batch has behaved this
-  // way since it shipped. Revisit both together, not one at a time.
-  // Second-order: the wrapper's onCall fires AFTER its steps, so the retry
-  // hash it compares against is the last INNER step's — two identical
-  // back-to-back sequences never register as a retry.
-  'ps_batch',
-  'ps_sequence',
 
   // adjustment
   'ps_add_adjustment_layer',
