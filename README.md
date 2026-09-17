@@ -94,7 +94,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 | **AI selection** | Community | `select_subject` · `select_sky` · `replace_sky` |
 | **Automation** | Community | `sequence` |
 | **AI selection** | Pro | `select_subject_instance` · `select_object` |
-| **Filters** | Pro | `apply_camera_raw` |
+| **Filters** | Pro | `apply_camera_raw` · `develop_raw` |
 | **Layers (warp)** | Pro | `warp_layer` |
 | **Perception** | Pro | `edit_object` · `add_text_to_object` · `resolve_placement` |
 | **Face mesh** | Pro | `detect_landmarks` · `select_face_feature` |

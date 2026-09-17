@@ -194,7 +194,10 @@ func init() {
 
 		// openDocumentPipeline. Slots: 1=getContextInfo, 2=bitsPerChannelHelper,
 		// 3=isWindows(jsBool), 4=filePath(already-open compare), 5=filePath,
-		// 6=filePath, 7=filePath, 8=suppressDialogs(literal), 9=filePath. (The
+		// 6=filePath, 7=filePath, 8=rawBits(jsNum), 9=suppressDialogs(literal),
+		// 10=filePath. Keep this inventory current: it is the only readable map
+		// of the order, and a stale one is how the next insertion lands in the
+		// wrong position and emits %!s(MISSING) or swaps a path for a bool. (The
 		// bits_per_channel comment had backtick chars in the TS source;
 		// reproduced with plain punctuation — behaviorally inert.)
 		//

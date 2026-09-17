@@ -1576,6 +1576,25 @@ describe('raw develop pending flag (dispatch-level)', () => {
     expect(getPendingRawDevelop()).toBeNull();
   });
 
+  it('a ps_develop_raw dispatch clears the flag its own inner open just set', async () => {
+    // ps_develop_raw develops the FILE and then opens it, so the open it makes
+    // internally sets the flag a moment before develop_raw returns. Without
+    // this the advisory tells the model to run a Camera Raw pass on a document
+    // that was just developed — a redundant 120s filter pass on exactly the
+    // workflow the tool provides.
+    const server = new EditmameiServer() as unknown as FlagServer;
+    server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: true, document_name: 'a.dng' })
+    );
+    server.toolRegistry.register('ps_develop_raw', stub('ps_develop_raw', { opened: true }));
+    await server.handleToolCall('ps_open_document', {});
+    expect(getPendingRawDevelop()).not.toBeNull();
+    await server.handleToolCall('ps_develop_raw', {});
+    expect(getPendingRawDevelop()).toBeNull();
+  });
+
   it('an isError open result never sets the flag', async () => {
     const server = new EditmameiServer() as unknown as FlagServer;
     server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));

@@ -7,6 +7,7 @@ import {
   SIDECAR_DEVELOPABLE_EXTENSIONS,
   applyCrsCoherence,
   describeSidecar,
+  extractChildBlock,
   findTopLevelDescription,
   formatCrsValue,
   mergeCrsIntoSidecar,
@@ -418,25 +419,37 @@ describe('xmp-crs — hardening found in QA', () => {
   });
 
   it('completes has_crop when only crop edges are given', () => {
-    const { changes, notes } = applyCrsCoherence({ fields: { crop_top: 0.1, crop_bottom: 0.9 } });
+    const { changes, notes } = applyCrsCoherence(
+      { fields: { crop_top: 0.1, crop_bottom: 0.9 } },
+      new Set(['crop_top', 'crop_bottom'])
+    );
     expect(changes.fields!.has_crop).toBe(true);
     expect(notes.join(' ')).toContain('has_crop');
   });
 
   it('completes white_balance when temperature is given', () => {
-    const { changes, notes } = applyCrsCoherence({ fields: { temperature: 8000 } });
+    const { changes, notes } = applyCrsCoherence(
+      { fields: { temperature: 8000 } },
+      new Set(['temperature'])
+    );
     expect(changes.fields!.white_balance).toBe('Custom');
     expect(notes.join(' ')).toContain('Custom');
   });
 
   it('refuses temperature under an explicitly non-Custom white balance', () => {
     expect(() =>
-      applyCrsCoherence({ fields: { temperature: 8000, white_balance: 'Daylight' } })
+      applyCrsCoherence(
+        { fields: { temperature: 8000, white_balance: 'Daylight' } },
+        new Set(['temperature', 'white_balance'])
+      )
     ).toThrow(/only take effect with white_balance="Custom"/);
   });
 
   it('leaves a coherent change set alone', () => {
-    const { changes, notes } = applyCrsCoherence({ fields: { exposure: 1 } });
+    const { changes, notes } = applyCrsCoherence(
+      { fields: { exposure: 1 } },
+      new Set(['exposure'])
+    );
     expect(notes).toEqual([]);
     expect(changes.fields).toEqual({ exposure: 1 });
   });
@@ -510,5 +523,156 @@ describe('xmp-crs — sidecar-developable is NOT the same set as is_raw_source',
       expect(RAW_EXTENSIONS).toContain(ext);
     }
     expect(SIDECAR_DEVELOPABLE_EXTENSIONS.length).toBeLessThan(RAW_EXTENSIONS.length);
+  });
+});
+
+describe('xmp-crs — child blocks are scoped to the top-level Description', () => {
+  const PRESET = readFileSync(join(FIXTURES, 'preset-user.xmp'), 'utf8');
+
+  it("does not mistake a Look's internal curve for the document's own", () => {
+    // preset-user.xmp has NO top-level tone curve; its only curves live inside
+    // <crs:Look><crs:Parameters>. A document-wide search reported those as the
+    // preset's own, which then overwrote the target image's real curve.
+    const { carried } = readPresetChanges(PRESET);
+    expect(carried).toContain('Look');
+    expect(carried).not.toContain('ToneCurvePV2012');
+    expect(carried).not.toContain('ToneCurvePV2012Red');
+  });
+
+  it("applying a preset leaves the image's own tone curve alone", () => {
+    // acr-full-sidecar.xmp has BOTH a top-level curve and one inside its Look.
+    const before = blockOf(REAL, 'ToneCurvePV2012');
+    expect(before).toContain('<rdf:li>');
+    const { changes } = readPresetChanges(PRESET);
+    const after = mergeCrsIntoSidecar(REAL, changes);
+    const topLevelAfter = extractChildBlock(after, 'ToneCurvePV2012');
+    expect(topLevelAfter).toBe(extractChildBlock(REAL, 'ToneCurvePV2012'));
+  });
+
+  it('an explicit curve does not get written inside a carried Look', () => {
+    // Writing into the Look would mutate a LookTable-hashed payload AND leave
+    // the document with no top-level curve, so the caller's curve never lands.
+    const { changes } = readPresetChanges(PRESET);
+    const merged = mergeCrsIntoSidecar(null, {
+      ...changes,
+      curves: {
+        curve: [
+          [0, 42],
+          [255, 255],
+        ],
+      },
+    });
+    const look = blockOf(merged, 'Look');
+    expect(look).not.toContain('<rdf:li>0, 42</rdf:li>');
+    expect(extractChildBlock(merged, 'ToneCurvePV2012')).toContain('<rdf:li>0, 42</rdf:li>');
+  });
+
+  it('extractChildBlock reads the top-level block, not a nested one', () => {
+    const top = extractChildBlock(REAL, 'ToneCurvePV2012')!;
+    const insideLook = /<crs:Look>[\s\S]*?<\/crs:Look>/.exec(REAL)![0];
+    expect(insideLook).toContain('<crs:ToneCurvePV2012>');
+    expect(insideLook).not.toContain(top);
+  });
+});
+
+describe('xmp-crs — registry lookups are own-property only', () => {
+  it('rejects an inherited Object.prototype name as an unknown field', () => {
+    // A bare CRS_FIELDS['toString'] is a truthy function, so it slipped past
+    // the unknown-field guard and wrote crs:undefined="5" instead of saying
+    // the name was wrong.
+    for (const name of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
+      const errors = validateCrsChanges({ fields: { [name]: 5 } });
+      expect(errors[0], `expected '${name}' to be rejected`).toContain('Unknown develop field');
+    }
+  });
+
+  it('rejects an inherited name as an unknown curve', () => {
+    const points: ReadonlyArray<readonly [number, number]> = [
+      [0, 0],
+      [255, 255],
+    ];
+    expect(
+      validateCrsChanges({
+        curves: {
+          toString: points,
+        },
+      })[0]
+    ).toContain('Unknown curve');
+  });
+
+  it('never writes a crs:undefined attribute', () => {
+    expect(() => mergeCrsIntoSidecar(null, { fields: { toString: 5 } })).toThrow(
+      /Unknown develop field/
+    );
+  });
+});
+
+describe('xmp-crs — split-namespace sidecars and entity round-trips', () => {
+  const SPLIT = [
+    '<x:xmpmeta xmlns:x="adobe:ns:meta/">',
+    ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">',
+    '  <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"',
+    '   dc:format="image/x-canon-cr2"/>',
+    '  <rdf:Description rdf:about=""',
+    '    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"',
+    '   crs:Version="18.2.2"',
+    '   crs:Exposure2012="0.00"/>',
+    ' </rdf:RDF>',
+    '</x:xmpmeta>',
+  ].join('\n');
+
+  it('writes onto the Description that already carries crs:, not simply the first', () => {
+    // exiftool, older Bridge and some asset managers split namespaces across
+    // sibling Descriptions. Writing to the first would leave the user's real
+    // develop block untouched in the sibling and create two competing crs
+    // blocks — an edit that may never apply.
+    const merged = mergeCrsIntoSidecar(SPLIT, { fields: { exposure: -2 } });
+    expect(merged).toContain('crs:Exposure2012="-2.00"');
+    expect(merged.match(/crs:Exposure2012=/g)).toHaveLength(1);
+    // The dc-only Description must not have gained crs attributes.
+    const dcBlock = /<rdf:Description[^>]*dc:format[^>]*>/.exec(merged)![0];
+    expect(dcBlock).not.toContain('crs:');
+  });
+
+  it('still uses the first Description when none declares crs yet', () => {
+    const plain = '<rdf:RDF xmlns:rdf="r"><rdf:Description rdf:about="" dc:x="1"/></rdf:RDF>';
+    expect(mergeCrsIntoSidecar(plain, { fields: { exposure: 1 } })).toContain(
+      'crs:Exposure2012="+1.00"'
+    );
+  });
+
+  it('round-trips an escaped value without doubling the entities', () => {
+    const once = mergeCrsIntoSidecar(null, { fields: { camera_profile: 'A & B < C' } });
+    expect(once).toContain('crs:CameraProfile="A &amp; B &lt; C"');
+    // Read back as the TEXT, not the entities.
+    expect(readTopLevelCrs(once).CameraProfile).toBe('A & B < C');
+    expect(describeSidecar(once).camera_profile).toBe('A & B < C');
+    // ...and a second write does not escape the escapes.
+    const twice = mergeCrsIntoSidecar(once, { fields: { exposure: 1 } });
+    expect(twice).toContain('crs:CameraProfile="A &amp; B &lt; C"');
+    expect(twice).not.toContain('&amp;amp;');
+  });
+
+  it('refuses crop edges the caller explicitly disabled', () => {
+    // Symmetric with the white-balance contradiction: Camera Raw would write
+    // the edges and ignore them.
+    expect(() =>
+      applyCrsCoherence(
+        { fields: { crop_top: 0.1, has_crop: false } },
+        new Set(['crop_top', 'has_crop'])
+      )
+    ).toThrow(/only take effect with has_crop=true/);
+  });
+
+  it('leaves a file-sourced has_crop=false alone', () => {
+    expect(() =>
+      applyCrsCoherence({ fields: { crop_top: 0.1, has_crop: false } }, new Set())
+    ).not.toThrow();
+  });
+
+  it('rejects a NaN curve point', () => {
+    expect(
+      validateCrsChanges({ curves: { curve: [[Number.NaN, 0] as const, [255, 255] as const] } })[0]
+    ).toContain('0-255');
   });
 });

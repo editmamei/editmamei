@@ -37,8 +37,9 @@
  *     applied.
  *
  * Range provenance: only `PerspectiveRotate` has had its boundary measured
- * live. Every other range is taken from Camera Raw's UI and is marked
- * `verified: false` — see the T2 entry in the open-tests list.
+ * against live Camera Raw. Every other range is read off Camera Raw's UI and
+ * carries `verified: false`, meaning a bound that is too narrow would refuse
+ * a value Camera Raw would have accepted.
  */
 
 /**
@@ -401,6 +402,23 @@ export const CRS_CURVES: Readonly<Record<string, string>> = Object.freeze({
 
 export type CurvePoints = ReadonlyArray<readonly [number, number]>;
 
+/**
+ * Own-property lookups on the registries.
+ *
+ * A bare `CRS_FIELDS[name]` resolves through Object.prototype, so 'toString'
+ * or 'constructor' returns a truthy function and slips past the unknown-field
+ * guard — then writes a literal `crs:undefined="..."` attribute instead of
+ * reporting the typo. That is the silent-no-op class this module exists to
+ * remove, so the lookups are guarded rather than the names blacklisted.
+ */
+export function isCrsField(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(CRS_FIELDS, name);
+}
+
+export function isCrsCurve(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(CRS_CURVES, name);
+}
+
 export interface CrsChanges {
   /** Scalar fields keyed by the friendly names in CRS_FIELDS. */
   readonly fields?: Readonly<Record<string, number | boolean | string>>;
@@ -437,11 +455,11 @@ export function validateCrsChanges(changes: CrsChanges): string[] {
   const errors: string[] = [];
 
   for (const [name, raw] of Object.entries(changes.fields ?? {})) {
-    const spec = CRS_FIELDS[name];
-    if (!spec) {
+    if (!isCrsField(name)) {
       errors.push(`Unknown develop field '${name}'.`);
       continue;
     }
+    const spec = CRS_FIELDS[name];
     if (spec.format === 'bool') {
       if (typeof raw !== 'boolean')
         errors.push(`'${name}' must be true or false, got ${JSON.stringify(raw)}.`);
@@ -467,7 +485,7 @@ export function validateCrsChanges(changes: CrsChanges): string[] {
   }
 
   for (const [name, points] of Object.entries(changes.curves ?? {})) {
-    if (!CRS_CURVES[name]) {
+    if (!isCrsCurve(name)) {
       errors.push(`Unknown curve '${name}'. Valid: ${Object.keys(CRS_CURVES).join(', ')}.`);
       continue;
     }
@@ -479,7 +497,9 @@ export function validateCrsChanges(changes: CrsChanges): string[] {
       if (
         !Array.isArray(p) ||
         p.length !== 2 ||
-        p.some((n) => typeof n !== 'number' || n < 0 || n > 255)
+        // isFinite, not typeof: NaN is a number and passes every comparison,
+        // so it would render `<rdf:li>NaN, 0</rdf:li>` into the sidecar.
+        p.some((n) => !Number.isFinite(n) || n < 0 || n > 255)
       ) {
         errors.push(
           `'${name}' points must be [input, output] pairs in 0-255; got ${JSON.stringify(p)}.`
@@ -511,15 +531,27 @@ export function validateCrsChanges(changes: CrsChanges): string[] {
  */
 export function applyCrsCoherence(
   changes: CrsChanges,
-  callerFields: ReadonlySet<string> = new Set(Object.keys(changes.fields ?? {}))
+  callerFields: ReadonlySet<string>
 ): { changes: CrsChanges; notes: string[] } {
   const fields = { ...(changes.fields ?? {}) };
   const notes: string[] = [];
 
   const cropEdges = ['crop_top', 'crop_left', 'crop_bottom', 'crop_right', 'crop_angle'];
-  if (cropEdges.some((k) => k in fields) && fields.has_crop === undefined) {
-    fields.has_crop = true;
-    notes.push('Set has_crop=true: Camera Raw ignores a crop box without it.');
+  if (cropEdges.some((k) => k in fields)) {
+    if (fields.has_crop === undefined) {
+      fields.has_crop = true;
+      notes.push('Set has_crop=true: Camera Raw ignores a crop box without it.');
+    } else if (fields.has_crop === false && callerFields.has('has_crop')) {
+      // Symmetric with the white-balance case below: a caller asking for a
+      // crop box while explicitly disabling cropping gets a written sidecar
+      // and no visible change, which is the failure this function exists to
+      // stop. Only refuse when they typed it; a file may legitimately carry
+      // stale crop edges alongside HasCrop=False.
+      throw new Error(
+        'Crop edges only take effect with has_crop=true, but has_crop=false was given. ' +
+          'Pass has_crop=true, or drop the crop edge values.'
+      );
+    }
   }
 
   const wbDriven = 'temperature' in fields || 'tint' in fields;
@@ -586,6 +618,19 @@ function signed(rendered: string, value: number): string {
   return value > 0 ? `+${rendered}` : rendered;
 }
 
+/** Inverse of escapeXmlAttr. Without it a value round-trips double-escaped:
+ *  `A &amp; B` reads back as the literal `A &amp; B` and is escaped again on the
+ *  next write, and `describeSidecar` shows the caller the entities rather than
+ *  the text. `&amp;` must be decoded LAST or it would re-create the others. */
+function unescapeXmlAttr(s: string): string {
+  return s
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
 function escapeXmlAttr(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -619,11 +664,9 @@ interface DescriptionTag {
  * own `crs:Saturation`; a mask correction has `crs:LocalExposure2012`). A
  * naive document-wide regex would rewrite those and invalidate their digests.
  */
-export function findTopLevelDescription(xmp: string): DescriptionTag | null {
-  const open = xmp.indexOf('<rdf:Description');
-  if (open < 0) return null;
+/** Scan one `<rdf:Description` tag starting at `open`, quote-aware. */
+function scanDescriptionAt(xmp: string, open: number): DescriptionTag | null {
   const attrsStart = open + '<rdf:Description'.length;
-
   let i = attrsStart;
   let quote: string | null = null;
   while (i < xmp.length) {
@@ -644,6 +687,29 @@ export function findTopLevelDescription(xmp: string): DescriptionTag | null {
     i++;
   }
   return null;
+}
+
+export function findTopLevelDescription(xmp: string): DescriptionTag | null {
+  // Prefer the first Description that already carries `crs:`, not simply the
+  // first one. Split-namespace XMP is legal and common — exiftool, older
+  // Bridge and some asset managers put `dc`/`xmp` in one Description and `crs`
+  // in a sibling. Taking the first would write develop settings onto the
+  // metadata-only element and leave the user's real develop block untouched in
+  // the sibling, producing two competing crs blocks and an edit that may never
+  // apply. Document order makes this safe: a nested Description (inside a
+  // Look) can only appear after the crs-bearing one that contains it.
+  let first: DescriptionTag | null = null;
+  let idx = xmp.indexOf('<rdf:Description');
+  while (idx >= 0) {
+    const tag = scanDescriptionAt(xmp, idx);
+    if (!tag) break;
+    if (!first) first = tag;
+    const attrs = xmp.slice(tag.attrsStart, tag.attrsEnd);
+    if (/\scrs:[A-Za-z0-9_]+=/.test(attrs) || /xmlns:crs=/.test(attrs)) return tag;
+    idx = xmp.indexOf('<rdf:Description', tag.tagEnd);
+  }
+  // No Description declares crs: yet — the first is where it will go.
+  return first;
 }
 
 /** Minimal sidecar for a raw that has none yet. */
@@ -677,16 +743,87 @@ function indentBlock(block: string): string {
     .join('\n');
 }
 
+const XML_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
+
+interface ChildSpan {
+  readonly tag: string;
+  readonly start: number;
+  readonly end: number;
+}
+
 /**
- * Pull one whole `crs:` child element out of an XMP document, tag included.
+ * The `crs:` elements that are DIRECT children of the top-level
+ * `rdf:Description` — the document's own blocks, not blocks belonging to
+ * something nested inside it.
  *
- * Returns null when absent. Non-greedy to the first matching close tag, which
- * is correct for the `crs:` blocks Camera Raw writes — none of them nest a
- * second element of the same name.
+ * This distinction is load-bearing and a document-wide search gets it wrong.
+ * A `<crs:Look>` carries its own `<crs:Parameters>` containing
+ * `<crs:ToneCurvePV2012>` and its three per-channel siblings. Matching the
+ * first occurrence anywhere therefore (a) reads a Look's INTERNAL curve as if
+ * it were the document's, and (b) writes a requested curve INSIDE the Look,
+ * mutating a LookTable-hashed payload while leaving the document with no
+ * top-level curve at all. Both were live, and neither is visible in an
+ * attribute-level comparison.
+ *
+ * Depth is tracked over `crs:` tags only; `rdf:` wrappers in between are
+ * irrelevant to the nesting we care about.
+ */
+function topLevelChildBlocks(xmp: string): ChildSpan[] {
+  const tag = findTopLevelDescription(xmp);
+  if (!tag || tag.selfClosing) return [];
+
+  const spans: ChildSpan[] = [];
+  // BOTH tag families are tracked. A Look wraps its payload in its own
+  // `rdf:Description`, so bounding the scan at the first `</rdf:Description>`
+  // stops partway INSIDE the Look and never sees it close. Depth over both is
+  // what makes "direct child" mean what it says.
+  const re = /<(\/?)(crs:[A-Za-z0-9_]+|rdf:Description)([^>]*?)(\/?)>/g;
+  re.lastIndex = tag.tagEnd;
+  let depth = 0;
+  let openStart = -1;
+  let openTag = '';
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xmp)) !== null) {
+    const [full, closing, qname, , selfClosing] = m;
+    const isCrs = qname.startsWith('crs:');
+    const name = isCrs ? qname.slice(4) : qname;
+
+    if (closing === '/') {
+      // Depth 0 here is the top-level Description closing: we are done.
+      if (depth === 0) break;
+      depth--;
+      if (depth === 0 && isCrs && name === openTag) {
+        spans.push({ tag: openTag, start: openStart, end: m.index + full.length });
+        openStart = -1;
+        openTag = '';
+      }
+    } else if (selfClosing === '/') {
+      if (depth === 0 && isCrs) {
+        spans.push({ tag: name, start: m.index, end: m.index + full.length });
+      }
+    } else {
+      if (depth === 0 && isCrs) {
+        openStart = m.index;
+        openTag = name;
+      }
+      depth++;
+    }
+  }
+  return spans;
+}
+
+/**
+ * Pull one whole `crs:` child element of the top-level `rdf:Description` out
+ * of an XMP document, tag included. Returns null when absent.
+ *
+ * Deliberately NOT a document-wide search — see `topLevelChildBlocks`.
  */
 export function extractChildBlock(xmp: string, tagName: string): string | null {
-  const m = new RegExp(`<crs:${tagName}>[\\s\\S]*?</crs:${tagName}>`).exec(xmp);
-  return m ? m[0] : null;
+  if (!XML_NAME.test(tagName)) {
+    throw new Error(`Refusing to read a block with a non-identifier tag name: '${tagName}'.`);
+  }
+  const span = topLevelChildBlocks(xmp).find((s) => s.tag === tagName);
+  return span ? xmp.slice(span.start, span.end) : null;
 }
 
 /**
@@ -695,15 +832,20 @@ export function extractChildBlock(xmp: string, tagName: string): string | null {
  * room for children yet.
  */
 function upsertChildBlock(xmp: string, tagName: string, blockText: string): string {
-  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(tagName)) {
-    // The tag name is interpolated into a RegExp below; anything but a plain
-    // XML name could change what the pattern matches.
+  if (!XML_NAME.test(tagName)) {
     throw new Error(`Refusing to write a block with a non-identifier tag name: '${tagName}'.`);
   }
-  const existing = new RegExp(`[ \\t]*<crs:${tagName}>[\\s\\S]*?</crs:${tagName}>`);
-  // Replacer function for the same reason as the attribute path: `$` sequences
-  // in the block text would otherwise be treated as substitution syntax.
-  if (existing.test(xmp)) return xmp.replace(existing, () => blockText);
+  // Only a DIRECT child of the top-level Description is ours to replace. A
+  // document-wide match would write inside a carried Look, corrupting a
+  // hashed payload and leaving the document without the block it asked for.
+  const existing = topLevelChildBlocks(xmp).find((s) => s.tag === tagName);
+  if (existing) {
+    // Sliced, not `.replace`, so `$` sequences in the block text cannot be
+    // read as substitution syntax.
+    return (
+      xmp.slice(0, existing.start) + blockText.replace(/^[ \t]+/, '') + xmp.slice(existing.end)
+    );
+  }
 
   const tag = findTopLevelDescription(xmp);
   if (!tag) throw new Error('Sidecar structure changed unexpectedly during merge.');
@@ -895,7 +1037,7 @@ export function readTopLevelCrs(xmp: string): Record<string, string> {
   const out: Record<string, string> = {};
   const re = /crs:([A-Za-z0-9_]+)="([^"]*)"/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(region))) out[m[1]] = m[2];
+  while ((m = re.exec(region))) out[m[1]] = unescapeXmlAttr(m[2]);
   return out;
 }
 
