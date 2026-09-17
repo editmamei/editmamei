@@ -225,8 +225,12 @@ func convertImageModeBitmap(frequency, angle float64, shape string) string {
 	return fmt.Sprintf(tpl[vault.ConvertBitmp], getContextInfo(), f, a, halftoneShapeMap[shape], f, a, jsLit(shape))
 }
 
-func openDocumentPipeline(filePath string, suppressDialogs bool) string {
-	return openDocumentPipelineForPlatform(filePath, suppressDialogs, runtime.GOOS == "windows")
+// rawBits is the open-time bit depth for a RAW source (8, 16 or 32); 0 leaves
+// it to Photoshop. It is only honoured for raw files, because Camera Raw's
+// workflow options are the only scripted route to it — and it has to happen at
+// OPEN, since converting depth afterwards flattens the document.
+func openDocumentPipeline(filePath string, suppressDialogs bool, rawBits float64) string {
+	return openDocumentPipelineForPlatform(filePath, suppressDialogs, rawBits, runtime.GOOS == "windows")
 }
 
 // openDocumentPipelineForPlatform is the platform-parameterized emitter behind
@@ -236,7 +240,7 @@ func openDocumentPipeline(filePath string, suppressDialogs bool) string {
 // the test host's own OS. isWindows comes from runtime.GOOS at call time, which
 // is correct because this runs inside the per-platform shipped binary on the
 // same machine as Photoshop (see the F6 note on probeOpenDocument).
-func openDocumentPipelineForPlatform(filePath string, suppressDialogs bool, isWindows bool) string {
+func openDocumentPipelineForPlatform(filePath string, suppressDialogs bool, rawBits float64, isWindows bool) string {
 	fp := jsLit(filePath)
 	return fmt.Sprintf(
 		tpl[vault.OpenDoc],
@@ -244,6 +248,7 @@ func openDocumentPipelineForPlatform(filePath string, suppressDialogs bool, isWi
 		bitsPerChannelHelper(),
 		jsBool(isWindows),
 		fp, fp, fp, fp,
+		jsNum(rawBits),
 		jsBool(suppressDialogs),
 		fp,
 	)

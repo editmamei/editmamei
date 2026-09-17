@@ -406,6 +406,63 @@ describe('createDocumentTools', () => {
     expect(idx.get('ps_open_document')!.tool.inputSchema.required).toEqual(['file_path']);
   });
 
+  // Open-time bit depth for raw sources. It has to be set AT OPEN because
+  // ps_convert_image_mode flattens, so there is no second chance once an edit
+  // stack exists. Camera Raw's workflow options are the only scripted route,
+  // and the snippet falls back to a plain open where they are unavailable —
+  // so the handler's job is to report what was ACTUALLY opened rather than
+  // let the caller assume the request landed.
+  describe('ps_open_document bit_depth (raw open-time depth)', () => {
+    const openedAt = (bits: number, isRaw = true) =>
+      makeConnection({
+        resultFor: () => ({
+          success: true,
+          document_name: 'a.CR2',
+          bits_per_channel: bits,
+          is_raw_source: isRaw,
+        }),
+      });
+
+    it('forwards the requested depth to the snippet as rawBits', async () => {
+      const sc = makeSnippetClient();
+      const tools = createDocumentTools(openedAt(16).asConnection(), sc);
+      await callTool(tools, 'ps_open_document', { file_path: 'E:/a.CR2', bit_depth: 16 });
+      expect(sc.allBuilds()[0].params.rawBits).toBe(16);
+    });
+
+    it('sends rawBits 0 when the caller does not ask, leaving depth to Photoshop', async () => {
+      const sc = makeSnippetClient();
+      const tools = createDocumentTools(conn.asConnection(), sc);
+      await callTool(tools, 'ps_open_document', { file_path: 'E:/a.CR2' });
+      expect(sc.allBuilds()[0].params.rawBits).toBe(0);
+    });
+
+    it('stays silent when the document really opened at the requested depth', async () => {
+      const tools = createDocumentTools(openedAt(16).asConnection(), makeSnippetClient());
+      const r = await callTool(tools, 'ps_open_document', { file_path: 'E:/a.CR2', bit_depth: 16 });
+      expect(r.structuredContent).not.toHaveProperty('bit_depth_warning');
+    });
+
+    it('warns when Photoshop opened a raw at a different depth than requested', async () => {
+      const tools = createDocumentTools(openedAt(8).asConnection(), makeSnippetClient());
+      const r = await callTool(tools, 'ps_open_document', { file_path: 'E:/a.CR2', bit_depth: 16 });
+      expect(r.structuredContent!.bit_depth_warning).toContain('Requested 16-bit');
+      expect(r.structuredContent!.bit_depth_warning).toContain('opened 8-bit');
+    });
+
+    it('says bit_depth is raw-only when asked for it on a non-raw file', async () => {
+      const tools = createDocumentTools(openedAt(8, false).asConnection(), makeSnippetClient());
+      const r = await callTool(tools, 'ps_open_document', { file_path: 'E:/a.jpg', bit_depth: 16 });
+      expect(r.structuredContent!.bit_depth_warning).toContain('RAW sources only');
+    });
+
+    it('rejects a depth Photoshop has no mode for', async () => {
+      const tools = createDocumentTools(conn.asConnection(), makeSnippetClient());
+      const r = await callTool(tools, 'ps_open_document', { file_path: 'E:/a.CR2', bit_depth: 12 });
+      expect(r.isError).toBe(true);
+    });
+  });
+
   it('export defaults to nothing without a format (format is required)', async () => {
     const tools = createDocumentTools(conn.asConnection(), snippetClient);
     const r = await callTool(tools, 'ps_export', { output_path: 'C:/out/test.jpg' });

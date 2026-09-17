@@ -700,6 +700,14 @@ export class EditmameiServer {
         // pending flag now refers to a document that is no longer active.
         clearPendingRawDevelop();
       }
+    } else if (name === 'ps_develop_raw') {
+      // ps_develop_raw develops the FILE before opening it, so a raw the model
+      // opened earlier is now developed and the advisory would otherwise send
+      // it into a redundant Camera Raw pass on exactly the workflow this tool
+      // provides. Only an actual open counts: mode='read' just inspects the
+      // sidecar and develops nothing.
+      const sc = result.structuredContent as { opened?: unknown } | undefined;
+      if (sc?.opened === true) clearPendingRawDevelop();
     } else if (name === 'ps_apply_camera_raw' || name === 'ps_close_document') {
       clearPendingRawDevelop();
     }
