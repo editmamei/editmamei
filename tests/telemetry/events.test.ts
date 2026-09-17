@@ -255,7 +255,8 @@ describe('buildSessionSummary', () => {
     const e = buildSessionSummary(
       dims('2026'),
       { tool_call_count: 47, distinct_tools: 11, any_failures: true },
-      '2026-06-14'
+      '2026-06-14',
+      new Date('2026-06-14T09:00:00.000Z')
     );
     expect(e.type).toBe('session_summary');
     expect(e.tool_call_count).toBe(47);
@@ -267,7 +268,8 @@ describe('buildSessionSummary', () => {
     const e = buildSessionSummary(
       dims('2026'),
       { tool_call_count: 1, distinct_tools: 1, any_failures: false },
-      '2026-06-13'
+      '2026-06-13',
+      new Date('2026-06-14T00:30:00.000Z')
     );
     expect(e.ts_bucket).toBe('2026-06-13');
   });
@@ -276,7 +278,8 @@ describe('buildSessionSummary', () => {
     const e = buildSessionSummary(
       dims('2026'),
       { tool_call_count: 1, distinct_tools: 1, any_failures: false },
-      '2026-06-13'
+      '2026-06-13',
+      NOW
     );
     for (const key of [
       'duration_s',
@@ -312,7 +315,8 @@ describe('buildSessionSummary', () => {
         templates_saved: 6,
         action_sets: 2,
       },
-      '2026-06-13'
+      '2026-06-13',
+      NOW
     );
     expect(e.duration_s).toBe(120);
     expect(e.retry_count).toBe(2);
@@ -326,23 +330,12 @@ describe('buildSessionSummary', () => {
     expect(e.action_sets).toBe(2);
   });
 
-  it("falls back to today's real-clock bucket when tsBucket does not match YYYY-MM-DD", () => {
-    // No injectable "now" for this fallback (unlike the rest of this module, which always
-    // takes `now` as a parameter) — it reaches for the real clock, so the expectation must
-    // too, computed at the same instant rather than pinned to the fixture NOW constant.
-    const e = buildSessionSummary(
-      dims('2026'),
-      { tool_call_count: 1, distinct_tools: 1, any_failures: false },
-      'not-a-date'
-    );
-    expect(e.ts_bucket).toBe(dayBucket(new Date()));
-  });
-
   it('keeps a well-formed tsBucket verbatim', () => {
     const e = buildSessionSummary(
       dims('2026'),
       { tool_call_count: 1, distinct_tools: 1, any_failures: false },
-      '2026-01-02'
+      '2026-01-02',
+      NOW
     );
     expect(e.ts_bucket).toBe('2026-01-02');
   });
@@ -422,6 +415,15 @@ describe('buildClientConnected', () => {
       NOW
     );
     expect('ps_version' in e).toBe(false);
+  });
+  it('clamps a malformed bucket to the current UTC day rather than 400 the whole batch', () => {
+    const e = buildSessionSummary(
+      dims('2026'),
+      { tool_call_count: 1, distinct_tools: 1, any_failures: false },
+      'not-a-bucket',
+      new Date('2026-06-14T00:30:00.000Z')
+    );
+    expect(e.ts_bucket).toBe('2026-06-14');
   });
 });
 

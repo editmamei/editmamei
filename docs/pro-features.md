@@ -73,7 +73,19 @@ Templates turn one-shot edits into repeatable looks. Bundling the whole surface 
 
 The part that matters: it reads back what's already applied. Ask for "a touch less dehaze" a day later and the AI reads the current settings, changes that one value, and reapplies. Nothing else moves, and nothing bakes into pixels.
 
-Scope note, honestly: this develops open documents. The raw-file import dialog (the develop screen you see when double-clicking a .CR3) and Camera Raw's local masks are not driveable this way.
+Scope note, honestly: this develops open documents, and Camera Raw's local masks are not driveable this way. For the raw file itself, before it opens, see below.
+
+### Raw files, developed before they open
+
+`ps_develop_raw` develops the raw file rather than the opened pixels. That distinction buys three things nothing else in Photoshop can reach from a script: Upright levelling and perspective correction, crop with straighten, and lens profile correction. A filter cannot change a layer's dimensions, so Photoshop disables that whole panel for the Camera Raw Filter. Working on the file instead sidesteps it.
+
+You also get Camera Raw's own Auto, the full modern develop set, and the option to open straight to 16 bit, which has to be decided at open because converting later flattens the document.
+
+It applies your own saved Camera Raw presets. Ask for one by name and its look comes across intact.
+
+How it works is deliberately unglamorous: it writes Camera Raw's settings file next to the raw, the same file Bridge and Lightroom have always used to carry settings between applications. Your existing develop is merged rather than replaced, the previous settings are backed up first, and masks you made by hand in Camera Raw are carried through untouched.
+
+Scope note, honestly: HEIC is not included. Photoshop opens HEIC by a route that never reads that settings file, so asking for it is refused rather than writing something that would quietly do nothing.
 
 ### Precision placement
 

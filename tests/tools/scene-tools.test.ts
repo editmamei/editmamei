@@ -177,6 +177,14 @@ describe('createSceneTools', () => {
     expect(schema.required).toContain('target');
   });
 
+  it('ps_read_scene annotate defaults to false — the structured model is complete on its own', () => {
+    const t = tools();
+    const schema = t[0].tool.inputSchema as unknown as {
+      properties: { annotate: { default: boolean } };
+    };
+    expect(schema.properties.annotate.default).toBe(false);
+  });
+
   // ---------- ps_read_scene ----------
 
   it('scene builds a structured model with subjects, faces, horizon, tonal zones, composition', async () => {
@@ -239,6 +247,57 @@ describe('createSceneTools', () => {
     // The export+decode freshness probe itself still ran on both calls.
     const detectScripts = conn.allScripts().filter((s) => s.includes('__mcp_detect__')).length;
     expect(detectScripts).toBe(2);
+  });
+
+  it('omitting annotate returns no preview image, structured model unaffected', async () => {
+    const t = createSceneTools(conn.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      detectDeps: fakeDetectDeps(),
+    });
+    const withDefault = await callTool(t, 'ps_read_scene', {});
+    expect(withDefault.content.some((c) => c.type === 'image')).toBe(false);
+    const withExplicitFalse = await callTool(t, 'ps_read_scene', {
+      annotate: false,
+      refresh: true,
+    });
+    expect(withExplicitFalse.content.some((c) => c.type === 'image')).toBe(false);
+    expect((withDefault.structuredContent as { doc: unknown }).doc).toEqual(
+      (withExplicitFalse.structuredContent as { doc: unknown }).doc
+    );
+  });
+
+  it('annotate:true is opt-in and returns the annotated preview image', async () => {
+    const t = createSceneTools(conn.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      detectDeps: fakeDetectDeps(),
+    });
+    const res = await callTool(t, 'ps_read_scene', { annotate: true });
+    const img = res.content.find((c) => c.type === 'image');
+    expect(img).toBeDefined();
+  });
+
+  it('annotate does not change the structured model — only content[] gains the image', async () => {
+    // No field of the model (doc/subjects/faces/regions/horizon/tonal_zones/
+    // composition/provenance) describes the annotated PICTURE itself — that
+    // only ever lands in content[] — so annotate must be a pure content[]-only
+    // switch. Each call gets its own fresh scene-cache clear (rather than two
+    // calls on one tool instance) so provenance.cached reads the same (false)
+    // on both sides and isn't a spurious source of drift here.
+    __clearSceneCache();
+    const t1 = createSceneTools(conn.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      detectDeps: fakeDetectDeps(),
+    });
+    const withFalse = await callTool(t1, 'ps_read_scene', { annotate: false });
+
+    __clearSceneCache();
+    const t2 = createSceneTools(conn.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      detectDeps: fakeDetectDeps(),
+    });
+    const withTrue = await callTool(t2, 'ps_read_scene', { annotate: true });
+
+    expect(withTrue.structuredContent).toEqual(withFalse.structuredContent);
   });
 
   it('scene refresh:true forces a fresh detection pass', async () => {
@@ -601,15 +660,50 @@ describe('createSceneTools', () => {
     expect((relaxed.structuredContent as { passed: boolean }).passed).toBe(true); // model relaxes ⇒ confident
   });
 
-  it('above_horizon → rectangle to the horizon y', async () => {
-    const res = await callTool(tools(), 'ps_select_by_reference', {
-      target: 'above_horizon',
+  /** An export with a real sky/ground split: top quarter bright, rest dark. */
+  function horizonDecoded(): DecodedImage {
+    const w = 32;
+    const h = 32;
+    const data = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      const v = y < h / 4 ? 220 : 40;
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        data[i] = v;
+        data[i + 1] = v;
+        data[i + 2] = v;
+        data[i + 3] = 255;
+      }
+    }
+    return { width: w, height: h, data };
+  }
+
+  it('above_horizon → rectangle to the horizon y when a horizon is measurable', async () => {
+    const t = createSceneTools(conn.asConnection(), sc, {
+      client: new FakeDetectionClient(),
+      detectDeps: fakeDetectDeps(horizonDecoded()),
     });
+    const res = await callTool(t, 'ps_select_by_reference', { target: 'above_horizon' });
     const rect = sc.allBuilds().find((b) => b.name === 'selectRectangle');
     expect(rect).toBeTruthy();
     // The rectangle spans the full width and stops at the horizon (top=0).
     expect(rect?.params).toMatchObject({ left: 0, top: 0, right: 1000 });
     expect((res.structuredContent as { method: string }).method).toBe('rectangle_to_horizon');
+  });
+
+  it('above_horizon is honest absence when no horizon is measurable', async () => {
+    // The default fixture has no decodable export, so there is no row profile
+    // and nothing to measure. An unmeasurable frame must produce NO selection:
+    // supplying a coordinate here would return a rectangle presented as a
+    // region, on an image containing no horizon at all. Asserting absence is
+    // the point — a test that only checked the call succeeded would pass
+    // against a fabricated coordinate.
+    const res = await callTool(tools(), 'ps_select_by_reference', { target: 'above_horizon' });
+    expect(
+      sc.allBuilds().find((b) => b.name === 'selectRectangle'),
+      'must not select a rectangle at a guessed horizon'
+    ).toBeFalsy();
+    expect(res.structuredContent).toMatchObject({ passed: false, method: 'none' });
   });
 
   it('face → the primary face box as a feathered ellipse', async () => {

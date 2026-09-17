@@ -8,7 +8,12 @@ import { groupOf, GROUPS, type ToolGroup } from './tool-groups.js';
 import { EDITION } from '../edition.js';
 import { VERSION } from '../version.js';
 import { Session } from './session.js';
-import { SessionLog, classifyError, computeResultBytes } from '../utils/session-log.js';
+import {
+  SessionLog,
+  classifyError,
+  computeResultBytes,
+  NO_ERROR_TEXT_CLASS,
+} from '../utils/session-log.js';
 import {
   loadSettings,
   applyTelemetryEnvOverrides,
@@ -373,13 +378,17 @@ export class EditmameiServer {
         // Only the ping downgrade may claim ps_not_running: it is the one path
         // that knows Photoshop did not answer. Any other classless failure —
         // reachable if a handler ever returns isError with no text block — gets
-        // 'other', which is honest. What must never happen again is null on a
-        // failure, so the ternary has no branch that produces one.
+        // NO_ERROR_TEXT_CLASS, the SAME sentinel SessionLog.append() falls back
+        // to for the local NDJSON, so a diagnostics bundle (built from the local
+        // log) and a telemetry dashboard (built from this call) agree on one
+        // class for the same event instead of naming it two different things.
+        // What must never happen again is null on a failure, so the ternary has
+        // no branch that produces one.
         const isPingDowngrade =
           entry.tool === 'ps_ping' && !telemetrySuccess && entry.error === undefined;
         const errorClass =
           classifyError(entry.error) ??
-          (telemetrySuccess ? null : isPingDowngrade ? 'ps_not_running' : 'other');
+          (telemetrySuccess ? null : isPingDowngrade ? 'ps_not_running' : NO_ERROR_TEXT_CLASS);
         // Retry signal: same tool + deep-equal args as the IMMEDIATELY preceding call. Hashed
         // (never the raw args themselves — nothing about args is retained, logged, or
         // emitted). A hash failure (unserializable args, e.g. a circular structure) degrades
@@ -403,7 +412,7 @@ export class EditmameiServer {
         if (!telemetrySuccess) {
           this.telemetry.recordDiagnostic({
             tool: entry.tool,
-            error_class: errorClass ?? 'other',
+            error_class: errorClass ?? NO_ERROR_TEXT_CLASS,
             // `||`, not `??`: a handler can return an isError result whose text
             // block is the empty string, which `??` would pass through and
             // leave the failure just as unnamed as a missing one.
@@ -803,6 +812,14 @@ export class EditmameiServer {
         // pending flag now refers to a document that is no longer active.
         clearPendingRawDevelop();
       }
+    } else if (name === 'ps_develop_raw') {
+      // ps_develop_raw develops the FILE before opening it, so a raw the model
+      // opened earlier is now developed and the advisory would otherwise send
+      // it into a redundant Camera Raw pass on exactly the workflow this tool
+      // provides. Only an actual open counts: mode='read' just inspects the
+      // sidecar and develops nothing.
+      const sc = result.structuredContent as { opened?: unknown } | undefined;
+      if (sc?.opened === true) clearPendingRawDevelop();
     } else if (name === 'ps_apply_camera_raw' || name === 'ps_close_document') {
       clearPendingRawDevelop();
     }

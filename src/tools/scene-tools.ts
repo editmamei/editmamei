@@ -2,10 +2,12 @@
  * Scene Model v1 tools (Layer 1 perception).
  *
  *   ps_read_scene               — the "look before you select" read: returns
- *                                   the structured scene model + an annotated
- *                                   preview (subject boxes, horizon line, region
- *                                   tints, tonal-zone hint). Content-free beyond
- *                                   the downscaled preview.
+ *                                   the structured scene model (subject boxes,
+ *                                   horizon line, region tints, tonal-zone
+ *                                   hint), complete on its own — pass
+ *                                   annotate:true for an annotated preview
+ *                                   drawn from the same data. Content-free
+ *                                   beyond that optional downscaled preview.
  *   ps_select_by_reference — the headline: resolve a SEMANTIC target
  *                                   (sky / ground / subject / shadows / … ) to a
  *                                   real pixel selection on the ORIGINAL in
@@ -166,9 +168,9 @@ const sceneSchema: JsonSchemaObject = {
   properties: {
     annotate: {
       type: 'boolean',
-      default: true,
+      default: false,
       description:
-        'Return an annotated preview with subject boxes (magenta), faces (cyan), and the horizon line (yellow) drawn so you can visually confirm the scene model.',
+        'Also return an annotated preview JPEG with subject boxes (magenta), faces (cyan), and the horizon line (yellow) drawn. Default false: the structured scene model returned by this call is already complete on its own — ask for the image only when you actually need to see the annotation drawn.',
     },
     refresh: {
       type: 'boolean',
@@ -243,7 +245,9 @@ function summarizeScene(model: SceneModel): string {
   const parts = [
     `${model.subjects.length} subject(s)${subjStr ? ` (${subjStr})` : ''}`,
     `${model.faces.length} face(s)`,
-    `horizon at y=${model.horizon.y} (${Math.round(model.horizon.placement * 100)}% down, conf ${model.horizon.confidence.toFixed(2)})`,
+    model.horizon.detected
+      ? `horizon at y=${model.horizon.y} (${Math.round(model.horizon.placement * 100)}% down, conf ${model.horizon.confidence.toFixed(2)})`
+      : `no horizon measured (${model.horizon.reason})`,
     `sky ~${Math.round((model.regions.find((r) => r.kind === 'sky')?.coverage ?? 0) * 100)}%`,
   ];
   if (main && cell) parts.push(`main subject in the ${cell.row}-${cell.col} third`);
@@ -261,7 +265,7 @@ async function scene(
 ): Promise<ToolResult> {
   try {
     const args = validateArgs(sceneSchema, rawArgs);
-    const annotate = (args.annotate as boolean) ?? true;
+    const annotate = (args.annotate as boolean) ?? false;
     const refresh = (args.refresh as boolean) ?? false;
     // Must match the schema default. Asserting the opposite here is harmless
     // only while validateArgs fills defaults in; deleting `default: false` from
@@ -330,7 +334,9 @@ async function scene(
         // Lift the horizon y into export-pixel space for the overlay.
         const exportH = built.exportImage.height || 0;
         const sy = model.doc.height > 0 ? exportH / model.doc.height : 1;
-        const horizonExportY = Math.round(model.horizon.y * sy);
+        // null when no horizon was measured — annotateScene skips the line
+        // rather than drawing one at a guessed position.
+        const horizonExportY = model.horizon.detected ? Math.round(model.horizon.y * sy) : null;
         const annotated = annotateScene(
           built.decoded,
           built.rawFaces,
@@ -746,7 +752,7 @@ export function createSceneTools(
       tool: {
         name: 'ps_read_scene',
         description:
-          'The full scene model — run this before a spatially-targeted edit, not the cheaper ps_detect: detected subjects (with the main one flagged) and faces in document pixels, a coarse sky/ground region map, the horizon line (y + placement + confidence), tonal zones (shadow/midtone/highlight bands + coverage), composition geometry (which thirds cell the subject sits in, balance, headroom), plus an annotated preview and the menu of selectable named regions. Built using LOCAL on-device vision + classical CV; the image never leaves the machine. Select regions by name with ps_select_by_reference instead of guessing a rectangle. Read-only: renders a throwaway duplicate. Perception is cached per document state, so repeated reads are cheap.',
+          'The full scene model — run this before a spatially-targeted edit, not the cheaper ps_detect: detected subjects (with the main one flagged) and faces in document pixels, a coarse sky/ground region map, the horizon line (y + placement + confidence), tonal zones (shadow/midtone/highlight bands + coverage), composition geometry (which thirds cell the subject sits in, balance, headroom), and the menu of selectable named regions. The structured model is complete on its own — pass `annotate:true` for an annotated preview JPEG when you actually need to see it drawn. Built using LOCAL on-device vision + classical CV; the image never leaves the machine. Select regions by name with ps_select_by_reference instead of guessing a rectangle. Read-only: renders a throwaway duplicate. Perception is cached per document state, so repeated reads are cheap.',
         inputSchema: sceneSchema,
         outputSchema: {
           type: 'object',

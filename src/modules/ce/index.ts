@@ -41,6 +41,7 @@ import { createVectorMaskTools } from '../../tools/vector-mask-tools.js';
 import { createChannelComposeTools } from '../../tools/channel-compose-tools.js';
 import { createShapeTools } from '../../tools/shape-tools.js';
 import { createSkyTools } from '../../tools/sky-tools.js';
+import { createSequenceTools } from '../../tools/sequence-tools.js';
 
 // CE-tier factories; each takes (connection, snippetClient). Exported so the
 // leak-guard test (tests/integration/readme-leak-guard.test.ts) can derive
@@ -127,6 +128,20 @@ export const ceModule: EditmameiModule = {
       // so subject can refine through the Pro select_subject_instance (Sensei)
       // when entitled, else CE fallback.
       ...createSceneTools(connection, snippet, { invokeTool: host.invokeTool }),
+      // ps_sequence — runs an ordered list of already-registered tool calls
+      // through host.invokeTool (the cross-module broker) and validates each
+      // one against host.hasTool (the live registry), so it needs a shape the
+      // generic (connection, snippet) factory call can't supply. hasTool is
+      // optional on HostApi for cross-version compatibility; this kernel
+      // always provides it. The throw below is unreachable today — it exists
+      // so a future host missing the method reports why validation refused
+      // rather than reporting every step as an unregistered tool.
+      ...createSequenceTools(host.invokeTool, (name) => {
+        if (!host.hasTool) {
+          throw new Error(`cannot validate "${name}" — this host does not expose hasTool`);
+        }
+        return host.hasTool(name);
+      }),
     ].filter((def) => isToolAllowedInEdition(def.tool.name, EDITION));
     host.registerTools(defs);
   },

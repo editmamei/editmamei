@@ -9,6 +9,7 @@ import {
   BACKGROUND_VERSION_PROBE_TIMEOUT_MS,
 } from '@editmamei/core/server.ts';
 import { getPendingRawDevelop, __clearRawDevelopState } from '@editmamei/core/raw-develop-state.ts';
+import { NO_ERROR_TEXT_CLASS } from '@editmamei/utils/session-log.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
@@ -1315,7 +1316,7 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
   // gates nothing — delete it and every other test still passes, while every
   // tool's classless failure gets relabelled a Photoshop-connectivity problem
   // under the wrong tool name.
-  it('classifies a classless non-ping failure as other, never as ps_not_running', async () => {
+  it('classifies a classless non-ping failure as no_error_text, never as ps_not_running', async () => {
     const server = new EditmameiServer() as unknown as {
       toolRegistry: {
         register(
@@ -1347,13 +1348,13 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       tool: 'ps_export',
       success: false,
       duration_ms: expect.any(Number),
-      error_class: 'other',
+      error_class: NO_ERROR_TEXT_CLASS,
       result_bytes: expect.any(Number),
       retry: false,
     });
     expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
       tool: 'ps_export',
-      error_class: 'other',
+      error_class: NO_ERROR_TEXT_CLASS,
       error_message: 'tool reported failure with no message',
     });
   });
@@ -1791,6 +1792,41 @@ describe('raw develop pending flag (dispatch-level)', () => {
     await server.handleToolCall('ps_open_document', {});
     await server.handleToolCall('ps_close_document', {});
     expect(getPendingRawDevelop()).toBeNull();
+  });
+
+  it('a ps_develop_raw that opened the file clears the flag', async () => {
+    // A raw the model opened earlier is now developed, so the advisory would
+    // otherwise send it into a redundant Camera Raw pass on exactly the
+    // workflow ps_develop_raw provides.
+    const server = new EditmameiServer() as unknown as FlagServer;
+    server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: true, document_name: 'a.dng' })
+    );
+    server.toolRegistry.register('ps_develop_raw', stub('ps_develop_raw', { opened: true }));
+    await server.handleToolCall('ps_open_document', {});
+    expect(getPendingRawDevelop()).not.toBeNull();
+    await server.handleToolCall('ps_develop_raw', {});
+    expect(getPendingRawDevelop()).toBeNull();
+  });
+
+  it('a ps_develop_raw that only READ the sidecar leaves the flag alone', async () => {
+    // mode='read' inspects and develops nothing, so clearing on the tool name
+    // alone would suppress an advisory that is still correct.
+    const server = new EditmameiServer() as unknown as FlagServer;
+    server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: true, document_name: 'a.dng' })
+    );
+    server.toolRegistry.register(
+      'ps_develop_raw',
+      stub('ps_develop_raw', { mode: 'read', opened: false })
+    );
+    await server.handleToolCall('ps_open_document', {});
+    await server.handleToolCall('ps_develop_raw', { mode: 'read' });
+    expect(getPendingRawDevelop()).not.toBeNull();
   });
 
   it('an isError open result never sets the flag', async () => {

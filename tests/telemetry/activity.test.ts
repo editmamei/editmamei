@@ -63,7 +63,6 @@ describe('MUTATING_TOOLS', () => {
       'ps_select_sky',
       'ps_select_subject_instance',
       'ps_select_object',
-      'ps_select_focus_area',
       'ps_select_by_reference',
       'ps_select_face_feature',
       'ps_select_layer',

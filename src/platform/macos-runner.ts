@@ -2,24 +2,24 @@ import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { Logger } from '../utils/logger.js';
 import { TempDir } from '../utils/temp.js';
+import { DEFAULT_SCRIPT_TIMEOUT_MS } from '../utils/operation-timeouts.js';
 import { ScriptQueue } from './script-queue.js';
 import type { PhotoshopInfo, PlatformAdapter } from './ports.js';
 import { runChildWithTimeout } from './run-child.js';
 import { decodeScriptResult } from './script-result.js';
+import { waitForLaunchReady } from './launch-readiness.js';
 
 const execAsync = promisify(exec);
 
-/** Default wall-clock budget for one script, in ms. */
-const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
-
 /**
- * Pause after spawning Photoshop before letting the caller proceed, in ms.
- *
- * A courtesy pause, not a readiness check — a cold Photoshop start takes far
- * longer than this. The script that follows is what actually proves the app is
- * answering.
+ * Per-attempt cap for the launch readiness probe — a real script round trip
+ * (see `launch()`), short enough that a few failed attempts still fit inside
+ * `LAUNCH_READY_MAX_WAIT_MS`.
  */
-const LAUNCH_GRACE_MS = 5_000;
+const LAUNCH_PROBE_TIMEOUT_MS = 2_000;
+
+/** Hard cap on the pgrep check itself, so a wedged process table can't hang isRunning(). */
+const IS_RUNNING_EXEC_TIMEOUT_MS = 3_000;
 
 /**
  * Characters that cannot appear in an application name we compose into an
@@ -182,10 +182,13 @@ end timeout`;
 
   async isRunning(): Promise<boolean> {
     try {
-      const { stdout } = await execAsync('pgrep -f "Adobe Photoshop"');
+      const { stdout } = await execAsync('pgrep -f "Adobe Photoshop"', {
+        timeout: IS_RUNNING_EXEC_TIMEOUT_MS,
+      });
       return stdout.trim().length > 0;
     } catch {
-      // pgrep exits non-zero when nothing matches.
+      // pgrep exits non-zero when nothing matches, or the check itself
+      // exceeded its own timeout; both read as "cannot confirm".
       return false;
     }
   }
@@ -196,15 +199,30 @@ end timeout`;
       const child = spawn('open', ['-a', executablePath], { detached: true, stdio: 'ignore' });
       child.unref();
 
-      const grace = setTimeout(() => {
-        grace.unref();
-        resolve();
-      }, LAUNCH_GRACE_MS);
-
+      // Guards against the readiness poll resolving after a spawn error
+      // already rejected this promise.
+      let aborted = false;
       child.on('error', (error) => {
-        clearTimeout(grace);
+        aborted = true;
         reject(new Error(`Could not launch Photoshop at ${executablePath}: ${error.message}`));
       });
+
+      // The probe is a real script round trip, not a process-existence
+      // check: Photoshop's process exists within milliseconds of spawning,
+      // long before AppleEvents are ready to accept a `do javascript` call,
+      // so isRunning() would report "up" while every real script still
+      // fails to attach. A rejecting attempt means "not ready yet", not
+      // failure.
+      const probe = (): Promise<boolean> =>
+        this.run("'pong';", LAUNCH_PROBE_TIMEOUT_MS)
+          .then(() => true)
+          .catch(() => false);
+
+      waitForLaunchReady(probe, { isAborted: () => aborted })
+        .catch(() => false) // a probe chain that somehow rejects must not leave this promise unsettled
+        .then(() => {
+          if (!aborted) resolve();
+        });
     });
   }
 }

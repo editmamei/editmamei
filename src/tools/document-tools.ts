@@ -108,6 +108,15 @@ const openDocumentSchema: JsonSchemaObject = {
         'Suppress all PS dialogs during open (raw/HEIC use last-used ACR settings). Default true for pipeline use.',
       default: true,
     },
+    bit_depth: {
+      type: 'number',
+      // 8 and 16 only: Camera Raw's workflow options offer no 32-bit raw open.
+      // Measured — asking for 32 opened at 8, so advertising it would promise
+      // a depth that never arrives.
+      enum: [8, 16],
+      description:
+        'Open-time bits per channel, RAW sources only. Set this here rather than converting later: ps_convert_image_mode FLATTENS the document, so depth cannot be changed once an edit stack exists. Prefer 16 for anything with heavy gradients (skies, skin, long tonal moves). Ignored for non-raw files, and the returned bits_per_channel always reports what was actually opened.',
+    },
   },
   required: ['file_path'],
 };
@@ -345,6 +354,11 @@ export function createDocumentTools(
             },
             already_open: { type: 'boolean' },
             file_path: { type: 'string' },
+            bit_depth_warning: {
+              type: 'string',
+              description:
+                'Present only when a requested bit_depth was not what the document actually opened at — because the file is not a raw source, or Photoshop declined the requested depth. Absent means bits_per_channel is what you asked for.',
+            },
             context: { type: 'object' },
           },
           required: ['success'],
@@ -710,9 +724,27 @@ async function openDocumentPipeline(
     const args = validateArgs(openDocumentSchema, rawArgs);
     filePath = args.file_path as string;
     const suppressDialogs = args.suppress_dialogs as boolean;
+    const bitDepth = args.bit_depth as number | undefined;
 
-    const script = await snippetClient.build('openDocumentPipeline', { filePath, suppressDialogs });
+    const script = await snippetClient.build('openDocumentPipeline', {
+      filePath,
+      suppressDialogs,
+      rawBits: bitDepth ?? 0,
+    });
     const result = await runScript(connection, script, OPEN_DOCUMENT_TIMEOUT_MS);
+
+    // A requested depth is a request, not a promise: it only applies to raw
+    // sources, and the snippet falls back to a plain open if the host rejects
+    // the Camera Raw workflow options. Report the gap instead of letting the
+    // caller assume 16-bit it did not get.
+    const payload = result as Record<string, unknown>;
+    if (bitDepth !== undefined && typeof payload.bits_per_channel === 'number') {
+      if (payload.bits_per_channel !== bitDepth) {
+        payload.bit_depth_warning = payload.is_raw_source
+          ? `Requested ${bitDepth}-bit but Photoshop opened ${payload.bits_per_channel}-bit.`
+          : `bit_depth applies to RAW sources only; this file opened at ${payload.bits_per_channel}-bit.`;
+      }
+    }
 
     return {
       content: [

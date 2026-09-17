@@ -47,7 +47,7 @@ Then restart your AI client and ask it: _"Is Photoshop connected?"_
 
 Prefer not to use a terminal? Claude Desktop users can install the one-click [`.mcpb` extension](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb) directly (no system Node required, Claude Desktop ships its own runtime). Full walkthrough in the [install guide](docs/installation.md).
 
-**Requirements:** Adobe Photoshop 2026 (v27.x), Windows 10/11 or macOS 12+, Node.js 22+ (for the npm path), and an MCP-compatible AI client (Claude Desktop, Cursor, Claude Code).
+**Requirements:** Adobe Photoshop 2026 (v27.x), Windows 10/11 or macOS 13+, Node.js 22+ (for the npm path), and an MCP-compatible AI client (Claude Desktop, Cursor, Claude Code).
 
 ## A session, end to end
 
@@ -75,7 +75,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**81 tools across 16 capability groups** (61 Community, 20 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
+**83 tools across 16 capability groups** (62 Community, 21 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
 
 | Group | Edition | Tools |
 | --- | --- | --- |
@@ -92,8 +92,9 @@ These are the choices that shape the surface, and the reason an AI assistant can
 | **Type** | Community | `text` |
 | **Perception** | Community | `detect` · `read_scene` · `select_by_reference` |
 | **AI selection** | Community | `select_subject` · `select_sky` · `replace_sky` |
+| **Automation** | Community | `sequence` |
 | **AI selection** | Pro | `select_subject_instance` · `select_object` |
-| **Filters** | Pro | `apply_camera_raw` |
+| **Filters** | Pro | `apply_camera_raw` · `develop_raw` |
 | **Layers (warp)** | Pro | `warp_layer` |
 | **Perception** | Pro | `edit_object` · `add_text_to_object` · `resolve_placement` |
 | **Face mesh** | Pro | `detect_landmarks` · `select_face_feature` |
@@ -119,7 +120,7 @@ npm run build
 npm test
 ```
 
-You need Node.js 22+ and a Go toolchain (the build compiles the `editmamei-core` binary that generates Photoshop scripts). The build warns instead of failing when Go is missing, so you can still run the test suite; set `EDITMAMEI_CORE_BIN` to a prebuilt binary if you would rather not install Go.
+You need Node.js 22+ and Go 1.21+ (the build compiles the `editmamei-core` binary that generates Photoshop scripts; it needs Go 1.27, which Go fetches for you from 1.21 on). The build warns instead of failing when Go is missing, so you can still run the test suite; set `EDITMAMEI_CORE_BIN` to a prebuilt binary if you would rather not install Go.
 
 The test suite runs without Photoshop. It verifies the ExtendScript Editmamei generates, never that Photoshop accepted it, so live verification against a real Photoshop is a separate step.
 

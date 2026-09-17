@@ -409,6 +409,63 @@ describe('session_summary day attribution', () => {
     expect(summary?.ts_bucket).toBe('2026-06-15'); // start day, not the shutdown day
   });
 
+  it('a later persist does not advance the bucket past midnight', async () => {
+    // The persisted bucket must survive a persist that happens on a later day. The two
+    // calls have to be far enough apart to clear SESSION_PERSIST_THROTTLE_MS, or the
+    // second persist never runs and the assertion proves nothing.
+    let cur = new Date('2026-06-15T23:59:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    expect(readSessionState({ dir })?.ts_bucket).toBe('2026-06-15');
+
+    cur = new Date('2026-06-16T00:05:00.000Z'); // past midnight AND past the throttle
+    c.recordCall({ tool: 'photoshop_b', success: true, duration_ms: 1, error_class: null });
+    expect(readSessionState({ dir })?.ts_bucket).toBe('2026-06-15');
+  });
+
+  it('a resident server credits the day of its first CALL, not the day it booted', async () => {
+    // An MCP host can stay resident for days. Claiming the bucket in start() would credit
+    // the summary to the boot day while every usage event landed on the day of the work.
+    let cur = new Date('2026-06-15T08:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.start();
+    expect(readSessionState({ dir })).toBeNull(); // nothing claimed yet
+
+    cur = new Date('2026-06-17T10:00:00.000Z'); // first use, two days later
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toBe('2026-06-17');
+  });
+
+  it('clamps a corrupt persisted bucket so one bad file cannot reject the batch', async () => {
+    // The persisted state is a plain file on disk: truncation or a hand edit can put
+    // anything in ts_bucket, and the endpoint rejects a whole batch over one bad event.
+    const dir = freshOutboxDir();
+    const state: PersistedSessionState = {
+      install_id: 'i',
+      ts_bucket: 'not-a-bucket',
+      editmamei_version: '1.3.0',
+      edition: 'community',
+      platform: 'win32',
+      ps_version: 'unknown',
+      tool_call_count: 1,
+      distinct_tools: 1,
+      any_failures: false,
+    };
+    writeSessionStateSync(state, { dir });
+
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    const summary = rec.batches.flat().find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(summary?.ts_bucket).not.toBe('not-a-bucket');
+  });
   it('crash reconstruction agrees with what a clean shutdown would have produced', async () => {
     // Simulate a hard kill: the session-state marker persisted mid-session survives (no
     // clean shutdown to clear it); the NEXT startup reconstructs the summary from it.
@@ -423,8 +480,7 @@ describe('session_summary day attribution', () => {
     await c2.flushOutboxOnStartup();
     const summary = rec2.batches.flat().find((e) => e.type === 'session_summary') as
       { ts_bucket: string } | undefined;
-    // Same start-day bucket a clean shutdown would have used (see the previous test).
-    expect(summary?.ts_bucket).toBe('2026-06-15');
+    // Same start-day bucket a clean shutdown produces, so the two paths agree.    expect(summary?.ts_bucket).toBe('2026-06-15');
   });
 });
 
@@ -815,7 +871,6 @@ describe('persisted session state carries the new accumulators', () => {
     }
   });
 });
-
 describe('flushOutboxOnStartup', () => {
   it('delivers a backlog left by a previous run, then clears the outbox', async () => {
     // Session 1: transport fails, so the batch + summary land in the outbox.

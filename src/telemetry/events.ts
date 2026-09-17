@@ -239,9 +239,6 @@ export const MAX_RESULT_BYTES = 16_777_216;
 /** Photoshop UI-locale token shape the server accepts (e.g. "en_US"). */
 const PS_LOCALE_RE = /^[a-z]{2,3}_[A-Z]{2}$/;
 
-/** The server's TS_BUCKET token shape (day granularity, `YYYY-MM-DD`). */
-const TS_BUCKET_RE = /^\d{4}-\d{2}-\d{2}$/;
-
 /** Day-granularity bucket (`YYYY-MM-DD`) — never a precise timestamp (design §4). */
 export function dayBucket(now: Date): string {
   return now.toISOString().slice(0, 10);
@@ -259,6 +256,17 @@ export function normalizeErrorClass(value: string): string {
     .replace(/[^a-z0-9_]/g, '_')
     .slice(0, 48);
   return cleaned.length > 0 ? cleaned : 'other';
+}
+
+/**
+ * Force a day bucket into the server's `^\d{4}-\d{2}-\d{2}$` shape. Every in-tree caller
+ * passes a `dayBucket()` result, which conforms by construction — but this value now
+ * arrives as a string rather than being derived here, and one malformed event 400s the
+ * WHOLE batch on the server. Same defensive reasoning as `normalizeErrorClass`. A value
+ * that does not conform falls back to the current UTC day.
+ */
+export function normalizeDayBucket(value: string, now: Date): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : dayBucket(now);
 }
 
 function psVersionOf(dims: TelemetryDimensions): string {
@@ -298,15 +306,10 @@ export function buildUsageEvent(
 
 /**
  * `tsBucket` is the SESSION'S START day, not "now" — a session spanning UTC midnight is
- * credited to the day it started (matches the crash-recovery path in client.ts, which has
- * no choice but to reuse the persisted start bucket; splitting a session's usage across two
- * days was judged not worth it). Callers compute it once, at session start, rather than at
- * shutdown — see `TelemetryClient`'s `startDayBucket`.
- *
- * `tsBucket` is validated against the server's own `YYYY-MM-DD` token shape before use — a
- * caller passing something malformed (a corrupt persisted session-state file surviving a
- * hard kill, most plausibly) falls back to today's bucket rather than shipping an event the
- * server would 400 the whole batch over.
+ * credited to the day its first call ran, rather than being split across two days. Callers
+ * capture it once, on the first recorded call, and both the clean-shutdown summary and the
+ * persisted crash-recovery state replay that same value — see `TelemetryClient`'s
+ * `startDayBucket`. Clamped on the way out because the shape is no longer derived here.
  */
 export function buildSessionSummary(
   dims: TelemetryDimensions,
@@ -325,13 +328,14 @@ export function buildSessionSummary(
     templates_saved?: number;
     action_sets?: number;
   },
-  tsBucket: string
+  tsBucket: string,
+  now: Date
 ): SessionSummaryEvent {
   return {
     v: TELEMETRY_SCHEMA_VERSION,
     type: 'session_summary',
     install_id: dims.install_id,
-    ts_bucket: TS_BUCKET_RE.test(tsBucket) ? tsBucket : dayBucket(new Date()),
+    ts_bucket: normalizeDayBucket(tsBucket, now),
     editmamei_version: dims.editmamei_version,
     edition: dims.edition,
     platform: dims.platform,

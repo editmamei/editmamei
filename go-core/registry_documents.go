@@ -74,6 +74,7 @@ func buildDocuments(name string, params map[string]any) (string, bool, error) {
 		return openDocumentPipeline(
 			strParam(params, "filePath", ""),
 			boolParam(params, "suppressDialogs", true),
+			numParam(params, "rawBits", 0),
 		), true, nil
 	case "probeOpenDocument":
 		return probeOpenDocument(strParam(params, "filePath", "")), true, nil

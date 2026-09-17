@@ -210,8 +210,8 @@ export function __clearSceneCache(): void {
 /**
  * Reduce the already-decoded export to R top→bottom row-strip mean luminances.
  * Pure JS over the pixels detectActiveDoc already decoded — no extra PS round
- * trip, no extra decode. Returns undefined (caller falls back to the thirds
- * prior) if the export was undecodable/absent.
+ * trip, no extra decode. Returns undefined when the export was undecodable or
+ * absent, which is what makes the horizon facet refuse rather than estimate.
  */
 export function rowBrightnessProfile(
   decoded: DecodedImage | undefined,
@@ -402,7 +402,13 @@ export async function buildSceneModel(
 
   // Composition geometry over the subjects + horizon (allBoxes/mainBox hoisted
   // above for the horizon estimator).
-  const composition = computeComposition(mainBox, allBoxes, docW, docH, horizon.placement);
+  const composition = computeComposition(
+    mainBox,
+    allBoxes,
+    docW,
+    docH,
+    horizon.detected ? horizon.placement : null
+  );
 
   const backends = {
     faces: det.result.backends.faces,

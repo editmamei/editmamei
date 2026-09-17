@@ -17,8 +17,9 @@ func getLayerTree() string {
 }
 
 // getHistogram returns the histogram for the named channel. An empty string or
-// "composite" reads the composite (doc.histogram). "luminosity" synthesizes
-// from the document's colour model. Any other value is treated as a named
+// "composite" reads the composite (doc.histogram). "luminosity" dispatches on
+// the document mode: the Lightness or Gray channel where one exists, otherwise
+// the same per-pixel document histogram. Any other value is treated as a named
 // channel (case-insensitive).
 func getHistogram(channel string) string {
 	return fmt.Sprintf(tpl[vault.GetHistogram], getContextInfo(), jsLit(channel))

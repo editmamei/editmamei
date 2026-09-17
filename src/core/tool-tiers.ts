@@ -67,6 +67,18 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // module, stripped from CE.
   ps_batch: 'pro',
 
+  // sequence-tools — runs an ordered list of already-registered tool calls in
+  // one round trip via the kernel's invokeTool broker, against the current
+  // document. Verified against Photoshop 27.10 before promotion: multi-step
+  // runs, all three on_error modes, and the validation refusals (rollback over
+  // a history-unsafe step, self-nesting), with rollback confirmed by reading
+  // the document back rather than trusting its own report.
+  //
+  // It carries no dispatch deadline of its own (operation-timeouts.ts). Each
+  // step it dispatches keeps its own timeout; the sequence as a whole is
+  // limited between steps instead.
+  ps_sequence: 'community',
+
   // adjustment-tools — bakes consolidated into ps_apply_adjustment
   ps_add_adjustment_layer: 'community',
   ps_apply_adjustment: 'community',
@@ -161,6 +173,11 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // Camera Raw Filter as a re-editable Smart Filter. Pro-gated go-core emitter
   // (//go:build pro).
   ps_apply_camera_raw: 'pro',
+  // Raw-FILE develop, via a Camera Raw XMP sidecar. Distinct from the Filter
+  // above, which operates on already-rasterised pixels and so cannot reach
+  // geometry, crop or lens correction at all. Implemented in the Pro module;
+  // this table is CE-owned, which is why the entry lives here.
+  ps_develop_raw: 'pro',
   ps_transform_canvas: 'community',
   ps_guides: 'community',
 
@@ -238,14 +255,12 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // SAM organic mask → selection.
   ps_select_object: 'pro',
   // Native-AI additions, both Adobe's own inference and CE-destined on the usual
-  // line. ps_select_focus_area stays 'dev': standalone only because a parameter
-  // cannot be tiered, and it folds into ps_select as mode=focus_area whenever it
-  // does promote.
+  // line. Focus Area lives on ps_select as mode=focus_area, not as its own
+  // tool — it rides ps_select's tier below.
   //
   // The point-prompt selector (AM deepSelect) is deliberately ABSENT: its only
   // input is a coordinate and we have no precision aiming to give it in any
   // tier, so it stays unbuilt until the coordinate-ID work lands.
-  ps_select_focus_area: 'dev',
   ps_replace_sky: 'community',
   ps_modify_selection: 'community',
   // get_selection_info → ps_inspect

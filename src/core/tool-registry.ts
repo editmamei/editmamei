@@ -1,5 +1,7 @@
 import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { Logger } from '../utils/logger.js';
+import { getToolTimeoutMs } from '../utils/operation-timeouts.js';
+import { budgetContextFor, runWithToolBudget } from '../utils/tool-budget-context.js';
 
 /** Runs one tool call. Owns its own input validation and error shaping. */
 export interface ToolHandler {
@@ -122,7 +124,14 @@ export class ToolRegistry {
     let error: string | undefined;
     let result: ToolResult | undefined;
     try {
-      result = await definition.handler(args);
+      // Every script the handler runs — however many — is bounded by this
+      // call's deadline, computed once here. A nested Kernel.invokeTool call
+      // re-enters this same method while still inside the outer context, so
+      // budgetContextFor caps the inner deadline at the outer's remaining
+      // time automatically — see its doc comment. Read side: run-script.ts.
+      result = await runWithToolBudget(budgetContextFor(name, getToolTimeoutMs(name)), () =>
+        definition.handler(args)
+      );
       // Handlers signal failure via { isError: true } rather than throwing.
       if (result?.isError) {
         success = false;

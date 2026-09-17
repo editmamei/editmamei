@@ -72,6 +72,7 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'ps_play_action',
   'ps_execute_script',
   'ps_batch',
+  'ps_sequence',
 
   // adjustment
   'ps_add_adjustment_layer',
@@ -81,6 +82,7 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'ps_create_document',
   'ps_close_document',
   'ps_open_document',
+  'ps_develop_raw',
 
   // filter / group / clipping
   'ps_filter',
@@ -142,7 +144,6 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'ps_select_sky',
   'ps_select_subject_instance',
   'ps_select_object',
-  'ps_select_focus_area',
   'ps_replace_sky',
   'ps_modify_selection',
   'ps_selection_channel',

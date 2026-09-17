@@ -147,8 +147,9 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   },
   automation: {
     id: 'automation',
-    label: 'Automation (Pro)',
-    purpose: 'Batch files, play recorded Actions, and the ExtendScript escape hatch (Pro).',
+    label: 'Automation',
+    purpose:
+      'Run several tool calls in one round trip (community), plus batch files, recorded Actions, and the ExtendScript escape hatch (Pro).',
   },
 };
 
@@ -202,7 +203,6 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_select_sky: 'select_ai',
   ps_select_subject_instance: 'select_ai',
   ps_select_object: 'select_ai',
-  ps_select_focus_area: 'select_ai',
   // Not a selection — it composites a layer group — but it is the same Sensei
   // family and belongs beside its siblings for discovery.
   ps_replace_sky: 'select_ai',
@@ -214,6 +214,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   // filters
   ps_filter: 'filter',
   ps_apply_camera_raw: 'filter',
+  ps_develop_raw: 'filter',
 
   // retouch
   ps_retouch: 'retouch',
@@ -283,7 +284,8 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_template_recall: 'templates',
   ps_template_delete: 'templates',
 
-  // automation (Pro)
+  // automation — ps_sequence is community; the rest are pro (see tool-tiers.ts)
+  ps_sequence: 'automation',
   ps_list_actions: 'automation',
   ps_play_action: 'automation',
   ps_execute_script: 'automation',
