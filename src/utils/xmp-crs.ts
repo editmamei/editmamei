@@ -1000,9 +1000,12 @@ export function readPresetChanges(presetXmp: string): PresetImport {
  * `validateCrsChanges` first if you want to report all problems at once.
  *
  * Guarantees:
- *  - only attributes inside the top-level `<rdf:Description>` tag are touched
- *  - nested elements (Look, masks, point colours, curves we were not asked to
- *    change) are copied through byte-for-byte, digests intact
+ *  - edits are confined to the top-level `<rdf:Description>`: its attributes,
+ *    and the `crs:` elements that are its DIRECT children
+ *  - anything nested deeper (a Look's internal curves and parameters, mask
+ *    corrections, point colours) is copied through byte-for-byte, so the
+ *    digests and LookTable hashes Camera Raw validates stay intact
+ *  - curves and blocks we were not asked to change are left alone
  *  - unrelated namespaces (exif, tiff, aux, photoshop, xmpMM) are untouched
  */
 export function mergeCrsIntoSidecar(original: string | null, changes: CrsChanges): string {
