@@ -339,6 +339,15 @@ describe('buildSessionSummary', () => {
     );
     expect(e.ts_bucket).toBe('2026-01-02');
   });
+  it('clamps a malformed bucket to the current UTC day rather than 400 the whole batch', () => {
+    const e = buildSessionSummary(
+      dims('2026'),
+      { tool_call_count: 1, distinct_tools: 1, any_failures: false },
+      'not-a-bucket',
+      new Date('2026-06-14T00:30:00.000Z')
+    );
+    expect(e.ts_bucket).toBe('2026-06-14');
+  });
 });
 
 describe('buildClientConnected', () => {
@@ -415,15 +424,6 @@ describe('buildClientConnected', () => {
       NOW
     );
     expect('ps_version' in e).toBe(false);
-  });
-  it('clamps a malformed bucket to the current UTC day rather than 400 the whole batch', () => {
-    const e = buildSessionSummary(
-      dims('2026'),
-      { tool_call_count: 1, distinct_tools: 1, any_failures: false },
-      'not-a-bucket',
-      new Date('2026-06-14T00:30:00.000Z')
-    );
-    expect(e.ts_bucket).toBe('2026-06-14');
   });
 });
 

@@ -71,6 +71,19 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   // action / batch / scripting
   'ps_play_action',
   'ps_execute_script',
+  // KNOWN BIAS, deliberate for now. Both of these are ORCHESTRATION WRAPPERS:
+  // their steps dispatch through host.invokeTool -> registry.execute, whose
+  // `finally` fires onCall for every dispatch including nested ones, so each
+  // inner step is already recorded on its own. Counting the wrapper too adds
+  // one phantom edit per call, and the inflation scales with step count rather
+  // than being a constant bias. Under this module's own rule an orchestrator
+  // changes nothing itself, so READ_ONLY_TOOLS is the arithmetically correct
+  // home. Left as-is because moving them requires the aggregation service's
+  // mirrored copy to move in the same deploy, and ps_batch has behaved this
+  // way since it shipped. Revisit both together, not one at a time.
+  // Second-order: the wrapper's onCall fires AFTER its steps, so the retry
+  // hash it compares against is the last INNER step's — two identical
+  // back-to-back sequences never register as a retry.
   'ps_batch',
   'ps_sequence',
 
@@ -82,6 +95,11 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'ps_create_document',
   'ps_close_document',
   'ps_open_document',
+  // Develops a raw FILE and then opens it — document lifecycle, same as the
+  // line above. KNOWN BIAS: classification is per tool NAME, but this tool's
+  // mode='read' only inspects a sidecar and develops nothing, so a read-probe
+  // counts as an edit. The server's pending-develop flag already discriminates
+  // on `opened === true`; this set cannot, being name-shaped.
   'ps_develop_raw',
 
   // filter / group / clipping

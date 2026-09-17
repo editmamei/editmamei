@@ -254,3 +254,27 @@ describe('osMajor', () => {
     expect(osMajor('linux', 'not-a-version')).toBeNull();
   });
 });
+
+describe('classification of the orchestration wrappers and raw develop', () => {
+  // The exhaustiveness suite only proves each tool is in EXACTLY ONE set, so it
+  // passes whichever set these land in. These pin the actual decision, because
+  // both carry a live correctness argument against where they currently sit —
+  // see the KNOWN BIAS comments in activity.ts.
+  it('counts ps_sequence and ps_batch as mutating, the documented over-count', () => {
+    // Their inner steps are each recorded separately (host.invokeTool ->
+    // registry.execute fires onCall for nested dispatches too), so counting the
+    // wrapper adds one phantom edit per call. Kept for now only because the
+    // aggregation service mirrors this classification and must move in step.
+    for (const tool of ['ps_sequence', 'ps_batch']) {
+      expect(MUTATING_TOOLS.has(tool)).toBe(true);
+      expect(READ_ONLY_TOOLS.has(tool)).toBe(false);
+    }
+  });
+
+  it('counts ps_develop_raw as mutating, including its read mode', () => {
+    // Name-shaped classification cannot see mode='read', which develops
+    // nothing. Documented in activity.ts rather than silently shipped.
+    expect(MUTATING_TOOLS.has('ps_develop_raw')).toBe(true);
+    expect(KEPT_WORK_TOOLS.has('ps_develop_raw')).toBe(false);
+  });
+});

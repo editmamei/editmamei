@@ -466,6 +466,7 @@ describe('session_summary day attribution', () => {
     expect(summary?.ts_bucket).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(summary?.ts_bucket).not.toBe('not-a-bucket');
   });
+
   it('crash reconstruction agrees with what a clean shutdown would have produced', async () => {
     // Simulate a hard kill: the session-state marker persisted mid-session survives (no
     // clean shutdown to clear it); the NEXT startup reconstructs the summary from it.
@@ -480,7 +481,8 @@ describe('session_summary day attribution', () => {
     await c2.flushOutboxOnStartup();
     const summary = rec2.batches.flat().find((e) => e.type === 'session_summary') as
       { ts_bucket: string } | undefined;
-    // Same start-day bucket a clean shutdown produces, so the two paths agree.    expect(summary?.ts_bucket).toBe('2026-06-15');
+    // Same start-day bucket a clean shutdown produces, so the two paths agree.
+    expect(summary?.ts_bucket).toBe('2026-06-15');
   });
 });
 
