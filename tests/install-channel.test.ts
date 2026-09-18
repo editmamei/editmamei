@@ -2,28 +2,330 @@ import { describe, it, expect } from 'vitest';
 import { resolveInstallChannel } from '@editmamei/install-channel.ts';
 
 describe('resolveInstallChannel', () => {
-  it('reports dev for a dev build regardless of env (committed EDITION default)', () => {
+  it('reports dev for a dev build regardless of env or argv1 (committed EDITION default)', () => {
     // The test tree is EDITION='dev', so the default (no edition arg) short-circuits.
     expect(resolveInstallChannel({})).toBe('dev');
     expect(resolveInstallChannel({ EDITMAMEI_INSTALL_CHANNEL: 'mcpb' })).toBe('dev');
   });
 
-  it('defaults a shipped build to npm when no channel env is set', () => {
-    expect(resolveInstallChannel({}, 'community')).toBe('npm');
-    expect(resolveInstallChannel({}, 'pro')).toBe('npm');
-  });
-
-  it('reports mcpb when the bundle env marker is set', () => {
-    expect(resolveInstallChannel({ EDITMAMEI_INSTALL_CHANNEL: 'mcpb' }, 'community')).toBe('mcpb');
-  });
-
-  it('dev wins over the env marker (a working tree is never a distributed channel)', () => {
+  it('dev wins over every other signal (a working tree is never a distributed channel)', () => {
     expect(resolveInstallChannel({ EDITMAMEI_INSTALL_CHANNEL: 'mcpb' }, 'dev')).toBe('dev');
+    expect(
+      resolveInstallChannel(
+        {},
+        'dev',
+        '/home/x/.npm/_npx/abc123/node_modules/editmamei/dist/index.js'
+      )
+    ).toBe('dev');
   });
 
-  it('falls back to npm for an unrecognized marker value', () => {
-    expect(resolveInstallChannel({ EDITMAMEI_INSTALL_CHANNEL: 'garbage' }, 'community')).toBe(
-      'npm'
-    );
+  it('reports mcpb when the bundle env marker is set, regardless of argv1', () => {
+    expect(
+      resolveInstallChannel(
+        { EDITMAMEI_INSTALL_CHANNEL: 'mcpb' },
+        'community',
+        '/some/random/path/index.js'
+      )
+    ).toBe('mcpb');
+  });
+
+  it('reports npx for an entry script under an _npx cache dir (POSIX and Windows)', () => {
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/alice/.npm/_npx/1a2b3c/node_modules/editmamei/dist/index.js',
+        undefined,
+        (p) => p
+      )
+    ).toBe('npx');
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\Users\\alice\\AppData\\Local\\npm-cache\\_npx\\1a2b3c\\node_modules\\editmamei\\dist\\index.js',
+        undefined,
+        (p) => p
+      )
+    ).toBe('npx');
+  });
+
+  it('reports npm_global for a node_modules segment preceded by lib (POSIX global convention)', () => {
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/usr/local/lib/node_modules/editmamei/dist/index.js',
+        undefined,
+        (p) => p
+      )
+    ).toBe('npm_global');
+  });
+
+  it('reports npm_global for a node_modules segment preceded by npm (Windows AppData layout)', () => {
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\\editmamei\\dist\\index.js',
+        undefined,
+        (p) => p
+      )
+    ).toBe('npm_global');
+  });
+
+  it('reports npm_global for nvm/volta-style global layouts (a lib segment above node_modules)', () => {
+    // nvm: node_modules sits under <node version>/lib/, same convention as any other
+    // POSIX global npm prefix — no execPath inference needed, the lib segment alone decides.
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/alice/.nvm/versions/node/v20.11.0/lib/node_modules/editmamei/dist/index.js',
+        undefined,
+        (p) => p
+      )
+    ).toBe('npm_global');
+    // volta: global packages land under its own "image" tree, same lib/node_modules shape.
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/alice/.volta/tools/image/packages/editmamei/lib/node_modules/editmamei/dist/index.js',
+        undefined,
+        (p) => p
+      )
+    ).toBe('npm_global');
+  });
+
+  it("reports npm_global when node_modules sits under the running node binary's own directory (no lib/npm segment)", () => {
+    // The Windows official installer layout: node.exe and node_modules\ are SIBLINGS in the
+    // same directory, with neither a `lib` nor an `npm` segment between them.
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\Program Files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe',
+        (p) => p
+      )
+    ).toBe('npm_global');
+  });
+
+  it('reports npm_global for a version-manager symlink shared by argv1 and execPath (nvm-windows / fnm)', () => {
+    // On nvm-windows/fnm, `C:\Program Files\nodejs` is a directory symlink to the real
+    // version dir. Both argv1 and execPath sit under it unresolved, and must resolve to
+    // the SAME real prefix for the exec-dir compare to still recognize this as npm_global.
+    const realpath = (p: string) =>
+      p.replace('C:\\Program Files\\nodejs', 'C:\\Users\\u\\AppData\\Roaming\\nvm\\v22.20.0');
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\Program Files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe',
+        realpath
+      )
+    ).toBe('npm_global');
+  });
+
+  it('matches via the RAW path pair when realpath resolves execPath but throws for argv1 (asymmetric resolution)', () => {
+    // realpath can fail for one side and not the other (e.g. the entry file no longer
+    // exists). Comparing a resolved execPath against an unresolved argv1 would put the two
+    // sides in different path spaces and miss the match — the RAW (unresolved) pair must
+    // still line up so this nvm-windows global install doesn't fall to npm_local.
+    const realpath = (p: string) => {
+      if (p === 'C:\\Program Files\\nodejs\\node_modules\\editmamei\\dist\\index.js') {
+        throw new Error('ENOENT');
+      }
+      return p.replace(
+        'C:\\Program Files\\nodejs',
+        'C:\\Users\\u\\AppData\\Roaming\\nvm\\v22.20.0'
+      );
+    };
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\Program Files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe',
+        realpath
+      )
+    ).toBe('npm_global');
+  });
+
+  it('still classifies via the lib rule when only the entry path resolves (execPath is not itself a symlink)', () => {
+    const realpath = (p: string) =>
+      p === '/home/u/.nvm/versions/node/v22.20.0/bin/editmamei'
+        ? '/home/u/.nvm/versions/node/v22.20.0/lib/node_modules/editmamei/dist/index.js'
+        : p;
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/u/.nvm/versions/node/v22.20.0/bin/editmamei',
+        '/usr/bin/node',
+        realpath
+      )
+    ).toBe('npm_global');
+  });
+
+  it('reports npm_local for any OTHER node_modules segment (a project-local install)', () => {
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/alice/my-project/node_modules/editmamei/dist/index.js',
+        '/usr/bin/node', // not a sibling/ancestor of the node_modules segment above
+        (p) => p
+      )
+    ).toBe('npm_local');
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\projects\\my-app\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe',
+        (p) => p
+      )
+    ).toBe('npm_local');
+  });
+
+  it('reports source for an entry script outside any node_modules', () => {
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/alice/editmamei/dist/index.js',
+        undefined,
+        (p) => p
+      )
+    ).toBe('source');
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'E:\\code\\editmamei\\dist\\index.js',
+        undefined,
+        (p) => p
+      )
+    ).toBe('source');
+  });
+
+  it('reports source (never npm_global) for a directory whose name merely CONTAINS "node_modules" — segment matching, not substring', () => {
+    // The old substring check (`.includes('node_modules')`) would have misclassified this as
+    // npm_global; there is no `node_modules` PATH SEGMENT here at all, only a directory named
+    // `node_modules_backup`.
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/alice/projects/node_modules_backup/editmamei/dist/index.js',
+        undefined,
+        (p) => p
+      )
+    ).toBe('source');
+  });
+
+  it('reports unknown when argv1 is empty or whitespace-only (entry path not available)', () => {
+    // Passing `undefined` here would trigger the parameter default (the REAL
+    // process.argv[1], the vitest worker's own path) rather than testing "no entry path" —
+    // an explicit empty (or whitespace-only) string is the honest way to exercise this
+    // branch directly.
+    expect(resolveInstallChannel({}, 'community', '')).toBe('unknown');
+    expect(resolveInstallChannel({}, 'community', '   ')).toBe('unknown');
+  });
+
+  it('resolves a POSIX bin shim through realpath before classifying (global npm install)', () => {
+    // /usr/local/bin/editmamei is a symlink into the global npm prefix's node_modules; Node
+    // sets argv[1] to the shim's own path (path.resolve, not realpath), which has no
+    // node_modules segment at all until resolved.
+    const realpath = (p: string) =>
+      p === '/usr/local/bin/editmamei' ? '/usr/local/lib/node_modules/editmamei/dist/index.js' : p;
+    expect(
+      resolveInstallChannel({}, 'community', '/usr/local/bin/editmamei', undefined, realpath)
+    ).toBe('npm_global');
+  });
+
+  it('resolves an nvm bin shim through realpath before classifying (global npm install)', () => {
+    const realpath = (p: string) =>
+      p === '/home/u/.nvm/versions/node/v22.20.0/bin/editmamei'
+        ? '/home/u/.nvm/versions/node/v22.20.0/lib/node_modules/editmamei/dist/index.js'
+        : p;
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/u/.nvm/versions/node/v22.20.0/bin/editmamei',
+        undefined,
+        realpath
+      )
+    ).toBe('npm_global');
+  });
+
+  it('resolves a Homebrew bin shim through realpath before classifying (global npm install)', () => {
+    const realpath = (p: string) =>
+      p === '/opt/homebrew/bin/editmamei'
+        ? '/opt/homebrew/lib/node_modules/editmamei/dist/index.js'
+        : p;
+    expect(
+      resolveInstallChannel({}, 'community', '/opt/homebrew/bin/editmamei', undefined, realpath)
+    ).toBe('npm_global');
+  });
+
+  it('proceeds on the unresolved path when realpath throws (e.g. the entry path no longer exists)', () => {
+    const realpath = () => {
+      throw new Error('ENOENT');
+    };
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/u/src/editmamei/dist/index.js',
+        undefined,
+        realpath
+      )
+    ).toBe('source');
+  });
+
+  it('proceeds on the unresolved paths when realpath throws for BOTH argv1 and execPath', () => {
+    // execPath: undefined in the sibling test above skips safeRealpath(execPath, …)
+    // entirely — this stub throws for every input, so it also exercises that catch arm.
+    // Neither call should throw or misclassify.
+    const realpath = () => {
+      throw new Error('ENOENT');
+    };
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/u/src/editmamei/dist/index.js',
+        'C:\\Program Files\\nodejs\\node.exe',
+        realpath
+      )
+    ).toBe('source');
+    // The Windows official-installer layout still matches via the RAW pair once both
+    // realpath calls have failed and fallen back to their unresolved inputs.
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\Program Files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe',
+        realpath
+      )
+    ).toBe('npm_global');
+  });
+
+  it('compares path segments case-insensitively (a lowercased Windows entry path in an MCP config)', () => {
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'c:\\program files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe',
+        (p) => p
+      )
+    ).toBe('npm_global');
   });
 });

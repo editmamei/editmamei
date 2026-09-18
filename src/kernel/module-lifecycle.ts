@@ -100,6 +100,13 @@ export interface ModuleLifecycleDeps {
    * (`EditmameiServer.classifyTool`).
    */
   classifyTool: (name: string) => void;
+  /**
+   * Telemetry hook for the `session_summary.module_update` field — called at most once per
+   * background task, on a successful provision ('updated') or a caught failure ('failed').
+   * Optional so tests that construct a `ModuleLifecycle` without a telemetry client don't
+   * need to stub it; the host wires it to `TelemetryClient.setModuleUpdate`.
+   */
+  onModuleUpdate?: (outcome: 'updated' | 'failed') => void;
 }
 
 /**
@@ -468,6 +475,12 @@ export class ModuleLifecycle {
       );
       return;
     }
+    // The outcome is decided inside the try/catch below but the onModuleUpdate callback is
+    // invoked ONLY after it, guarded in its own try/catch — a throwing callback must not
+    // escape this fire-and-forget background task as an unhandled rejection. Calling it
+    // FROM INSIDE the try (the previous shape) meant a throwing callback on the 'updated'
+    // path would be swallowed by the very catch that reports network/provisioning failures.
+    let outcome: 'updated' | 'failed' | null = null;
     try {
       const prov = await provisionModules(license.key, {
         // 'corrupt' → the current install is unusable; force bypasses the up-to-date
@@ -482,51 +495,61 @@ export class ModuleLifecycle {
         for (const m of prov.installed) {
           this.deps.logger.info(`Pro module updated to v${m.version}, restart to load.`);
         }
-        return;
-      }
-      if (prov.notConfigured) {
+        outcome = 'updated';
+      } else if (prov.notConfigured) {
         this.deps.logger.warn('Module delivery is not configured — staying Community.');
-        return;
-      }
-      // An abi-too-new refusal is not a delivery failure — the manifest is fine and
-      // the download would have worked; this host is just older than what's
-      // published. That is the same wall an 'incompatible' skip hits, so it routes
-      // to the tailored guidance below instead of surfacing as a provisioning
-      // error the user can do nothing with.
-      const abiTooNew = prov.errors.some((e) => e.code === 'abi_too_new');
-      for (const e of prov.errors) {
-        if (e.code === 'abi_too_new') continue;
-        this.deps.logger.warn(
-          `Could not re-provision the ${e.sku} module (staying Community): ${e.message}`
-        );
-      }
-      if (prov.errors.length === 0 || abiTooNew) {
-        // Nothing installable. Guidance MUST be honest per skip reason — never
-        // point at a lever that hits the same wall. `abiTooNew` forces the
-        // update-the-host branch even from a 'corrupt' skip: a forced re-download
-        // cannot fix a module this host is too old to run.
-        if (reason === 'incompatible' || abiTooNew) {
-          // A newer version would have installed; there isn't one. `repair` re-runs
-          // the identical provision and would skip too — do NOT recommend it.
+      } else {
+        // An abi-too-new refusal is not a delivery failure — the manifest is fine and
+        // the download would have worked; this host is just older than what's
+        // published. That is the same wall an 'incompatible' skip hits, so it routes
+        // to the tailored guidance below instead of surfacing as a provisioning
+        // error the user can do nothing with.
+        const abiTooNew = prov.errors.some((e) => e.code === 'abi_too_new');
+        for (const e of prov.errors) {
+          if (e.code === 'abi_too_new') continue;
           this.deps.logger.warn(
-            'The published Pro module does not yet support this host version — staying ' +
-              'Community. Update Editmamei when a compatible release ships; ' +
-              '`editmamei report` files a diagnostic.'
-          );
-        } else {
-          // 'corrupt': a forced same-version reinstall should have installed. Falling
-          // here is unusual (manifest no longer lists it, etc.) — repair CAN retry.
-          this.deps.logger.warn(
-            'Re-provision installed nothing for the corrupt Pro module — staying ' +
-              'Community. Try `editmamei repair`; `editmamei report` if it persists.'
+            `Could not re-provision the ${e.sku} module (staying Community): ${e.message}`
           );
         }
+        if (prov.errors.length === 0 || abiTooNew) {
+          // Nothing installable. Guidance MUST be honest per skip reason — never
+          // point at a lever that hits the same wall. `abiTooNew` forces the
+          // update-the-host branch even from a 'corrupt' skip: a forced re-download
+          // cannot fix a module this host is too old to run.
+          if (reason === 'incompatible' || abiTooNew) {
+            // A newer version would have installed; there isn't one. `repair` re-runs
+            // the identical provision and would skip too — do NOT recommend it.
+            this.deps.logger.warn(
+              'The published Pro module does not yet support this host version — staying ' +
+                'Community. Update Editmamei when a compatible release ships; ' +
+                '`editmamei report` files a diagnostic.'
+            );
+          } else {
+            // 'corrupt': a forced same-version reinstall should have installed. Falling
+            // here is unusual (manifest no longer lists it, etc.) — repair CAN retry.
+            this.deps.logger.warn(
+              'Re-provision installed nothing for the corrupt Pro module — staying ' +
+                'Community. Try `editmamei repair`; `editmamei report` if it persists.'
+            );
+          }
+        }
+        // Provisioning ran and installed nothing — a real outcome worth surfacing in
+        // module_update, not only a thrown (network/verification) exception.
+        if (prov.errors.length > 0) outcome = 'failed';
       }
     } catch (err) {
       this.deps.logger.warn(
         `Background Pro-module re-provision failed (staying Community): ` +
           `${err instanceof Error ? err.message : String(err)}`
       );
+      outcome = 'failed';
+    }
+    if (outcome !== null) {
+      try {
+        this.deps.onModuleUpdate?.(outcome);
+      } catch {
+        /* a throwing callback must not escape this fire-and-forget background task */
+      }
     }
   }
 
@@ -579,6 +602,9 @@ export class ModuleLifecycle {
     if (underTest && !delivery.fetchImpl) return;
     const license = readLicense();
     if (!license) return; // entitled-without-a-cached-key shouldn't happen; provision needs one.
+    // Deferred + guarded the same way as reprovisionIfModuleSkipped above — see that
+    // method's comment on why the callback is invoked outside the try/catch.
+    let outcome: 'updated' | 'failed' | null = null;
     try {
       const prov = await provisionModules(license.key, {
         // No force: a genuine version mismatch installs; an up-to-date pointer is a
@@ -590,6 +616,13 @@ export class ModuleLifecycle {
       });
       for (const m of prov.installed) {
         this.deps.logger.info(`Pro module updated to v${m.version} — restart to load.`);
+      }
+      if (prov.installed.length > 0) {
+        outcome = 'updated';
+      } else if (prov.errors.length > 0) {
+        // Provisioning ran and installed nothing — a real outcome worth surfacing in
+        // module_update, not only a thrown exception. Same treatment as the self-heal.
+        outcome = 'failed';
       }
       // A freshness poll is best-effort: on error/notConfigured we simply stay on the
       // currently-installed module. Log at WARN for support, but recommend no lever
@@ -618,6 +651,14 @@ export class ModuleLifecycle {
         `Background Pro-module freshness check failed (staying on the installed version): ` +
           `${err instanceof Error ? err.message : String(err)}`
       );
+      outcome = 'failed';
+    }
+    if (outcome !== null) {
+      try {
+        this.deps.onModuleUpdate?.(outcome);
+      } catch {
+        /* a throwing callback must not escape this fire-and-forget background task */
+      }
     }
   }
 }

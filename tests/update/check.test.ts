@@ -5,6 +5,7 @@ import {
   resolveUpdateCheckUrl,
   shouldCheckForUpdate,
   checkForUpdate,
+  checkForUpdateWithStatus,
   parseFixesByVersion,
   fixedToolsSince,
   httpFetchLatest,
@@ -33,7 +34,9 @@ describe('isNewer', () => {
 
 describe('updateMessage', () => {
   it('gives channel-specific remediation', () => {
-    expect(updateMessage('npm', '0.19.0')).toContain('npm install -g editmamei@latest');
+    expect(updateMessage('npm_global', '0.19.0')).toContain('npm install -g editmamei@latest');
+    expect(updateMessage('npx', '0.19.0')).toContain('npx -y editmamei');
+    expect(updateMessage('source', '0.19.0').toLowerCase()).toContain('source checkout');
     const mcpb = updateMessage('mcpb', '0.19.0');
     // Stable, versionless asset filename (release.yml uploads editmamei.mcpb); the
     // version appears as (v0.19.0) for the user, never baked into the filename.
@@ -47,6 +50,23 @@ describe('updateMessage', () => {
     expect(mcpb).toContain('editmamei.com/download');
     expect(mcpb).not.toContain('github.com');
     expect(updateMessage('dev', '0.19.0').toLowerCase()).toContain('dev build');
+  });
+
+  it('tells a project-local install to update its own dependency, never a global install', () => {
+    const local = updateMessage('npm_local', '0.19.0');
+    expect(local).toContain('npm install editmamei@latest');
+    // A project-local install is a DIFFERENT node_modules than npm_global's — a global
+    // `npm install -g` would be a no-op for it, so that remediation must never appear here.
+    expect(local).not.toContain('npm install -g');
+  });
+
+  it('gives a generic remediation for unknown (entry path not available to classify)', () => {
+    const unknown = updateMessage('unknown', '0.19.0');
+    expect(unknown).toContain('0.19.0');
+    expect(unknown).toContain('restart your MCP client');
+    // No specific channel to name a fix for — must not guess one.
+    expect(unknown).not.toContain('npm install');
+    expect(unknown).not.toContain('npx');
   });
 });
 
@@ -75,7 +95,7 @@ describe('shouldCheckForUpdate', () => {
 });
 
 describe('checkForUpdate', () => {
-  const validChannels = ['npm', 'mcpb', 'dev'];
+  const validChannels = ['npx', 'npm_global', 'npm_local', 'mcpb', 'source', 'dev'];
 
   it('returns UpdateInfo when a newer version is published', async () => {
     const info = await checkForUpdate({
@@ -153,6 +173,59 @@ describe('checkForUpdate', () => {
       }),
     });
     expect(info!.fixed_tools).toEqual(['ps_create_clipping_mask', 'ps_delete_layer']);
+  });
+});
+
+describe('checkForUpdateWithStatus', () => {
+  it('status "newer" with a populated info when a newer version is published', async () => {
+    const result = await checkForUpdateWithStatus({
+      env: {},
+      current: '0.18.0',
+      fetchLatest: async () => bare('0.99.0'),
+    });
+    expect(result.status).toBe('newer');
+    expect(result.info?.latest).toBe('0.99.0');
+  });
+
+  it('status "current" (not "failed") with a null info when already up to date', async () => {
+    const result = await checkForUpdateWithStatus({
+      env: {},
+      current: '0.18.0',
+      fetchLatest: async () => bare('0.18.0'),
+    });
+    expect(result.status).toBe('current');
+    expect(result.info).toBeNull();
+  });
+
+  it('status "failed" with a null info when the fetch returns null (offline / non-2xx)', async () => {
+    const result = await checkForUpdateWithStatus({
+      env: {},
+      current: '0.18.0',
+      fetchLatest: async () => null,
+    });
+    expect(result.status).toBe('failed');
+    expect(result.info).toBeNull();
+  });
+
+  it('status "failed" when the fetch throws', async () => {
+    const result = await checkForUpdateWithStatus({
+      env: {},
+      current: '0.18.0',
+      fetchLatest: async () => {
+        throw new Error('network down');
+      },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.info).toBeNull();
+  });
+
+  it('status "failed" for a malformed latest value', async () => {
+    const result = await checkForUpdateWithStatus({
+      env: {},
+      current: '0.18.0',
+      fetchLatest: async () => bare('not-a-version'),
+    });
+    expect(result.status).toBe('failed');
   });
 });
 

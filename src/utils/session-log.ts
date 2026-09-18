@@ -520,7 +520,10 @@ export function jsonEscapedLength(s: string): number {
  * straight through to a plain `JSON.stringify(result).length` — cheap
  * because there's no known payload field to spare it from.
  *
- * @internal exported for unit tests only — not a stable public API.
+ * @internal exported for `SessionLog.append`'s own default and for `server.ts`'s onCall
+ * hook, which computes this ONCE per call and threads the number to both `append` (as its
+ * optional `resultBytes` param) and telemetry's `recordCall`, rather than each caller
+ * re-walking the same result. Not a stable public API beyond this tree.
  */
 export function computeResultBytes(result: unknown): number {
   if (result === undefined) return 0;
@@ -732,10 +735,14 @@ export class SessionLog {
    * Emits the meta line first if it hasn't been written yet (lazy-emit so
    * mcp_client is populated after the initialize handshake).
    *
-   * @param entry  The call details from the tool-registry observer.
-   * @param result The full result object returned by the handler (used for
-   *               result_bytes, hoisted context scalars, and optional
-   *               EDITMAMEI_LOG_RESULTS full capture).
+   * @param entry       The call details from the tool-registry observer.
+   * @param result      The full result object returned by the handler (used for hoisted
+   *                    context scalars and optional EDITMAMEI_LOG_RESULTS full capture, and
+   *                    for result_bytes when the caller doesn't already have that number).
+   * @param resultBytes Precomputed `computeResultBytes(result)`, when the caller already
+   *                    needs that number for something else (server.ts's onCall hook also
+   *                    threads it to telemetry) — passing it here skips a second walk of the
+   *                    same result. Computed fresh from `result` when omitted.
    */
   async append(
     entry: {
@@ -745,7 +752,8 @@ export class SessionLog {
       duration_ms: number;
       error?: string;
     },
-    result?: unknown
+    result?: unknown,
+    resultBytes?: number
   ): Promise<void> {
     // Lazy meta emission — before any call line, and with mcp_client available.
     if (!this.metaEmitted) {
@@ -775,8 +783,9 @@ export class SessionLog {
 
     // result_bytes: byte count a full JSON.stringify(result) would report,
     // computed without ever stringifying an embedded base64/text payload
-    // directly — see computeResultBytes.
-    const resultBytes = computeResultBytes(result);
+    // directly — see computeResultBytes. Reused verbatim when the caller already computed
+    // it (server.ts's onCall hook does, for telemetry) rather than walking result again.
+    const finalResultBytes = resultBytes !== undefined ? resultBytes : computeResultBytes(result);
 
     // Hoist context scalars from structuredContent — fire-and-forget if it throws.
     let hoisted: HoistedContext = {};
@@ -821,7 +830,7 @@ export class SessionLog {
       edition: EDITION,
       platform: process.platform,
       ps_version: this.psVersion,
-      result_bytes: resultBytes,
+      result_bytes: finalResultBytes,
       ...hoisted,
       ...(errorClass !== null ? { error_class: errorClass } : {}),
       retry_signal: retrySignal,

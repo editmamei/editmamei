@@ -4,8 +4,11 @@ import "editmamei-core/internal/vault"
 
 func init() {
 	addFragments(map[string]string{
-		// pingState. No slots (uses charIDToTypeID directly, no cTID helper).
+		// pingState. Slot 1 = bitsPerChannelHelper (getBitsPerChannelInt(doc), needed for
+		// doc_depth below) — uses charIDToTypeID directly for the action-set walk, no cTID
+		// helper needed there.
 		vault.PingState: `
+    %s
     var setCount = 0;
     var setIdx = 1;
     while (true) {
@@ -22,10 +25,33 @@ func init() {
       try { openDocs.push(String(app.documents[i].name)); } catch (e) {}
     }
 
+    // Telemetry's ps_locale/doc_depth/doc_mode dimensions (all content-free: a locale
+    // token, a bit depth, an enum mode string - never a document name or path). locale
+    // has no document dependency; depth/mode need an open document and are left null
+    // without one, matching every other "no active document" degrade in this file.
+    var locale = null;
+    try { locale = String(app.locale); } catch (e) {}
+    var docDepth = null;
+    var docMode = null;
+    if (app.documents.length > 0) {
+      try {
+        docDepth = getBitsPerChannelInt(app.activeDocument) || null;
+        var m = String(app.activeDocument.mode);
+        if (m === 'DocumentMode.RGB') docMode = 'rgb';
+        else if (m === 'DocumentMode.CMYK') docMode = 'cmyk';
+        else if (m === 'DocumentMode.LAB') docMode = 'lab';
+        else if (m === 'DocumentMode.GRAYSCALE') docMode = 'grayscale';
+        else docMode = 'other';
+      } catch (e) {}
+    }
+
     return {
       version: String(app.version),
       action_sets_count: setCount,
-      open_documents: openDocs
+      open_documents: openDocs,
+      locale: locale,
+      doc_depth: docDepth,
+      doc_mode: docMode
     };
   `,
 

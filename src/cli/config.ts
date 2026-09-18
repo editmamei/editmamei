@@ -24,7 +24,7 @@ type Coerce = (raw: string) => boolean | string | null;
 
 interface KeySpec {
   get: (s: Settings) => unknown;
-  /** Absent = read-only (e.g. the anonymous install id). */
+  /** Absent = read-only (e.g. the install id: salted and random, never derived from PII, but stable — pseudonymous, not anonymous). */
   set?: (s: Settings, value: boolean | string | null) => void;
   coerce?: Coerce;
 }
@@ -58,7 +58,7 @@ const KEYS: Record<string, KeySpec> = {
     coerce: coerceBool,
   },
   'telemetry.install_id': {
-    // Read-only: the anonymous id is minted once and must stay stable.
+    // Read-only: the id is minted once and must stay stable — pseudonymous, not anonymous.
     get: (s) => s.telemetry.install_id,
   },
   'privacy.send_previews_to_llm': {

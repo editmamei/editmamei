@@ -3,6 +3,7 @@ import {
   buildUsageEvent,
   buildSessionSummary,
   buildSessionStart,
+  buildClientConnected,
   buildModuleStatus,
   buildDiagnosticEvent,
   dayBucket,
@@ -10,6 +11,7 @@ import {
   looksLikeAbsolutePath,
   normalizeErrorClass,
   PS_VERSION_UNKNOWN,
+  MAX_RESULT_BYTES,
   type TelemetryDimensions,
 } from '@editmamei/telemetry/events.ts';
 import { ERROR_CLASS_TABLE, classifyError } from '@editmamei/utils/session-log.ts';
@@ -63,6 +65,24 @@ describe('buildSessionStart', () => {
 
   it('uses the unknown placeholder before a ping resolves the PS version', () => {
     expect(buildSessionStart(dims(null), NOW).ps_version).toBe(PS_VERSION_UNKNOWN);
+  });
+
+  it('omits node_major/arch/os_major when the caller passes none', () => {
+    const e = buildSessionStart(dims('2026'), NOW);
+    expect('node_major' in e).toBe(false);
+    expect('arch' in e).toBe(false);
+    expect('os_major' in e).toBe(false);
+  });
+
+  it('includes node_major/arch/os_major when the caller supplies them', () => {
+    const e = buildSessionStart(dims('2026'), NOW, {
+      node_major: 22,
+      arch: 'x64',
+      os_major: 11,
+    });
+    expect(e.node_major).toBe(22);
+    expect(e.arch).toBe('x64');
+    expect(e.os_major).toBe(11);
   });
 });
 
@@ -136,6 +156,45 @@ describe('buildUsageEvent', () => {
       NOW
     );
     expect(e.ps_version).toBe(PS_VERSION_UNKNOWN);
+  });
+
+  it('omits result_bytes when the caller does not pass it', () => {
+    const e = buildUsageEvent(
+      dims('2026'),
+      { tool: 'ps_ping', success: true, duration_ms: 5, error_class: null },
+      NOW
+    );
+    expect('result_bytes' in e).toBe(false);
+  });
+
+  it('carries result_bytes verbatim below the clamp', () => {
+    const e = buildUsageEvent(
+      dims('2026'),
+      {
+        tool: 'ps_get_preview',
+        success: true,
+        duration_ms: 5,
+        error_class: null,
+        result_bytes: 4096,
+      },
+      NOW
+    );
+    expect(e.result_bytes).toBe(4096);
+  });
+
+  it('clamps result_bytes to MAX_RESULT_BYTES', () => {
+    const e = buildUsageEvent(
+      dims('2026'),
+      {
+        tool: 'ps_get_preview',
+        success: true,
+        duration_ms: 5,
+        error_class: null,
+        result_bytes: MAX_RESULT_BYTES + 1_000_000,
+      },
+      NOW
+    );
+    expect(e.result_bytes).toBe(MAX_RESULT_BYTES);
   });
 });
 
@@ -215,6 +274,71 @@ describe('buildSessionSummary', () => {
     expect(e.ts_bucket).toBe('2026-06-13');
   });
 
+  it('omits every new counter when the caller passes none of them', () => {
+    const e = buildSessionSummary(
+      dims('2026'),
+      { tool_call_count: 1, distinct_tools: 1, any_failures: false },
+      '2026-06-13',
+      NOW
+    );
+    for (const key of [
+      'duration_s',
+      'retry_count',
+      'ended_after_failure',
+      'edits_ok',
+      'kept_work',
+      'behind_latest',
+      'dropped_events',
+      'module_update',
+      'templates_saved',
+      'action_sets',
+    ]) {
+      expect(key in e).toBe(false);
+    }
+  });
+
+  it('includes each new field when the caller supplies it', () => {
+    const e = buildSessionSummary(
+      dims('2026'),
+      {
+        tool_call_count: 10,
+        distinct_tools: 3,
+        any_failures: true,
+        duration_s: 120,
+        retry_count: 2,
+        ended_after_failure: true,
+        edits_ok: 5,
+        kept_work: 1,
+        behind_latest: true,
+        dropped_events: 4,
+        module_update: 'updated',
+        templates_saved: 6,
+        action_sets: 2,
+      },
+      '2026-06-13',
+      NOW
+    );
+    expect(e.duration_s).toBe(120);
+    expect(e.retry_count).toBe(2);
+    expect(e.ended_after_failure).toBe(true);
+    expect(e.edits_ok).toBe(5);
+    expect(e.kept_work).toBe(1);
+    expect(e.behind_latest).toBe(true);
+    expect(e.dropped_events).toBe(4);
+    expect(e.module_update).toBe('updated');
+    expect(e.templates_saved).toBe(6);
+    expect(e.action_sets).toBe(2);
+  });
+
+  it('keeps a well-formed tsBucket verbatim', () => {
+    const e = buildSessionSummary(
+      dims('2026'),
+      { tool_call_count: 1, distinct_tools: 1, any_failures: false },
+      '2026-01-02',
+      NOW
+    );
+    expect(e.ts_bucket).toBe('2026-01-02');
+  });
   it('clamps a malformed bucket to the current UTC day rather than 400 the whole batch', () => {
     const e = buildSessionSummary(
       dims('2026'),
@@ -223,6 +347,83 @@ describe('buildSessionSummary', () => {
       new Date('2026-06-14T00:30:00.000Z')
     );
     expect(e.ts_bucket).toBe('2026-06-14');
+  });
+});
+
+describe('buildClientConnected', () => {
+  it('maps a known client name + version, and every capability flag', () => {
+    const e = buildClientConnected(
+      dims('2026'),
+      {
+        clientName: 'claude-code',
+        clientVersion: '2.1.170',
+        capSampling: true,
+        capElicitation: false,
+        capRoots: true,
+      },
+      NOW
+    );
+    expect(e).toEqual({
+      v: 2,
+      type: 'client_connected',
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-14',
+      editmamei_version: '0.15.0',
+      edition: 'community',
+      platform: 'win32',
+      client: 'claude_code',
+      client_major: 2,
+      cap_sampling: true,
+      cap_elicitation: false,
+      cap_roots: true,
+    });
+    expect(isContentSafe(e)).toBe(true);
+  });
+
+  it('sends client_major as null (not omitted) when the version is unparseable', () => {
+    const e = buildClientConnected(
+      dims('2026'),
+      {
+        clientName: 'some-client',
+        clientVersion: undefined,
+        capSampling: false,
+        capElicitation: false,
+        capRoots: false,
+      },
+      NOW
+    );
+    expect('client_major' in e).toBe(true);
+    expect(e.client_major).toBeNull();
+  });
+
+  it('maps an unrecognized client name to other', () => {
+    const e = buildClientConnected(
+      dims('2026'),
+      {
+        clientName: 'some-custom-mcp-client',
+        clientVersion: '1.0.0',
+        capSampling: false,
+        capElicitation: false,
+        capRoots: false,
+      },
+      NOW
+    );
+    expect(e.client).toBe('other');
+  });
+
+  it('has no ps_version dimension (unlike usage/session_start/diagnostic)', () => {
+    const e = buildClientConnected(
+      dims('2026'),
+      {
+        clientName: 'claude-ai',
+        clientVersion: '0.1.0',
+        capSampling: false,
+        capElicitation: false,
+        capRoots: false,
+      },
+      NOW
+    );
+    expect('ps_version' in e).toBe(false);
   });
 });
 
@@ -241,6 +442,63 @@ describe('buildDiagnosticEvent', () => {
     expect('edition' in withOpt).toBe(false);
     expect(withOpt.snippet).toBe('applyShadowsHighlights');
     expect('stderr_tail' in withOpt).toBe(false);
+  });
+
+  it('omits doc_depth/doc_mode/ps_locale when the caller passes none', () => {
+    const e = buildDiagnosticEvent(
+      dims('2026'),
+      { tool: 'ps_apply_adjustment', error_class: 'other', error_message: 'msg' },
+      NOW
+    );
+    expect('doc_depth' in e).toBe(false);
+    expect('doc_mode' in e).toBe(false);
+    expect('ps_locale' in e).toBe(false);
+  });
+
+  it('includes doc_depth/doc_mode/ps_locale when the caller supplies them', () => {
+    const e = buildDiagnosticEvent(
+      dims('2026'),
+      {
+        tool: 'ps_apply_adjustment',
+        error_class: 'other',
+        error_message: 'msg',
+        doc_depth: 16,
+        doc_mode: 'cmyk',
+        ps_locale: 'en_US',
+      },
+      NOW
+    );
+    expect(e.doc_depth).toBe(16);
+    expect(e.doc_mode).toBe('cmyk');
+    expect(e.ps_locale).toBe('en_US');
+  });
+
+  it('silently omits a ps_locale that does not match the server token shape', () => {
+    const e = buildDiagnosticEvent(
+      dims('2026'),
+      {
+        tool: 'ps_apply_adjustment',
+        error_class: 'other',
+        error_message: 'msg',
+        ps_locale: 'not-a-locale',
+      },
+      NOW
+    );
+    expect('ps_locale' in e).toBe(false);
+  });
+
+  it('accepts a 3-letter language subtag locale', () => {
+    const e = buildDiagnosticEvent(
+      dims('2026'),
+      {
+        tool: 'ps_apply_adjustment',
+        error_class: 'other',
+        error_message: 'msg',
+        ps_locale: 'fil_PH',
+      },
+      NOW
+    );
+    expect(e.ps_locale).toBe('fil_PH');
   });
 });
 

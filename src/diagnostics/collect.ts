@@ -15,8 +15,8 @@
  *     images can ride along.
  *   - The session summary keeps only `{seq, ts, tool, success, duration_ms,
  *     error_class}` — never the recorded `args`.
- * The only identifier is the anonymous `install_id` (a salted random id, not
- * derived from PII — same one telemetry uses).
+ * The only identifier is the `install_id` (a salted random id, never derived
+ * from PII, but stable — pseudonymous, not anonymous — same one telemetry uses).
  */
 
 import { homedir, release as osRelease, arch as osArch, platform as osPlatform } from 'node:os';

@@ -45,7 +45,7 @@ Install options:
 
 Config examples:
   editmamei config list                          Show all settings
-  editmamei config set telemetry.usage false     Opt out of anonymous usage telemetry
+  editmamei config set telemetry.usage false     Opt out of usage telemetry
   editmamei config set telemetry.diagnostics true Opt in to sanitized diagnostic detail
 
 Report options:

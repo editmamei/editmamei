@@ -10,6 +10,7 @@ import {
 } from '@editmamei/core/server.ts';
 import { getPendingRawDevelop, __clearRawDevelopState } from '@editmamei/core/raw-develop-state.ts';
 import { NO_ERROR_TEXT_CLASS } from '@editmamei/utils/session-log.ts';
+import * as templateStorage from '@editmamei/utils/template-storage.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
@@ -19,6 +20,15 @@ import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
 // constructions (several per test) never write real NDJSON into the user's
 // ~/.editmamei/sessions/.
 useSessionLogSandbox();
+
+// Wrap listTemplates (not the rest of template-storage.ts) so one test below can force
+// it to reject — every other call still runs for real against whatever templates dir the
+// test host has (listTemplates itself swallows its own disk errors and resolves [], so a
+// rejection can only be observed by forcing it here).
+vi.mock('@editmamei/utils/template-storage.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@editmamei/utils/template-storage.ts')>();
+  return { ...actual, listTemplates: vi.fn(actual.listTemplates) };
+});
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -1094,8 +1104,11 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
         success: boolean;
         duration_ms: number;
         error_class: string | null;
+        result_bytes?: number;
+        retry?: boolean;
       }): void;
       recordDiagnostic(diag: { tool: string; error_class: string; error_message: string }): void;
+      setInstallAssets(assets: { templates_saved: number; action_sets: number }): void;
     };
     handleToolCall(
       name: string,
@@ -1104,13 +1117,19 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
   };
 
   // F12 — a full double, not a partial one: pingPhotoshop()'s own connected
-  // path calls telemetry.onPsVersionResolved(), and onCall can call
-  // recordDiagnostic. A partial double throws a TypeError that handleToolCall's
-  // try/catch swallows into an unrelated isError result — confirmed by hand:
-  // the first cut of this double (recordCall + recordDiagnostic only) broke
-  // the "genuinely connects" test below with exactly that failure mode.
+  // path calls telemetry.onPsVersionResolved() AND telemetry.setInstallAssets(), and
+  // onCall can call recordDiagnostic. A partial double throws a TypeError that
+  // handleToolCall's try/catch swallows into an unrelated isError result — confirmed by
+  // hand: the first cut of this double (recordCall + recordDiagnostic only) broke the
+  // "genuinely connects" test below with exactly that failure mode, and setInstallAssets
+  // reproduced it again once ps_ping started calling it too.
   function spyTelemetry() {
-    return { recordCall: vi.fn(), recordDiagnostic: vi.fn(), onPsVersionResolved: vi.fn() };
+    return {
+      recordCall: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
   }
 
   it('records success:false when the ping never reaches Photoshop, without changing the tool result', async () => {
@@ -1138,6 +1157,8 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       success: false,
       duration_ms: expect.any(Number),
       error_class: 'ps_not_running',
+      result_bytes: expect.any(Number),
+      retry: false,
     });
     // The downgrade is a failure, so it feeds the opt-in diagnostic too. This
     // was previously gated on the registry's raw success flag — still true
@@ -1176,6 +1197,8 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       success: true,
       duration_ms: expect.any(Number),
       error_class: null,
+      result_bytes: expect.any(Number),
+      retry: false,
     });
     // A success feeds no diagnostic.
     expect(telemetry.recordDiagnostic).not.toHaveBeenCalled();
@@ -1336,6 +1359,8 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       success: false,
       duration_ms: expect.any(Number),
       error_class: NO_ERROR_TEXT_CLASS,
+      result_bytes: expect.any(Number),
+      retry: false,
     });
     expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
       tool: 'ps_export',
@@ -1359,6 +1384,419 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
     expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
       tool: 'ps_ping',
       error_class: 'ps_not_running',
+    });
+  });
+});
+
+describe('client_connected: wired from Server.oninitialized', () => {
+  type OninitializedServer = {
+    server: {
+      oninitialized?: () => void;
+      getClientVersion(): { name: string; version: string } | undefined;
+      getClientCapabilities(): Record<string, unknown> | undefined;
+    };
+    telemetry: {
+      recordClientConnected(info: {
+        clientName: string | undefined;
+        clientVersion: string | undefined;
+        capSampling: boolean;
+        capElicitation: boolean;
+        capRoots: boolean;
+      }): void;
+    };
+  };
+
+  it('maps the client name/major and capability presence into recordClientConnected', () => {
+    const server = new EditmameiServer() as unknown as OninitializedServer;
+    server.server.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
+    server.server.getClientCapabilities = () => ({ sampling: {}, roots: { listChanged: true } });
+    const recordClientConnected = vi.fn();
+    server.telemetry.recordClientConnected = recordClientConnected;
+
+    // The callback is wired in the constructor (see server.ts's comment on WHY — the SDK's
+    // Server wires its own `notifications/initialized` handler there too, not at connect()
+    // time), so it already exists before this test ever touches the transport.
+    expect(server.server.oninitialized).toBeTypeOf('function');
+    server.server.oninitialized!();
+
+    expect(recordClientConnected).toHaveBeenCalledTimes(1);
+    expect(recordClientConnected).toHaveBeenCalledWith({
+      clientName: 'claude-code',
+      clientVersion: '2.1.170',
+      capSampling: true,
+      capElicitation: false,
+      capRoots: true,
+    });
+  });
+
+  it('passes undefined name/version through when the client never reports them', () => {
+    const server = new EditmameiServer() as unknown as OninitializedServer;
+    server.server.getClientVersion = () => undefined;
+    server.server.getClientCapabilities = () => undefined;
+    const recordClientConnected = vi.fn();
+    server.telemetry.recordClientConnected = recordClientConnected;
+
+    server.server.oninitialized!();
+
+    expect(recordClientConnected).toHaveBeenCalledWith({
+      clientName: undefined,
+      clientVersion: undefined,
+      capSampling: false,
+      capElicitation: false,
+      capRoots: false,
+    });
+  });
+
+  // Once-latch: nothing in the MCP spec stops a non-conforming client sending a second
+  // `notifications/initialized`, and recordClientConnected no longer force-flushes, so a
+  // repeat would silently queue a duplicate event rather than visibly re-send.
+  it('sends client_connected at most once even if oninitialized fires twice', () => {
+    const server = new EditmameiServer() as unknown as OninitializedServer;
+    server.server.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
+    server.server.getClientCapabilities = () => ({ sampling: {} });
+    const recordClientConnected = vi.fn();
+    server.telemetry.recordClientConnected = recordClientConnected;
+
+    server.server.oninitialized!();
+    server.server.oninitialized!();
+    server.server.oninitialized!();
+
+    expect(recordClientConnected).toHaveBeenCalledTimes(1);
+  });
+
+  // An explicit `null` capability is a client saying "I don't have this," the same as
+  // omitting it — not a declaration. `!== undefined` would have wrongly counted it as one.
+  it('treats an explicit null capability as NOT declared (!= null, not !== undefined)', () => {
+    const server = new EditmameiServer() as unknown as OninitializedServer;
+    server.server.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
+    server.server.getClientCapabilities = () =>
+      ({ sampling: null, elicitation: {}, roots: undefined }) as Record<string, unknown>;
+    const recordClientConnected = vi.fn();
+    server.telemetry.recordClientConnected = recordClientConnected;
+
+    server.server.oninitialized!();
+
+    expect(recordClientConnected).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capSampling: false, // explicit null — not declared
+        capElicitation: true, // a real object — declared
+        capRoots: false, // undefined — not declared
+      })
+    );
+  });
+});
+
+describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mode)', () => {
+  it('caches locale/doc_depth/doc_mode from a successful ping and attaches them to a later diagnostic', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+    server.session.connection = makeConnection({
+      result: {
+        version: '27.8.0',
+        action_sets_count: 0,
+        open_documents: [],
+        locale: 'en_US',
+        doc_depth: 16,
+        doc_mode: 'cmyk',
+      },
+    });
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    // The ping caches the dimensions; it emits no diagnostic itself (it succeeds).
+    await server.handleToolCall('ps_ping', {});
+    expect(recordDiagnostic).not.toHaveBeenCalled();
+
+    // A later, unrelated failing tool call picks up the cached dimensions.
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(1);
+    expect(recordDiagnostic.mock.calls[0][0]).toMatchObject({
+      ps_locale: 'en_US',
+      doc_depth: 16,
+      doc_mode: 'cmyk',
+    });
+  });
+
+  it('omits doc_depth/doc_mode/ps_locale from a diagnostic when a ping never reported them', async () => {
+    const server = new EditmameiServer() as unknown as {
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+    const recordDiagnostic = vi.fn();
+    server.telemetry = { recordCall: vi.fn(), recordDiagnostic };
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+
+    await server.handleToolCall('ps_export', {});
+
+    const diag = recordDiagnostic.mock.calls[0][0];
+    expect('ps_locale' in diag).toBe(false);
+    expect('doc_depth' in diag).toBe(false);
+    expect('doc_mode' in diag).toBe(false);
+  });
+
+  it('a live ping reporting no open document clears a previously cached doc_depth/doc_mode', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+
+    // First ping: a 16-bit CMYK document is open. Second ping: the live round trip runs
+    // again but the document has since been closed — no doc fields in the state at all.
+    let pingCount = 0;
+    server.session.connection = makeConnection({
+      resultFor: () => {
+        pingCount++;
+        return pingCount === 1
+          ? {
+              version: '27.8.0',
+              action_sets_count: 0,
+              open_documents: ['a.psd'],
+              doc_depth: 16,
+              doc_mode: 'cmyk',
+            }
+          : { version: '27.8.0', action_sets_count: 0, open_documents: [] };
+      },
+    });
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    await server.handleToolCall('ps_ping', {}); // caches doc_depth: 16, doc_mode: 'cmyk'
+    await server.handleToolCall('ps_ping', {}); // live round trip, no document open — clears both
+
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(1);
+    const diag = recordDiagnostic.mock.calls[0][0];
+    expect('doc_depth' in diag).toBe(false);
+    expect('doc_mode' in diag).toBe(false);
+  });
+
+  it('a ping reporting Photoshop is not running clears a previously cached doc_depth/doc_mode', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+
+    // First ping: a 16-bit CMYK document is open. Then Photoshop quits before the second
+    // ping — isCurrentlyRunning() flips false, so pingPhotoshop takes its "does not appear
+    // to be running" early return, well before the round trip that would otherwise report
+    // the document gone.
+    const fakeConn = makeConnection({
+      result: {
+        version: '27.8.0',
+        action_sets_count: 0,
+        open_documents: ['a.psd'],
+        doc_depth: 16,
+        doc_mode: 'cmyk',
+      },
+    });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    await server.handleToolCall('ps_ping', {}); // caches doc_depth: 16, doc_mode: 'cmyk'
+    fakeConn.setCurrentlyRunning(false);
+    // "not running" early return — clears both. This ping's OWN registry success is
+    // downgraded by telemetry (lastPingReachedPs false), so it emits a diagnostic of its
+    // own here too, ahead of the failing call below.
+    await server.handleToolCall('ps_ping', {});
+
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(2);
+    for (const [diag] of recordDiagnostic.mock.calls) {
+      expect('doc_depth' in diag).toBe(false);
+      expect('doc_mode' in diag).toBe(false);
+    }
+  });
+
+  it('keeps the last known document dimensions across a degraded ping (preserved behaviour)', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+
+    server.session.connection = makeConnection({
+      result: {
+        version: '27.8.0',
+        action_sets_count: 0,
+        open_documents: ['a.psd'],
+        doc_depth: 16,
+        doc_mode: 'cmyk',
+      },
+    });
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    await server.handleToolCall('ps_ping', {}); // caches doc_depth: 16, doc_mode: 'cmyk'
+
+    // Second ping: the go-core binary is broken this time — build() fails before the round
+    // trip ever runs, so this is a DEGRADED ping, not a live "no document" answer.
+    server.snippetClient = {
+      build: async () => {
+        throw new Error('go-core binary missing');
+      },
+    };
+    await server.handleToolCall('ps_ping', {});
+
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(1);
+    expect(recordDiagnostic.mock.calls[0][0]).toMatchObject({
+      doc_depth: 16,
+      doc_mode: 'cmyk',
     });
   });
 });
@@ -1620,5 +2058,245 @@ describe('raw develop pending flag (dispatch-level)', () => {
     );
     await server.handleToolCall('ps_open_document', {});
     expect(getPendingRawDevelop()).toBeNull();
+  });
+});
+
+// ===========================================================================
+// The retry signal is a SHA-256 hash of tool+args now, not the raw stringified
+// args (server.ts's hashRetryKey) — nothing about args is retained on the
+// instance between calls. Observable behavior must be unchanged: same tool +
+// deep-equal args as the IMMEDIATELY preceding call is a retry.
+// ===========================================================================
+describe('telemetry: retry signal (hashed key)', () => {
+  interface RetryServer {
+    toolRegistry: {
+      register(
+        name: string,
+        def: {
+          tool: { name: string; description: string; inputSchema: object };
+          handler: () => Promise<unknown>;
+        }
+      ): void;
+    };
+    telemetry: {
+      recordCall: ReturnType<typeof vi.fn>;
+      recordDiagnostic: ReturnType<typeof vi.fn>;
+    };
+    sessionLog: { append: ReturnType<typeof vi.fn> };
+    handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+  }
+
+  function spyTelemetry() {
+    return { recordCall: vi.fn(), recordDiagnostic: vi.fn() };
+  }
+
+  const stub = (name: string) => ({
+    tool: {
+      name,
+      description: 'test fixture',
+      inputSchema: { type: 'object' as const, properties: {} },
+    },
+    handler: async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }),
+  });
+
+  it('flags the second of two identical back-to-back calls as a retry', async () => {
+    const server = new EditmameiServer() as unknown as RetryServer;
+    server.toolRegistry.register('ps_export', stub('ps_export'));
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[1][0]).toMatchObject({ retry: true });
+  });
+
+  it('does not flag the second call as a retry when the args differ', async () => {
+    const server = new EditmameiServer() as unknown as RetryServer;
+    server.toolRegistry.register('ps_export', stub('ps_export'));
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+    await server.handleToolCall('ps_export', { format: 'png' });
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[1][0]).toMatchObject({ retry: false });
+  });
+
+  it('does not flag a repeat as a retry when a DIFFERENT tool intervenes (A, B, A)', async () => {
+    const server = new EditmameiServer() as unknown as RetryServer;
+    server.toolRegistry.register('ps_export', stub('ps_export'));
+    server.toolRegistry.register('ps_save_psd', stub('ps_save_psd'));
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+    await server.handleToolCall('ps_save_psd', { format: 'jpg' });
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[1][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[2][0]).toMatchObject({ retry: false });
+  });
+
+  it('unserializable args (circular structure) are never a retry, and leave the stored key untouched for the NEXT comparison', async () => {
+    const server = new EditmameiServer() as unknown as RetryServer;
+    server.toolRegistry.register('ps_export', stub('ps_export'));
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+    // SessionLog.append computes its OWN (separately unguarded) retry key by re-walking
+    // and re-stringifying the same args — stub it so this test isolates hashRetryKey's
+    // behavior in the onCall hook, rather than also exercising that unrelated path.
+    server.sessionLog.append = vi.fn().mockResolvedValue(undefined);
+
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+
+    const circular: Record<string, unknown> = { format: 'png' };
+    circular.self = circular;
+    await server.handleToolCall('ps_export', circular);
+
+    // Same tool + deep-equal args as the first call — only a retry if the stored hash
+    // survived the circular call untouched rather than being clobbered by a null.
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[1][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[2][0]).toMatchObject({ retry: true });
+  });
+});
+
+// ===========================================================================
+// computeResultBytes is computed ONCE per call in the onCall hook and
+// threaded to both SessionLog.append and telemetry.recordCall, rather than
+// each caller re-walking the same result. Pinned against the exact fixture
+// tests/unit/session-log.test.ts's own computeResultBytes suite uses, so the
+// two layers are cross-checked against each other for the same input.
+// ===========================================================================
+describe('telemetry: result_bytes is computed once and threaded to recordCall', () => {
+  it('matches the exact byte count for a known text-block result', async () => {
+    const server = new EditmameiServer() as unknown as {
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      telemetry: {
+        recordCall: ReturnType<typeof vi.fn>;
+        recordDiagnostic: ReturnType<typeof vi.fn>;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+    // Same fixture as tests/unit/session-log.test.ts's `computeResultBytes` suite
+    // ("matches JSON.stringify(result).length for a plain text content block").
+    const result = { content: [{ type: 'text' as const, text: 'hello' }] };
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test fixture',
+        inputSchema: { type: 'object' as const, properties: {} },
+      },
+      handler: async () => result,
+    });
+    const telemetry = { recordCall: vi.fn(), recordDiagnostic: vi.fn() };
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_export', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
+      result_bytes: JSON.stringify(result).length,
+    });
+  });
+});
+
+// ===========================================================================
+// setInstallAssets is called with only the fields THIS ping actually
+// observed (never a stale 0 for a degraded field) — see client.ts's
+// per-field merge and server.ts's ps_ping handler.
+// ===========================================================================
+describe('telemetry: setInstallAssets carries only the fields this ping observed', () => {
+  type AssetsServer = {
+    session: { connection: unknown };
+    snippetClient: unknown;
+    telemetry: {
+      recordCall: (call: unknown) => void;
+      recordDiagnostic: (diag: unknown) => void;
+      onPsVersionResolved: () => void;
+      setInstallAssets: ReturnType<typeof vi.fn>;
+    };
+    handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+  };
+
+  function spyTelemetry() {
+    return {
+      recordCall: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+  }
+
+  it('reports both fields when the pingState round trip fully succeeds', async () => {
+    const server = new EditmameiServer() as unknown as AssetsServer;
+    server.session.connection = makeConnection({
+      result: { version: '27.8.0', action_sets_count: 3, open_documents: [] },
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.setInstallAssets).toHaveBeenCalledTimes(1);
+    const call = telemetry.setInstallAssets.mock.calls[0][0] as Record<string, unknown>;
+    expect(call.action_sets).toBe(3);
+    expect(typeof call.templates_saved).toBe('number');
+  });
+
+  it('omits action_sets when the pingState snippet never ran (build failure, PS still alive)', async () => {
+    const server = new EditmameiServer() as unknown as AssetsServer;
+    server.session.connection = makeConnection(); // default info → connection.ping() resolves true
+    server.snippetClient = {
+      build: async () => {
+        throw new Error('go-core binary missing');
+      },
+    };
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.setInstallAssets).toHaveBeenCalledTimes(1);
+    const call = telemetry.setInstallAssets.mock.calls[0][0] as Record<string, unknown>;
+    expect('action_sets' in call).toBe(false);
+    // listTemplates() still ran (not gated on pingState) — templates_saved is observed.
+    expect(typeof call.templates_saved).toBe('number');
+  });
+
+  it('omits templates_saved when listTemplates() throws (pingState round trip still succeeded)', async () => {
+    const server = new EditmameiServer() as unknown as AssetsServer;
+    server.session.connection = makeConnection({
+      result: { version: '27.8.0', action_sets_count: 3, open_documents: [] },
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    vi.mocked(templateStorage.listTemplates).mockRejectedValueOnce(new Error('disk read failed'));
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.setInstallAssets).toHaveBeenCalledTimes(1);
+    const call = telemetry.setInstallAssets.mock.calls[0][0] as Record<string, unknown>;
+    // A confirmed 0 would misreport a healthy install as having no saved templates —
+    // the field must be absent, not a stale/misleading zero.
+    expect('templates_saved' in call).toBe(false);
+    // action_sets is unaffected — its own round trip succeeded independently.
+    expect(call.action_sets).toBe(3);
   });
 });

@@ -216,7 +216,20 @@ export function updateMessage(channel: InstallChannel, latest: string): string {
       return `Download editmamei.mcpb (v${latest}) from ${RELEASES_URL} and reinstall the Claude Desktop extension.`;
     case 'dev':
       return `You're on a local dev build — pull the latest source and rebuild.`;
-    case 'npm':
+    case 'npx':
+      // Nothing to install — npx re-fetches the package fresh on the next invocation.
+      return `The next \`npx -y editmamei\` picks up v${latest} automatically — just restart your AI client.`;
+    case 'source':
+      return `You're running Editmamei from a source checkout — pull the latest changes and rebuild.`;
+    case 'npm_local':
+      // A project-local install (editmamei lives under some OTHER project's own
+      // node_modules/) — a global `npm install -g` would be a no-op for it.
+      return `Editmamei is installed locally in a project — update the \`editmamei\` dependency in that project (e.g. \`npm install editmamei@latest\`) and restart your MCP client.`;
+    case 'unknown':
+      // The entry path wasn't available to classify — no channel-specific remediation is
+      // possible, so point back at whatever install method the user actually used.
+      return `Editmamei v${latest} is available. Update it the way you installed it, then restart your MCP client.`;
+    case 'npm_global':
     default:
       return `Run: npm install -g editmamei@latest (then restart your MCP client).`;
   }
@@ -242,27 +255,55 @@ export interface CheckOptions {
 }
 
 /**
- * Check npm for a newer version. Resolves to an `UpdateInfo` when one exists, else `null`
- * (already current, or any failure — this never throws).
+ * `checkForUpdate`'s outcome, WITH the "already current" / "the check failed" distinction its
+ * plain `UpdateInfo | null` return collapses. The ping-notice path (checkForUpdate below)
+ * doesn't need that distinction — it only cares whether there's something to show — but
+ * telemetry's `behind_latest` must never conflate them: a failed check has NOTHING to report
+ * (the field stays omitted this session), while a confirmed "current" is a genuine `false`.
  */
-export async function checkForUpdate(opts: CheckOptions = {}): Promise<UpdateInfo | null> {
+export interface UpdateCheckResult {
+  status: 'current' | 'newer' | 'failed';
+  /** Populated only when status is 'newer'. */
+  info: UpdateInfo | null;
+}
+
+/**
+ * Check npm for a newer version, distinguishing why there's no `UpdateInfo` — see
+ * `UpdateCheckResult`'s doc comment. Never throws.
+ */
+export async function checkForUpdateWithStatus(
+  opts: CheckOptions = {}
+): Promise<UpdateCheckResult> {
   try {
     const env = opts.env ?? process.env;
     const current = opts.current ?? VERSION;
     const channel = resolveInstallChannel(env);
     const fetchLatest = opts.fetchLatest ?? httpFetchLatest();
     const manifest = await fetchLatest(resolveUpdateCheckUrl(env), opts.timeoutMs ?? 4000);
-    if (!manifest || !parseSemver(manifest.version)) return null;
+    if (!manifest || !parseSemver(manifest.version)) return { status: 'failed', info: null };
     const latest = manifest.version;
-    if (!isNewer(latest, current)) return null;
+    if (!isNewer(latest, current)) return { status: 'current', info: null };
     return {
-      current,
-      latest,
-      channel,
-      how_to_update: updateMessage(channel, latest),
-      fixed_tools: fixedToolsSince(manifest.fixesByVersion, current, latest),
+      status: 'newer',
+      info: {
+        current,
+        latest,
+        channel,
+        how_to_update: updateMessage(channel, latest),
+        fixed_tools: fixedToolsSince(manifest.fixesByVersion, current, latest),
+      },
     };
   } catch {
-    return null;
+    return { status: 'failed', info: null };
   }
+}
+
+/**
+ * Check npm for a newer version. Resolves to an `UpdateInfo` when one exists, else `null`
+ * (already current, or any failure — this never throws). Thin wrapper over
+ * `checkForUpdateWithStatus` for callers that only care whether there's something to show,
+ * not why not.
+ */
+export async function checkForUpdate(opts: CheckOptions = {}): Promise<UpdateInfo | null> {
+  return (await checkForUpdateWithStatus(opts)).info;
 }
