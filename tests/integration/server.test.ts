@@ -1589,6 +1589,145 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
     expect('doc_depth' in diag).toBe(false);
     expect('doc_mode' in diag).toBe(false);
   });
+
+  it('a live ping reporting no open document clears a previously cached doc_depth/doc_mode', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+
+    // First ping: a 16-bit CMYK document is open. Second ping: the live round trip runs
+    // again but the document has since been closed — no doc fields in the state at all.
+    let pingCount = 0;
+    server.session.connection = makeConnection({
+      resultFor: () => {
+        pingCount++;
+        return pingCount === 1
+          ? {
+              version: '27.8.0',
+              action_sets_count: 0,
+              open_documents: ['a.psd'],
+              doc_depth: 16,
+              doc_mode: 'cmyk',
+            }
+          : { version: '27.8.0', action_sets_count: 0, open_documents: [] };
+      },
+    });
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    await server.handleToolCall('ps_ping', {}); // caches doc_depth: 16, doc_mode: 'cmyk'
+    await server.handleToolCall('ps_ping', {}); // live round trip, no document open — clears both
+
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(1);
+    const diag = recordDiagnostic.mock.calls[0][0];
+    expect('doc_depth' in diag).toBe(false);
+    expect('doc_mode' in diag).toBe(false);
+  });
+
+  it('a degraded ping (pingState build failure) leaves previously cached doc_depth/doc_mode alone', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+
+    server.session.connection = makeConnection({
+      result: {
+        version: '27.8.0',
+        action_sets_count: 0,
+        open_documents: ['a.psd'],
+        doc_depth: 16,
+        doc_mode: 'cmyk',
+      },
+    });
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    await server.handleToolCall('ps_ping', {}); // caches doc_depth: 16, doc_mode: 'cmyk'
+
+    // Second ping: the go-core binary is broken this time — build() fails before the round
+    // trip ever runs, so this is a DEGRADED ping, not a live "no document" answer.
+    server.snippetClient = {
+      build: async () => {
+        throw new Error('go-core binary missing');
+      },
+    };
+    await server.handleToolCall('ps_ping', {});
+
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(1);
+    expect(recordDiagnostic.mock.calls[0][0]).toMatchObject({
+      doc_depth: 16,
+      doc_mode: 'cmyk',
+    });
+  });
 });
 
 // ===========================================================================

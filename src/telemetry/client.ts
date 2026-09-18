@@ -261,7 +261,7 @@ export class TelemetryClient {
       );
       // Pro module boot outcome, alongside the ping — emitted only for installs with a
       // license record (moduleStatus() returns null otherwise), so a pure-CE host stays
-      // silent. This is the signal that answers "did the subscriber's module actually load?".
+      // silent. Reports whether the licensed module actually loaded this boot.
       const moduleStatus = this.moduleStatus();
       if (moduleStatus) this.enqueue(buildModuleStatus(this.dims, moduleStatus, this.now()));
       void this.flush();
@@ -323,15 +323,17 @@ export class TelemetryClient {
    * (rather than replacing the object) — pass only the fields this ping actually observed,
    * so a degraded field on one ping doesn't erase a good value an earlier ping recorded this
    * session. Each value is clamped to MAX_INSTALL_ASSET_COUNT before being kept, matching the
-   * server's field bound.
+   * server's field bound; a non-finite value (see clampCount) is treated the same as an
+   * unobserved field — left out of this merge entirely, never kept as 0.
    */
   setInstallAssets(assets: { templates_saved?: number; action_sets?: number }): void {
+    const templatesSaved =
+      assets.templates_saved !== undefined ? clampCount(assets.templates_saved) : null;
+    const actionSets = assets.action_sets !== undefined ? clampCount(assets.action_sets) : null;
     this.installAssets = {
       ...this.installAssets,
-      ...(assets.templates_saved !== undefined
-        ? { templates_saved: clampCount(assets.templates_saved) }
-        : {}),
-      ...(assets.action_sets !== undefined ? { action_sets: clampCount(assets.action_sets) } : {}),
+      ...(templatesSaved !== null ? { templates_saved: templatesSaved } : {}),
+      ...(actionSets !== null ? { action_sets: actionSets } : {}),
     };
   }
 
@@ -692,7 +694,12 @@ function errMsg(err: unknown): string {
 }
 
 /** Clamp an install-asset count to [0, MAX_INSTALL_ASSET_COUNT] — matches the server's field
- *  bound on `templates_saved` / `action_sets`. */
-function clampCount(n: number): number {
+ *  bound on `templates_saved` / `action_sets`. Returns null for a non-finite input (NaN,
+ *  ±Infinity): the wire format has no way to distinguish a clamped 0 from a field that was
+ *  never actually observed, so the caller must treat null as "leave the field unset," never
+ *  send it as 0 or as `null` itself (the server rejects a null here and a rejected batch is
+ *  re-queued forever). */
+function clampCount(n: number): number | null {
+  if (!Number.isFinite(n)) return null;
   return Math.min(Math.max(0, n), MAX_INSTALL_ASSET_COUNT);
 }

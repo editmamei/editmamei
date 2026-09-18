@@ -71,14 +71,14 @@ export function __resetLogScriptOnErrorWarnForTests(): void {
 
 /**
  * Hash a retry-detection key (tool name + args) so the raw args are never retained on the
- * server instance, logged, or emitted — only a SHA-1 digest survives past this call. Returns
- * null when `args` can't be serialized (e.g. a circular structure); the caller treats that as
- * "not a retry" rather than letting the whole onCall hook throw.
+ * server instance, logged, or emitted — only a SHA-256 digest survives past this call.
+ * Returns null when `args` can't be serialized (e.g. a circular structure); the caller
+ * treats that as "not a retry" rather than letting the whole onCall hook throw.
  */
 function hashRetryKey(tool: string, args: unknown): string | null {
   try {
     const json = JSON.stringify({ tool, args });
-    return createHash('sha1').update(json).digest('hex');
+    return createHash('sha256').update(json).digest('hex');
   } catch {
     return null;
   }
@@ -97,9 +97,9 @@ export const FIRST_RUN_DISCLOSURE =
   'success, duration, bytes returned, version/edition/OS/PS-version, install channel, ' +
   'which AI client connected, Node/OS/architecture versions, and per-session counts like ' +
   'edits made and retries) to find what breaks. It never sends image content, file paths, ' +
-  'or personal data. Opt out anytime: `editmamei config set telemetry.usage false` (or edit ' +
-  '~/.editmamei/settings.json). Opt in to sanitized diagnostics: `editmamei config set ' +
-  'telemetry.diagnostics true`.';
+  'or tool arguments. The only identifier is a random install ID. Opt out anytime: ' +
+  '`editmamei config set telemetry.usage false` (or edit ~/.editmamei/settings.json). ' +
+  'Opt in to sanitized diagnostics: `editmamei config set telemetry.diagnostics true`.';
 
 /**
  * Timeout for the background ps_version probe (resolveLiveVersionInBackground) —
@@ -116,6 +116,18 @@ export const FIRST_RUN_DISCLOSURE =
  * version just stays 'unknown' a while longer, which is honest, not wrong.
  */
 export const BACKGROUND_VERSION_PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * Test seam for the boot-time update check wired up in the constructor — production never
+ * passes either field and gets the real `shouldCheckForUpdate` / `checkForUpdateWithStatus`
+ * (which is always false under vitest, so the check normally never runs in the test suite
+ * at all). Lets a test force the check on and control its outcome without touching the
+ * network or leaving every other server test to reckon with a real fetch.
+ */
+export interface EditmameiServerOptions {
+  shouldCheckForUpdate?: typeof shouldCheckForUpdate;
+  checkForUpdateWithStatus?: typeof checkForUpdateWithStatus;
+}
 
 export class EditmameiServer {
   private server: Server;
@@ -199,9 +211,15 @@ export class EditmameiServer {
    */
   private lastPsLocale: string | null = null;
   /**
-   * Active document's bit depth / color mode at the last `ps_ping` that had one open,
-   * carried on every diagnostic thereafter (same cache-and-reuse shape as lastPsLocale).
-   * null until a ping reports them (no document is open, or the read failed).
+   * Active document's bit depth / color mode at the last `ps_ping` whose LIVE pingState
+   * round trip actually ran, carried on every diagnostic thereafter. Unlike lastPsLocale,
+   * this is overwritten (including back to null) by every ping whose round trip completed
+   * — a ping that completed and found no document open means the previously cached document
+   * really is gone (closed, or swapped for a different one), and reporting its stale
+   * depth/mode on a later failure would describe a document that no longer exists. Only a
+   * DEGRADED ping (the round trip itself did not run — see `pingStateObserved` in
+   * `pingPhotoshop`) leaves an already-known value alone, since it has no live answer to
+   * prefer over the cache.
    */
   private lastDocDepth: 8 | 16 | 32 | null = null;
   private lastDocMode: 'rgb' | 'cmyk' | 'lab' | 'grayscale' | 'other' | null = null;
@@ -234,8 +252,10 @@ export class EditmameiServer {
    * FIRST ping of a session renders the notice instead of racing the network fetch
    * and silently losing (the pre-2026-08 shape: fire-and-forget assignment, first
    * ping reads null, notice only ever appears on a LATER ping most sessions never
-   * make). `checkForUpdate` self-caps at 4s and never rejects, so this await is
-   * bounded and throw-free; settled by the second ping, so it costs nothing after.
+   * make). `checkForUpdateWithStatus` self-caps at 4s and never rejects, and the
+   * constructor's own `.catch` is a second line of defense (e.g. against a test-injected
+   * override that does), so this await is bounded and throw-free; settled by the second
+   * ping, so it costs nothing after.
    */
   private updateCheck: Promise<void> | null = null;
   /**
@@ -261,7 +281,7 @@ export class EditmameiServer {
    */
   private readonly refreshLicenseOnPing = createPingLicenseRefresher();
 
-  constructor() {
+  constructor(opts: EditmameiServerOptions = {}) {
     this.logger = new Logger('EditmameiServer');
     this.session = new Session();
 
@@ -299,15 +319,19 @@ export class EditmameiServer {
     // runner). One anonymous, content-free GET to the npm registry, fire-and-forget — the
     // result rides ps_ping (an MCP server's stderr never reaches the user, a tool
     // result does). checkForUpdate is fail-silent, so this never throws and never blocks boot.
-    if (shouldCheckForUpdate(effectiveSettings.update_check)) {
-      this.updateCheck = checkForUpdateWithStatus().then((result) => {
-        this.updateInfo = result.info;
-        // setBehindLatest only on a CONFIRMED status — 'newer' -> true, 'current' -> false.
-        // 'failed' calls neither, so the field stays omitted (never resolved this session)
-        // rather than sending a false 'false' for a check that never actually ran.
-        if (result.status === 'newer') this.telemetry.setBehindLatest(true);
-        else if (result.status === 'current') this.telemetry.setBehindLatest(false);
-      });
+    const shouldCheckForUpdateFn = opts.shouldCheckForUpdate ?? shouldCheckForUpdate;
+    const checkForUpdateWithStatusFn = opts.checkForUpdateWithStatus ?? checkForUpdateWithStatus;
+    if (shouldCheckForUpdateFn(effectiveSettings.update_check)) {
+      this.updateCheck = checkForUpdateWithStatusFn()
+        .then((result) => {
+          this.updateInfo = result.info;
+          // setBehindLatest only on a CONFIRMED status — 'newer' -> true, 'current' -> false.
+          // 'failed' calls neither, so the field stays omitted (never resolved this session)
+          // rather than sending a false 'false' for a check that never actually ran.
+          if (result.status === 'newer') this.telemetry.setBehindLatest(true);
+          else if (result.status === 'current') this.telemetry.setBehindLatest(false);
+        })
+        .catch(() => undefined);
     }
 
     // LOG_SCRIPT_ON_ERROR=1 dumps fully-interpolated ExtendScript on every
@@ -979,6 +1003,12 @@ export class EditmameiServer {
     // disk-detected fallback in the text/structuredContent below is pre-existing,
     // user-facing behavior, unrelated to telemetry's value-space requirement.
     let versionIsLive = false;
+    // Whether THIS ping's pingState round trip actually executed and reported (as opposed to
+    // a degraded ping where snippetClient.build() failed and the block below never ran) —
+    // gates the lastDocDepth/lastDocMode cache update near the end of this method: a live
+    // round trip's own null answer (no document open) is a fact worth caching over a stale
+    // one, but a degraded ping has no answer at all to prefer over the cache.
+    let pingStateObserved = false;
 
     // C3/Q4: getVersion() runs FIRST, ahead of the pingState build/execute
     // below. On the real PhotoshopConnection this call is what populates
@@ -1116,6 +1146,10 @@ export class EditmameiServer {
           },
         };
       }
+      // Reached only when the round trip above actually completed — a failure returned
+      // early. Set before reading any individual field so it reflects "this ping has a
+      // live answer to report," independent of which fields that answer happened to carry.
+      pingStateObserved = true;
       if (state.version) {
         version = state.version;
         versionIsLive = true;
@@ -1172,13 +1206,18 @@ export class EditmameiServer {
       // placeholder. Best-effort + content-free; never affects the ping result.
       this.telemetry.onPsVersionResolved();
     }
-    // Cache the locale + doc depth/mode for every diagnostic recorded for the rest of the
-    // session (see lastPsLocale/lastDocDepth/lastDocMode's field docs) — only overwritten
-    // on a ping that actually reported one, so a later degraded ping (or one with no
-    // document open) doesn't blank out an already-known value.
+    // Cache the locale for every diagnostic recorded for the rest of the session (see
+    // lastPsLocale's field doc) — only overwritten on a ping that actually reported one, so
+    // a later degraded ping doesn't blank out an already-known value. Doc depth/mode instead
+    // mirror the LIVE round trip's own answer whenever one ran (see lastDocDepth/
+    // lastDocMode's field docs): a genuine "no document open" report clears both to null,
+    // since the cached pair may describe a document the user has since closed — only a ping
+    // whose round trip never ran (pingStateObserved false) leaves them alone.
     if (psLocale !== null) this.lastPsLocale = psLocale;
-    if (docDepth !== null) this.lastDocDepth = docDepth;
-    if (docMode !== null) this.lastDocMode = docMode;
+    if (pingStateObserved) {
+      this.lastDocDepth = docDepth;
+      this.lastDocMode = docMode;
+    }
     // Install-asset counts, alongside the other session_summary counters — a pure count,
     // content-free like everything else this method reports. Only the fields THIS ping
     // actually observed: action_sets needs the pingState round trip to have run at all;

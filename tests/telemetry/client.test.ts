@@ -765,6 +765,21 @@ describe('session_summary accumulators', () => {
     expect(summary?.templates_saved).toBe(100_000);
     expect(summary?.action_sets).toBe(0);
   });
+
+  it('setInstallAssets treats a non-finite field as unobserved — never clamped to 0, never sent as null', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    // A real earlier reading, then a NaN on a later ping (e.g. a bad parse) — the NaN must
+    // not overwrite the earlier good value, and must never surface as 0 or null on the wire.
+    c.setInstallAssets({ templates_saved: 6, action_sets: 2 });
+    c.setInstallAssets({ templates_saved: NaN, action_sets: Infinity });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { templates_saved?: number; action_sets?: number } | undefined;
+    expect(summary?.templates_saved).toBe(6);
+    expect(summary?.action_sets).toBe(2);
+  });
 });
 
 describe('recordClientConnected', () => {

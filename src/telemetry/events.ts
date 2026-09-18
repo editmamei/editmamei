@@ -91,7 +91,8 @@ export interface SessionSummaryEvent {
   /** Wall-clock from the first recorded call to the last, in seconds. Capped at 604_800
    *  (7 days) — a session left running for weeks shouldn't skew the aggregate. */
   duration_s?: number;
-  /** Calls whose tool + (sanitized) args matched the immediately preceding call. */
+  /** Calls whose tool + args matched the immediately preceding call (compared by a local
+   *  hash that is never sent). */
   retry_count?: number;
   /** True when the LAST recorded call of the session failed. */
   ended_after_failure?: boolean;

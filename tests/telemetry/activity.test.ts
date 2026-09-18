@@ -234,6 +234,12 @@ describe('boundMajor', () => {
   it('passes null through as null', () => {
     expect(boundMajor(null, 999)).toBeNull();
   });
+
+  it('returns null for a non-finite input (NaN, Infinity)', () => {
+    expect(boundMajor(NaN, 999)).toBeNull();
+    expect(boundMajor(Infinity, 999)).toBeNull();
+    expect(boundMajor(-Infinity, 999)).toBeNull();
+  });
 });
 
 describe('nodeMajor', () => {

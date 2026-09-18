@@ -99,7 +99,9 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   // on `opened === true`; this set cannot, being name-shaped.
   'ps_develop_raw',
 
-  // filter / group / clipping
+  // filter / group / clipping. ps_filter also has a read-only `list` op — SAME KNOWN BIAS
+  // as ps_play_action/ps_execute_script above: classification is per tool NAME, so a
+  // list-only call still counts as an edit.
   'ps_filter',
   'ps_group',
   'ps_clipping_mask',
@@ -166,7 +168,8 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'ps_selection_channel',
   'ps_layer_mask',
 
-  // path / vector mask / channel compose / shape
+  // path / vector mask / channel compose / shape. ps_path also has a read-only `list` op —
+  // same KNOWN BIAS as ps_filter above.
   'ps_path',
   'ps_vector_mask',
   'ps_apply_image',
@@ -220,7 +223,7 @@ export function parseMajor(version: string | undefined): number | null {
  * null when `n` is null or falls outside `[0, max]`.
  */
 export function boundMajor(n: number | null, max: number): number | null {
-  return n !== null && n >= 0 && n <= max ? n : null;
+  return n !== null && Number.isFinite(n) && n >= 0 && n <= max ? n : null;
 }
 
 /** The running Node.js major version, from `process.versions.node`, or `null` when unparseable. */
