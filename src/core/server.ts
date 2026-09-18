@@ -340,23 +340,30 @@ export class EditmameiServer {
             this.resolveLiveVersionInBackground();
           }
         }
-        // Computed once per call and threaded through to both consumers below — the
-        // previous shape called computeResultBytes twice (once inside sessionLog.append,
-        // once here for telemetry), redoing the same content-block walk over what can be a
-        // hundreds-of-KB result on every single tool call.
+        // Computed once per call and threaded through to both consumers below. Both would
+        // otherwise walk the same content blocks independently, over what can be a
+        // hundreds-of-KB result, on every single tool call.
         const resultBytes = computeResultBytes(entry.result);
-        // Local NDJSON evidence log — fire-and-forget (append never throws).
-        void this.sessionLog.append(
-          {
-            tool: entry.tool,
-            args: entry.args,
-            success: entry.success,
-            duration_ms: entry.duration_ms,
-            ...(entry.error ? { error: entry.error } : {}),
-          },
-          entry.result,
-          resultBytes
-        );
+        // Local NDJSON evidence log — fire-and-forget. `append` builds its retry key with a
+        // bare JSON.stringify, so args that cannot serialize (a cycle, a throwing getter)
+        // would reject. Real MCP args are JSON.parse output and cannot be either, but this
+        // runs on EVERY call and an unhandled rejection is fatal to the process, so the
+        // evidence log is never allowed to take down a tool call it only observes.
+        void this.sessionLog
+          .append(
+            {
+              tool: entry.tool,
+              args: entry.args,
+              success: entry.success,
+              duration_ms: entry.duration_ms,
+              ...(entry.error ? { error: entry.error } : {}),
+            },
+            entry.result,
+            resultBytes
+          )
+          .catch((err) => {
+            this.logger.debug(`session log append failed: ${String(err)}`);
+          });
         // Tee the same call into content-free telemetry (Category A, opt-out). Failures
         // additionally feed an opt-in Category-B diagnostic (sanitized message). Both are
         // gated/inert inside the client; nothing here can throw into the tool-call path.
@@ -394,6 +401,17 @@ export class EditmameiServer {
         // emitted). A hash failure (unserializable args, e.g. a circular structure) degrades
         // to "not a retry" rather than aborting this hook; the stored hash is left untouched
         // so the NEXT call still compares against the last successfully hashed key.
+        //
+        // KNOWN BIAS, orchestrated sessions: the wrappers (`ps_sequence`, `ps_batch`)
+        // dispatch their steps through this same hook, so the stream compared here is
+        // interleaved. A wrapper's own entry arrives AFTER its inner steps, meaning it is
+        // compared against its last step rather than against the previous wrapper — two
+        // identical back-to-back sequences therefore both read as "not a retry". The signal
+        // is directional for orchestrated work, not exact; read it that way.
+        //
+        // "Deep-equal" is by serialization, so it is key-order sensitive: a client that
+        // emits the same arguments in a different property order reads as a fresh call.
+        // That under-counts rather than over-counts, which is the safe direction here.
         const telemetryCallKeyHash = hashRetryKey(entry.tool, entry.args);
         const isTelemetryRetry =
           telemetryCallKeyHash !== null && telemetryCallKeyHash === this.lastTelemetryCallKeyHash;
@@ -467,7 +485,7 @@ export class EditmameiServer {
     //
     // Once-latch: nothing in the MCP spec stops a client from sending a second
     // `notifications/initialized` (a buggy or non-conforming one might), and
-    // recordClientConnected no longer forces its own flush (B-18), so a repeat would
+    // recordClientConnected does not force its own flush, so a repeat would
     // silently queue a duplicate event rather than visibly double-send. `client_connected`
     // is a once-per-session signal — send it at most once no matter how many times this fires.
     let clientConnectedSent = false;

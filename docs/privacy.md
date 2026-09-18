@@ -101,7 +101,7 @@ editmamei config set telemetry.diagnostics true  # opt in to diagnostic detail
 Boolean values accept `true`/`false`, `on`/`off`, `yes`/`no`, or `1`/`0`.
 
 **In Claude Desktop.** The one-click extension has no terminal, so the same two switches appear in
-the extension's own settings (Settings → Extensions → Editmamei): **Share anonymous usage stats**
+the extension's own settings (Settings → Extensions → Editmamei): **Share usage stats**
 (opt-out) and **Share error diagnostics** (opt-in). Toggling them there controls telemetry for
 Claude Desktop without editing any file.
 
@@ -160,7 +160,7 @@ hidden fields.
 | `success` | Whether the call succeeded. |
 | `error_class` | On failure, a short error **category** (e.g. `wrong_layer_kind`), never a message or free text. `null` on success. |
 | `duration_ms` | How long the call took, in milliseconds. |
-| `result_bytes` | The **size** of the tool's response, in bytes — never its content. Always present; `0` when the tool returned nothing. |
+| `result_bytes` | The **size** of the tool's response, in bytes — never its content. `0` when the tool returned nothing, and omitted entirely if the size wasn't measured. |
 
 ### Session start: once when Editmamei launches (on by default)
 
@@ -219,7 +219,7 @@ version is reduced to a bare major number.
 | Field | Meaning |
 |---|---|
 | `client` | Which AI client connected, one of: `claude_desktop`, `claude_code`, `cursor`, `windsurf`, `vscode`, or `other`. Never the raw client name string. |
-| `client_major` | The client's major version number, or `null` if it didn't report one or the version doesn't parse. This is the one field that is ever sent as `null` rather than omitted — a connected client with an unreadable version is still a known fact. |
+| `client_major` | The client's major version number, or `null` if it didn't report one or the version doesn't parse. Among the fields added after this event type shipped, it is the only one sent as `null` rather than omitted — a connected client with an unreadable version is still a known fact. (`error_class` is also sent as `null`, on a successful call.) |
 | `cap_sampling` / `cap_elicitation` / `cap_roots` | Whether the client declared support for these MCP capabilities. Booleans only. |
 
 If your AI client never completes the handshake, this event is never sent.
@@ -296,7 +296,7 @@ many tool calls happened, how many distinct tools, whether anything failed. No p
 | `behind_latest` | Whether the boot-time update check found a newer published version. Present only when the check actually ran and resolved a verdict — `true` for a confirmed newer version, `false` for confirmed already current. Omitted when the check is off, disabled, still pending, or failed (offline, timeout, malformed response) — a failed check has no verdict to report, so it is never sent as a false `false`. |
 | `dropped_events` | Events this client had to drop in memory because too many piled up before they could be sent. Almost always `0`. |
 | `module_update` | Whether the background Pro-module refresh installed something (`updated`), failed (`failed`), or did neither (`none`). Sent only for installs with a Pro license on file — a Community install never sends this field. |
-| `templates_saved` / `action_sets` | How many templates you've saved and how many Photoshop Action Sets you have loaded, as counts only — never their names or content. Omitted until a connection to Photoshop has reported them. |
+| `templates_saved` / `action_sets` | How many templates you've saved and how many Photoshop Action Sets you have loaded, as counts only — never their names or content. `templates_saved` is read from your own disk and is omitted if that read fails; `action_sets` is omitted until a connection to Photoshop has reported it. |
 
 `duration_s`, `ended_after_failure`, `behind_latest`, `module_update`, `templates_saved`, and
 `action_sets` are each omitted — never sent as a false zero — when this session never learned
@@ -485,7 +485,9 @@ Without an install ID we cannot locate your records. No email address, account, 
 stored alongside it.
 
 **Processing.** Editmamei's own Cloudflare infrastructure. No third-party analytics processor.
-Telemetry is not sold, shared, or used for advertising.
+Telemetry is not sold, shared, or used for advertising. Your IP address reaches that
+infrastructure with the request, as it does with any web request, and is used only to rate-limit
+abuse. It is never written to the telemetry store and never joined to your install ID.
 
 ---
 

@@ -10,6 +10,7 @@ import {
 } from '@editmamei/core/server.ts';
 import { getPendingRawDevelop, __clearRawDevelopState } from '@editmamei/core/raw-develop-state.ts';
 import { NO_ERROR_TEXT_CLASS } from '@editmamei/utils/session-log.ts';
+import * as templateStorage from '@editmamei/utils/template-storage.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
@@ -19,6 +20,15 @@ import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
 // constructions (several per test) never write real NDJSON into the user's
 // ~/.editmamei/sessions/.
 useSessionLogSandbox();
+
+// Wrap listTemplates (not the rest of template-storage.ts) so one test below can force
+// it to reject — every other call still runs for real against whatever templates dir the
+// test host has (listTemplates itself swallows its own disk errors and resolves [], so a
+// rejection can only be observed by forcing it here).
+vi.mock('@editmamei/utils/template-storage.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@editmamei/utils/template-storage.ts')>();
+  return { ...actual, listTemplates: vi.fn(actual.listTemplates) };
+});
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -1437,9 +1447,9 @@ describe('client_connected: wired from Server.oninitialized', () => {
     });
   });
 
-  // B-15: once-latch — nothing in the MCP spec stops a non-conforming client sending a
-  // second `notifications/initialized`, and recordClientConnected no longer force-flushes
-  // (B-18), so a repeat would silently queue a duplicate event rather than visibly re-send.
+  // Once-latch: nothing in the MCP spec stops a non-conforming client sending a second
+  // `notifications/initialized`, and recordClientConnected no longer force-flushes, so a
+  // repeat would silently queue a duplicate event rather than visibly re-send.
   it('sends client_connected at most once even if oninitialized fires twice', () => {
     const server = new EditmameiServer() as unknown as OninitializedServer;
     server.server.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
@@ -1454,7 +1464,7 @@ describe('client_connected: wired from Server.oninitialized', () => {
     expect(recordClientConnected).toHaveBeenCalledTimes(1);
   });
 
-  // B-15: an explicit `null` capability is a client saying "I don't have this," the same as
+  // An explicit `null` capability is a client saying "I don't have this," the same as
   // omitting it — not a declaration. `!== undefined` would have wrongly counted it as one.
   it('treats an explicit null capability as NOT declared (!= null, not !== undefined)', () => {
     const server = new EditmameiServer() as unknown as OninitializedServer;
@@ -1842,10 +1852,10 @@ describe('raw develop pending flag (dispatch-level)', () => {
 });
 
 // ===========================================================================
-// B-4/B-20 — the retry signal is a SHA-1 hash of tool+args now, not the raw
-// stringified args (server.ts's hashRetryKey) — nothing about args is retained
-// on the instance between calls. Observable behavior must be unchanged: same
-// tool + deep-equal args as the IMMEDIATELY preceding call is a retry.
+// The retry signal is a SHA-1 hash of tool+args now, not the raw stringified
+// args (server.ts's hashRetryKey) — nothing about args is retained on the
+// instance between calls. Observable behavior must be unchanged: same tool +
+// deep-equal args as the IMMEDIATELY preceding call is a retry.
 // ===========================================================================
 describe('telemetry: retry signal (hashed key)', () => {
   interface RetryServer {
@@ -1862,6 +1872,7 @@ describe('telemetry: retry signal (hashed key)', () => {
       recordCall: ReturnType<typeof vi.fn>;
       recordDiagnostic: ReturnType<typeof vi.fn>;
     };
+    sessionLog: { append: ReturnType<typeof vi.fn> };
     handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
   }
 
@@ -1919,11 +1930,36 @@ describe('telemetry: retry signal (hashed key)', () => {
     expect(telemetry.recordCall.mock.calls[1][0]).toMatchObject({ retry: false });
     expect(telemetry.recordCall.mock.calls[2][0]).toMatchObject({ retry: false });
   });
+
+  it('unserializable args (circular structure) are never a retry, and leave the stored key untouched for the NEXT comparison', async () => {
+    const server = new EditmameiServer() as unknown as RetryServer;
+    server.toolRegistry.register('ps_export', stub('ps_export'));
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+    // SessionLog.append computes its OWN (separately unguarded) retry key by re-walking
+    // and re-stringifying the same args — stub it so this test isolates hashRetryKey's
+    // behavior in the onCall hook, rather than also exercising that unrelated path.
+    server.sessionLog.append = vi.fn().mockResolvedValue(undefined);
+
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+
+    const circular: Record<string, unknown> = { format: 'png' };
+    circular.self = circular;
+    await server.handleToolCall('ps_export', circular);
+
+    // Same tool + deep-equal args as the first call — only a retry if the stored hash
+    // survived the circular call untouched rather than being clobbered by a null.
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[1][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[2][0]).toMatchObject({ retry: true });
+  });
 });
 
 // ===========================================================================
-// B-16/B-23 — computeResultBytes is computed ONCE per call in the onCall hook
-// and threaded to both SessionLog.append and telemetry.recordCall, rather than
+// computeResultBytes is computed ONCE per call in the onCall hook and
+// threaded to both SessionLog.append and telemetry.recordCall, rather than
 // each caller re-walking the same result. Pinned against the exact fixture
 // tests/unit/session-log.test.ts's own computeResultBytes suite uses, so the
 // two layers are cross-checked against each other for the same input.
@@ -1969,9 +2005,9 @@ describe('telemetry: result_bytes is computed once and threaded to recordCall', 
 });
 
 // ===========================================================================
-// B-11/B-21 — setInstallAssets is called with only the fields THIS ping
-// actually observed (never a stale 0 for a degraded field) — see client.ts's
-// per-field merge (B-11) and server.ts's ps_ping handler.
+// setInstallAssets is called with only the fields THIS ping actually
+// observed (never a stale 0 for a degraded field) — see client.ts's
+// per-field merge and server.ts's ps_ping handler.
 // ===========================================================================
 describe('telemetry: setInstallAssets carries only the fields this ping observed', () => {
   type AssetsServer = {
@@ -2030,5 +2066,27 @@ describe('telemetry: setInstallAssets carries only the fields this ping observed
     expect('action_sets' in call).toBe(false);
     // listTemplates() still ran (not gated on pingState) — templates_saved is observed.
     expect(typeof call.templates_saved).toBe('number');
+  });
+
+  it('omits templates_saved when listTemplates() throws (pingState round trip still succeeded)', async () => {
+    const server = new EditmameiServer() as unknown as AssetsServer;
+    server.session.connection = makeConnection({
+      result: { version: '27.8.0', action_sets_count: 3, open_documents: [] },
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    vi.mocked(templateStorage.listTemplates).mockRejectedValueOnce(new Error('disk read failed'));
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.setInstallAssets).toHaveBeenCalledTimes(1);
+    const call = telemetry.setInstallAssets.mock.calls[0][0] as Record<string, unknown>;
+    // A confirmed 0 would misreport a healthy install as having no saved templates —
+    // the field must be absent, not a stale/misleading zero.
+    expect('templates_saved' in call).toBe(false);
+    // action_sets is unaffected — its own round trip succeeded independently.
+    expect(call.action_sets).toBe(3);
   });
 });

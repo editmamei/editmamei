@@ -142,9 +142,9 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
       },
       telemetry_usage: {
         type: 'boolean',
-        title: 'Share anonymous usage stats',
+        title: 'Share usage stats',
         description:
-          'Anonymous, content-free counts (which tools run, success/duration) that help improve Editmamei. No images, file paths, or personal data are ever sent. On by default — turn off to opt out.',
+          'Content-free counts (which tools run, success/duration) that help improve Editmamei, tied to a random install ID. No images, file paths, or personal data are ever sent. On by default — turn off to opt out.',
         required: false,
         default: true,
       },

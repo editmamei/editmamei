@@ -88,7 +88,7 @@ describe('MUTATING_TOOLS', () => {
   });
 });
 
-// B-14: exhaustiveness guard. Reads every tool name registered in tool-tiers.ts (the actual
+// Exhaustiveness guard. Reads every tool name registered in tool-tiers.ts (the actual
 // source of truth for what tools exist, all tiers) and asserts each falls into EXACTLY one of
 // the three classification sets — so a newly added tool that nobody classified here fails
 // this suite instead of silently defaulting to "edit" with no test noticing either way.
@@ -125,6 +125,48 @@ describe('classification exhaustiveness against tool-tiers.ts', () => {
     expect(READ_ONLY_TOOLS.size + KEPT_WORK_TOOLS.size + MUTATING_TOOLS.size).toBe(
       allToolNames.length
     );
+  });
+});
+
+describe('classification mirror', () => {
+  // The aggregation service classifies each arriving event's tool name against its own copy
+  // of these two sets, and its rollups are only comparable to this client's counters while
+  // both copies agree. Nothing across that boundary can be imported here, so the membership
+  // is pinned literally: changing either set fails this test, and the fix is to update the
+  // service in the same breath — not to re-bless the list. MUTATING_TOOLS is deliberately
+  // not pinned; it is the fail-open default on both sides, so a new tool lands in it
+  // automatically and the two stay in step without an edit.
+  it('pins READ_ONLY_TOOLS membership (update the aggregation service when this fails)', () => {
+    expect([...READ_ONLY_TOOLS].sort()).toEqual([
+      'ps_batch',
+      'ps_compare_regions',
+      'ps_detect',
+      'ps_detect_landmarks',
+      'ps_document',
+      'ps_get_histogram',
+      'ps_get_layer_bounds_diff',
+      'ps_get_preview',
+      'ps_get_selection_preview',
+      'ps_inspect',
+      'ps_list_actions',
+      'ps_list_capabilities',
+      'ps_overview',
+      'ps_ping',
+      'ps_read_scene',
+      'ps_report_problem',
+      'ps_resolve_placement',
+      'ps_sequence',
+      'ps_template_create_evidence',
+      'ps_template_delete',
+      'ps_template_list',
+      'ps_template_recall',
+      'ps_template_save',
+      'ps_template_verify',
+    ]);
+  });
+
+  it('pins KEPT_WORK_TOOLS membership (update the aggregation service when this fails)', () => {
+    expect([...KEPT_WORK_TOOLS].sort()).toEqual(['ps_export', 'ps_save_psd']);
   });
 });
 

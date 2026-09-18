@@ -232,8 +232,8 @@ describe('start() boot ping', () => {
     expect(boot).toBeDefined();
     // content-free: exactly the shared Category A dimensions + channel + arch, no counts /
     // free text. node_major/os_major are asserted the SAME way the client itself decides
-    // whether to include them (bounded + non-null) — not assumed always-present on whatever
-    // host happens to run this suite (B-24: a real host isn't guaranteed to resolve either).
+    // whether to include them (bounded + non-null) — not assumed always-present, since a
+    // real host isn't guaranteed to resolve either one.
     const expectedKeys = [
       'arch',
       'channel',
@@ -659,6 +659,18 @@ describe('session_summary accumulators', () => {
     const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
       { behind_latest?: boolean } | undefined;
     expect(summary2?.behind_latest).toBe(true);
+  });
+
+  it('carries behind_latest: false when the install is confirmed already current', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.setBehindLatest(false);
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { behind_latest?: boolean } | undefined;
+    expect('behind_latest' in (summary ?? {})).toBe(true);
+    expect(summary?.behind_latest).toBe(false);
   });
 
   it('omits module_update for a pure-CE install even after setModuleUpdate is called', async () => {

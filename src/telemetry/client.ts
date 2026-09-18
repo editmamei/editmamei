@@ -84,7 +84,8 @@ export interface RecordedCall {
   error_class: string | null;
   /** Serialized result size in bytes (see utils/session-log.ts's computeResultBytes). */
   result_bytes?: number;
-  /** Same tool + deep-equal args as the immediately preceding call (SessionLog's retry key). */
+  /** Same tool + identically-serializing args as the immediately preceding call. Directional,
+   *  not exact — see the retry-signal comment in core/server.ts for the two known biases. */
   retry?: boolean;
 }
 

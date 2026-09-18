@@ -78,7 +78,9 @@ export const KEPT_WORK_TOOLS: ReadonlySet<string> = new Set(['ps_export', 'ps_sa
  * fall through to the (correct, fail-open) edit default with no test ever failing.
  */
 export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
-  // action / batch / scripting
+  // action / batch / scripting. KNOWN BIAS, same shape as ps_develop_raw below: both of
+  // these run caller-supplied work, so a script or action that only reads still counts as
+  // an edit. Name-shaped classification cannot see inside them.
   'ps_play_action',
   'ps_execute_script',
 
@@ -102,7 +104,9 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'ps_group',
   'ps_clipping_mask',
 
-  // history
+  // history. These move the document, so they are edits by this set's test, but they
+  // move it BACKWARD as often as forward — an undo-heavy session inflates edits_ok
+  // without producing more finished work. kept_work is the counter to trust there.
   'ps_undo',
   'ps_redo',
 
@@ -180,10 +184,9 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
  * Map the MCP client's self-reported `name` (from the `initialize` handshake) to a fixed
  * enum. Lowercase substring rules, first match wins — order matters: `claude-code` must be
  * checked before the bare `claude` fallback, or Claude Code would misclassify as Desktop.
- * Calibrated 2026-09 against real `mcp_client` names recorded in this machine's local
- * session NDJSON (`~/.editmamei/sessions/*.ndjson`): Claude Desktop reports `"claude-ai"`
- * (caught by the generic `claude` rule), Claude Code reports `"claude-code"` (caught by the
- * specific rule first) — both map correctly with no adjustment needed.
+ * Calibrated against the `mcp_client` names these clients actually report: Claude Desktop
+ * sends `"claude-ai"` (caught by the generic `claude` rule) and Claude Code sends
+ * `"claude-code"` (caught by the specific rule first).
  */
 export function mapClientName(
   name: string | undefined

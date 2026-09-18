@@ -51,6 +51,14 @@ describe('updateMessage', () => {
     expect(mcpb).not.toContain('github.com');
     expect(updateMessage('dev', '0.19.0').toLowerCase()).toContain('dev build');
   });
+
+  it('tells a project-local install to update its own dependency, never a global install', () => {
+    const local = updateMessage('npm_local', '0.19.0');
+    expect(local).toContain('npm install editmamei@latest');
+    // A project-local install is a DIFFERENT node_modules than npm_global's — a global
+    // `npm install -g` would be a no-op for it, so that remediation must never appear here.
+    expect(local).not.toContain('npm install -g');
+  });
 });
 
 describe('resolveUpdateCheckUrl', () => {
@@ -78,7 +86,7 @@ describe('shouldCheckForUpdate', () => {
 });
 
 describe('checkForUpdate', () => {
-  const validChannels = ['npx', 'npm_global', 'mcpb', 'source', 'dev'];
+  const validChannels = ['npx', 'npm_global', 'npm_local', 'mcpb', 'source', 'dev'];
 
   it('returns UpdateInfo when a newer version is published', async () => {
     const info = await checkForUpdate({

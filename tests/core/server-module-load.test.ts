@@ -897,7 +897,7 @@ describe('EditmameiServer.ensureEntitledModuleFresh — healthy-path auto-update
 });
 
 // ===========================================================================
-// B-12: `module_update` outcome reporting for the two background tasks.
+// `module_update` outcome reporting for the two background tasks.
 // `onModuleUpdate` is invoked OUTSIDE each task's try/catch now (guarded in
 // its own try/catch), and 'failed' is reported not only on a thrown
 // exception but also when provisioning ran and returned errors with nothing
@@ -905,7 +905,7 @@ describe('EditmameiServer.ensureEntitledModuleFresh — healthy-path auto-update
 // callback server.ts wires as `onModuleUpdate` — rather than threading a
 // bespoke deps object through the full crypto/delivery harness above.
 // ===========================================================================
-describe('module_update telemetry wiring (B-12)', () => {
+describe('module_update telemetry wiring', () => {
   it('reprovisionIfModuleSkipped: success installs a module → "updated"', async () => {
     buildHome({ names: ['photoshop_list_actions'], abi: 1 }); // wedge → incompatible
     const server = new EditmameiServer() as unknown as ServerProbe;
@@ -974,7 +974,8 @@ describe('module_update telemetry wiring (B-12)', () => {
         sleep: async () => {},
       });
       // No exception was thrown — provisionModules ran, refused the too-new manifest entry,
-      // and installed nothing. Before B-12 this outcome never called onModuleUpdate at all.
+      // and installed nothing. A failed update used to be invisible here because this
+      // outcome never called onModuleUpdate at all.
       expect(setModuleUpdate).toHaveBeenCalledWith('failed');
     } finally {
       stderr.mockRestore();

@@ -8,8 +8,9 @@
  * constructor path) and by short-lived CLI subcommands. Atomic write via tmp+rename
  * mirrors the pattern in `src/cli/clients/json-config.ts`.
  *
- * Privacy note: `install_id` is an ANONYMOUS salted random id minted on first run — it
- * is NOT derived from any machine or user identifier (see docs/privacy.md).
+ * Privacy note: `install_id` is a salted random id minted on first run — it is NOT derived
+ * from any machine or user identifier, but it is stable, which makes it pseudonymous rather
+ * than anonymous (see docs/privacy.md).
  */
 
 import { homedir } from 'node:os';
