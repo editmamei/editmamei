@@ -1,6 +1,6 @@
 {
   "name": "editmamei",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "description": "Photoshop MCP server: natural-language AI photo editing in desktop Photoshop",
   "mcpName": "io.github.editmamei/editmamei",

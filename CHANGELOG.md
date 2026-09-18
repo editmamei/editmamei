@@ -10,6 +10,47 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-09-18
+
+### Added
+
+- **Develop a raw file before it opens (Pro).** Camera Raw's own settings file is written beside
+  the raw and the file is then opened, which reaches the panels a filter never can: Upright
+  levelling and perspective, crop with straighten, and lens profile correction.
+  - `ps_develop_raw`, with `read`, `adjust` (merge into the existing develop) and `apply`
+    (replace) modes. The previous settings file is backed up first; masks and Looks made in
+    Camera Raw are carried through untouched.
+  - Applies your own saved Camera Raw presets by name.
+  - Out-of-range values are refused with the limit named, because Camera Raw discards them
+    silently rather than clamping.
+  - HEIC is refused: Photoshop opens HEIC by a route that never reads the settings file, so the
+    develop would be written and ignored.
+  - A raw that is already open is refused unless you ask to reopen it. Opening rasterises the
+    pixels, so a develop written afterwards cannot reach that document.
+
+- **Open a raw file at 16 bit.** `ps_open_document` takes `bit_depth` (8 or 16) for raw sources.
+  It has to be decided at open, because converting afterwards flattens the document. When the
+  request could not be honoured the result says so in `bit_depth_warning`.
+
+### Changed
+
+- **Telemetry now describes the session, and the privacy page says exactly what is sent.**
+  - New per-session counters: duration, retries, edits, kept work, whether the session ended
+    after a failure, dropped events, and the outcome of a Pro module update. A
+    `client_connected` event records which MCP client connected and what it negotiated.
+  - Result size in bytes is recorded on usage rows. The result itself never is.
+  - Photoshop's locale and the document's bit depth and colour mode are included in opt-in
+    diagnostics.
+  - `npx` runs, global installs, and project-local installs are now distinguished, since each
+    updates differently, and the update notice says the right thing for each. An install whose
+    entry path cannot be read reports `unknown` rather than guessing.
+  - The privacy page gains a legal section: who the controller is, the lawful basis for each
+    tier, retention, and how to exercise access, erasure and objection. The install ID is
+    described as pseudonymous rather than anonymous: it is random and derived from nothing about
+    you, but it is stable. The country, time zone, and serving datacenter the network edge
+    derives from the connection are now listed among what is recorded with it. A test pins the
+    first-run disclosure text to the page so the two cannot drift.
+
 ## [1.4.0] — 2026-09-07
 
 ### Added
