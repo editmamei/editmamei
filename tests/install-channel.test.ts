@@ -34,21 +34,31 @@ describe('resolveInstallChannel', () => {
       resolveInstallChannel(
         {},
         'community',
-        '/home/alice/.npm/_npx/1a2b3c/node_modules/editmamei/dist/index.js'
+        '/home/alice/.npm/_npx/1a2b3c/node_modules/editmamei/dist/index.js',
+        undefined,
+        (p) => p
       )
     ).toBe('npx');
     expect(
       resolveInstallChannel(
         {},
         'community',
-        'C:\\Users\\alice\\AppData\\Local\\npm-cache\\_npx\\1a2b3c\\node_modules\\editmamei\\dist\\index.js'
+        'C:\\Users\\alice\\AppData\\Local\\npm-cache\\_npx\\1a2b3c\\node_modules\\editmamei\\dist\\index.js',
+        undefined,
+        (p) => p
       )
     ).toBe('npx');
   });
 
   it('reports npm_global for a node_modules segment preceded by lib (POSIX global convention)', () => {
     expect(
-      resolveInstallChannel({}, 'community', '/usr/local/lib/node_modules/editmamei/dist/index.js')
+      resolveInstallChannel(
+        {},
+        'community',
+        '/usr/local/lib/node_modules/editmamei/dist/index.js',
+        undefined,
+        (p) => p
+      )
     ).toBe('npm_global');
   });
 
@@ -57,7 +67,9 @@ describe('resolveInstallChannel', () => {
       resolveInstallChannel(
         {},
         'community',
-        'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\\editmamei\\dist\\index.js'
+        'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\\editmamei\\dist\\index.js',
+        undefined,
+        (p) => p
       )
     ).toBe('npm_global');
   });
@@ -69,7 +81,9 @@ describe('resolveInstallChannel', () => {
       resolveInstallChannel(
         {},
         'community',
-        '/home/alice/.nvm/versions/node/v20.11.0/lib/node_modules/editmamei/dist/index.js'
+        '/home/alice/.nvm/versions/node/v20.11.0/lib/node_modules/editmamei/dist/index.js',
+        undefined,
+        (p) => p
       )
     ).toBe('npm_global');
     // volta: global packages land under its own "image" tree, same lib/node_modules shape.
@@ -77,7 +91,9 @@ describe('resolveInstallChannel', () => {
       resolveInstallChannel(
         {},
         'community',
-        '/home/alice/.volta/tools/image/packages/editmamei/lib/node_modules/editmamei/dist/index.js'
+        '/home/alice/.volta/tools/image/packages/editmamei/lib/node_modules/editmamei/dist/index.js',
+        undefined,
+        (p) => p
       )
     ).toBe('npm_global');
   });
@@ -90,7 +106,41 @@ describe('resolveInstallChannel', () => {
         {},
         'community',
         'C:\\Program Files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
-        'C:\\Program Files\\nodejs\\node.exe'
+        'C:\\Program Files\\nodejs\\node.exe',
+        (p) => p
+      )
+    ).toBe('npm_global');
+  });
+
+  it('reports npm_global for a version-manager symlink shared by argv1 and execPath (nvm-windows / fnm)', () => {
+    // On nvm-windows/fnm, `C:\Program Files\nodejs` is a directory symlink to the real
+    // version dir. Both argv1 and execPath sit under it unresolved, and must resolve to
+    // the SAME real prefix for the exec-dir compare to still recognize this as npm_global.
+    const realpath = (p: string) =>
+      p.replace('C:\\Program Files\\nodejs', 'C:\\Users\\u\\AppData\\Roaming\\nvm\\v22.20.0');
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\Program Files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe',
+        realpath
+      )
+    ).toBe('npm_global');
+  });
+
+  it('still classifies via the lib rule when only the entry path resolves (execPath is not itself a symlink)', () => {
+    const realpath = (p: string) =>
+      p === '/home/u/.nvm/versions/node/v22.20.0/bin/editmamei'
+        ? '/home/u/.nvm/versions/node/v22.20.0/lib/node_modules/editmamei/dist/index.js'
+        : p;
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/u/.nvm/versions/node/v22.20.0/bin/editmamei',
+        '/usr/bin/node',
+        realpath
       )
     ).toBe('npm_global');
   });
@@ -101,7 +151,8 @@ describe('resolveInstallChannel', () => {
         {},
         'community',
         '/home/alice/my-project/node_modules/editmamei/dist/index.js',
-        '/usr/bin/node' // not a sibling/ancestor of the node_modules segment above
+        '/usr/bin/node', // not a sibling/ancestor of the node_modules segment above
+        (p) => p
       )
     ).toBe('npm_local');
     expect(
@@ -109,18 +160,31 @@ describe('resolveInstallChannel', () => {
         {},
         'community',
         'C:\\projects\\my-app\\node_modules\\editmamei\\dist\\index.js',
-        'C:\\Program Files\\nodejs\\node.exe'
+        'C:\\Program Files\\nodejs\\node.exe',
+        (p) => p
       )
     ).toBe('npm_local');
   });
 
   it('reports source for an entry script outside any node_modules', () => {
-    expect(resolveInstallChannel({}, 'community', '/home/alice/editmamei/dist/index.js')).toBe(
-      'source'
-    );
-    expect(resolveInstallChannel({}, 'community', 'E:\\code\\editmamei\\dist\\index.js')).toBe(
-      'source'
-    );
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/alice/editmamei/dist/index.js',
+        undefined,
+        (p) => p
+      )
+    ).toBe('source');
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'E:\\code\\editmamei\\dist\\index.js',
+        undefined,
+        (p) => p
+      )
+    ).toBe('source');
   });
 
   it('reports source (never npm_global) for a directory whose name merely CONTAINS "node_modules" — segment matching, not substring', () => {
@@ -131,7 +195,9 @@ describe('resolveInstallChannel', () => {
       resolveInstallChannel(
         {},
         'community',
-        '/home/alice/projects/node_modules_backup/editmamei/dist/index.js'
+        '/home/alice/projects/node_modules_backup/editmamei/dist/index.js',
+        undefined,
+        (p) => p
       )
     ).toBe('source');
   });
@@ -203,7 +269,8 @@ describe('resolveInstallChannel', () => {
         {},
         'community',
         'c:\\program files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
-        'C:\\Program Files\\nodejs\\node.exe'
+        'C:\\Program Files\\nodejs\\node.exe',
+        (p) => p
       )
     ).toBe('npm_global');
   });

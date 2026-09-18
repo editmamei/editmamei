@@ -698,8 +698,11 @@ function errMsg(err: unknown): string {
  *  ±Infinity): the wire format has no way to distinguish a clamped 0 from a field that was
  *  never actually observed, so the caller must treat null as "leave the field unset," never
  *  send it as 0 or as `null` itself (the server rejects a null here and a rejected batch is
- *  re-queued forever). */
+ *  re-queued forever). Truncated to an integer AFTER the finite check (Math.trunc(NaN) is
+ *  itself NaN, so ordering doesn't matter there, but doing it after keeps the finite check
+ *  reading as the guard it is) — the server validates both fields as integers and rejects
+ *  the whole batch otherwise, so a fractional count is the same poison as NaN. */
 function clampCount(n: number): number | null {
   if (!Number.isFinite(n)) return null;
-  return Math.min(Math.max(0, n), MAX_INSTALL_ASSET_COUNT);
+  return Math.min(Math.max(0, Math.trunc(n)), MAX_INSTALL_ASSET_COUNT);
 }

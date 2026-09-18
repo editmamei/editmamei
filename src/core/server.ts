@@ -196,7 +196,7 @@ export class EditmameiServer {
    */
   private lastPingReachedPs: boolean | null = null;
   /**
-   * SHA-1 hash of JSON(tool+args) of the immediately preceding tool call, for telemetry's
+   * SHA-256 hash of JSON(tool+args) of the immediately preceding tool call, for telemetry's
    * `retry` signal (RecordedCall.retry — mirrors SessionLog's own `lastCallKey`/
    * `retry_signal`, kept as a SEPARATE field rather than reused: this one stays in memory
    * and never leaves the process, while SessionLog's copy is built from sanitized args
@@ -220,6 +220,14 @@ export class EditmameiServer {
    * DEGRADED ping (the round trip itself did not run — see `pingStateObserved` in
    * `pingPhotoshop`) leaves an already-known value alone, since it has no live answer to
    * prefer over the cache.
+   *
+   * Also cleared on any of `pingPhotoshop`'s early returns that mean Photoshop itself is
+   * UNREACHABLE (the "does not appear to be running" check, and the "did not respond" falls
+   * on both the build()-failure-fallback ping and the pingState round trip itself) — an
+   * unreachable Photoshop is direct evidence the cached document no longer exists, same as a
+   * live round trip that finds none open. NOT cleared on a path that merely means a signal
+   * was skipped (e.g. the disk-detected version fallback) without saying anything about
+   * reachability.
    */
   private lastDocDepth: 8 | 16 | 32 | null = null;
   private lastDocMode: 'rgb' | 'cmyk' | 'lab' | 'grayscale' | 'other' | null = null;
@@ -1044,6 +1052,10 @@ export class EditmameiServer {
     // Photoshop that is already open.
     if (connection.getPhotoshopInfo() !== null && !(await connection.isCurrentlyRunning())) {
       this.lastPingReachedPs = false;
+      // Photoshop is confirmed not running — the cached document (if any) is gone too.
+      // See lastDocDepth/lastDocMode's field doc.
+      this.lastDocDepth = null;
+      this.lastDocMode = null;
       return {
         content: [
           {
@@ -1086,6 +1098,10 @@ export class EditmameiServer {
         // host knows the real reason; say it.
         const reason = unsupportedHostReason();
         this.lastPingReachedPs = false;
+        // The fallback liveness probe itself failed — Photoshop is unreachable, same as the
+        // isCurrentlyRunning() check above. See lastDocDepth/lastDocMode's field doc.
+        this.lastDocDepth = null;
+        this.lastDocMode = null;
         return {
           content: [
             {
@@ -1137,6 +1153,10 @@ export class EditmameiServer {
           `pingState snippet failed: ${err instanceof Error ? err.message : String(err)}`
         );
         this.lastPingReachedPs = false;
+        // The round trip itself failed to respond — Photoshop is unreachable. See
+        // lastDocDepth/lastDocMode's field doc.
+        this.lastDocDepth = null;
+        this.lastDocMode = null;
         return {
           content: [{ type: 'text' as const, text: 'Photoshop did not respond' + update.note }],
           structuredContent: {

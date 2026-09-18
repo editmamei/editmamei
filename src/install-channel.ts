@@ -18,13 +18,19 @@
  * install runs through a symlinked bin shim (`/usr/local/bin/editmamei`, an nvm shim under
  * `.../bin/`), and `argv[1]` is set by `path.resolve`, not `realpath` — the shim's path has
  * no `node_modules` segment at all, so without resolving the symlink first every one of
- * those installs would misclassify as a source checkout. Windows is unaffected (the `.cmd`
- * shim re-execs with the real path already). The resolved path is then matched by PATH
- * SEGMENT (split on `/` and `\`, compared CASE-INSENSITIVELY — a Windows path can arrive in
- * whatever case the launcher or an MCP config used), never by substring — a checkout living
- * under a directory that merely CONTAINS the text `node_modules` (e.g.
- * `node_modules_backup/`) is not a `node_modules` segment and must not be misread as an
- * install:
+ * those installs would misclassify as a source checkout. `process.execPath` is resolved
+ * through that SAME realpath before the exec-dir prefix compare (the npm_global rule that
+ * looks for `node_modules` sitting alongside the node binary itself): on nvm-windows or
+ * fnm, the directory node.exe appears to live in (e.g. `C:\Program Files\nodejs`) is itself
+ * a symlink to the real version directory, while the entry path resolves the same symlink
+ * away — comparing an unresolved execPath against a resolved argv1 would put the two sides
+ * in different path spaces and the prefix match would silently fail. Resolving both leaves
+ * version-manager symlinks on either platform comparing consistently. The resolved path is
+ * then matched by PATH SEGMENT (split on `/` and `\`, compared CASE-INSENSITIVELY — a
+ * Windows path can arrive in whatever case the launcher or an MCP config used), never by
+ * substring — a checkout living under a directory that merely CONTAINS the text
+ * `node_modules` (e.g. `node_modules_backup/`) is not a `node_modules` segment and must not
+ * be misread as an install:
  *
  *   - **npx** — a one-off run through npm's `_npx` cache dir (e.g.
  *     `~/.npm/_npx/<hash>/node_modules/editmamei/dist/index.js` on POSIX,
@@ -82,6 +88,19 @@ function defaultRealpath(p: string): string {
   }
 }
 
+/** Runs `realpath` over `p`, falling back to `p` unchanged if the call throws. Guarded
+ *  independently of `defaultRealpath`'s own try/catch, so an INJECTED `realpath` (a test
+ *  stub) that throws degrades to the unresolved path rather than propagating out of this
+ *  classification helper. Shared by both `argv1` and `execPath` so the two sides of the
+ *  exec-dir prefix compare are resolved the same way. */
+function safeRealpath(p: string, realpath: (p: string) => string): string {
+  try {
+    return realpath(p);
+  } catch {
+    return p;
+  }
+}
+
 export function resolveInstallChannel(
   env: Record<string, string | undefined> = process.env,
   // `edition` is injectable so tests can exercise every branch; production always uses
@@ -107,15 +126,7 @@ export function resolveInstallChannel(
   if (!trimmedArgv1) return 'unknown';
 
   // Bin shims are symlinks on POSIX (see the header comment) — resolve before segmenting.
-  // Guarded independently of `realpath`'s own try/catch (the default's), so an injected
-  // `realpath` that throws degrades to the unresolved path rather than propagating out of
-  // a classification helper.
-  let resolvedArgv1: string;
-  try {
-    resolvedArgv1 = realpath(trimmedArgv1);
-  } catch {
-    resolvedArgv1 = trimmedArgv1;
-  }
+  const resolvedArgv1 = safeRealpath(trimmedArgv1, realpath);
 
   const segments = pathSegments(resolvedArgv1);
   if (segments.includes('_npx')) return 'npx';
@@ -128,10 +139,15 @@ export function resolveInstallChannel(
 
   // Under the directory the running node binary itself lives in — the Windows official
   // installer's layout, where `node_modules\` sits directly alongside `node.exe` with no
-  // `lib` or `npm` segment above it. Segment-sliced (drop the binary's own filename) rather
-  // than `path.dirname`, so this doesn't depend on which platform's separator convention
-  // node:path happens to apply at runtime — this module already hand-splits every path.
-  const execDirSegments = pathSegments(execPath ?? '').slice(0, -1);
+  // `lib` or `npm` segment above it. Realpath-resolved through the same `realpath` as
+  // `argv1` (see the header comment) — a version manager can symlink the directory node.exe
+  // appears to live in, and comparing an unresolved execPath against a resolved argv1 would
+  // put the two sides in different path spaces. Segment-sliced (drop the binary's own
+  // filename) rather than `path.dirname`, so this doesn't depend on which platform's
+  // separator convention node:path happens to apply at runtime — this module already
+  // hand-splits every path.
+  const resolvedExecPath = execPath === undefined ? undefined : safeRealpath(execPath, realpath);
+  const execDirSegments = pathSegments(resolvedExecPath ?? '').slice(0, -1);
   const entryPrefix = segments.slice(0, nodeModulesIdx);
   const underExecDir =
     execDirSegments.length > 0 && execDirSegments.every((seg, i) => entryPrefix[i] === seg);

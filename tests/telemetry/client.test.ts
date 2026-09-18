@@ -780,6 +780,28 @@ describe('session_summary accumulators', () => {
     expect(summary?.templates_saved).toBe(6);
     expect(summary?.action_sets).toBe(2);
   });
+
+  it('setInstallAssets omits templates_saved entirely when the only observation is non-finite (no earlier value to fall back on)', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.setInstallAssets({ templates_saved: NaN });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      Record<string, unknown> | undefined;
+    expect('templates_saved' in (summary ?? {})).toBe(false);
+  });
+
+  it('setInstallAssets truncates a fractional count to an integer', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.setInstallAssets({ action_sets: 6.5 });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { action_sets?: number } | undefined;
+    expect(summary?.action_sets).toBe(6);
+  });
 });
 
 describe('recordClientConnected', () => {

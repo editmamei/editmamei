@@ -1659,7 +1659,78 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
     expect('doc_mode' in diag).toBe(false);
   });
 
-  it('a degraded ping (pingState build failure) leaves previously cached doc_depth/doc_mode alone', async () => {
+  it('a ping reporting Photoshop is not running clears a previously cached doc_depth/doc_mode', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+
+    // First ping: a 16-bit CMYK document is open. Then Photoshop quits before the second
+    // ping — isCurrentlyRunning() flips false, so pingPhotoshop takes its "does not appear
+    // to be running" early return, well before the round trip that would otherwise report
+    // the document gone.
+    const fakeConn = makeConnection({
+      result: {
+        version: '27.8.0',
+        action_sets_count: 0,
+        open_documents: ['a.psd'],
+        doc_depth: 16,
+        doc_mode: 'cmyk',
+      },
+    });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    await server.handleToolCall('ps_ping', {}); // caches doc_depth: 16, doc_mode: 'cmyk'
+    fakeConn.setCurrentlyRunning(false);
+    // "not running" early return — clears both. This ping's OWN registry success is
+    // downgraded by telemetry (lastPingReachedPs false), so it emits a diagnostic of its
+    // own here too, ahead of the failing call below.
+    await server.handleToolCall('ps_ping', {});
+
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(2);
+    for (const [diag] of recordDiagnostic.mock.calls) {
+      expect('doc_depth' in diag).toBe(false);
+      expect('doc_mode' in diag).toBe(false);
+    }
+  });
+
+  it('keeps the last known document dimensions across a degraded ping (preserved behaviour)', async () => {
     const server = new EditmameiServer() as unknown as {
       session: { connection: unknown };
       snippetClient: unknown;
@@ -1991,7 +2062,7 @@ describe('raw develop pending flag (dispatch-level)', () => {
 });
 
 // ===========================================================================
-// The retry signal is a SHA-1 hash of tool+args now, not the raw stringified
+// The retry signal is a SHA-256 hash of tool+args now, not the raw stringified
 // args (server.ts's hashRetryKey) — nothing about args is retained on the
 // instance between calls. Observable behavior must be unchanged: same tool +
 // deep-equal args as the IMMEDIATELY preceding call is a retry.
