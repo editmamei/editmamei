@@ -125,7 +125,9 @@ log so the default is never a surprise:
 
 When `telemetry.usage` is on, Editmamei sends a small, content-free subset of the local session
 log. Each event is one JSON object. Below is every field that can ever be sent; there are no
-hidden fields.
+hidden fields. Three values are recorded on arrival rather than sent: the country, time zone, and
+serving datacenter that the network edge derives from the connection. See *Processing* under
+[Your rights, and the legal basis](#your-rights-and-the-legal-basis).
 
 ### Usage event: one per tool call (on by default)
 
@@ -376,10 +378,11 @@ Events that fail to send — offline, a network hiccup, the endpoint unreachable
 small, bounded local queue and retried at the next launch; they are never queued indefinitely.
 
 Per-install daily counts derived from Category A events (calls, failures, edits, exports, and
-the like), together with the country, time zone, and serving datacenter that the network edge
-derives from the connection, are kept against your install ID for **24 months after the install
-was last seen**, then deleted automatically by a nightly job — long enough to see how usage
-changes over the life of an install, and no longer.
+the like) are kept against your install ID for **24 months from the day they cover**, then
+deleted automatically by a nightly job. The install record itself (first and last seen, versions,
+channel, and the country, time zone, and serving datacenter that the network edge derives from
+the connection) is kept until **24 months after the install was last seen**. Long enough to see
+how usage changes over the life of an install, and no longer.
 Opt-in diagnostic rows (Category B, the sanitized error detail) are deleted after **90 days**.
 The day-by-day totals that carry no install ID at all — how many times a tool ran across
 everyone, and whether it worked — are not tied to you and are not on that clock.
@@ -466,8 +469,9 @@ editmamei config set telemetry.usage false
 editmamei config set telemetry.diagnostics false
 ```
 
-**Retention.** Per-install records: 24 months after the install was last seen, deleted
-automatically. Opt-in diagnostic records: 90 days, deleted automatically. Aggregate daily totals carry no install ID and are not subject to
+**Retention.** Per-install daily counts: 24 months from the day they cover. The install record:
+24 months after the install was last seen. Opt-in diagnostic records: 90 days. All deleted
+automatically. Aggregate daily totals carry no install ID and are not subject to
 these windows.
 
 **Your rights.** Access, rectification, erasure, and objection. Your install ID is the reference
@@ -490,7 +494,7 @@ stored alongside it.
 **Processing.** Editmamei's own infrastructure, on Cloudflare and on equipment we operate. No
 third-party analytics processor. Telemetry is not sold, shared, or used for advertising. Your IP
 address reaches that infrastructure with the request, as it does with any web request. It is used
-to rate-limit abuse and is not stored. Three values the network edge derives from the connection
+to rate-limit abuse and is not written to the telemetry store. Three values the network edge derives from the connection
 are recorded with your install ID: country, time zone, and the datacenter that served the request.
 
 ---
