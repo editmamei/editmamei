@@ -15,7 +15,7 @@ Editmamei is an MCP server that drives desktop Adobe Photoshop. It installs two 
   - [Claude Code](https://claude.ai/code)
 
   Editmamei ships no model of its own and runs on whichever client you connect, so every edit
-  spends that client's tokens. It can be a subscription, an API key, or a model you run yourself.
+  spends that client's tokens. That client might be a subscription, an API key, or a model you run yourself.
 
 ---
 
