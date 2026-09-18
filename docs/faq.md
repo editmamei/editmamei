@@ -8,7 +8,7 @@ Common questions about Editmamei, the MCP server that drives Adobe Photoshop fro
 
 ### What is Editmamei?
 
-Editmamei is a Model Context Protocol (MCP) server for Adobe Photoshop. It runs locally, your AI client (Claude Desktop, Claude Code, Cursor, or any MCP-compatible client) connects to it, and it drives the Photoshop installed on your machine. You describe the edit in plain language; the AI plans the steps; Photoshop carries them out with its own standard tools.
+Editmamei is a Model Context Protocol (MCP) server for Adobe Photoshop. It runs locally, your AI client (Claude Desktop, Claude Code, Cursor, or any MCP-compatible client) connects to it, and it drives desktop Photoshop. You describe the edit in plain language; the AI plans the steps; Photoshop carries them out with its own standard tools.
 
 ### Is Editmamei affiliated with Adobe?
 

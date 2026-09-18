@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](LICENSE.md)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey.svg)](docs/installation.md)
 
-Editmamei is a Model Context Protocol (MCP) server that drives the Adobe Photoshop you already have. You describe the edit in plain words, your AI assistant plans the steps, and your own copy of Photoshop carries them out with its standard adjustment layers, masks, selections, and filters. The AI directs and Photoshop edits. No generative model touches your pixels, and no image is uploaded to perform an edit.
+Editmamei is a Model Context Protocol (MCP) server that drives desktop Adobe Photoshop. You describe the edit in plain words, your AI assistant plans the steps, and Photoshop carries them out with its standard adjustment layers, masks, selections, and filters. The AI directs and Photoshop edits. No generative model touches your pixels, and no image is uploaded to perform an edit.
 
 It serves photographers and retouchers who want to edit by conversation just as much as developers wiring Photoshop into an AI pipeline. To learn more or get started, visit **[editmamei.com](https://editmamei.com)**.
 
@@ -47,7 +47,7 @@ Then restart your AI client and ask it: _"Is Photoshop connected?"_
 
 Prefer not to use a terminal? Claude Desktop users can install the one-click [`.mcpb` extension](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb) directly (no system Node required, Claude Desktop ships its own runtime). Full walkthrough in the [install guide](docs/installation.md).
 
-**Requirements:** Adobe Photoshop 2026 (v27.x), Windows 10/11 or macOS 13+, Node.js 22+ (for the npm path), and an MCP-compatible AI client (Claude Desktop, Cursor, Claude Code).
+**Requirements:** Adobe Photoshop 2026 (v27.x), Windows 10/11 or macOS 13+, Node.js 22+ (for the npm path), and an MCP-compatible AI client (Claude Desktop, Cursor, Claude Code). Editmamei ships no model of its own and runs on that client's usage, so every edit spends its tokens.
 
 ## A session, end to end
 
@@ -140,7 +140,7 @@ editmamei config set ps_path "/path/to/Photoshop"
 
 ## Privacy
 
-Editmamei runs on your computer and edits in your own Photoshop. No image content, document data, or file paths are sent to Editmamei's servers. It reports content-free usage telemetry (on by default, turn it off with `editmamei config set telemetry.usage false`). When your AI assistant needs to see a result, Editmamei sends it a downscaled preview, the same as dropping a photo into a chat with that assistant. Every field is documented in [privacy.md](docs/privacy.md), including [your rights, and the legal basis](docs/privacy.md#your-rights-and-the-legal-basis).
+Editmamei runs on your computer and edits in desktop Photoshop. No image content, document data, or file paths are sent to Editmamei's servers. It reports content-free usage telemetry (on by default, turn it off with `editmamei config set telemetry.usage false`). When your AI assistant needs to see a result, Editmamei sends it a downscaled preview, the same as dropping a photo into a chat with that assistant. Every field is documented in [privacy.md](docs/privacy.md), including [your rights, and the legal basis](docs/privacy.md#your-rights-and-the-legal-basis).
 
 The source in this repository is the same code published to npm, so none of the above has to be taken on trust.
 

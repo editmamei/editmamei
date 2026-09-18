@@ -2,7 +2,7 @@
 
 This guide walks you through your first session with Editmamei, the MCP server that drives Adobe Photoshop from your AI assistant. It goes from confirming Photoshop is connected to making your first real edit, and assumes you've already done the [installation](installation.md).
 
-The pattern throughout is the same: **you describe what you want in your own words; the AI plans it; your Photoshop carries it out.** You're not learning a new app; you're learning to ask for what you already know how to do.
+The pattern throughout is the same: **you describe what you want in your own words; the AI plans it; Photoshop carries it out.** You're not learning a new app; you're learning to ask for what you already know how to do.
 
 ---
 
