@@ -921,6 +921,36 @@ describe('persisted session state carries the new accumulators', () => {
       expect(key in summary!).toBe(false);
     }
   });
+
+  it('re-clamps templates_saved / action_sets read from a persisted state file', async () => {
+    // The persisted state is a plain file on disk: a hand edit or a differently-versioned
+    // writer can put anything in these fields, same reasoning as the ts_bucket clamp above —
+    // one bad count must not reject the whole batch.
+    const dir = freshOutboxDir();
+    const state: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '1.3.0',
+      edition: 'community',
+      platform: 'win32',
+      ps_version: 'unknown',
+      tool_call_count: 3,
+      distinct_tools: 1,
+      any_failures: false,
+      templates_saved: 6.5,
+      action_sets: NaN,
+    };
+    writeSessionStateSync(state, { dir });
+
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+
+    const summary = rec.batches.flat().find((e) => e.type === 'session_summary') as
+      { templates_saved?: number; action_sets?: number } | undefined;
+    expect(summary?.templates_saved).toBe(6);
+    expect('action_sets' in (summary ?? {})).toBe(false);
+  });
 });
 describe('flushOutboxOnStartup', () => {
   it('delivers a backlog left by a previous run, then clears the outbox', async () => {

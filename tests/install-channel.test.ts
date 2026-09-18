@@ -129,6 +129,31 @@ describe('resolveInstallChannel', () => {
     ).toBe('npm_global');
   });
 
+  it('matches via the RAW path pair when realpath resolves execPath but throws for argv1 (asymmetric resolution)', () => {
+    // realpath can fail for one side and not the other (e.g. the entry file no longer
+    // exists). Comparing a resolved execPath against an unresolved argv1 would put the two
+    // sides in different path spaces and miss the match — the RAW (unresolved) pair must
+    // still line up so this nvm-windows global install doesn't fall to npm_local.
+    const realpath = (p: string) => {
+      if (p === 'C:\\Program Files\\nodejs\\node_modules\\editmamei\\dist\\index.js') {
+        throw new Error('ENOENT');
+      }
+      return p.replace(
+        'C:\\Program Files\\nodejs',
+        'C:\\Users\\u\\AppData\\Roaming\\nvm\\v22.20.0'
+      );
+    };
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\Program Files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe',
+        realpath
+      )
+    ).toBe('npm_global');
+  });
+
   it('still classifies via the lib rule when only the entry path resolves (execPath is not itself a symlink)', () => {
     const realpath = (p: string) =>
       p === '/home/u/.nvm/versions/node/v22.20.0/bin/editmamei'
@@ -261,6 +286,35 @@ describe('resolveInstallChannel', () => {
         realpath
       )
     ).toBe('source');
+  });
+
+  it('proceeds on the unresolved paths when realpath throws for BOTH argv1 and execPath', () => {
+    // execPath: undefined in the sibling test above skips safeRealpath(execPath, …)
+    // entirely — this stub throws for every input, so it also exercises that catch arm.
+    // Neither call should throw or misclassify.
+    const realpath = () => {
+      throw new Error('ENOENT');
+    };
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/u/src/editmamei/dist/index.js',
+        'C:\\Program Files\\nodejs\\node.exe',
+        realpath
+      )
+    ).toBe('source');
+    // The Windows official-installer layout still matches via the RAW pair once both
+    // realpath calls have failed and fallen back to their unresolved inputs.
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'C:\\Program Files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe',
+        realpath
+      )
+    ).toBe('npm_global');
   });
 
   it('compares path segments case-insensitively (a lowercased Windows entry path in an MCP config)', () => {

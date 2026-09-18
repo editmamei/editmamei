@@ -662,6 +662,12 @@ export class TelemetryClient {
  * than reconstructed as a false zero/false.
  */
 function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
+  // Same clamp the clean path (setInstallAssets) gets: these values came off disk, where a
+  // hand-edited or differently-versioned file can hold anything (a fraction, a negative, a
+  // NaN), and one bad count rejects the whole batch. A non-finite value has no earlier good
+  // reading to fall back on here, so it's omitted rather than sent as a false 0.
+  const templatesSaved = s.templates_saved !== undefined ? clampCount(s.templates_saved) : null;
+  const actionSets = s.action_sets !== undefined ? clampCount(s.action_sets) : null;
   return {
     v: 2,
     type: 'session_summary',
@@ -684,8 +690,8 @@ function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
     ...(s.behind_latest !== undefined ? { behind_latest: s.behind_latest } : {}),
     ...(s.dropped_events !== undefined ? { dropped_events: s.dropped_events } : {}),
     ...(s.module_update !== undefined ? { module_update: s.module_update } : {}),
-    ...(s.templates_saved !== undefined ? { templates_saved: s.templates_saved } : {}),
-    ...(s.action_sets !== undefined ? { action_sets: s.action_sets } : {}),
+    ...(templatesSaved !== null ? { templates_saved: templatesSaved } : {}),
+    ...(actionSets !== null ? { action_sets: actionSets } : {}),
   };
 }
 

@@ -25,8 +25,11 @@
  * a symlink to the real version directory, while the entry path resolves the same symlink
  * away — comparing an unresolved execPath against a resolved argv1 would put the two sides
  * in different path spaces and the prefix match would silently fail. Resolving both leaves
- * version-manager symlinks on either platform comparing consistently. The resolved path is
- * then matched by PATH SEGMENT (split on `/` and `\`, compared CASE-INSENSITIVELY — a
+ * version-manager symlinks on either platform comparing consistently — and since either
+ * side's `realpath` call can itself fail independently (e.g. a stale entry path that no
+ * longer exists), the exec-dir compare accepts a match on the RESOLVED pair or the RAW
+ * (unresolved) pair, rather than requiring both sides to have resolved successfully. The
+ * resolved path is then matched by PATH SEGMENT (split on `/` and `\`, compared CASE-INSENSITIVELY — a
  * Windows path can arrive in whatever case the launcher or an MCP config used), never by
  * substring — a checkout living under a directory that merely CONTAINS the text
  * `node_modules` (e.g. `node_modules_backup/`) is not a `node_modules` segment and must not
@@ -101,6 +104,15 @@ function safeRealpath(p: string, realpath: (p: string) => string): string {
   }
 }
 
+/** True when every segment of `execDirSegments` lines up with `entryPrefixSegments` at the
+ *  same position — i.e. the entry path's `node_modules` sits at or under the exec dir.
+ *  Segments are pre-lowercased by `pathSegments`, so this comparison is case-insensitive. */
+function prefixMatches(execDirSegments: string[], entryPrefixSegments: string[]): boolean {
+  return (
+    execDirSegments.length > 0 && execDirSegments.every((seg, i) => entryPrefixSegments[i] === seg)
+  );
+}
+
 export function resolveInstallChannel(
   env: Record<string, string | undefined> = process.env,
   // `edition` is injectable so tests can exercise every branch; production always uses
@@ -146,11 +158,25 @@ export function resolveInstallChannel(
   // filename) rather than `path.dirname`, so this doesn't depend on which platform's
   // separator convention node:path happens to apply at runtime — this module already
   // hand-splits every path.
+  //
+  // `realpath` can resolve one side and not the other (e.g. the entry file no longer exists
+  // and throws, while the exec dir's symlink still resolves fine) — comparing only the
+  // resolved pair would then put the two sides in mismatched path spaces and miss a real
+  // match. So this matches on the RESOLVED pair or the RAW (unresolved) pair, whichever lines
+  // up.
   const resolvedExecPath = execPath === undefined ? undefined : safeRealpath(execPath, realpath);
-  const execDirSegments = pathSegments(resolvedExecPath ?? '').slice(0, -1);
-  const entryPrefix = segments.slice(0, nodeModulesIdx);
+  const resolvedExecDir = pathSegments(resolvedExecPath ?? '').slice(0, -1);
+  const resolvedEntryPrefix = segments.slice(0, nodeModulesIdx);
+
+  const rawExecDir = execPath === undefined ? [] : pathSegments(execPath).slice(0, -1);
+  const rawArgv1Segments = pathSegments(trimmedArgv1);
+  const rawNodeModulesIdx = rawArgv1Segments.indexOf('node_modules');
+  const rawEntryPrefix =
+    rawNodeModulesIdx === -1 ? [] : rawArgv1Segments.slice(0, rawNodeModulesIdx);
+
   const underExecDir =
-    execDirSegments.length > 0 && execDirSegments.every((seg, i) => entryPrefix[i] === seg);
+    prefixMatches(resolvedExecDir, resolvedEntryPrefix) ||
+    prefixMatches(rawExecDir, rawEntryPrefix);
   if (underExecDir) return 'npm_global';
 
   // Any other `node_modules` segment is a project-local install, not a global one.
