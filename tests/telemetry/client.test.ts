@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir, release } from 'node:os';
 import { join } from 'node:path';
 import { osMajor, nodeMajor, boundMajor } from '@editmamei/telemetry/activity.ts';
 import { TelemetryClient } from '@editmamei/telemetry/client.ts';
 import {
+  appendOutboxSync,
+  outboxPath,
   readOutbox,
   readSessionState,
   writeSessionStateSync,
@@ -1152,5 +1154,342 @@ describe('ps_version re-stamping at flush', () => {
     const mod = { type: 'module_status' };
     (c as unknown as { restampPsVersion(e: unknown[]): unknown[] }).restampPsVersion([mod]);
     expect('ps_version' in mod).toBe(false);
+  });
+});
+
+/** A transport that accepts the first `n` batches and then fails, like a mid-drain outage. */
+function failAfter(n: number) {
+  const batches: TelemetryEvent[][] = [];
+  let calls = 0;
+  const transport = async (_url: string, body: string) => {
+    calls += 1;
+    if (calls > n) throw new Error('network down');
+    batches.push((JSON.parse(body) as { events: TelemetryEvent[] }).events);
+  };
+  return { batches, transport };
+}
+
+function usageLine(tool: string): TelemetryEvent {
+  return {
+    v: 2,
+    type: 'usage',
+    install_id: 'a'.repeat(32),
+    ts_bucket: '2026-06-16',
+    editmamei_version: '0.16.4',
+    edition: 'community',
+    platform: 'darwin',
+    ps_version: '27.7.0',
+    tool,
+    success: true,
+    error_class: null,
+    duration_ms: 1,
+  };
+}
+
+type LossCounts = {
+  dropped_events: number;
+  dropped_outbox: number;
+  dropped_unsafe: number;
+  usage_calls_sent: number;
+  tool_call_count: number;
+};
+
+describe('telemetry loss accounting', () => {
+  it('reports all four counters, at 0, for an ordinary session', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    // Always present, never omitted-when-zero: a missing field can't be told apart from a
+    // client too old to report one, which is the ambiguity that hid this loss for weeks.
+    expect(summary).toMatchObject({
+      dropped_events: 0,
+      dropped_outbox: 0,
+      dropped_unsafe: 0,
+      usage_calls_sent: 0,
+    });
+  });
+
+  it('counts an event the content guard refused to send', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    // A tool name shaped like an absolute path fails isContentSafe, so flush drops it.
+    c.recordCall({ tool: '/usr/bin/leak', success: true, duration_ms: 1, error_class: null });
+    await c.flush();
+    expect(rec.batches).toHaveLength(0); // nothing went out…
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.dropped_unsafe).toBe(1); // …and the drop is on the record
+  });
+
+  it('counts a corrupt outbox line discarded by the startup drain', async () => {
+    const rec = recorder();
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_export')], { dir });
+    appendFileSync(outboxPath({ dir }), 'not json at all\n', 'utf8');
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.dropped_outbox).toBe(1);
+  });
+
+  it('counts only usage events in usage_calls_sent, and only once sent', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    c.recordCall({ tool: 'ps_save_psd', success: true, duration_ms: 1, error_class: null });
+    await c.flush();
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    // Two flushed; the third never left (it went to the outbox at shutdown), and the
+    // session_summary riding the same path must not inflate the denominator.
+    expect(summary?.usage_calls_sent).toBe(2);
+    expect(summary?.tool_call_count ?? 0).toBe(3);
+  });
+
+  it('does not count usage events toward sent when the transport fails', async () => {
+    const rec = recorder({ fail: true });
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.flush();
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.usage_calls_sent).toBe(0);
+  });
+});
+
+describe('startup outbox drain — partial delivery', () => {
+  it('keeps only the undelivered remainder when the drain fails midway', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(
+      ['a', 'b', 'c', 'd', 'e', 'f'].map((t) => usageLine(`ps_${t}`)),
+      { dir }
+    );
+    // Batches of 2: the first two go out, the third throws.
+    const rec = failAfter(2);
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+
+    expect(rec.batches).toHaveLength(2);
+    const remaining = readOutbox({ dir }).map((e) => (e as { tool: string }).tool);
+    // The four delivered events are GONE from the file. Before this fix the drain cleared
+    // nothing on a partial failure, so the next startup re-sent ps_a..ps_d and the server
+    // counted them twice — inflation, the mirror image of the loss being chased here.
+    expect(remaining).toEqual(['ps_e', 'ps_f']);
+  });
+
+  it('clears the outbox entirely when every batch lands', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(
+      ['a', 'b', 'c'].map((t) => usageLine(`ps_${t}`)),
+      { dir }
+    );
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    expect(readOutbox({ dir })).toHaveLength(0);
+  });
+
+  it('keeps everything when the very first batch fails', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(
+      ['a', 'b', 'c'].map((t) => usageLine(`ps_${t}`)),
+      { dir }
+    );
+    const rec = failAfter(0);
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    expect(readOutbox({ dir }).map((e) => (e as { tool: string }).tool)).toEqual([
+      'ps_a',
+      'ps_b',
+      'ps_c',
+    ]);
+  });
+});
+
+function startLine(): TelemetryEvent {
+  return {
+    v: 2,
+    type: 'session_start',
+    install_id: 'a'.repeat(32),
+    ts_bucket: '2026-06-16',
+    editmamei_version: '0.16.4',
+    edition: 'community',
+    platform: 'darwin',
+    ps_version: '27.7.0',
+    channel: 'npm',
+  };
+}
+
+describe('shutdown ordering and loss carry-through', () => {
+  it('the summary reports discards from its OWN shutdown drain', async () => {
+    // The discriminating test for the doShutdown reorder. The unsafe event is left IN THE
+    // QUEUE — never explicitly flushed — so it is only discarded during shutdown's drain.
+    // Build the summary first (the old order) and this reads 0; drain first and it reads 1.
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { maxBatchSize: 1_000_000 });
+    c.recordCall({ tool: '/usr/bin/leak', success: true, duration_ms: 1, error_class: null });
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.dropped_unsafe).toBe(1);
+  });
+
+  it('emits a summary for a run that made no tool calls but has loss to report', async () => {
+    // The startup drain is the ONLY place the outbox bound's discards are observed, and it
+    // runs before any tool call. Gating the summary on tool_call_count alone threw that
+    // measurement away on exactly the boots most likely to have a backlog.
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_export'), usageLine('ps_save_psd')], { dir });
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    await c.shutdown(); // no recordCall at all
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary).toBeDefined();
+    expect(summary).toMatchObject({ tool_call_count: 0, usage_calls_sent: 2 });
+  });
+
+  it('still emits nothing for a run with neither calls nor loss', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    await c.shutdown();
+    expect(readOutbox({ dir }).filter((e) => e.type === 'session_summary')).toHaveLength(0);
+  });
+
+  it('counts only usage events in usage_calls_sent when the batch is mixed', async () => {
+    // A mixed batch is the case that discriminates countUsageCalls from `batch.length` —
+    // the earlier flush-based test could never have contained a non-usage event.
+    const dir = freshOutboxDir();
+    appendOutboxSync([startLine(), usageLine('ps_a'), usageLine('ps_b'), usageLine('ps_c')], {
+      dir,
+    });
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.usage_calls_sent).toBe(3); // 4 events delivered, 3 of them calls
+  });
+});
+
+describe('crash-recovered summary carries the loss counters', () => {
+  it('reconstructs them from a state file written by this build', async () => {
+    const dir = freshOutboxDir();
+    const state: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '0.16.4',
+      edition: 'community',
+      platform: 'darwin',
+      ps_version: '27.7.0',
+      tool_call_count: 12,
+      distinct_tools: 4,
+      any_failures: false,
+      dropped_outbox: 9,
+      dropped_unsafe: 1,
+      usage_calls_sent: 11,
+    };
+    writeSessionStateSync(state, { dir });
+    const rec = recorder({ fail: true }); // keep the reconstructed summary on disk
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary).toMatchObject({ dropped_outbox: 9, dropped_unsafe: 1, usage_calls_sent: 11 });
+  });
+
+  it('omits them for a state file written by an older build', async () => {
+    // The backward-compat contract: every field added after v2 is optional on the state file,
+    // so an older build's leftover state must reconstruct WITHOUT them, not as false zeroes.
+    const dir = freshOutboxDir();
+    const legacy: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '0.16.4',
+      edition: 'community',
+      platform: 'darwin',
+      ps_version: '27.7.0',
+      tool_call_count: 3,
+      distinct_tools: 2,
+      any_failures: false,
+    };
+    writeSessionStateSync(legacy, { dir });
+    const rec = recorder({ fail: true });
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      Record<string, unknown> | undefined;
+    expect(summary).toBeDefined();
+    expect(summary).toMatchObject({ tool_call_count: 3 });
+    expect('dropped_outbox' in (summary ?? {})).toBe(false);
+    expect('usage_calls_sent' in (summary ?? {})).toBe(false);
+  });
+});
+
+describe('startup outbox drain — remaining boundaries', () => {
+  it('keeps just the final batch when the LAST batch fails', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(
+      ['a', 'b', 'c', 'd'].map((t) => usageLine(`ps_${t}`)),
+      { dir }
+    );
+    const rec = failAfter(1); // batches of 2: first lands, second throws
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    expect(readOutbox({ dir }).map((e) => (e as { tool: string }).tool)).toEqual(['ps_c', 'ps_d']);
+  });
+
+  it('handles a non-multiple length with a partial failure', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(
+      ['a', 'b', 'c', 'd', 'e'].map((t) => usageLine(`ps_${t}`)),
+      { dir }
+    );
+    const rec = failAfter(2); // 2 + 2 land, the 1-event remainder throws
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    expect(readOutbox({ dir }).map((e) => (e as { tool: string }).tool)).toEqual(['ps_e']);
+  });
+
+  it('discards a wholly-unsafe batch rather than retrying it forever', async () => {
+    // A batch every one of whose events fails the content guard can never be sent. It must be
+    // counted and dropped, not written back — otherwise it is re-counted at every boot.
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('/usr/bin/leak'), usageLine('/etc/shadow')], { dir });
+    const rec = failAfter(0);
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    await c.shutdown();
+    expect(readOutbox({ dir }).filter((e) => e.type === 'usage')).toHaveLength(0);
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.dropped_unsafe).toBe(2);
+  });
+
+  it('does not re-count an unsafe event left behind by a failed drain', async () => {
+    // The unsafe event sits in a batch that fails to send. The remainder written back must
+    // exclude it, or the next boot counts the same single bad event all over again.
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('/usr/bin/leak'), usageLine('ps_export')], { dir });
+    const rec = failAfter(0);
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    const kept = readOutbox({ dir }).map((e) => (e as { tool: string }).tool);
+    expect(kept).toEqual(['ps_export']); // the safe event retried, the unsafe one gone for good
   });
 });

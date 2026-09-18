@@ -44,10 +44,18 @@ const DIRNAME = '.editmamei';
 const OUTBOX_FILENAME = 'telemetry-outbox.ndjson';
 const SESSION_STATE_FILENAME = 'telemetry-session.json';
 
-/** Keep the outbox bounded — drop oldest beyond this on read/compaction. */
-export const MAX_OUTBOX_EVENTS = 1000;
+/**
+ * Keep the outbox bounded — drop oldest beyond this on read/compaction.
+ *
+ * Raised from 1,000 on 2026-09-18. 1,000 was about ONE heavy session: the 09-18 Norway
+ * session alone recorded 1,411 calls, so a single failed-send stretch could overrun the
+ * bound and silently discard the excess — permanently, since the drain deletes the file
+ * afterwards. At ~300 B per content-free event this ceiling is ~6 MB of NDJSON, comfortably
+ * under MAX_OUTBOX_BYTES, and the file is transient (cleared on a clean drain).
+ */
+export const MAX_OUTBOX_EVENTS = 20_000;
 /** Hard byte cap that forces a truncate-to-last-N on append (defense vs. runaway growth). */
-const MAX_OUTBOX_BYTES = 2_000_000;
+const MAX_OUTBOX_BYTES = 8_000_000;
 
 export interface OutboxOptions {
   /** Override the default `~/.editmamei` directory (used in tests). */
@@ -78,6 +86,9 @@ export interface PersistedSessionState {
   kept_work?: number;
   behind_latest?: boolean;
   dropped_events?: number;
+  dropped_outbox?: number;
+  dropped_unsafe?: number;
+  usage_calls_sent?: number;
   module_update?: 'none' | 'updated' | 'failed';
   templates_saved?: number;
   action_sets?: number;
@@ -102,28 +113,48 @@ function ensureDir(path: string): void {
  * exit handler — it does not depend on the event loop surviving. Best-effort: any error is
  * logged and swallowed. Forces a compaction if the file has grown past the byte cap.
  */
-export function appendOutboxSync(events: TelemetryEvent[], opts: OutboxOptions = {}): void {
-  if (events.length === 0) return;
+export function appendOutboxSync(events: TelemetryEvent[], opts: OutboxOptions = {}): number {
+  if (events.length === 0) return 0;
   const path = outboxPath(opts);
+  let discarded = 0;
   try {
     ensureDir(path);
     if (existsSync(path) && statSync(path).size > MAX_OUTBOX_BYTES) {
-      compactOutbox(opts);
+      discarded += compactOutbox(opts);
     }
     const lines = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
     appendFileSync(path, lines, { encoding: 'utf8', mode: 0o600 });
   } catch (err) {
     logger.debug(`outbox append dropped ${events.length} event(s): ${errMsg(err)}`);
+    // The append is the last line of defence — if it throws, these events are simply gone.
+    discarded += events.length;
   }
+  return discarded;
 }
 
-/** Read + parse every queued event. Malformed lines are skipped. Returns [] on any error. */
-export function readOutbox(opts: OutboxOptions = {}): TelemetryEvent[] {
+/** What a read of the outbox produced, and what it threw away getting there. */
+export interface OutboxRead {
+  events: TelemetryEvent[];
+  /**
+   * Events this read discarded and did NOT return: the MAX_OUTBOX_EVENTS bound dropping
+   * oldest, plus corrupt lines that failed to parse. The caller deletes the file once the
+   * returned events are delivered, so anything counted here is gone for good — which is
+   * exactly why it has to be reported rather than silently swallowed.
+   */
+  discarded: number;
+}
+
+/**
+ * Read + parse every queued event, reporting what the bound discarded. Malformed lines are
+ * skipped (and counted). Returns no events on any error.
+ */
+export function readOutboxWithDiscards(opts: OutboxOptions = {}): OutboxRead {
   const path = outboxPath(opts);
-  if (!existsSync(path)) return [];
+  if (!existsSync(path)) return { events: [], discarded: 0 };
   try {
     const raw = readFileSync(path, 'utf8');
     const events: TelemetryEvent[] = [];
+    let discarded = 0;
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
@@ -131,16 +162,32 @@ export function readOutbox(opts: OutboxOptions = {}): TelemetryEvent[] {
         events.push(JSON.parse(trimmed) as TelemetryEvent);
       } catch {
         /* skip a corrupt line rather than discard the whole outbox */
+        discarded += 1;
       }
     }
     // Bound: keep only the most recent MAX_OUTBOX_EVENTS.
-    return events.length > MAX_OUTBOX_EVENTS
-      ? events.slice(events.length - MAX_OUTBOX_EVENTS)
-      : events;
+    if (events.length > MAX_OUTBOX_EVENTS) {
+      const over = events.length - MAX_OUTBOX_EVENTS;
+      return { events: events.slice(over), discarded: discarded + over };
+    }
+    return { events, discarded };
   } catch (err) {
     logger.debug(`outbox read failed: ${errMsg(err)}`);
-    return [];
+    return { events: [], discarded: 0 };
   }
+}
+
+/**
+ * The events only.
+ *
+ * **Tests and assertions only — production code must call `readOutboxWithDiscards`.** This
+ * wrapper throws the discard count away, and since the caller typically deletes the file
+ * straight afterwards, that count is the only record the discarded events ever existed.
+ * Losing it silently is the bug this module was changed to stop having; the shorter name is
+ * kept purely so the existing test call sites did not all have to churn.
+ */
+export function readOutbox(opts: OutboxOptions = {}): TelemetryEvent[] {
+  return readOutboxWithDiscards(opts).events;
 }
 
 /** Delete the outbox file. Best-effort. */
@@ -152,24 +199,61 @@ export function clearOutbox(opts: OutboxOptions = {}): void {
   }
 }
 
-/** Rewrite the outbox keeping only the most recent MAX_OUTBOX_EVENTS lines. */
-function compactOutbox(opts: OutboxOptions = {}): void {
-  const kept = readOutbox(opts);
+/**
+ * Replace the outbox with exactly these events (atomic tmp+rename). Best-effort.
+ *
+ * This is what lets a PARTIAL drain keep only what it hasn't delivered. The startup drain
+ * used to clear the file only when every batch succeeded, which meant a failure midway left
+ * the already-delivered batches on disk for the next startup to send a second time — double
+ * counting, the mirror image of the loss this accounting exists to find.
+ */
+export function rewriteOutbox(events: TelemetryEvent[], opts: OutboxOptions = {}): void {
+  if (events.length === 0) {
+    clearOutbox(opts);
+    return;
+  }
   const path = outboxPath(opts);
   try {
-    if (kept.length === 0) {
-      clearOutbox(opts);
-      return;
-    }
+    ensureDir(path);
     const tmp = join(dirname(path), `.outbox.${process.pid}.tmp`);
-    writeFileSync(tmp, kept.map((e) => JSON.stringify(e)).join('\n') + '\n', {
+    writeFileSync(tmp, events.map((e) => JSON.stringify(e)).join('\n') + '\n', {
       encoding: 'utf8',
       mode: 0o600,
     });
     renameSync(tmp, path);
   } catch (err) {
-    logger.debug(`outbox compaction failed: ${errMsg(err)}`);
+    logger.debug(`outbox rewrite failed: ${errMsg(err)}`);
   }
+}
+
+/**
+ * Rewrite the outbox keeping only the most recent events that fit BOTH bounds.
+ * Returns how many events that threw away, for the caller's discard accounting.
+ *
+ * The byte bound has to be enforced here, not just by the event bound: `readOutboxWithDiscards`
+ * trims by COUNT, so for any event fatter than MAX_OUTBOX_BYTES/MAX_OUTBOX_EVENTS the file can
+ * sit over the byte cap while under the event cap — and a compaction that discards nothing
+ * rewrites the identical bytes back, leaving the caller to pay a full read+write on every
+ * subsequent append while the file keeps growing. Diagnostic events are exactly that shape
+ * (a sanitized message plus a stderr tail is ~6 KB, twenty times a usage event), so this is
+ * the opt-in-diagnostics-plus-broken-network path, not a hypothetical.
+ */
+function compactOutbox(opts: OutboxOptions = {}): number {
+  const { events, discarded } = readOutboxWithDiscards(opts);
+  // Target half the cap so compaction is amortized — trimming to exactly the cap would
+  // re-compact on the very next append.
+  const target = MAX_OUTBOX_BYTES / 2;
+  let bytes = 0;
+  let firstKept = events.length;
+  // Walk newest-first, keeping what fits; newer signal is more useful than older.
+  for (let i = events.length - 1; i >= 0; i--) {
+    bytes += JSON.stringify(events[i]).length + 1;
+    if (bytes > target) break;
+    firstKept = i;
+  }
+  const kept = events.slice(firstKept);
+  rewriteOutbox(kept, opts);
+  return discarded + (events.length - kept.length);
 }
 
 /**

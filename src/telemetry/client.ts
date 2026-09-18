@@ -57,8 +57,9 @@ import {
   appendOutboxSync,
   clearOutbox,
   clearSessionState,
-  readOutbox,
+  readOutboxWithDiscards,
   readSessionState,
+  rewriteOutbox,
   writeSessionStateSync,
   type OutboxOptions,
   type PersistedSessionState,
@@ -178,13 +179,30 @@ export class TelemetryClient {
   private editsOk = 0;
   private keptWork = 0;
   /**
-   * Events dropped by `enqueue`'s MAX_QUEUE_SIZE trim this session. This is the IN-MEMORY
-   * drop count only — `outbox.ts`'s own bounding (MAX_OUTBOX_EVENTS / MAX_OUTBOX_BYTES,
-   * see readOutbox/appendOutboxSync) doesn't return how many lines it discarded, and adding
-   * that return value would touch every caller of two already-widely-used functions for a
-   * count this field only approximates anyway. Undercounts rather than requires that churn.
+   * Events dropped by `enqueue`'s MAX_QUEUE_SIZE trim this session — the IN-MEMORY drop
+   * count, which only moves when sends are failing fast enough for the queue to overrun.
+   *
+   * This used to be the ONLY discard counter, on the reasoning that plumbing the outbox's
+   * own count through would churn two widely-used callers for an approximation. That was
+   * wrong, and measurably so: across 2026-09-06..18 this field read 0 on every session in
+   * production while `usage_daily` was demonstrably missing up to 4x its calls — so the
+   * counter that existed proved only that the path it watched was innocent, and named no
+   * suspect. The other two paths are counted now (`droppedOutbox`, `droppedUnsafe`), and
+   * together the three are exhaustive: a recorded event that never reaches the server was
+   * discarded by the in-memory trim, by the outbox, or by the content-safety filter.
    */
   private droppedEvents = 0;
+  /**
+   * Events the on-disk outbox discarded this RUN — its bound, a corrupt line, or a failed
+   * append. Not "this session": the startup drain observes discards belonging to a previous
+   * session's backlog. Same for the two below. They telescope across sessions; a single
+   * summary's ratio against its own tool_call_count is meaningless.
+   */
+  private droppedOutbox = 0;
+  /** Events `isContentSafe` refused to send this run (never sent dirty, never counted). */
+  private droppedUnsafe = 0;
+  /** Tool CALLS handed to a transport call that returned without throwing — not events. */
+  private usageCallsSent = 0;
   /** Whether the boot-time update check found a strictly newer published version. null =
    *  never determined this session (check disabled, or it hadn't resolved by shutdown). */
   private behindLatest: boolean | null = null;
@@ -371,6 +389,9 @@ export class TelemetryClient {
     kept_work: number;
     behind_latest?: boolean;
     dropped_events: number;
+    dropped_outbox: number;
+    dropped_unsafe: number;
+    usage_calls_sent: number;
     module_update?: 'none' | 'updated' | 'failed';
     templates_saved?: number;
     action_sets?: number;
@@ -388,6 +409,12 @@ export class TelemetryClient {
       kept_work: this.keptWork,
       ...(this.behindLatest !== null ? { behind_latest: this.behindLatest } : {}),
       dropped_events: this.droppedEvents,
+      // Always present, like dropped_events: 0 is a real observation ("nothing was
+      // discarded"), and a field that disappears when it is 0 can't be told apart from a
+      // client too old to report it — the exact ambiguity this change exists to remove.
+      dropped_outbox: this.droppedOutbox,
+      dropped_unsafe: this.droppedUnsafe,
+      usage_calls_sent: this.usageCallsSent,
       ...(moduleStatus !== null ? { module_update: this.moduleUpdate } : {}),
       ...(this.installAssets.templates_saved !== undefined
         ? { templates_saved: this.installAssets.templates_saved }
@@ -533,17 +560,18 @@ export class TelemetryClient {
    */
   async flush(): Promise<void> {
     if (!this.active || this.queue.length === 0) return;
-    const batch = this.restampPsVersion(this.queue.splice(0, this.maxBatchSize)).filter(
-      isContentSafe
-    );
+    const picked = this.restampPsVersion(this.queue.splice(0, this.maxBatchSize));
+    const batch = picked.filter(isContentSafe);
+    this.droppedUnsafe += picked.length - batch.length;
     if (batch.length === 0) return;
     try {
       await this.transport(this.endpoint, JSON.stringify({ events: batch }));
+      this.usageCallsSent += countUsageCalls(batch);
     } catch (err) {
       this.logger.debug(
         `telemetry flush failed, persisting ${batch.length} event(s) to outbox: ${errMsg(err)}`
       );
-      appendOutboxSync(batch, this.outboxOpts);
+      this.droppedOutbox += appendOutboxSync(batch, this.outboxOpts);
     }
   }
 
@@ -574,29 +602,59 @@ export class TelemetryClient {
       this.timer = null;
     }
     if (!this.active) return;
-    if (this.settings.telemetry.usage && this.toolCallCount > 0) {
-      this.enqueue(
-        buildSessionSummary(
-          this.dims,
-          {
-            tool_call_count: this.toolCallCount,
-            distinct_tools: this.distinctTools.size,
-            any_failures: this.anyFailures,
-            ...this.summaryFields(),
-          },
-          // Start-day bucket, not the shutdown-time day — see startDayBucket's field doc.
-          // toolCallCount > 0 guarantees recordCall already ran, so this is never the
-          // first-ever call of ensureStartDayBucket() at shutdown time.
-          this.ensureStartDayBucket(),
-          this.now()
-        )
-      );
-    }
+    // Drain the pending events BEFORE building the summary. Their content-safety and outbox
+    // discards belong to THIS session, and a summary built first would be stale by exactly
+    // the numbers it exists to report — the ordering is the whole point, not a tidy-up.
     if (this.queue.length > 0) {
-      appendOutboxSync(
-        this.restampPsVersion(this.queue.splice(0)).filter(isContentSafe),
-        this.outboxOpts
+      const picked = this.restampPsVersion(this.queue.splice(0));
+      const batch = picked.filter(isContentSafe);
+      this.droppedUnsafe += picked.length - batch.length;
+      this.droppedOutbox += appendOutboxSync(batch, this.outboxOpts);
+    }
+    // A boot that did no tool work still emits a summary IF it has loss to report. The
+    // startup drain is the ONLY place the outbox bound's discards are ever observed, and it
+    // runs before any tool call — so gating purely on `toolCallCount > 0` threw away exactly
+    // the measurement this change exists to produce, on the boots most likely to have a
+    // backlog. Zero-work boots are a large share of real boots here, so this is the common
+    // case, not an edge.
+    //
+    // The cost is honest and small: such a summary carries `tool_call_count: 0` and does add
+    // 1 to the server's `session_count`. A boot that delivered a previous session's backlog
+    // is a session that did something, so counting it is defensible — but it IS a change to
+    // what `session_count` has meant, and the server-side note says so too.
+    const hasLossToReport =
+      this.droppedEvents > 0 ||
+      this.droppedOutbox > 0 ||
+      this.droppedUnsafe > 0 ||
+      this.usageCallsSent > 0;
+    if (this.settings.telemetry.usage && (this.toolCallCount > 0 || hasLossToReport)) {
+      const summary = buildSessionSummary(
+        this.dims,
+        {
+          tool_call_count: this.toolCallCount,
+          distinct_tools: this.distinctTools.size,
+          any_failures: this.anyFailures,
+          ...this.summaryFields(),
+        },
+        // Start-day bucket, not the shutdown-time day — see startDayBucket's field doc. On a
+        // loss-only boot no call ever ran, so this may be the first call of
+        // ensureStartDayBucket() — which is fine, it falls back to today.
+        this.ensureStartDayBucket(),
+        this.now()
       );
+      // Appended directly rather than enqueued, so it observes the drain above. It still
+      // goes through the content guard — a summary is all counters and enum tokens, but
+      // routing around the filter is not a precedent worth setting.
+      if (isContentSafe(summary)) {
+        // This append's own discards cannot appear in the summary it is writing. Usually
+        // that is the one-event self-reference and nothing more, but if THIS append is what
+        // crosses the byte cap, compaction can discard far more — unreportable either way,
+        // so surface it locally rather than letting it vanish entirely.
+        const lost = appendOutboxSync([summary], this.outboxOpts);
+        if (lost > 0) {
+          this.logger.debug(`outbox discarded ${lost} event(s) while writing the session summary`);
+        }
+      }
     }
     // Clean end — drop the marker so the startup path won't reconstruct a duplicate summary.
     clearSessionState(this.outboxOpts);
@@ -620,7 +678,10 @@ export class TelemetryClient {
       }
       clearSessionState(this.outboxOpts);
 
-      const pending = readOutbox(this.outboxOpts);
+      const { events: pending, discarded } = readOutboxWithDiscards(this.outboxOpts);
+      // Anything the bound threw away is gone the moment we clear the file below — count it
+      // before it vanishes, or it is loss that leaves no trace anywhere.
+      this.droppedOutbox += discarded;
       if (pending.length === 0) {
         clearOutbox(this.outboxOpts);
         return;
@@ -631,19 +692,37 @@ export class TelemetryClient {
         clearOutbox(this.outboxOpts);
         return;
       }
-      let allAccepted = true;
+      // How many of `pending` are accounted for — delivered, or discarded as unsafe. Used to
+      // keep ONLY the undelivered remainder on a partial drain (see rewriteOutbox).
+      let settled = 0;
       for (let i = 0; i < pending.length; i += this.maxBatchSize) {
-        const batch = pending.slice(i, i + this.maxBatchSize).filter(isContentSafe);
-        if (batch.length === 0) continue;
-        try {
-          await this.transport(this.endpoint, JSON.stringify({ events: batch }));
-        } catch (err) {
-          this.logger.debug(`startup outbox flush failed: ${errMsg(err)}`);
-          allAccepted = false;
-          break; // keep the remainder for the next startup
+        const slice = pending.slice(i, i + this.maxBatchSize);
+        const batch = slice.filter(isContentSafe);
+        this.droppedUnsafe += slice.length - batch.length;
+        if (batch.length > 0) {
+          try {
+            await this.transport(this.endpoint, JSON.stringify({ events: batch }));
+            this.usageCallsSent += countUsageCalls(batch);
+          } catch (err) {
+            this.logger.debug(`startup outbox flush failed: ${errMsg(err)}`);
+            break; // keep the remainder for the next startup
+          }
         }
+        settled = i + slice.length;
       }
-      if (allAccepted) clearOutbox(this.outboxOpts);
+      if (settled >= pending.length) {
+        clearOutbox(this.outboxOpts);
+      } else {
+        // Partial drain: drop what went through, keep the rest. Clearing nothing (the old
+        // behaviour) re-sent the delivered batches on the next startup and inflated the
+        // server's counters; clearing everything would lose the undelivered tail.
+        //
+        // The remainder is content-filtered on the way back to disk. The failing slice's
+        // unsafe events were already counted into droppedUnsafe above, and they can never be
+        // sent — writing them back would re-read, re-filter and RE-COUNT them at every boot
+        // until the slice finally succeeds, reporting one bad event as dozens.
+        rewriteOutbox(pending.slice(settled).filter(isContentSafe), this.outboxOpts);
+      }
     } catch (err) {
       this.logger.debug(`startup outbox flush error: ${errMsg(err)}`);
     }
@@ -689,6 +768,9 @@ function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
     ...(s.kept_work !== undefined ? { kept_work: s.kept_work } : {}),
     ...(s.behind_latest !== undefined ? { behind_latest: s.behind_latest } : {}),
     ...(s.dropped_events !== undefined ? { dropped_events: s.dropped_events } : {}),
+    ...(s.dropped_outbox !== undefined ? { dropped_outbox: s.dropped_outbox } : {}),
+    ...(s.dropped_unsafe !== undefined ? { dropped_unsafe: s.dropped_unsafe } : {}),
+    ...(s.usage_calls_sent !== undefined ? { usage_calls_sent: s.usage_calls_sent } : {}),
     ...(s.module_update !== undefined ? { module_update: s.module_update } : {}),
     ...(templatesSaved !== null ? { templates_saved: templatesSaved } : {}),
     ...(actionSets !== null ? { action_sets: actionSets } : {}),
@@ -697,6 +779,28 @@ function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * How many tool CALLS these events represent — the population `usage_calls_sent` counts, and
+ * the only unit comparable against the server's `usage_daily.call_count`. Session summaries,
+ * boot pings and module-status events ride the same batches and must not inflate it.
+ *
+ * Reads an optional `count` per event even though nothing sets one yet: a usage event is
+ * one call today, but the wire schema allows an event to stand for N identical calls, and a
+ * version of this function that assumed 1-per-event would keep returning the right answer in
+ * tests while quietly reporting an events figure under a field named for calls.
+ */
+function countUsageCalls(events: TelemetryEvent[]): number {
+  let n = 0;
+  for (const event of events) {
+    if (event.type !== 'usage') continue;
+    // Integer, not merely finite: a fractional count would put a fractional value in a field
+    // the server validates as an int, and one bad number rejects the whole batch.
+    const count = (event as { count?: number }).count;
+    n += typeof count === 'number' && Number.isInteger(count) && count > 0 ? count : 1;
+  }
+  return n;
 }
 
 /** Clamp an install-asset count to [0, MAX_INSTALL_ASSET_COUNT] — matches the server's field

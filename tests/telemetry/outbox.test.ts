@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import {
   appendOutboxSync,
   readOutbox,
+  readOutboxWithDiscards,
+  rewriteOutbox,
   clearOutbox,
   outboxPath,
   writeSessionStateSync,
@@ -140,5 +142,56 @@ describe('session state', () => {
     writeSessionStateSync(STATE, { dir });
     clearSessionState({ dir });
     expect(readSessionState({ dir })).toBeNull();
+  });
+});
+
+describe('discard accounting', () => {
+  it('reports nothing discarded on an ordinary read', () => {
+    const dir = freshDir();
+    appendOutboxSync([usage('photoshop_a'), usage('photoshop_b')], { dir });
+    expect(readOutboxWithDiscards({ dir })).toMatchObject({ discarded: 0 });
+  });
+
+  it('reports what the MAX_OUTBOX_EVENTS bound threw away', () => {
+    const dir = freshDir();
+    const many = Array.from({ length: MAX_OUTBOX_EVENTS + 50 }, (_v, i) => usage(`photoshop_${i}`));
+    appendOutboxSync(many, { dir });
+    const { events, discarded } = readOutboxWithDiscards({ dir });
+    expect(events).toHaveLength(MAX_OUTBOX_EVENTS);
+    // The 50 oldest are gone — and, crucially, SAID to be gone. Before this counter the
+    // caller cleared the file straight afterwards and the loss left no trace anywhere.
+    expect(discarded).toBe(50);
+  });
+
+  it('counts a corrupt line as a discard', () => {
+    const dir = freshDir();
+    appendOutboxSync([usage('photoshop_a')], { dir });
+    appendFileSync(outboxPath({ dir }), 'not json at all\n', 'utf8');
+    expect(readOutboxWithDiscards({ dir })).toMatchObject({ discarded: 1 });
+  });
+
+  it('returns 0 from an append that lands cleanly', () => {
+    const dir = freshDir();
+    expect(appendOutboxSync([usage('photoshop_a')], { dir })).toBe(0);
+  });
+
+  it('returns 0 from an append of nothing', () => {
+    expect(appendOutboxSync([], { dir: freshDir() })).toBe(0);
+  });
+});
+
+describe('rewriteOutbox', () => {
+  it('replaces the file with exactly the events given', () => {
+    const dir = freshDir();
+    appendOutboxSync([usage('photoshop_a'), usage('photoshop_b'), usage('photoshop_c')], { dir });
+    rewriteOutbox([usage('photoshop_c')], { dir });
+    expect(readOutbox({ dir }).map((e) => (e as { tool: string }).tool)).toEqual(['photoshop_c']);
+  });
+
+  it('clears the file when given nothing', () => {
+    const dir = freshDir();
+    appendOutboxSync([usage('photoshop_a')], { dir });
+    rewriteOutbox([], { dir });
+    expect(readOutbox({ dir })).toEqual([]);
   });
 });
