@@ -47,15 +47,19 @@ const SESSION_STATE_FILENAME = 'telemetry-session.json';
 /**
  * Keep the outbox bounded — drop oldest beyond this on read/compaction.
  *
- * Raised from 1,000 on 2026-09-18. 1,000 was about ONE heavy session: the 09-18 Norway
- * session alone recorded 1,411 calls, so a single failed-send stretch could overrun the
- * bound and silently discard the excess — permanently, since the drain deletes the file
- * afterwards. At ~300 B per content-free event this ceiling is ~6 MB of NDJSON, comfortably
- * under MAX_OUTBOX_BYTES, and the file is transient (cleared on a clean drain).
+ * The ceiling has to exceed a whole busy session's events several times over. Overrunning it
+ * is not a deferral, it is permanent loss: the drain deletes the file once it has delivered
+ * what it read, so anything the bound trimmed is gone with it. A single batch-style session
+ * can record several thousand calls, which the previous 1,000 did not come close to covering.
+ * At a few hundred bytes per content-free event this is on the order of 1.5 MB of NDJSON,
+ * well under MAX_OUTBOX_BYTES, and the file is transient.
  */
-export const MAX_OUTBOX_EVENTS = 20_000;
-/** Hard byte cap that forces a truncate-to-last-N on append (defense vs. runaway growth). */
-const MAX_OUTBOX_BYTES = 8_000_000;
+export const MAX_OUTBOX_EVENTS = 5_000;
+/**
+ * Hard byte cap that forces a truncate-to-newest on append (defense vs. runaway growth).
+ * Exported so a test can drive the compaction path rather than having to synthesize one.
+ */
+export const MAX_OUTBOX_BYTES = 2_000_000;
 
 export interface OutboxOptions {
   /** Override the default `~/.editmamei` directory (used in tests). */
@@ -244,10 +248,15 @@ function compactOutbox(opts: OutboxOptions = {}): number {
   // re-compact on the very next append.
   const target = MAX_OUTBOX_BYTES / 2;
   let bytes = 0;
-  let firstKept = events.length;
-  // Walk newest-first, keeping what fits; newer signal is more useful than older.
+  // Walk newest-first, keeping what fits; newer signal is more useful than older. Start at
+  // the last index rather than events.length so a single event fatter than the whole target
+  // still keeps ONE — otherwise the slice comes back empty and compaction deletes the entire
+  // backlog to make room for nothing.
+  let firstKept = Math.max(events.length - 1, 0);
   for (let i = events.length - 1; i >= 0; i--) {
-    bytes += JSON.stringify(events[i]).length + 1;
+    // Byte length, not string length: a non-ASCII payload is more bytes than UTF-16 units,
+    // and undercounting here is what lets the file stay over the cap it just compacted for.
+    bytes += Buffer.byteLength(JSON.stringify(events[i]), 'utf8') + 1;
     if (bytes > target) break;
     firstKept = i;
   }

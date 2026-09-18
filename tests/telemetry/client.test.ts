@@ -1353,6 +1353,7 @@ describe('shutdown ordering and loss carry-through', () => {
     // measurement away on exactly the boots most likely to have a backlog.
     const dir = freshOutboxDir();
     appendOutboxSync([usageLine('ps_export'), usageLine('ps_save_psd')], { dir });
+    appendFileSync(outboxPath({ dir }), 'not json at all\n', 'utf8'); // a real discard
     const rec = recorder();
     const c = makeClient(makeSettings(), rec, { outboxDir: dir });
     await c.flushOutboxOnStartup();
@@ -1360,7 +1361,19 @@ describe('shutdown ordering and loss carry-through', () => {
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
       LossCounts | undefined;
     expect(summary).toBeDefined();
-    expect(summary).toMatchObject({ tool_call_count: 0, usage_calls_sent: 2 });
+    expect(summary).toMatchObject({ tool_call_count: 0, dropped_outbox: 1, usage_calls_sent: 2 });
+  });
+
+  it('does NOT emit a summary for a zero-call run that only delivered a backlog', async () => {
+    // The gate is loss, not delivery. Every clean shutdown leaves a backlog, so gating on
+    // delivery would fire on nearly every zero-work boot and roughly double session_count.
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_export')], { dir });
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    await c.shutdown();
+    expect(readOutbox({ dir }).filter((e) => e.type === 'session_summary')).toHaveLength(0);
   });
 
   it('still emits nothing for a run with neither calls nor loss', async () => {
@@ -1380,6 +1393,8 @@ describe('shutdown ordering and loss carry-through', () => {
     const rec = recorder();
     const c = makeClient(makeSettings(), rec, { outboxDir: dir });
     await c.flushOutboxOnStartup();
+    // A tool call so the run emits a summary at all — the gate is loss, not delivery.
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
     await c.shutdown();
     const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
       LossCounts | undefined;

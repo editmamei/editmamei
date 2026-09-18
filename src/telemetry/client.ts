@@ -182,14 +182,11 @@ export class TelemetryClient {
    * Events dropped by `enqueue`'s MAX_QUEUE_SIZE trim this session — the IN-MEMORY drop
    * count, which only moves when sends are failing fast enough for the queue to overrun.
    *
-   * This used to be the ONLY discard counter, on the reasoning that plumbing the outbox's
-   * own count through would churn two widely-used callers for an approximation. That was
-   * wrong, and measurably so: across 2026-09-06..18 this field read 0 on every session in
-   * production while `usage_daily` was demonstrably missing up to 4x its calls — so the
-   * counter that existed proved only that the path it watched was innocent, and named no
-   * suspect. The other two paths are counted now (`droppedOutbox`, `droppedUnsafe`), and
-   * together the three are exhaustive: a recorded event that never reaches the server was
-   * discarded by the in-memory trim, by the outbox, or by the content-safety filter.
+   * On its own this counter cannot answer whether events were lost: it watches one path of
+   * three, so a 0 here rules that path out and names no other. `droppedOutbox` and
+   * `droppedUnsafe` cover the rest, and together the three are exhaustive — a recorded event
+   * that never reaches the server was discarded by the in-memory trim, by the outbox, or by
+   * the content-safety filter.
    */
   private droppedEvents = 0;
   /**
@@ -618,15 +615,15 @@ export class TelemetryClient {
     // backlog. Zero-work boots are a large share of real boots here, so this is the common
     // case, not an edge.
     //
-    // The cost is honest and small: such a summary carries `tool_call_count: 0` and does add
-    // 1 to the server's `session_count`. A boot that delivered a previous session's backlog
-    // is a session that did something, so counting it is defensible — but it IS a change to
-    // what `session_count` has meant, and the server-side note says so too.
+    // LOSS only — deliberately NOT `usageCallsSent > 0`. Every clean shutdown leaves a
+    // backlog, so a delivery-based gate would fire on essentially every zero-work boot that
+    // follows a working one, roughly doubling the server's `session_count` and stepping every
+    // per-session average at the release that shipped it. Actual discards are rare, so this
+    // gate stays rare. The cost of the narrower gate is that a zero-work boot which only
+    // *delivered* a backlog does not report its `usage_calls_sent`; that undercounts the
+    // denominator slightly, which is the better error to make.
     const hasLossToReport =
-      this.droppedEvents > 0 ||
-      this.droppedOutbox > 0 ||
-      this.droppedUnsafe > 0 ||
-      this.usageCallsSent > 0;
+      this.droppedEvents > 0 || this.droppedOutbox > 0 || this.droppedUnsafe > 0;
     if (this.settings.telemetry.usage && (this.toolCallCount > 0 || hasLossToReport)) {
       const summary = buildSessionSummary(
         this.dims,
@@ -665,7 +662,14 @@ export class TelemetryClient {
    * event loop is healthy (the conditions an exit-time send lacks):
    *   1. If a session-state marker survives, the previous session was killed before a clean
    *      shutdown — reconstruct its summary and add it to the outbox.
-   *   2. Drain the outbox to the server in batches; clear it only if every batch is accepted.
+   *   2. Drain the outbox to the server in batches. On a clean drain the file is cleared; on
+   *      a partial one only the UNDELIVERED remainder is written back, so the batches that
+   *      did land are never sent a second time.
+   *
+   * Note a limitation this does not close: the drain holds a snapshot taken before its first
+   * network round-trip, so an append made concurrently (a live flush failing while the drain
+   * awaits) is overwritten by the write-back. Closing it needs a lock on the file, which this
+   * best-effort path does not have.
    * Respects CURRENT consent: if usage telemetry is now off, the backlog is dropped unsent.
    * Best-effort and fire-and-forget — never throws, never blocks boot.
    */
@@ -692,36 +696,34 @@ export class TelemetryClient {
         clearOutbox(this.outboxOpts);
         return;
       }
-      // How many of `pending` are accounted for — delivered, or discarded as unsafe. Used to
-      // keep ONLY the undelivered remainder on a partial drain (see rewriteOutbox).
+      // Filter ONCE, up front, over the whole backlog — not per batch inside the loop.
+      // Filtering per batch counts only the slices the loop actually reached, so a drain that
+      // breaks early would silently discard the unsafe events beyond the break when it wrote
+      // the remainder back, with nothing counting them. One filter, one count, and the
+      // remainder is already safe by construction.
+      const sendable = pending.filter(isContentSafe);
+      this.droppedUnsafe += pending.length - sendable.length;
+      // How many of `sendable` are delivered. Used to keep ONLY the undelivered remainder on
+      // a partial drain — see rewriteOutbox.
       let settled = 0;
-      for (let i = 0; i < pending.length; i += this.maxBatchSize) {
-        const slice = pending.slice(i, i + this.maxBatchSize);
-        const batch = slice.filter(isContentSafe);
-        this.droppedUnsafe += slice.length - batch.length;
-        if (batch.length > 0) {
-          try {
-            await this.transport(this.endpoint, JSON.stringify({ events: batch }));
-            this.usageCallsSent += countUsageCalls(batch);
-          } catch (err) {
-            this.logger.debug(`startup outbox flush failed: ${errMsg(err)}`);
-            break; // keep the remainder for the next startup
-          }
+      for (let i = 0; i < sendable.length; i += this.maxBatchSize) {
+        const batch = sendable.slice(i, i + this.maxBatchSize);
+        try {
+          await this.transport(this.endpoint, JSON.stringify({ events: batch }));
+          this.usageCallsSent += countUsageCalls(batch);
+        } catch (err) {
+          this.logger.debug(`startup outbox flush failed: ${errMsg(err)}`);
+          break; // keep the remainder for the next startup
         }
-        settled = i + slice.length;
+        settled = i + batch.length;
       }
-      if (settled >= pending.length) {
+      if (settled >= sendable.length) {
         clearOutbox(this.outboxOpts);
       } else {
         // Partial drain: drop what went through, keep the rest. Clearing nothing (the old
         // behaviour) re-sent the delivered batches on the next startup and inflated the
         // server's counters; clearing everything would lose the undelivered tail.
-        //
-        // The remainder is content-filtered on the way back to disk. The failing slice's
-        // unsafe events were already counted into droppedUnsafe above, and they can never be
-        // sent — writing them back would re-read, re-filter and RE-COUNT them at every boot
-        // until the slice finally succeeds, reporting one bad event as dozens.
-        rewriteOutbox(pending.slice(settled).filter(isContentSafe), this.outboxOpts);
+        rewriteOutbox(sendable.slice(settled), this.outboxOpts);
       }
     } catch (err) {
       this.logger.debug(`startup outbox flush error: ${errMsg(err)}`);
@@ -786,10 +788,10 @@ function errMsg(err: unknown): string {
  * the only unit comparable against the server's `usage_daily.call_count`. Session summaries,
  * boot pings and module-status events ride the same batches and must not inflate it.
  *
- * Reads an optional `count` per event even though nothing sets one yet: a usage event is
- * one call today, but the wire schema allows an event to stand for N identical calls, and a
- * version of this function that assumed 1-per-event would keep returning the right answer in
- * tests while quietly reporting an events figure under a field named for calls.
+ * A usage event is exactly one call today — `UsageEvent` has no `count` — so this is a plain
+ * count of usage events. It is written as a sum rather than a length because the field it
+ * feeds is named for calls, and the day an event can stand for several, a `length`-based
+ * version would keep passing every test while reporting the wrong unit.
  */
 function countUsageCalls(events: TelemetryEvent[]): number {
   let n = 0;
