@@ -14,10 +14,17 @@
  * `EDITMAMEI_INSTALL_CHANNEL=mcpb` (`buildMcpbManifest`).
  *
  * The remaining channels are told apart from the entry script's own path (`process.argv[1]`
- * — the file Node was invoked with), matched by PATH SEGMENT (split on `/` and `\`), never
- * by substring — a checkout living under a directory that merely CONTAINS the text
- * `node_modules` (e.g. `node_modules_backup/`) is not a `node_modules` segment and must not
- * be misread as an install:
+ * — the file Node was invoked with), REALPATH-RESOLVED first: a global npm/nvm/Homebrew
+ * install runs through a symlinked bin shim (`/usr/local/bin/editmamei`, an nvm shim under
+ * `.../bin/`), and `argv[1]` is set by `path.resolve`, not `realpath` — the shim's path has
+ * no `node_modules` segment at all, so without resolving the symlink first every one of
+ * those installs would misclassify as a source checkout. Windows is unaffected (the `.cmd`
+ * shim re-execs with the real path already). The resolved path is then matched by PATH
+ * SEGMENT (split on `/` and `\`, compared CASE-INSENSITIVELY — a Windows path can arrive in
+ * whatever case the launcher or an MCP config used), never by substring — a checkout living
+ * under a directory that merely CONTAINS the text `node_modules` (e.g.
+ * `node_modules_backup/`) is not a `node_modules` segment and must not be misread as an
+ * install:
  *
  *   - **npx** — a one-off run through npm's `_npx` cache dir (e.g.
  *     `~/.npm/_npx/<hash>/node_modules/editmamei/dist/index.js` on POSIX,
@@ -33,23 +40,46 @@
  *     script lives under some project's own `node_modules/editmamei/...`, not a global
  *     prefix). Needs different remediation from npm_global — the user updates the package
  *     in the project that hosts it, not a global `npm install -g`.
- *   - **source** — no `node_modules` segment anywhere in the path at all: a git checkout
- *     run directly (`node dist/index.js`).
+ *   - **source** — no `node_modules` segment anywhere in the resolved path at all: a git
+ *     checkout run directly (`node dist/index.js`).
+ *   - **unknown** — the entry path itself isn't available (`argv[1]` empty or undefined
+ *     after trimming), so there's nothing to classify. Distinct from `source`: this means
+ *     "we don't know," not "we know it's a checkout."
  *
  * A local dev build (`EDITION==='dev'`) is checked FIRST and short-circuits all of the
  * above — that's a contributor's working tree, not a distributed artifact, so the update
  * remediation must say "pull + rebuild", never "npm install" or "npx".
  */
 
+import { realpathSync } from 'node:fs';
 import { EDITION } from './edition.js';
 
-export type InstallChannel = 'npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'source' | 'dev';
+export type InstallChannel =
+  'npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'source' | 'dev' | 'unknown';
 
-/** Split a path into its non-empty segments, on either separator (Windows paths in this
- *  codebase can arrive with either, since they're not always normalized before reaching
- *  here — `process.argv[1]` is whatever the OS/launcher handed Node). */
+/** Split a path into its non-empty, LOWERCASED segments, on either separator (Windows paths
+ *  in this codebase can arrive with either, since they're not always normalized before
+ *  reaching here — `process.argv[1]` is whatever the OS/launcher handed Node). Lowercased
+ *  because a Windows path can arrive in whatever case the launcher (or a hand-edited MCP
+ *  config) used; a POSIX directory that differs from `node_modules`/`lib`/`npm`/`_npx` only
+ *  by case is not a distinction this classification needs to defend. */
 function pathSegments(path: string): string[] {
-  return path.split(/[\\/]/).filter((s) => s.length > 0);
+  return path
+    .split(/[\\/]/)
+    .filter((s) => s.length > 0)
+    .map((s) => s.toLowerCase());
+}
+
+/** Resolve symlinks in an entry path, falling back to the input unchanged on any error —
+ *  the path may not exist (e.g. under a test), and this classification must never throw
+ *  over a filesystem read. `.native` avoids the extra work of the pure-JS fallback path
+ *  `realpathSync` otherwise uses for a small perf win on a call that runs once per boot. */
+function defaultRealpath(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return p;
+  }
 }
 
 export function resolveInstallChannel(
@@ -62,14 +92,32 @@ export function resolveInstallChannel(
   argv1: string | undefined = process.argv[1],
   // The running node binary's own path, injectable for tests. Production always uses the
   // real `process.execPath`.
-  execPath: string | undefined = process.execPath
+  execPath: string | undefined = process.execPath,
+  // Resolves symlinks in `argv1` before it's segmented — injectable so tests can exercise a
+  // specific shim -> real-path mapping (or a broken filesystem) without touching the real
+  // one. Production always uses `defaultRealpath`.
+  realpath: (p: string) => string = defaultRealpath
 ): InstallChannel {
   // A dev build is a working tree, not a distributed artifact — surface that
   // honestly so the update remediation doesn't tell a contributor to `npm install`.
   if (edition === 'dev') return 'dev';
   if (env.EDITMAMEI_INSTALL_CHANNEL === 'mcpb') return 'mcpb';
 
-  const segments = pathSegments(argv1 ?? '');
+  const trimmedArgv1 = argv1?.trim();
+  if (!trimmedArgv1) return 'unknown';
+
+  // Bin shims are symlinks on POSIX (see the header comment) — resolve before segmenting.
+  // Guarded independently of `realpath`'s own try/catch (the default's), so an injected
+  // `realpath` that throws degrades to the unresolved path rather than propagating out of
+  // a classification helper.
+  let resolvedArgv1: string;
+  try {
+    resolvedArgv1 = realpath(trimmedArgv1);
+  } catch {
+    resolvedArgv1 = trimmedArgv1;
+  }
+
+  const segments = pathSegments(resolvedArgv1);
   if (segments.includes('_npx')) return 'npx';
 
   const nodeModulesIdx = segments.indexOf('node_modules');

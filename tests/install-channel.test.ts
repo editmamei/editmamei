@@ -136,10 +136,75 @@ describe('resolveInstallChannel', () => {
     ).toBe('source');
   });
 
-  it('falls back to source when argv1 is empty (unavailable)', () => {
+  it('reports unknown when argv1 is empty or whitespace-only (entry path not available)', () => {
     // Passing `undefined` here would trigger the parameter default (the REAL
     // process.argv[1], the vitest worker's own path) rather than testing "no entry path" —
-    // an empty string is the honest way to exercise that branch directly.
-    expect(resolveInstallChannel({}, 'community', '')).toBe('source');
+    // an explicit empty (or whitespace-only) string is the honest way to exercise this
+    // branch directly.
+    expect(resolveInstallChannel({}, 'community', '')).toBe('unknown');
+    expect(resolveInstallChannel({}, 'community', '   ')).toBe('unknown');
+  });
+
+  it('resolves a POSIX bin shim through realpath before classifying (global npm install)', () => {
+    // /usr/local/bin/editmamei is a symlink into the global npm prefix's node_modules; Node
+    // sets argv[1] to the shim's own path (path.resolve, not realpath), which has no
+    // node_modules segment at all until resolved.
+    const realpath = (p: string) =>
+      p === '/usr/local/bin/editmamei' ? '/usr/local/lib/node_modules/editmamei/dist/index.js' : p;
+    expect(
+      resolveInstallChannel({}, 'community', '/usr/local/bin/editmamei', undefined, realpath)
+    ).toBe('npm_global');
+  });
+
+  it('resolves an nvm bin shim through realpath before classifying (global npm install)', () => {
+    const realpath = (p: string) =>
+      p === '/home/u/.nvm/versions/node/v22.20.0/bin/editmamei'
+        ? '/home/u/.nvm/versions/node/v22.20.0/lib/node_modules/editmamei/dist/index.js'
+        : p;
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/u/.nvm/versions/node/v22.20.0/bin/editmamei',
+        undefined,
+        realpath
+      )
+    ).toBe('npm_global');
+  });
+
+  it('resolves a Homebrew bin shim through realpath before classifying (global npm install)', () => {
+    const realpath = (p: string) =>
+      p === '/opt/homebrew/bin/editmamei'
+        ? '/opt/homebrew/lib/node_modules/editmamei/dist/index.js'
+        : p;
+    expect(
+      resolveInstallChannel({}, 'community', '/opt/homebrew/bin/editmamei', undefined, realpath)
+    ).toBe('npm_global');
+  });
+
+  it('proceeds on the unresolved path when realpath throws (e.g. the entry path no longer exists)', () => {
+    const realpath = () => {
+      throw new Error('ENOENT');
+    };
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        '/home/u/src/editmamei/dist/index.js',
+        undefined,
+        realpath
+      )
+    ).toBe('source');
+  });
+
+  it('compares path segments case-insensitively (a lowercased Windows entry path in an MCP config)', () => {
+    expect(
+      resolveInstallChannel(
+        {},
+        'community',
+        'c:\\program files\\nodejs\\node_modules\\editmamei\\dist\\index.js',
+        'C:\\Program Files\\nodejs\\node.exe'
+      )
+    ).toBe('npm_global');
   });
 });

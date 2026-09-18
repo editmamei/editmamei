@@ -225,6 +225,10 @@ export function updateMessage(channel: InstallChannel, latest: string): string {
       // A project-local install (editmamei lives under some OTHER project's own
       // node_modules/) — a global `npm install -g` would be a no-op for it.
       return `Editmamei is installed locally in a project — update the \`editmamei\` dependency in that project (e.g. \`npm install editmamei@latest\`) and restart your MCP client.`;
+    case 'unknown':
+      // The entry path wasn't available to classify — no channel-specific remediation is
+      // possible, so point back at whatever install method the user actually used.
+      return `Editmamei v${latest} is available. Update it the way you installed it, then restart your MCP client.`;
     case 'npm_global':
     default:
       return `Run: npm install -g editmamei@latest (then restart your MCP client).`;

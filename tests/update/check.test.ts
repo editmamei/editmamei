@@ -59,6 +59,15 @@ describe('updateMessage', () => {
     // `npm install -g` would be a no-op for it, so that remediation must never appear here.
     expect(local).not.toContain('npm install -g');
   });
+
+  it('gives a generic remediation for unknown (entry path not available to classify)', () => {
+    const unknown = updateMessage('unknown', '0.19.0');
+    expect(unknown).toContain('0.19.0');
+    expect(unknown).toContain('restart your MCP client');
+    // No specific channel to name a fix for — must not guess one.
+    expect(unknown).not.toContain('npm install');
+    expect(unknown).not.toContain('npx');
+  });
 });
 
 describe('resolveUpdateCheckUrl', () => {
