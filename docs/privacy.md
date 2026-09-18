@@ -111,9 +111,10 @@ log so the default is never a surprise:
 > First run: Editmamei collects content-free usage telemetry (tool name, success,
 > duration, bytes returned, version/edition/OS/PS-version, install channel, which AI client
 > connected, Node/OS/architecture versions, and per-session counts like edits made and retries)
-> to find what breaks. It never sends image content, file paths, or personal data. Opt out
-> anytime: `editmamei config set telemetry.usage false` (or edit `~/.editmamei/settings.json`).
-> Opt in to sanitized diagnostics: `editmamei config set telemetry.diagnostics true`.
+> to find what breaks. It never sends image content, file paths, or tool arguments. The only
+> identifier is a random install ID. Opt out anytime: `editmamei config set telemetry.usage false`
+> (or edit `~/.editmamei/settings.json`). Opt in to sanitized diagnostics:
+> `editmamei config set telemetry.diagnostics true`.
 
 > **Note:** Editmamei reads the settings file once at startup. After changing a setting, restart
 > your AI client so the server picks it up.
@@ -187,7 +188,7 @@ content-free fields as above, with **no tool name, no counts, no free text**. `p
 
 | Field | Meaning |
 |---|---|
-| `channel` | Which install route you used: `npx`, `npm_global` (installed from the package registry into a global prefix), `npm_local` (installed as a dependency of another local project), `mcpb` (the one-click Claude Desktop extension), or `source` (running from a git checkout). One of those five values; nothing else. |
+| `channel` | Which install route you used: `npx`, `npm_global` (installed from the package registry into a global prefix), `npm_local` (installed as a dependency of another local project), `mcpb` (the one-click Claude Desktop extension), `source` (running from a git checkout), or `unknown` (the entry path could not be read). One of those six values; nothing else. |
 | `node_major` | The Node.js major version Editmamei is running under (e.g. `22`). Omitted if unknown. |
 | `arch` | CPU architecture bucket: `x64`, `arm64`, or `other`. Always present — an unrecognized architecture sends `other`, never omitted. |
 | `os_major` | Your OS's major version (e.g. `11` for Windows 11, `15` for macOS Sequoia). Omitted if unparseable. |
@@ -264,7 +265,7 @@ No image content, no paths, no tool arguments — an enum outcome plus the modul
   "install_id": "9f3c…",
   "ts_bucket": "2026-06-15",
   "editmamei_version": "1.0.3",
-  "edition": "community",
+  "edition": "pro",
   "platform": "win32",
   "ps_version": "27.8.0",
   "tool_call_count": 47,
@@ -375,8 +376,10 @@ Events that fail to send — offline, a network hiccup, the endpoint unreachable
 small, bounded local queue and retried at the next launch; they are never queued indefinitely.
 
 Per-install daily counts derived from Category A events (calls, failures, edits, exports, and
-the like) are kept against your install ID for **24 months**, then deleted automatically by a
-nightly job — long enough to see how usage changes over the life of an install, and no longer.
+the like), together with the country, time zone, and serving datacenter that the network edge
+derives from the connection, are kept against your install ID for **24 months after the install
+was last seen**, then deleted automatically by a nightly job — long enough to see how usage
+changes over the life of an install, and no longer.
 Opt-in diagnostic rows (Category B, the sanitized error detail) are deleted after **90 days**.
 The day-by-day totals that carry no install ID at all — how many times a tool ran across
 everyone, and whether it worked — are not tied to you and are not on that clock.
@@ -463,8 +466,8 @@ editmamei config set telemetry.usage false
 editmamei config set telemetry.diagnostics false
 ```
 
-**Retention.** Per-install records: 24 months, deleted automatically. Opt-in diagnostic records:
-90 days, deleted automatically. Aggregate daily totals carry no install ID and are not subject to
+**Retention.** Per-install records: 24 months after the install was last seen, deleted
+automatically. Opt-in diagnostic records: 90 days, deleted automatically. Aggregate daily totals carry no install ID and are not subject to
 these windows.
 
 **Your rights.** Access, rectification, erasure, and objection. Your install ID is the reference
@@ -484,10 +487,11 @@ Send it via [the contact page](https://editmamei.com/contact) with your request.
 Without an install ID we cannot locate your records. No email address, account, or IP address is
 stored alongside it.
 
-**Processing.** Editmamei's own Cloudflare infrastructure. No third-party analytics processor.
-Telemetry is not sold, shared, or used for advertising. Your IP address reaches that
-infrastructure with the request, as it does with any web request, and is used only to rate-limit
-abuse. It is never written to the telemetry store and never joined to your install ID.
+**Processing.** Editmamei's own infrastructure, on Cloudflare and on equipment we operate. No
+third-party analytics processor. Telemetry is not sold, shared, or used for advertising. Your IP
+address reaches that infrastructure with the request, as it does with any web request. It is used
+to rate-limit abuse and is not stored. Three values the network edge derives from the connection
+are recorded with your install ID: country, time zone, and the datacenter that served the request.
 
 ---
 
