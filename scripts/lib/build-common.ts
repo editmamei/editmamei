@@ -314,8 +314,8 @@ export function buildPackageJson(
     version,
     description:
       edition === 'community'
-        ? 'Photoshop MCP server: natural-language AI photo editing with your own Photoshop (Community Edition)'
-        : 'Photoshop MCP server: natural-language AI photo editing with your own Photoshop (Pro Edition)',
+        ? 'Photoshop MCP server: natural-language AI photo editing in desktop Photoshop (Community Edition)'
+        : 'Photoshop MCP server: natural-language AI photo editing in desktop Photoshop (Pro Edition)',
     mcpName: src.mcpName,
     // Release metadata the boot-time update check reads from the npm version
     // manifest (`registry.npmjs.org/editmamei/latest` — see src/update/check.ts).

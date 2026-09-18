@@ -1,6 +1,6 @@
 # Installation
 
-Editmamei is an MCP server that drives your locally installed Adobe Photoshop. It installs two ways: a one-click `.mcpb` extension for Claude Desktop (no terminal, no Node), or the `editmamei` npm package for Claude Code, Cursor, and any other MCP client. Both deliver the same tools. On the npm path, the `editmamei install` subcommand detects your MCP clients and writes each one's config in a single pass; manual configuration is documented below as a fallback.
+Editmamei is an MCP server that drives desktop Adobe Photoshop. It installs two ways: a one-click `.mcpb` extension for Claude Desktop (no terminal, no Node), or the `editmamei` npm package for Claude Code, Cursor, and any other MCP client. Both deliver the same tools. On the npm path, the `editmamei install` subcommand detects your MCP clients and writes each one's config in a single pass; manual configuration is documented below as a fallback.
 
 ---
 
@@ -13,6 +13,9 @@ Editmamei is an MCP server that drives your locally installed Adobe Photoshop. I
   - [Claude Desktop](https://claude.ai/download)
   - [Cursor](https://cursor.com/)
   - [Claude Code](https://claude.ai/code)
+
+  Editmamei ships no model of its own and runs on whichever client you connect, so every edit
+  spends that client's tokens. That client might be a subscription, an API key, or a model you run yourself.
 
 ---
 

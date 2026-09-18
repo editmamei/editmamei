@@ -114,7 +114,7 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
     name: 'editmamei',
     display_name: 'Editmamei',
     version,
-    description: 'Photoshop MCP server: natural-language AI photo editing with your own Photoshop',
+    description: 'Photoshop MCP server: natural-language AI photo editing in desktop Photoshop',
     author: { name: 'Editmamei' },
     homepage: 'https://editmamei.com',
     server: {
