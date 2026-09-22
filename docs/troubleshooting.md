@@ -45,10 +45,12 @@ Read the reason in brackets and follow the matching row:
 | Reason | What it means | What to do |
 |---|---|---|
 | `granted` | Pro is unlocked | If tools are still missing, restart your AI client. A newly downloaded module only loads on the next start. |
-| `grace-expired` | Your license hasn't checked in recently enough | See [the restart loop](#the-restart-loop) below. This is the common one. |
-| `revoked` / `disabled` | The license is no longer active | Check your subscription status, or email support@editmamei.com. |
-| `expired` | The license has an end date that has passed | Renew, then run `editmamei activate YOUR-KEY`. |
-| `no-license` | No license is stored on this machine | Activate it. See [Activating Pro](installation.md#pro). |
+| `grace-expired` | Your license hasn't checked in recently enough | Usually [the restart loop](#the-restart-loop) below. If your system clock has been wrong, see [a clock set behind](#a-clock-set-behind) instead. |
+| `revoked` / `disabled` | The license is no longer active | Check your subscription status. Once it's running again, run `editmamei license` to re-check it, then restart your AI client so the Pro tools load. |
+| `expired` | The license has an end date that has passed | Renew, then run `editmamei activate YOUR-KEY` and restart your AI client so the Pro tools load. |
+
+If `editmamei license` says **"No license activated on this device"** instead of printing the
+block above, there's no license stored here at all. See [Activating Pro](installation.md#pro).
 
 ### The restart loop
 
@@ -71,8 +73,25 @@ on it.
 Then run `editmamei license`. `Last check` should show today's date and `Pro` should read
 `unlocked`. Restart the client once more so the Pro tools load.
 
-If it still says `grace-expired` after that, send the `editmamei license` output to
-support@editmamei.com.
+If it still says `grace-expired` after that, check the section below before emailing
+support@editmamei.com, because a wrong clock produces the same reason and the steps above can't
+cure it.
+
+### A clock set behind
+
+`grace-expired` also appears when this machine's clock is set **earlier** than the date of its own
+last license check, which happens after a clock runs fast and is then corrected. The stored license
+can't be read as current, and no amount of restarting changes that, because the recorded mark never
+moves backwards.
+
+Fix the clock first, then re-activate:
+
+1. Correct your system clock, or turn on automatic time.
+2. Run `editmamei activate YOUR-KEY`.
+3. Restart your AI client so the Pro tools load.
+
+You can tell this apart from the restart loop by looking at `Last check` in the `editmamei license`
+output: if it's a date in the **future**, this is your case.
 
 ### After updating the Claude Desktop extension
 
