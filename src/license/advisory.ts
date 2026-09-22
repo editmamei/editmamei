@@ -240,11 +240,20 @@ function clockIsBehind(rec: LicenseRecord, now: number): boolean {
   return Number.isFinite(last) && last + GRACE_MS >= now;
 }
 
-/** What that reader is actually looking at, and the only thing that fixes it. */
+/**
+ * What that reader is actually looking at, and the only thing that fixes it.
+ * Deactivate-then-activate, not activate alone: on a device that already holds a
+ * record for the key, activate only refreshes it, and a refresh keeps the stored
+ * high-water mark because that mark never moves backwards. Deactivate clears the
+ * record so the next activate seeds a fresh one. Both need the network, since an
+ * offline deactivate clears locally but leaves the device slot held on the server.
+ */
 const CLOCK_BEHIND =
   `${NOT_UNLOCKING} This machine's clock is set earlier than the date of its last license ` +
   'check, so the license stored on it cannot be read as current. Fix: correct the system clock, ' +
-  `then run \`editmamei activate YOUR-KEY\` in a terminal and ${RESTART_TO_LOAD}. ${SUPPORT_TAIL}`;
+  'then, while connected to the internet, run `editmamei deactivate` followed by ' +
+  `\`editmamei activate YOUR-KEY\` in a terminal and ${RESTART_TO_LOAD}. Running activate on ` +
+  `its own is not enough here, because it keeps the stored record. ${SUPPORT_TAIL}`;
 
 /** The words themselves — one branch per reason the reader can be in. */
 function advisoryText(

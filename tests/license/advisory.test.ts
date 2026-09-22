@@ -379,7 +379,13 @@ describe('licenseAdvisory — the cause it names is the cause it is', () => {
     expect(text).toContain('Pro is not unlocking');
     expect(text).toContain('clock is set earlier');
     expect(text).toContain('correct the system clock');
-    expect(text).toContain('editmamei activate');
+    // Activate alone refreshes the existing record, which keeps the future mark,
+    // so the cure has to clear the record first. Pin the order, not just the words.
+    const deactivateAt = text.indexOf('editmamei deactivate');
+    const activateAt = text.indexOf('editmamei activate YOUR-KEY');
+    expect(deactivateAt).toBeGreaterThan(-1);
+    expect(activateAt).toBeGreaterThan(deactivateAt);
+    expect(text).toContain('connected to the internet');
     // The self-contradiction itself: no window that "closes" on a date the
     // reader can still see coming.
     expect(text).not.toContain('closes on');

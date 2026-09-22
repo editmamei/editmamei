@@ -556,7 +556,7 @@ export class ModuleLifecycle {
               type: 'text' as const,
               text: isProEntitled(this.store)
                 ? PRO_RESTART_TO_LOAD
-                : (licenseAdvisory() ?? PRO_RESTART_TO_LOAD),
+                : (licenseAdvisory(this.store) ?? PRO_RESTART_TO_LOAD),
             },
           ],
           // isError, UNLIKE the ps_ping advisory. Ping genuinely succeeds and

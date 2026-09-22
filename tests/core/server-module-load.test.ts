@@ -1178,11 +1178,28 @@ describe('EditmameiServer.loadModules — explain-only Pro stubs for a lapsed li
       })
     );
 
+    // `fx.home` is module-level and never reset, so without this it would still
+    // point at whatever lapsed home the previous test built, and this test would
+    // pass even if the injection were ignored. An empty home here means the
+    // default path finds NO license: only the injected store can produce stubs.
+    const emptyHome = mkdtempSync(join(tmpdir(), 'em-empty-'));
+    homes.push(emptyHome);
+    fx.home = emptyHome;
+
     const server = new EditmameiServer({ licenseStore: { dir } }) as unknown as ServerProbe;
     await server.loadModules();
 
     const registered = names(server);
     for (const name of toolsInTier('pro')) expect(registered).toContain(name);
+
+    // The stub's own answer must come from the same store. Read from the empty
+    // default home instead, it would find no record and fall back to the
+    // "active again, restart" line.
+    const def = server.toolRegistry.get(toolsInTier('pro')[0]) as {
+      handler: () => Promise<{ content: Array<{ text: string }> }>;
+    };
+    const res = await def.handler();
+    expect(res.content[0].text).toContain('Pro is not unlocking');
   });
 
   it('never registers a dev- or none-tier name (the cross-surface tier invariant)', async () => {

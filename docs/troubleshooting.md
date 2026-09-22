@@ -79,19 +79,24 @@ cure it.
 
 ### A clock set behind
 
-`grace-expired` also appears when this machine's clock is set **earlier** than the date of its own
-last license check, which happens after a clock runs fast and is then corrected. The stored license
-can't be read as current, and no amount of restarting changes that, because the recorded mark never
-moves backwards.
+`grace-expired` also appears when this machine's clock has been set **ahead** at some point and
+then corrected. Editmamei remembers the latest date it has seen, and a clock that is now earlier
+than that makes the stored license unreadable as current. Restarting can't change it, and neither
+can re-running `editmamei activate` on its own, because that keeps the stored record.
 
-Fix the clock first, then re-activate:
+**How to tell it's this and not the restart loop:** `editmamei license` says `locked
+(grace-expired)`, but `Last check` is within the past week (or even in the future). A license that
+has genuinely gone a week without checking in shows an older date than that.
+
+Fix it while connected to the internet:
 
 1. Correct your system clock, or turn on automatic time.
-2. Run `editmamei activate YOUR-KEY`.
-3. Restart your AI client so the Pro tools load.
+2. Run `editmamei deactivate`. This clears the stored record and frees this machine's device slot.
+3. Run `editmamei activate YOUR-KEY`.
+4. Restart your AI client so the Pro tools load.
 
-You can tell this apart from the restart loop by looking at `Last check` in the `editmamei license`
-output: if it's a date in the **future**, this is your case.
+Do steps 2 and 3 online. Deactivating offline clears the record here but leaves the device slot
+held on the server, so the activate that follows can be refused for having too many devices.
 
 ### After updating the Claude Desktop extension
 
