@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import {
   appendOutboxSync,
   readOutbox,
+  readOutboxWithDiscards,
+  rewriteOutbox,
   clearOutbox,
   outboxPath,
   writeSessionStateSync,
@@ -12,6 +14,7 @@ import {
   clearSessionState,
   sessionStatePath,
   MAX_OUTBOX_EVENTS,
+  MAX_OUTBOX_BYTES,
   type PersistedSessionState,
 } from '@editmamei/telemetry/outbox.ts';
 import type { TelemetryEvent } from '@editmamei/telemetry/events.ts';
@@ -140,5 +143,106 @@ describe('session state', () => {
     writeSessionStateSync(STATE, { dir });
     clearSessionState({ dir });
     expect(readSessionState({ dir })).toBeNull();
+  });
+});
+
+describe('discard accounting', () => {
+  it('reports nothing discarded on an ordinary read', () => {
+    const dir = freshDir();
+    appendOutboxSync([usage('photoshop_a'), usage('photoshop_b')], { dir });
+    expect(readOutboxWithDiscards({ dir })).toMatchObject({ discarded: 0 });
+  });
+
+  it('reports what the MAX_OUTBOX_EVENTS bound threw away', () => {
+    const dir = freshDir();
+    const many = Array.from({ length: MAX_OUTBOX_EVENTS + 50 }, (_v, i) => usage(`photoshop_${i}`));
+    appendOutboxSync(many, { dir });
+    const { events, discarded } = readOutboxWithDiscards({ dir });
+    expect(events).toHaveLength(MAX_OUTBOX_EVENTS);
+    // The 50 oldest are gone — and, crucially, SAID to be gone. Before this counter the
+    // caller cleared the file straight afterwards and the loss left no trace anywhere.
+    expect(discarded).toBe(50);
+  });
+
+  it('counts a corrupt line as a discard', () => {
+    const dir = freshDir();
+    appendOutboxSync([usage('photoshop_a')], { dir });
+    appendFileSync(outboxPath({ dir }), 'not json at all\n', 'utf8');
+    expect(readOutboxWithDiscards({ dir })).toMatchObject({ discarded: 1 });
+  });
+
+  it('returns 0 from an append that lands cleanly', () => {
+    const dir = freshDir();
+    expect(appendOutboxSync([usage('photoshop_a')], { dir })).toBe(0);
+  });
+
+  it('returns 0 from an append of nothing', () => {
+    expect(appendOutboxSync([], { dir: freshDir() })).toBe(0);
+  });
+});
+
+describe('rewriteOutbox', () => {
+  it('replaces the file with exactly the events given', () => {
+    const dir = freshDir();
+    appendOutboxSync([usage('photoshop_a'), usage('photoshop_b'), usage('photoshop_c')], { dir });
+    rewriteOutbox([usage('photoshop_c')], { dir });
+    expect(readOutbox({ dir }).map((e) => (e as { tool: string }).tool)).toEqual(['photoshop_c']);
+  });
+
+  it('clears the file when given nothing', () => {
+    const dir = freshDir();
+    appendOutboxSync([usage('photoshop_a')], { dir });
+    rewriteOutbox([], { dir });
+    expect(readOutbox({ dir })).toEqual([]);
+  });
+});
+
+describe('byte-cap compaction', () => {
+  /** A usage event padded to roughly `bytes` by stretching the tool name. */
+  function fatUsage(bytes: number, marker: string): TelemetryEvent {
+    const pad = Math.max(1, bytes - JSON.stringify(usage(marker)).length);
+    return usage(`${marker}${'a'.repeat(pad)}`);
+  }
+
+  it('discards oldest events once the file passes the byte cap', () => {
+    const dir = freshDir();
+    // Well under MAX_OUTBOX_EVENTS, so the COUNT bound cannot be what trims this — the byte
+    // cap has to. Before it was enforced, compaction rewrote the identical file back and
+    // discarded nothing, so the file grew without bound while every append paid a full
+    // read + rewrite.
+    const fat = Math.floor(MAX_OUTBOX_BYTES / 8);
+    for (let i = 0; i < 9; i++) {
+      appendOutboxSync([fatUsage(fat, `e${i}_`)], { dir });
+    }
+    const { events, discarded } = readOutboxWithDiscards({ dir });
+    expect(events.length).toBeLessThan(9);
+    expect(events.length).toBeGreaterThan(0);
+    expect(discarded).toBe(0); // the count bound discarded nothing…
+    // …the compaction did, and it kept the NEWEST. The final append always survives.
+    const tools = events.map((e) => (e as { tool: string }).tool);
+    expect(tools[tools.length - 1].startsWith('e8_')).toBe(true);
+    expect(tools.some((t) => t.startsWith('e0_'))).toBe(false);
+  });
+
+  it('keeps one event even when a single event exceeds the whole target', () => {
+    const dir = freshDir();
+    // Guards the empty-slice cliff: walking newest-first from `events.length` would break on
+    // the first iteration and slice to [], deleting the entire backlog to make room for
+    // nothing. One oversized event should cost the older ones, not everything.
+    appendOutboxSync([usage('photoshop_small')], { dir });
+    appendOutboxSync([fatUsage(MAX_OUTBOX_BYTES * 2, 'huge_')], { dir });
+    appendOutboxSync([usage('photoshop_trigger')], { dir });
+    expect(readOutbox({ dir }).length).toBeGreaterThan(0);
+  });
+
+  it('reports a failed append as a discard', () => {
+    // The outbox directory path is occupied by a regular FILE, so ensureDir throws and the
+    // append cannot land. privacy.md promises this case is counted in dropped_outbox.
+    const parent = freshDir();
+    const blocked = join(parent, 'not-a-dir');
+    writeFileSync(blocked, 'x', 'utf8');
+    expect(appendOutboxSync([usage('photoshop_a'), usage('photoshop_b')], { dir: blocked })).toBe(
+      2
+    );
   });
 });

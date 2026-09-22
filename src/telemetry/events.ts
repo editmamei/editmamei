@@ -104,6 +104,36 @@ export interface SessionSummaryEvent {
   behind_latest?: boolean;
   /** In-memory events dropped by the client's MAX_QUEUE_SIZE trim this session. */
   dropped_events?: number;
+  /**
+   * Events discarded by the on-disk outbox during this RUN — its MAX_OUTBOX_EVENTS /
+   * MAX_OUTBOX_BYTES bound dropping oldest, a corrupt line that would not parse, or an
+   * append that failed to write.
+   *
+   * "Run", not "session": the startup drain is where the bound's discards are observed, and
+   * what it discards belongs to a PREVIOUS session's backlog. The same applies to
+   * `usage_calls_sent`. These three telescope correctly when summed across sessions, which is
+   * how they are meant to be read; a single summary's ratio against its own
+   * `tool_call_count` does not mean anything.
+   */
+  dropped_outbox?: number;
+  /** Events discarded by the client's own `isContentSafe` filter during this run. */
+  dropped_unsafe?: number;
+  /**
+   * Tool CALLS this RUN handed to a transport call that returned without throwing —
+   * client-believed-delivered, and including calls carried over from an earlier session's
+   * outbox backlog (see `dropped_outbox` on why this is a run, not a session).
+   * Note the unit: the two `dropped_*` fields above count EVENTS,
+   * because that is what the pipeline discards, but `tool_call_count` and the server's
+   * `usage_daily.call_count` are both CALL counts — so a denominator comparable to either
+   * has to be in calls. Once one event can stand for many calls, an events-based figure here
+   * would silently turn the delivery rate into nonsense.
+   *
+   * These four counters do NOT form a closed identity. They cover client-side discards only;
+   * a batch the server rejects, a host killed with a full outbox, or consent revoked between
+   * sessions all leave the calls counted as sent with no `dropped_*` moving. The residual is
+   * the transport-loss signal, not a bug in the counters.
+   */
+  usage_calls_sent?: number;
   /** Boot-time Pro-module background refresh outcome. Included only for installs with a
    *  license record (see TelemetryClient.setModuleUpdate) — a pure-CE install sends nothing. */
   module_update?: 'none' | 'updated' | 'failed';
@@ -325,6 +355,9 @@ export function buildSessionSummary(
     kept_work?: number;
     behind_latest?: boolean;
     dropped_events?: number;
+    dropped_outbox?: number;
+    dropped_unsafe?: number;
+    usage_calls_sent?: number;
     module_update?: 'none' | 'updated' | 'failed';
     templates_saved?: number;
     action_sets?: number;
@@ -353,6 +386,11 @@ export function buildSessionSummary(
     ...(summary.kept_work !== undefined ? { kept_work: summary.kept_work } : {}),
     ...(summary.behind_latest !== undefined ? { behind_latest: summary.behind_latest } : {}),
     ...(summary.dropped_events !== undefined ? { dropped_events: summary.dropped_events } : {}),
+    ...(summary.dropped_outbox !== undefined ? { dropped_outbox: summary.dropped_outbox } : {}),
+    ...(summary.dropped_unsafe !== undefined ? { dropped_unsafe: summary.dropped_unsafe } : {}),
+    ...(summary.usage_calls_sent !== undefined
+      ? { usage_calls_sent: summary.usage_calls_sent }
+      : {}),
     ...(summary.module_update !== undefined ? { module_update: summary.module_update } : {}),
     ...(summary.templates_saved !== undefined ? { templates_saved: summary.templates_saved } : {}),
     ...(summary.action_sets !== undefined ? { action_sets: summary.action_sets } : {}),
