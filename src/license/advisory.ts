@@ -249,8 +249,9 @@ function clockIsBehind(rec: LicenseRecord, now: number): boolean {
  * offline deactivate clears locally but leaves the device slot held on the server.
  */
 const CLOCK_BEHIND =
-  `${NOT_UNLOCKING} This machine's clock is set earlier than the date of its last license ` +
-  'check, so the license stored on it cannot be read as current. Fix: correct the system clock, ' +
+  `${NOT_UNLOCKING} This machine's clock is set earlier than a date Editmamei has already ` +
+  'recorded here, usually because it was once set ahead, so the license stored on it cannot be ' +
+  'read as current. Fix: correct the system clock, ' +
   'then, while connected to the internet, run `editmamei deactivate` followed by ' +
   `\`editmamei activate YOUR-KEY\` in a terminal and ${RESTART_TO_LOAD}. Running activate on ` +
   `its own is not enough here, because it keeps the stored record. ${SUPPORT_TAIL}`;
