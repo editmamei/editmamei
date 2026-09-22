@@ -95,16 +95,29 @@ export interface PolarRetryConfig {
 }
 const DEFAULT_RETRY: PolarRetryConfig = { attempts: 3, baseDelayMs: 1000, maxDelayMs: 65_000 };
 
-type Sleep = (ms: number) => Promise<void>;
+export type Sleep = (ms: number) => Promise<void>;
 /**
- * Unref'd, because a wait this timer is holding must never be the reason the
- * process is still up. A backoff can be a minute long when the server names its
- * own interval, and a host that has already lost its client would otherwise sit
- * out the whole of it before exiting. Same treatment as the race timer in
- * `entitlement.ts`, and the optional call keeps it harmless where `unref` is not
- * a method on the handle.
+ * An ordinary timer, which holds the process up for the length of the wait.
+ *
+ * That is what the CLI needs and why this is the default. `withRetry` serves
+ * `validate`, and `validate` is what `editmamei activate`, `editmamei license`
+ * and `refresh` all run. Those are one-shot commands with nothing else pending:
+ * if the backoff timer did not hold the loop open, a transient failure would end
+ * the command silently — no output, no retry — instead of succeeding a second
+ * later. A long-lived host wants the opposite and opts into `unrefSleep`.
  */
-const defaultSleep: Sleep = (ms) =>
+const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The same wait on an unref'd timer, for a caller that is checking in behind a
+ * long-lived process: a backoff can be a minute long when the server names its
+ * own interval, and a host that has already lost its client should not sit out
+ * the whole of it before exiting. Opt-in through `PolarClientOptions.sleep`,
+ * because nothing else about a background check differs from a foreground one.
+ * Same treatment as the race timer in `entitlement.ts`, and the optional call
+ * keeps it harmless where `unref` is not a method on the handle.
+ */
+export const unrefSleep: Sleep = (ms) =>
   new Promise((resolve) => {
     const timer = setTimeout(resolve, ms);
     timer.unref?.();
@@ -113,7 +126,10 @@ const defaultSleep: Sleep = (ms) =>
 export interface PolarClientOptions {
   /** Override the retry policy (tests). Defaults to 3 attempts, 1s exponential backoff. */
   retry?: Partial<PolarRetryConfig>;
-  /** Injected backoff delay (tests pass a no-op so they don't actually wait). */
+  /**
+   * Override the backoff wait: `unrefSleep` on a background path, a no-op in
+   * tests that should not actually wait. Defaults to a plain timer.
+   */
   sleep?: Sleep;
 }
 

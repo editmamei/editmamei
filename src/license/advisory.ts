@@ -28,7 +28,9 @@
  *     never why those are dark, and no amount of restarting moves them. A fix that
  *     cannot work sends the reader round a loop with no end in it. The branches
  *     mirror the per-reason table in `docs/troubleshooting.md`; keep the two in
- *     step.
+ *     step. Not everything the words need is a reason, though: whether a check
+ *     is currently being held off cuts across the branches, so it travels beside
+ *     the reason as a fact rather than being baked into one of them.
  */
 
 import {
@@ -70,11 +72,17 @@ export const PRO_RESTART_TO_LOAD =
  */
 function isoDay(ms: number): string | null {
   if (!Number.isFinite(ms)) return null;
+  let iso: string;
   try {
-    return new Date(ms).toISOString().slice(0, 10);
+    iso = new Date(ms).toISOString();
   } catch {
     return null;
   }
+  // In range but not a calendar year the reader knows: an expanded-year date
+  // formats as `+275760-09-13T…`, and the first ten characters of that are
+  // `+275760-09`, which is not a day at all. Only the ordinary four-digit form
+  // slices to one, so anything else is dropped like an unparseable date.
+  return /^\d{4}-/.test(iso) ? iso.slice(0, 10) : null;
 }
 
 /**
@@ -104,7 +112,25 @@ export function licenseAdvisory(opts: LicenseAdvisoryOptions = {}): string | nul
   if (entitlement.entitled && !(stale && checksFailing) && opts.moduleUpdateFailed !== true) {
     return null;
   }
-  return advisoryText(rec, entitlement, now);
+  return advisoryText(rec, entitlement, now, {
+    checksFailing,
+    checksNotCompleting: stale && checksFailing,
+  });
+}
+
+/**
+ * What the words need to know beyond the reason, because the same reason is
+ * reached from states that want different sentences.
+ */
+interface AdvisoryFacts {
+  /**
+   * A backoff marker is live RIGHT NOW: a check failed and the next one is
+   * deliberately deferred. This is the only thing that makes the wait caveat
+   * true, and it cuts across the branches rather than belonging to one of them.
+   */
+  checksFailing: boolean;
+  /** Overdue for a check AND the last attempt did not get through. */
+  checksNotCompleting: boolean;
 }
 
 /** The opening line whenever the Pro tools are not there at all. */
@@ -126,10 +152,40 @@ const RESTART_LOOP_CAUSE_AND_FIX =
  * difference between a reader who leaves it alone and one who restarts on a loop
  * waiting for a change that was never going to arrive that fast. Deliberately
  * vague about how long and why — the interval is ours, not theirs.
+ *
+ * TRUE OF A STATE, NOT OF A BRANCH. It holds exactly while a backoff marker is
+ * live, which is what defers the next attempt; without one the very next start
+ * checks in, and telling that reader to wait hours and not restart delays the
+ * recovery they were one restart away from. So it is gated on `checksFailing`
+ * wherever it appears, never attached to a branch.
  */
 const GIVE_IT_TIME =
   'Pro may take a few hours to come back rather than returning at the next start, so leave ' +
   'the client alone instead of restarting it again.';
+
+/** `GIVE_IT_TIME`, space and all, only while it is true. */
+function waitCaveat(facts: AdvisoryFacts): string {
+  return facts.checksFailing ? ` ${GIVE_IT_TIME}` : '';
+}
+
+/**
+ * The Pro tools are resolved once, at start. Every branch that hands the reader a
+ * cure has to say this, because the cure on its own leaves Pro exactly as absent
+ * as it was and the reader with no reason to think it worked.
+ */
+const RESTART_TO_LOAD = 'restart your MCP client, because the Pro tools only load when it starts';
+
+/**
+ * Pro is fine; an update to its module is not. Named separately because the
+ * restart-loop cause above is flatly untrue here — the license checked in
+ * moments ago — and naming a cause that is not the cause is the whole defect
+ * these branches exist to remove.
+ */
+const MODULE_UPDATE_FAILED =
+  'Pro is unlocked, but an update to its module did not finish. The version already ' +
+  'installed keeps working and the update is tried again on its own, so there is nothing to ' +
+  'do now. If the Pro tools do stop working, run `editmamei repair` in a terminal and then ' +
+  'restart your MCP client.';
 
 /** Where to go when the fix above did not take. */
 const SUPPORT_TAIL =
@@ -166,20 +222,50 @@ function checkInWindow(rec: LicenseRecord, now: number, entitled: boolean): stri
 function endedSentence(rec: LicenseRecord): string {
   const day = rec.expires_at === null ? null : isoDay(Date.parse(rec.expires_at));
   return day === null
-    ? 'This license has an end date that has passed, and restarting will not extend it.'
-    : `This license ended on ${day}, and restarting will not extend it.`;
+    ? 'This license has an end date that has passed, and restarting on its own will not extend it.'
+    : `This license ended on ${day}, and restarting on its own will not extend it.`;
 }
 
+/**
+ * A record denied while its offline window is still OPEN. The window runs from
+ * the last check-in, so age cannot be what denied it; the backward-clock guard
+ * is the only other way out of `evaluateEntitlement`, and its cure is neither a
+ * restart nor a renewal. Worth detecting on its own because the grace wording
+ * contradicts itself here — it tells the reader Pro is dark and that a week of
+ * window is left, and the restart it advises can never work, since the recorded
+ * mark the clock is behind does not move back.
+ */
+function clockIsBehind(rec: LicenseRecord, now: number): boolean {
+  const last = Date.parse(rec.last_validated_at);
+  return Number.isFinite(last) && last + GRACE_MS >= now;
+}
+
+/** What that reader is actually looking at, and the only thing that fixes it. */
+const CLOCK_BEHIND =
+  `${NOT_UNLOCKING} This machine's clock is set earlier than the date of its last license ` +
+  'check, so the license stored on it cannot be read as current. Fix: correct the system clock, ' +
+  `then run \`editmamei activate YOUR-KEY\` in a terminal and ${RESTART_TO_LOAD}. ${SUPPORT_TAIL}`;
+
 /** The words themselves — one branch per reason the reader can be in. */
-function advisoryText(rec: LicenseRecord, entitlement: Entitlement, now: number): string {
-  // Entitled and still speaking: Pro works, its background checks do not. The
-  // restart-loop cause is the right one here, because a check that cannot finish
-  // is the whole of what is wrong.
+function advisoryText(
+  rec: LicenseRecord,
+  entitlement: Entitlement,
+  now: number,
+  facts: AdvisoryFacts
+): string {
   if (entitlement.entitled) {
+    // Entitled and still speaking, for one of two reasons. A module update that
+    // failed is not a check that could not finish: the license checked in
+    // seconds ago, so the restart-loop cause below would name something that
+    // demonstrably did not happen.
+    if (!facts.checksNotCompleting) return MODULE_UPDATE_FAILED;
+    // Pro works, its background checks do not. The restart-loop cause is the
+    // right one here, because a check that cannot finish is the whole of what is
+    // wrong.
     return (
       'Pro is unlocked, but its background license and update checks are not completing.' +
-      `${checkInWindow(rec, now, true)} ${RESTART_LOOP_CAUSE_AND_FIX} ` +
-      `${GIVE_IT_TIME} ${SUPPORT_TAIL}`
+      `${checkInWindow(rec, now, true)} ${RESTART_LOOP_CAUSE_AND_FIX}` +
+      `${waitCaveat(facts)} ${SUPPORT_TAIL}`
     );
   }
 
@@ -189,15 +275,19 @@ function advisoryText(rec: LicenseRecord, entitlement: Entitlement, now: number)
     case 'revoked':
     case 'disabled':
       return (
-        `${NOT_UNLOCKING} This license is no longer active, so restarting will not bring it ` +
-        'back. Fix: check your subscription status. If it should still be running, run ' +
-        '`editmamei license` in a terminal and send the output to support@editmamei.com.'
+        `${NOT_UNLOCKING} This license is no longer active, and restarting on its own will not ` +
+        'bring it back. Fix: check your subscription status. Once it is running again, run ' +
+        '`editmamei license` in a terminal to re-check the license and update this machine, ' +
+        `then ${RESTART_TO_LOAD}. If it should be running already, send that output to ` +
+        'support@editmamei.com.'
       );
     case 'expired':
       return (
         `${NOT_UNLOCKING} ${endedSentence(rec)} Fix: renew it, then run ` +
-        '`editmamei activate YOUR-KEY` in a terminal. If the renewal has already gone ' +
-        'through, run `editmamei license` and send that output to support@editmamei.com.'
+        `\`editmamei activate YOUR-KEY\` in a terminal and ${RESTART_TO_LOAD}. If the renewal ` +
+        'has already gone through, run `editmamei license` instead to re-check the license and ' +
+        'update this machine, then restart the client; if Pro is still missing, send that ' +
+        'output to support@editmamei.com.'
       );
     // `grace-expired` is what these words were written for. `granted` cannot be
     // un-entitled and `no-license` never reaches here (a null record returned
@@ -206,9 +296,10 @@ function advisoryText(rec: LicenseRecord, entitlement: Entitlement, now: number)
     case 'grace-expired':
     case 'granted':
     case 'no-license':
+      if (clockIsBehind(rec, now)) return CLOCK_BEHIND;
       return (
-        `${NOT_UNLOCKING}${checkInWindow(rec, now, false)} ${RESTART_LOOP_CAUSE_AND_FIX} ` +
-        `${GIVE_IT_TIME} ${SUPPORT_TAIL}`
+        `${NOT_UNLOCKING}${checkInWindow(rec, now, false)} ${RESTART_LOOP_CAUSE_AND_FIX}` +
+        `${waitCaveat(facts)} ${SUPPORT_TAIL}`
       );
   }
 }

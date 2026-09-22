@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { PolarLicenseClient, type FetchLike } from '@editmamei/license/polar-client.ts';
+import { describe, it, expect, vi } from 'vitest';
+import { PolarLicenseClient, unrefSleep, type FetchLike } from '@editmamei/license/polar-client.ts';
 import type { PolarConfig } from '@editmamei/license/config.ts';
 
 const cfg: PolarConfig = {
@@ -261,6 +261,60 @@ describe('PolarLicenseClient retry policy', () => {
       retryAfterMs: 60_000,
     });
     expect(calls).toHaveLength(3);
+  });
+
+  /**
+   * Record whether each timer opened for a `ms`-long wait is one that holds the
+   * event loop open. `unref()` runs synchronously right after `setTimeout`
+   * returns, so the state is read one microtask later — still long before any
+   * timer fires. Filtering on the delay keeps the runner's own timers out.
+   */
+  function watchTimerRefs(ms: number): { refs: (boolean | undefined)[]; restore: () => void } {
+    const refs: (boolean | undefined)[] = [];
+    const real = globalThis.setTimeout;
+    vi.stubGlobal('setTimeout', ((fn: () => void, delay?: number, ...rest: unknown[]) => {
+      const handle = real(fn, delay, ...(rest as []));
+      if (delay === ms) {
+        const h = handle as unknown as { hasRef?: () => boolean };
+        queueMicrotask(() => refs.push(h.hasRef?.()));
+      }
+      return handle;
+    }) as unknown as typeof setTimeout);
+    return { refs, restore: () => vi.unstubAllGlobals() };
+  }
+
+  it('waits out its default backoff on a timer that holds the process open', async () => {
+    // No `sleep` injected here, deliberately: this is the wait a one-shot CLI
+    // actually sits through. `editmamei activate`, `editmamei license` and
+    // `refresh` all reach `withRetry` with nothing else pending, so a backoff
+    // that let the loop drain would end the command mid-wait — no output, no
+    // retry — instead of returning the verdict a moment later.
+    const BACKOFF_MS = 17;
+    const { refs, restore } = watchTimerRefs(BACKOFF_MS);
+    try {
+      const { fetchImpl, calls } = scripted([503, 200]);
+      const client = new PolarLicenseClient(cfg, fetchImpl, {
+        retry: { baseDelayMs: BACKOFF_MS, maxDelayMs: BACKOFF_MS },
+      });
+
+      const v = await client.validate('K');
+      expect(v.status).toBe('granted');
+      expect(calls).toHaveLength(2);
+    } finally {
+      restore();
+    }
+    expect(refs).toEqual([true]);
+  });
+
+  it('offers unrefSleep as the opt-out, for a check running behind a long-lived host', async () => {
+    const BACKOFF_MS = 19;
+    const { refs, restore } = watchTimerRefs(BACKOFF_MS);
+    try {
+      await unrefSleep(BACKOFF_MS);
+    } finally {
+      restore();
+    }
+    expect(refs).toEqual([false]);
   });
 
   it('tolerates a response with no headers at all (test doubles, older fetch shims)', async () => {

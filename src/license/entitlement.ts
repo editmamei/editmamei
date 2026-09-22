@@ -22,6 +22,7 @@ import {
 import {
   PolarLicenseClient,
   PolarLicenseError,
+  unrefSleep,
   type FetchLike,
   type PolarClientOptions,
 } from './polar-client.js';
@@ -326,10 +327,21 @@ export async function refreshIfStale(ops: RefreshIfStaleOptions = {}): Promise<v
     updateCheckState({ validate_retry_after: null }, ops);
   }
 
+  // From here on a validate is actually fired, and this is the one caller that
+  // fires one behind a long-lived process. A retry backoff here must not be the
+  // reason the host stays up after its client has gone, so the wait goes on an
+  // unref'd timer. Only this path: `withRetry` also serves the one-shot CLI
+  // commands, which need the ref'd default or they exit mid-backoff with nothing
+  // to show for it. An injected client (tests) still wins.
+  const bootOps: RefreshIfStaleOptions = {
+    ...ops,
+    client: { sleep: unrefSleep, ...ops.client },
+  };
+
   if (clockSkewed || age <= GRACE_MS) {
     // Still entitled: refresh in the background. Deliberately NOT awaited —
     // this runs ahead of the MCP handshake and must add zero latency to it.
-    refresh(ops).catch((err) => {
+    refresh(bootOps).catch((err) => {
       noteValidateFailure(err, ops);
       logger.warn(
         `Background license refresh failed (grace covers offline use): ` +
@@ -342,7 +354,7 @@ export async function refreshIfStale(ops: RefreshIfStaleOptions = {}): Promise<v
   // Past grace but recoverable: Pro is already dark, so this boot may pay a
   // bounded wait for the chance to come back online entitled.
   const timeoutMs = ops.expiredRefreshTimeoutMs ?? EXPIRED_REFRESH_TIMEOUT_MS;
-  const attempt = refresh(ops);
+  const attempt = refresh(bootOps);
   // A late settle after the deadline must not become an unhandled rejection — and
   // whenever it DOES reject, that is a failed attempt worth backing off, however
   // the race below happened to resolve. Attaching the note here rather than to the

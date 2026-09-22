@@ -655,6 +655,46 @@ describe('refreshIfStale — persisted validate backoff', () => {
     expect(evaluateEntitlement(readLicense({ dir }), NOW).reason).toBe('grace-expired');
   });
 
+  it('waits out its retry backoff on a timer that cannot hold the host process up', async () => {
+    // The retry policy is shared with the one-shot CLI commands, which need the
+    // opposite: a wait that keeps the process alive, or the command ends
+    // mid-backoff with nothing to show. This caller is the exception — it checks
+    // in behind a long-lived host that may already have lost its client — so it
+    // passes its own sleep, and that opt-in is what is pinned here.
+    const BACKOFF_MS = 23;
+    const refs: (boolean | undefined)[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    vi.stubGlobal('setTimeout', ((fn: () => void, delay?: number, ...rest: unknown[]) => {
+      const handle = realSetTimeout(fn, delay, ...(rest as []));
+      // `unref()` runs synchronously right after this returns, so the ref state
+      // is read one microtask later, still long before the timer fires.
+      if (delay === BACKOFF_MS) {
+        const h = handle as unknown as { hasRef?: () => boolean };
+        queueMicrotask(() => refs.push(h.hasRef?.()));
+      }
+      return handle;
+    }) as unknown as typeof setTimeout);
+
+    try {
+      // Past grace, so the attempt is awaited and the backoff is over by the
+      // time this returns. No `sleep` in the injected client: the wait under
+      // test is the one the boot path chose for itself.
+      writeLicense(agedRec(31 * DAY_MS), { dir });
+      vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const { fetchImpl } = refusing(503);
+      await refreshIfStale(
+        ops({
+          fetchImpl,
+          client: { retry: { attempts: 2, baseDelayMs: BACKOFF_MS, maxDelayMs: BACKOFF_MS } },
+        })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(refs).toEqual([false]);
+  });
+
   it('a definitive revocation still lands while a marker is being written', async () => {
     // A failed ATTEMPT is what earns a marker. A server that ANSWERS — even to
     // revoke — is not a failure, and enforcement must reach the record as before.

@@ -42,6 +42,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 const RESTART_LOOP_WORDS = ['restarting faster', 'quit the client fully'];
 const GRACE_WINDOW_WORDS = ['grace window', 'last checked in'];
+/**
+ * The wait caveat. True only while a backoff marker is live, which a settled
+ * verdict never has — telling someone whose subscription ended to sit tight for
+ * a few hours costs them the restart that would actually have shown them the
+ * renewal. Asserted absent alongside the two above for exactly that reason.
+ */
+const WAIT_CAVEAT_WORDS = ['a few hours', 'instead of restarting it again'];
 
 function rec(over: Partial<LicenseRecord> = {}): LicenseRecord {
   return {
@@ -139,15 +146,27 @@ describe('licenseAdvisory — when it speaks', () => {
     expect(text).toContain('support@editmamei.com');
   });
 
-  it('does not promise the clean start will show its result at the next one', () => {
+  it('does not promise the clean start will show its result at the next one, while a check is being held off', () => {
     // A check that has just failed is not retried immediately, and the past-grace
     // recovery attempt is skipped for as long as that holds. Someone who takes
     // "wait a minute, then start it once" literally can restart into exactly the
     // same silence, so the advisory has to say that up front.
     writeLicense(agedRec(GRACE_MS + DAY_MS), { dir });
+    updateCheckState({ validate_retry_after: NOW + 60_000 }, { dir });
     const text = licenseAdvisory({ dir, now }) ?? '';
-    expect(text).toContain('a few hours');
-    expect(text).toContain('instead of restarting it again');
+    for (const phrase of WAIT_CAVEAT_WORDS) expect(text).toContain(phrase);
+  });
+
+  it('keeps quiet about the wait when nothing is holding the next check off', () => {
+    // The lapsed-grace reason is reached constantly with no marker at all: a
+    // machine that was simply offline, or one whose marker has since run out.
+    // The next start checks in straight away there, so "leave it alone for a few
+    // hours" is not a caveat, it is a delay imposed on the one action that would
+    // have brought Pro back.
+    writeLicense(agedRec(GRACE_MS + DAY_MS), { dir });
+    const text = licenseAdvisory({ dir, now }) ?? '';
+    expect(text).toContain('quit the client fully');
+    for (const phrase of WAIT_CAVEAT_WORDS) expect(text).not.toContain(phrase);
   });
 
   it('reads as future tense while the license is still inside its grace window', () => {
@@ -170,13 +189,45 @@ describe('licenseAdvisory — when it speaks', () => {
     expect(text).toContain('instead of restarting it again');
   });
 
+  it('names the update, not a restart loop, when the checks are fine and the module update is not', () => {
+    // The record checked in seconds ago, so "this client is restarting faster
+    // than the license check can finish" is not merely unhelpful here, it
+    // describes something that demonstrably did not happen. Nothing is dark
+    // either: the installed module carries on.
+    writeLicense(rec(), { dir });
+    const text = licenseAdvisory({ dir, now, moduleUpdateFailed: true }) ?? '';
+    expect(text).toContain('Pro is unlocked');
+    expect(text).toContain('did not finish');
+    expect(text).toContain('keeps working');
+    expect(text).toContain('tried again on its own');
+    for (const phrase of [...RESTART_LOOP_WORDS, ...WAIT_CAVEAT_WORDS]) {
+      expect(text).not.toContain(phrase);
+    }
+  });
+
+  it('gives the entitled reader the dates, the fix and somewhere to go', () => {
+    // Nothing else pins what this branch says. It is the one the wait caveat is
+    // most load-bearing on, since it is reached only while a marker is live.
+    writeLicense(agedRec(REFRESH_AFTER_MS + DAY_MS), { dir });
+    updateCheckState({ validate_retry_after: NOW + 60_000 }, { dir });
+    const text = licenseAdvisory({ dir, now }) ?? '';
+
+    expect(text).toContain('Pro is unlocked');
+    expect(text).toContain('not completing');
+    expect(text).toContain('last checked in on 2026-09-20'); // 2 days before NOW
+    expect(text).toContain('Pro locks on 2026-09-27'); // that date + the 7-day window
+    expect(text).toContain('quit the client fully');
+    expect(text).toContain('editmamei license');
+    expect(text).toContain('support@editmamei.com');
+  });
+
   it('never throws on a date the calendar cannot represent', () => {
     // The record's timestamp is only checked for being a string when it is read,
     // so an extreme value reaches the formatter — where `toISOString` THROWS
     // rather than returning "Invalid Date". This runs on the ping path, so a
     // throw would take out a response that otherwise succeeded.
-    // A failed module update is what makes it speak at all; the timestamp is what
-    // the formatter chokes on (the window ends past the end of representable time).
+    // A failed module update is what makes it speak at all; the timestamp sits at
+    // the far end of representable time, where the window would end past it.
     writeLicense(rec({ last_validated_at: '+275760-09-13T00:00:00.000Z' }), { dir });
     let text: string | null = null;
     expect(() => {
@@ -184,7 +235,18 @@ describe('licenseAdvisory — when it speaks', () => {
     }).not.toThrow();
     expect(text).not.toBeNull();
     expect(text ?? '').not.toContain('Invalid Date');
-    expect(text ?? '').toContain('quit the client fully');
+  });
+
+  it('drops a day the calendar cannot spell rather than printing half of one', () => {
+    // An expanded-year timestamp is inside what `Date` can represent, so nothing
+    // throws — but its ISO form reads `-271821-04-20T…`, and the first ten
+    // characters of that are a year and a month, not a day.
+    writeLicense(rec({ last_validated_at: '-271821-04-20T00:00:00.000Z' }), { dir });
+    const text = licenseAdvisory({ dir, now }) ?? '';
+    expect(text).toContain('Pro is not unlocking');
+    expect(text).not.toContain('-271821');
+    expect(text).not.toContain('last checked in');
+    expect(text).toContain('quit the client fully');
   });
 
   it('omits the dates rather than printing a bad one when the timestamp is unreadable', () => {
@@ -221,10 +283,10 @@ describe('licenseAdvisory — the cause it names is the cause it is', () => {
 
     expect(text).toContain('Pro is not unlocking');
     expect(text).toContain('no longer active');
-    expect(text).toContain('restarting will not bring it back');
+    expect(text).toContain('restarting on its own will not bring it back');
     expect(text).toContain('subscription status');
     expect(text).toContain('support@editmamei.com');
-    for (const phrase of [...RESTART_LOOP_WORDS, ...GRACE_WINDOW_WORDS]) {
+    for (const phrase of [...RESTART_LOOP_WORDS, ...GRACE_WINDOW_WORDS, ...WAIT_CAVEAT_WORDS]) {
       expect(text).not.toContain(phrase);
     }
   });
@@ -235,7 +297,7 @@ describe('licenseAdvisory — the cause it names is the cause it is', () => {
 
     expect(text).toContain('no longer active');
     expect(text).toContain('subscription status');
-    for (const phrase of [...RESTART_LOOP_WORDS, ...GRACE_WINDOW_WORDS]) {
+    for (const phrase of [...RESTART_LOOP_WORDS, ...GRACE_WINDOW_WORDS, ...WAIT_CAVEAT_WORDS]) {
       expect(text).not.toContain(phrase);
     }
   });
@@ -251,8 +313,47 @@ describe('licenseAdvisory — the cause it names is the cause it is', () => {
     expect(text).toContain('ended on 2026-09-21');
     expect(text).toContain('editmamei activate');
     expect(text).toContain('support@editmamei.com');
-    for (const phrase of [...RESTART_LOOP_WORDS, ...GRACE_WINDOW_WORDS]) {
+    for (const phrase of [...RESTART_LOOP_WORDS, ...GRACE_WINDOW_WORDS, ...WAIT_CAVEAT_WORDS]) {
       expect(text).not.toContain(phrase);
+    }
+  });
+
+  it('still names the end date on an ended license that stopped checking in long ago', () => {
+    // The real shape of an ended license: nothing re-validates it, so its last
+    // check-in recedes and it is comfortably past the offline window too. Only
+    // the order the reasons are tested in keeps it out of the lapsed-grace
+    // branch, and that order is what this pins — both dates are in the past, so
+    // a mix-up would read as plausible while naming the wrong cure.
+    writeLicense(
+      agedRec(GRACE_MS + 30 * DAY_MS, { expires_at: new Date(NOW - 30 * DAY_MS).toISOString() }),
+      { dir }
+    );
+    const text = licenseAdvisory({ dir, now }) ?? '';
+
+    expect(text).toContain('ended on 2026-08-23');
+    expect(text).toContain('editmamei activate');
+    for (const phrase of [...RESTART_LOOP_WORDS, ...GRACE_WINDOW_WORDS, ...WAIT_CAVEAT_WORDS]) {
+      expect(text).not.toContain(phrase);
+    }
+  });
+
+  it('tells both cure branches that the tools only come back on a restart', () => {
+    // Renewing, or reinstating a subscription, leaves Pro exactly as absent as
+    // it was until the client starts again: a module is never loaded
+    // mid-session. Without this the reader who did everything asked sees no
+    // change and has already been told restarting is pointless.
+    writeLicense(rec({ status: 'revoked' }), { dir });
+    const revoked = licenseAdvisory({ dir, now }) ?? '';
+    writeLicense(rec({ expires_at: new Date(NOW - DAY_MS).toISOString() }), { dir });
+    const ended = licenseAdvisory({ dir, now }) ?? '';
+
+    for (const text of [revoked, ended]) {
+      expect(text).toContain('only load when it starts');
+      // `editmamei license` re-checks the license and rewrites this machine's
+      // copy, so it is the self-heal for a subscription that is running again,
+      // not just something to paste into a support mail.
+      expect(text).toContain('editmamei license');
+      expect(text).toContain('re-check the license and update this machine');
     }
   });
 
@@ -261,6 +362,29 @@ describe('licenseAdvisory — the cause it names is the cause it is', () => {
     const text = licenseAdvisory({ dir, now }) ?? '';
     for (const phrase of [...RESTART_LOOP_WORDS, ...GRACE_WINDOW_WORDS]) {
       expect(text).toContain(phrase);
+    }
+  });
+
+  it('names the clock, not the window, when the clock is what denied the license', () => {
+    // The backward-clock guard denies a record whose offline window is still
+    // open, so the grace wording contradicts itself here: Pro is dark, and a
+    // week of window is left. The restart it advises cannot work either — the
+    // recorded mark the clock is behind never moves back, so every later check
+    // lands on the same verdict.
+    writeLicense(agedRec(DAY_MS, { high_water_mark: new Date(NOW + 30 * DAY_MS).toISOString() }), {
+      dir,
+    });
+    const text = licenseAdvisory({ dir, now }) ?? '';
+
+    expect(text).toContain('Pro is not unlocking');
+    expect(text).toContain('clock is set earlier');
+    expect(text).toContain('correct the system clock');
+    expect(text).toContain('editmamei activate');
+    // The self-contradiction itself: no window that "closes" on a date the
+    // reader can still see coming.
+    expect(text).not.toContain('closes on');
+    for (const phrase of [...GRACE_WINDOW_WORDS, ...RESTART_LOOP_WORDS, ...WAIT_CAVEAT_WORDS]) {
+      expect(text).not.toContain(phrase);
     }
   });
 
@@ -292,10 +416,20 @@ describe('licenseAdvisory — the cause it names is the cause it is', () => {
     writeLicense(agedRec(REFRESH_AFTER_MS + DAY_MS), { dir });
     updateCheckState({ validate_retry_after: NOW + 60_000 }, { dir });
     const failing = (licenseAdvisory({ dir, now }) ?? '').toLowerCase();
+    writeLicense(rec(), { dir });
+    updateCheckState({ validate_retry_after: null }, { dir });
+    const moduleFailed = (
+      licenseAdvisory({ dir, now, moduleUpdateFailed: true }) ?? ''
+    ).toLowerCase();
+    writeLicense(agedRec(DAY_MS, { high_water_mark: new Date(NOW + 30 * DAY_MS).toISOString() }), {
+      dir,
+    });
+    const clockBehind = (licenseAdvisory({ dir, now }) ?? '').toLowerCase();
 
-    for (const text of [lapsed, revoked, ended, failing]) expect(text).not.toBe('');
+    const all = [lapsed, revoked, ended, failing, moduleFailed, clockBehind];
+    for (const text of all) expect(text).not.toBe('');
     for (const word of forbidden) {
-      for (const text of [lapsed, revoked, ended, failing]) expect(text).not.toContain(word);
+      for (const text of all) expect(text).not.toContain(word);
     }
   });
 });
