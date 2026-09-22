@@ -16,6 +16,7 @@ import { Logger } from '../utils/logger.js';
 
 const logger = new Logger('License');
 const LICENSE_FILENAME = 'license.json';
+const CHECK_STATE_FILENAME = 'license-check.json';
 
 export type LicenseStatus = 'granted' | 'revoked' | 'disabled';
 
@@ -125,8 +126,118 @@ export function nextHighWaterMark(
   return new Date(hwm).toISOString();
 }
 
-/** Remove the cached license (deactivate / sign-out). No-op when absent. */
+/**
+ * Remove the cached license (deactivate / sign-out). No-op when absent. Also drops
+ * the check-state sidecar, which is derived scheduling state for THIS record and
+ * would otherwise outlive it — a marker left behind could delay the first online
+ * check after a re-activation.
+ */
 export function clearLicense(opts: LicenseStoreOptions = {}): void {
   const path = licensePath(opts);
   if (existsSync(path)) rmSync(path, { force: true });
+  clearCheckState(opts);
+}
+
+/**
+ * Scheduling markers that sit BESIDE the license record, never inside it: when the
+ * next online check may be ATTEMPTED, and when the Pro module freshness poll last
+ * ran.
+ *
+ * Deliberately its own file. Nothing here grants, shortens or removes
+ * entitlement — `evaluateEntitlement` does not read it and must never learn to —
+ * and keeping these frequent, low-value writes out of `license.json` means a
+ * failed or half-finished one can never damage the record that DOES decide what
+ * the user gets. Every read degrades to "no marker", so the worst outcome of a
+ * missing, unreadable or malformed file is the behaviour that existed before this
+ * file did: check now.
+ */
+export interface LicenseCheckState {
+  /**
+   * Epoch ms before which no online license check should be ATTEMPTED, written
+   * after an attempt failed. Suppresses attempts only — never the verdict.
+   */
+  validate_retry_after?: number;
+  /**
+   * Epoch ms before which the Pro-module freshness poll should not run again.
+   * Written before each poll and extended once one settles cleanly, so a poll
+   * that never finished still leaves a bounded wait behind.
+   */
+  module_retry_after?: number;
+}
+
+export function checkStatePath(opts: LicenseStoreOptions = {}): string {
+  return join(settingsDir(opts), CHECK_STATE_FILENAME);
+}
+
+/**
+ * Read the check-state sidecar. Never throws, and drops any field that is not a
+ * finite number — a hand-edited or truncated file degrades field by field to "no
+ * marker" rather than failing the boot path that reads it.
+ */
+export function readCheckState(opts: LicenseStoreOptions = {}): LicenseCheckState {
+  const path = checkStatePath(opts);
+  if (!existsSync(path)) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  } catch (err) {
+    logger.debug(
+      `license-check.json unreadable (ignoring): ${err instanceof Error ? err.message : String(err)}`
+    );
+    return {};
+  }
+  if (typeof parsed !== 'object' || parsed === null) return {};
+  const raw = parsed as Record<string, unknown>;
+  const out: LicenseCheckState = {};
+  if (typeof raw.validate_retry_after === 'number' && Number.isFinite(raw.validate_retry_after)) {
+    out.validate_retry_after = raw.validate_retry_after;
+  }
+  if (typeof raw.module_retry_after === 'number' && Number.isFinite(raw.module_retry_after)) {
+    out.module_retry_after = raw.module_retry_after;
+  }
+  return out;
+}
+
+/**
+ * Merge `patch` into the check-state sidecar and write it atomically. A `null`
+ * value REMOVES that marker (the "we got through, forget the backoff" case).
+ *
+ * Never throws: every caller is a fire-and-forget boot-path task where a
+ * read-only home or a full disk must degrade to "no marker persisted" — which
+ * simply means the next boot checks again — rather than failing a license refresh
+ * or a module poll.
+ */
+export function updateCheckState(
+  patch: { [K in keyof LicenseCheckState]?: number | null },
+  opts: LicenseStoreOptions = {}
+): void {
+  const next: LicenseCheckState = { ...readCheckState(opts) };
+  for (const [key, value] of Object.entries(patch) as [keyof LicenseCheckState, number | null][]) {
+    if (value === null) delete next[key];
+    else next[key] = value;
+  }
+  const path = checkStatePath(opts);
+  const dir = dirname(path);
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const tmp = join(dir, `.license-check.${process.pid}.tmp`);
+    writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+    renameSync(tmp, path);
+  } catch (err) {
+    logger.debug(
+      `license-check.json not written (ignoring): ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+/** Remove the check-state sidecar. No-op when absent; never throws. */
+export function clearCheckState(opts: LicenseStoreOptions = {}): void {
+  const path = checkStatePath(opts);
+  try {
+    if (existsSync(path)) rmSync(path, { force: true });
+  } catch (err) {
+    logger.debug(
+      `license-check.json not removed (ignoring): ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
 }

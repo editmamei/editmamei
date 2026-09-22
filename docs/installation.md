@@ -193,17 +193,37 @@ You should see your Photoshop version returned. If not, see [getting-started.md]
 
 ## Upgrade
 
-**npm install:**
+What you need to do depends on how Editmamei starts. The three paths behave differently, and two of
+them look identical from the outside.
+
+**`npx` (nothing to do).** If your client config runs `npx -y editmamei`, which is what every
+example config above uses, `npx` fetches the latest published version each time it starts. Restart
+your AI client and you're current. There is no command to run.
+
+**Global npm install (you have to ask).** If you installed with `npm install -g editmamei`, you
+stay on that version until you update it yourself:
 
 ```bash
 npm install -g editmamei@latest
 ```
 
-Restart your MCP client to pick up the new version.
+Restart your MCP client afterwards.
 
-**Claude Desktop (`.mcpb`):** download the latest [`editmamei.mcpb`](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb) and reinstall it under **Settings → Extensions**, then restart Claude Desktop.
+**Claude Desktop extension (replace the bundle).** The `.mcpb` is a frozen copy and never updates
+on its own. Download the current
+[`editmamei.mcpb`](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb),
+open **Settings → Extensions** in Claude Desktop, drag the new file onto that page to replace the
+installed one, then restart Claude Desktop.
 
-Either way, your existing templates and session logs at `~/.editmamei/` are preserved across upgrades.
+If you have Pro, check **Settings → Extensions → Editmamei → Pro license key** afterwards and paste
+your key back if the field came up empty. Your stored license keeps Pro working for a while even
+when that field is blank, so a missing key doesn't show up until days later.
+
+**Check what you're running.** Ask your assistant to run `ps_ping`. It reports the Editmamei
+version alongside the Photoshop connection.
+
+Your templates, session logs and license at `~/.editmamei/` are preserved across every upgrade path.
+Problems after an upgrade are covered in [troubleshooting.md](troubleshooting.md).
 
 ---
 

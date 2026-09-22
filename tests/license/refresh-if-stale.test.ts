@@ -18,9 +18,18 @@ import {
   EXPIRED_REFRESH_TIMEOUT_MS,
   GRACE_MS,
   CLOCK_SKEW_TOLERANCE_MS,
+  VALIDATE_BACKOFF_MIN_MS,
+  VALIDATE_BACKOFF_DEFAULT_MS,
+  VALIDATE_BACKOFF_MAX_MS,
 } from '@editmamei/license/entitlement.ts';
 import { maybeActivateFromEnv } from '@editmamei/license/env-activation.ts';
-import { readLicense, writeLicense, type LicenseRecord } from '@editmamei/license/store.ts';
+import {
+  readLicense,
+  writeLicense,
+  readCheckState,
+  updateCheckState,
+  type LicenseRecord,
+} from '@editmamei/license/store.ts';
 import type { PolarConfig } from '@editmamei/license/config.ts';
 import type { FetchLike } from '@editmamei/license/polar-client.ts';
 
@@ -93,6 +102,13 @@ describe('refreshIfStale', () => {
     config: CFG,
     now: () => NOW,
     env: PROD_ENV,
+    // A transient failure is retried with a real backoff in production. These
+    // tests are about what refreshIfStale DECIDES, not how long the client waits
+    // before giving up, so the backoff sleep is a no-op here — without it every
+    // failure case below would sit out several seconds of real wall-clock before
+    // the warn it asserts on ever fires. The retry schedule itself is pinned in
+    // polar-client.test.ts.
+    client: { sleep: async () => {} },
     ...extra,
   });
 
@@ -434,5 +450,260 @@ describe('refreshIfStale', () => {
       expect(pastBoundary.urls.length).toBe(1);
     });
     expect(pastBoundary.urls[0]).toContain('/validate');
+  });
+});
+
+/**
+ * The persisted attempt backoff.
+ *
+ * A failed validate used to leave the record exactly as stale as it found it, and
+ * a stale record is what makes the next boot try again — so a client restarting
+ * faster than a check can finish fed its own failure, once per restart, for as
+ * long as the failure lasted. The marker breaks that loop by suppressing the next
+ * ATTEMPT.
+ *
+ * The invariant these tests exist to defend: the marker is a scheduler and
+ * nothing more. It must never be able to deny a user, shorten their grace, or
+ * change any verdict — the worst it may do is delay a recovery, and only briefly.
+ */
+describe('refreshIfStale — persisted validate backoff', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'em-backoff-'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const ops = (extra: Record<string, unknown> = {}) => ({
+    dir,
+    config: CFG,
+    now: () => NOW,
+    env: PROD_ENV,
+    client: { sleep: async () => {} },
+    ...extra,
+  });
+
+  /** A validate endpoint that always refuses with `status`, optionally with a Retry-After. */
+  function refusing(status: number, retryAfter?: string) {
+    const urls: string[] = [];
+    const fetchImpl: FetchLike = async (url) => {
+      urls.push(url);
+      return {
+        ok: false,
+        status,
+        text: async () => JSON.stringify({ e: status }),
+        headers: {
+          get: (name: string) =>
+            name.toLowerCase() === 'retry-after' ? (retryAfter ?? null) : null,
+        },
+      };
+    };
+    return { fetchImpl, urls };
+  }
+
+  it('a throttled validate writes a marker, and the next boot does not attempt one', async () => {
+    writeLicense(agedRec(2 * DAY_MS), { dir });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const first = refusing(429, '60');
+    await refreshIfStale(ops({ fetchImpl: first.fetchImpl }));
+    await vi.waitFor(() => {
+      expect(readCheckState({ dir }).validate_retry_after).toBeDefined();
+    });
+    // The server said 60s; the floor is 60s, so that is what is honored.
+    expect(readCheckState({ dir }).validate_retry_after).toBe(NOW + VALIDATE_BACKOFF_MIN_MS);
+
+    // Same boot conditions a moment later: no attempt at all this time.
+    const second = refusing(429, '60');
+    await refreshIfStale(ops({ fetchImpl: second.fetchImpl, now: () => NOW + 1000 }));
+    expect(second.urls).toEqual([]);
+  });
+
+  it('a failure with no server guidance falls back to the default wait', async () => {
+    writeLicense(agedRec(2 * DAY_MS), { dir });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const fetchImpl: FetchLike = async () => {
+      throw new Error('network down');
+    };
+    await refreshIfStale(ops({ fetchImpl }));
+    await vi.waitFor(() => {
+      expect(readCheckState({ dir }).validate_retry_after).toBe(NOW + VALIDATE_BACKOFF_DEFAULT_MS);
+    });
+  });
+
+  it('the wait can never exceed the ceiling, however long the server asks for', async () => {
+    writeLicense(agedRec(2 * DAY_MS), { dir });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    // 30 days of Retry-After would otherwise park a license past its own grace.
+    const { fetchImpl } = refusing(503, String(30 * 24 * 60 * 60));
+    await refreshIfStale(ops({ fetchImpl }));
+    await vi.waitFor(() => {
+      expect(readCheckState({ dir }).validate_retry_after).toBe(NOW + VALIDATE_BACKOFF_MAX_MS);
+    });
+    // The ceiling is what guarantees the marker can't outlast the grace window.
+    expect(VALIDATE_BACKOFF_MAX_MS).toBeLessThan(GRACE_MS);
+  });
+
+  it('once the marker passes it is cleared and the attempt goes ahead', async () => {
+    writeLicense(agedRec(2 * DAY_MS), { dir });
+    updateCheckState({ validate_retry_after: NOW - 1 }, { dir });
+
+    const { fetchImpl, urls } = validateFetch();
+    await refreshIfStale(ops({ fetchImpl }));
+    await vi.waitFor(() => {
+      expect(urls.length).toBe(1);
+    });
+    await vi.waitFor(() => {
+      expect(readCheckState({ dir }).validate_retry_after).toBeUndefined();
+    });
+  });
+
+  it('a validate that gets through clears a marker left by an earlier failure', async () => {
+    writeLicense(agedRec(2 * DAY_MS), { dir });
+    updateCheckState({ validate_retry_after: NOW - 1 }, { dir });
+
+    const { fetchImpl } = validateFetch('granted');
+    await refreshIfStale(ops({ fetchImpl }));
+    await vi.waitFor(() => {
+      expect(readLicense({ dir })?.last_validated_at).toBe(new Date(NOW).toISOString());
+    });
+    expect(readCheckState({ dir }).validate_retry_after).toBeUndefined();
+  });
+
+  it('discards a marker further out than the longest wait it could have written', async () => {
+    // A machine whose clock was set a year ahead writes a marker a year out. Once
+    // the clock is corrected, honoring that value would skip the validate on every
+    // boot — `last_validated_at` never advances, and a healthy license runs out of
+    // grace with a working network. Clamping only on write cannot catch this,
+    // because the write happened on the wrong clock.
+    writeLicense(agedRec(2 * DAY_MS), { dir });
+    updateCheckState({ validate_retry_after: NOW + 365 * DAY_MS }, { dir });
+
+    const { fetchImpl, urls } = validateFetch();
+    await refreshIfStale(ops({ fetchImpl }));
+
+    await vi.waitFor(() => {
+      expect(urls.length).toBe(1);
+    });
+    // And it is cleared, not left for the next boot to weigh again.
+    await vi.waitFor(() => {
+      expect(readCheckState({ dir }).validate_retry_after).toBeUndefined();
+    });
+  });
+
+  it('a local configuration error writes no marker — waiting cannot fix it', async () => {
+    writeLicense(agedRec(2 * DAY_MS), { dir });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const { fetchImpl, urls } = validateFetch();
+    // An unconfigured org throws before anything leaves the machine.
+    await refreshIfStale(ops({ fetchImpl, config: { ...CFG, organizationId: '' } }));
+
+    expect(urls).toEqual([]);
+    await vi.waitFor(() => {
+      expect(readLicense({ dir })).not.toBeNull();
+    });
+    expect(readCheckState({ dir }).validate_retry_after).toBeUndefined();
+  });
+
+  it('a live marker suppresses the ATTEMPT and nothing else — entitlement is untouched', async () => {
+    writeLicense(agedRec(2 * DAY_MS), { dir });
+    updateCheckState({ validate_retry_after: NOW + VALIDATE_BACKOFF_MAX_MS }, { dir });
+
+    const before = readLicense({ dir });
+    const { fetchImpl, urls } = validateFetch();
+    await refreshIfStale(ops({ fetchImpl }));
+
+    expect(urls).toEqual([]);
+    // Same record, same verdict: the marker is invisible to entitlement.
+    expect(readLicense({ dir })).toEqual(before);
+    expect(evaluateEntitlement(readLicense({ dir }), NOW)).toEqual({
+      entitled: true,
+      reason: 'granted',
+    });
+  });
+
+  it('cannot darken a license that is still inside its grace window', async () => {
+    // The worst case for the marker: written at the maximum wait, on a record
+    // already most of the way through grace. Entitlement still says granted,
+    // because nothing on that path reads this file.
+    writeLicense(agedRec(GRACE_MS - 60_000), { dir });
+    updateCheckState({ validate_retry_after: NOW + VALIDATE_BACKOFF_MAX_MS }, { dir });
+
+    const { fetchImpl, urls } = validateFetch();
+    await refreshIfStale(ops({ fetchImpl }));
+
+    expect(urls).toEqual([]);
+    expect(evaluateEntitlement(readLicense({ dir }), NOW).entitled).toBe(true);
+  });
+
+  it('a marker is written when the awaited past-grace recovery fails, not only the background one', async () => {
+    writeLicense(agedRec(31 * DAY_MS), { dir });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const { fetchImpl } = refusing(429, '60');
+    await refreshIfStale(ops({ fetchImpl }));
+    await vi.waitFor(() => {
+      expect(readCheckState({ dir }).validate_retry_after).toBe(NOW + VALIDATE_BACKOFF_MIN_MS);
+    });
+    // Still grace-expired — the marker records the failure, it does not cause it.
+    expect(evaluateEntitlement(readLicense({ dir }), NOW).reason).toBe('grace-expired');
+  });
+
+  it('waits out its retry backoff on a timer that cannot hold the host process up', async () => {
+    // The retry policy is shared with the one-shot CLI commands, which need the
+    // opposite: a wait that keeps the process alive, or the command ends
+    // mid-backoff with nothing to show. This caller is the exception — it checks
+    // in behind a long-lived host that may already have lost its client — so it
+    // passes its own sleep, and that opt-in is what is pinned here.
+    const BACKOFF_MS = 23;
+    const refs: (boolean | undefined)[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    vi.stubGlobal('setTimeout', ((fn: () => void, delay?: number, ...rest: unknown[]) => {
+      const handle = realSetTimeout(fn, delay, ...(rest as []));
+      // `unref()` runs synchronously right after this returns, so the ref state
+      // is read one microtask later, still long before the timer fires.
+      if (delay === BACKOFF_MS) {
+        const h = handle as unknown as { hasRef?: () => boolean };
+        queueMicrotask(() => refs.push(h.hasRef?.()));
+      }
+      return handle;
+    }) as unknown as typeof setTimeout);
+
+    try {
+      // Past grace, so the attempt is awaited and the backoff is over by the
+      // time this returns. No `sleep` in the injected client: the wait under
+      // test is the one the boot path chose for itself.
+      writeLicense(agedRec(31 * DAY_MS), { dir });
+      vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const { fetchImpl } = refusing(503);
+      await refreshIfStale(
+        ops({
+          fetchImpl,
+          client: { retry: { attempts: 2, baseDelayMs: BACKOFF_MS, maxDelayMs: BACKOFF_MS } },
+        })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(refs).toEqual([false]);
+  });
+
+  it('a definitive revocation still lands while a marker is being written', async () => {
+    // A failed ATTEMPT is what earns a marker. A server that ANSWERS — even to
+    // revoke — is not a failure, and enforcement must reach the record as before.
+    writeLicense(agedRec(2 * DAY_MS), { dir });
+    const { fetchImpl } = validateFetch('revoked');
+    await refreshIfStale(ops({ fetchImpl }));
+    await vi.waitFor(() => {
+      expect(readLicense({ dir })?.status).toBe('revoked');
+    });
+    expect(readCheckState({ dir }).validate_retry_after).toBeUndefined();
   });
 });

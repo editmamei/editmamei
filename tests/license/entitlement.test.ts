@@ -336,7 +336,11 @@ describe('refresh + deactivate', () => {
     const fetchImpl: FetchLike = async () => {
       throw new Error('offline');
     };
-    await expect(deactivate({ dir, fetchImpl, config: CFG })).rejects.toBeInstanceOf(Error);
+    // No-op backoff: the thrown fetch is retried, and this test is about the
+    // local clear happening regardless, not the retry schedule.
+    await expect(
+      deactivate({ dir, fetchImpl, config: CFG, client: { sleep: async () => {} } })
+    ).rejects.toBeInstanceOf(Error);
     expect(existsSync(join(dir, 'license.json'))).toBe(false);
   });
 });

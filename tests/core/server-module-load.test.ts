@@ -19,7 +19,14 @@ import { compareVersions } from '@editmamei/delivery/provision.ts';
 import { ModuleLifecycle } from '@editmamei/kernel/module-lifecycle.ts';
 import { ToolRegistry, type ToolDefinition } from '@editmamei/core/tool-registry.ts';
 import { Logger } from '@editmamei/utils/logger.ts';
-import { tierOf } from '@editmamei/core/tool-tiers.ts';
+import { tierOf, toolsInTier } from '@editmamei/core/tool-tiers.ts';
+import {
+  MODULE_FRESH_AFTER_MS,
+  MODULE_RETRY_AFTER_FAILURE_MS,
+} from '@editmamei/kernel/module-lifecycle.ts';
+import { updateCheckState } from '@editmamei/license/store.ts';
+import { makeConnection } from '../fixtures/fake-connection.ts';
+import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
 import type { Kernel } from '@editmamei/kernel/kernel.ts';
 import { KERNEL_ABI } from '@editmamei/kernel/host-api.ts';
@@ -204,6 +211,8 @@ type SelfHealDelivery = {
   fetchImpl?: DeliveryFetch;
   signingKeys?: readonly string[];
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  freshAfterMs?: number;
 };
 type ServerProbe = {
   toolRegistry: { list(): Array<{ name: string }>; get(name: string): unknown; count(): number };
@@ -1081,5 +1090,433 @@ describe('classifyModuleOutcome — module_status taxonomy (telemetry §11)', ()
     expect(
       classifyModuleOutcome({ proModuleLoaded: false, skipReason: null, entitled: false })
     ).toBe('lapsed');
+  });
+});
+
+/**
+ * A home with a license record but NO module — the shape a license holder is in
+ * when Pro is not unlocking. `ageMs` back-dates the last check-in: past the grace
+ * window it is no longer entitled, which is the case the stubs exist for. Pass
+ * `license: false` for a pure Community install, which must look untouched.
+ */
+function buildLicenseOnlyHome({
+  ageMs = 0,
+  license = true,
+}: { ageMs?: number; license?: boolean } = {}): string {
+  const home = mkdtempSync(join(tmpdir(), 'em-lapsed-'));
+  homes.push(home);
+  const dir = dirOf(home);
+  mkdirSync(dir, { recursive: true });
+  if (license) {
+    writeFileSync(
+      join(dir, 'license.json'),
+      JSON.stringify({
+        key: 'TEST-KEY',
+        organization_id: 'org_test',
+        status: 'granted',
+        expires_at: null,
+        activation_id: 'act_test',
+        device_hash: 'dev_test',
+        display_key: '****-TEST',
+        last_validated_at: new Date(Date.now() - ageMs).toISOString(),
+      })
+    );
+  }
+  fx.home = home;
+  return home;
+}
+
+/** Comfortably past the 7-day grace window, so the record is no longer entitled. */
+const LAPSED_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Explain-only stubs for a license that is not unlocking Pro.
+ *
+ * Without them the Pro tools are simply absent and the model answers that it has
+ * no such tool — the one answer that tells a license holder nothing about why,
+ * and nothing about what to do. The stubs keep the names in the catalogue and
+ * answer with the reason and the fix.
+ *
+ * Two boundaries are load-bearing and tested here as such. A pure Community
+ * install must never see a Pro name, and the names must come from the tier table
+ * filtered to `pro` — never `dev` or `none`, which must not appear as `ps_*` on
+ * any user-facing surface.
+ */
+describe('EditmameiServer.loadModules — explain-only Pro stubs for a lapsed license', () => {
+  it('registers the Pro names when a license record exists but Pro is not unlocking', async () => {
+    buildLicenseOnlyHome({ ageMs: LAPSED_AGE_MS });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const registered = names(server);
+    for (const name of toolsInTier('pro')) expect(registered).toContain(name);
+    expect(registered).toContain('ps_ping'); // the CE surface is untouched
+  });
+
+  it('reads the injected store rather than this machine, with no home mock in play', async () => {
+    // Every other case here isolates by mocking `node:os` homedir, which is global
+    // and easy to omit: `settingsDir()` honours only an explicit option, never an
+    // env var, so a suite run on a machine that has ever activated Pro would read
+    // that developer's own license and register Pro stubs into unrelated tests.
+    // `licenseStore` is the explicit way out, and this pins that it is honoured:
+    // the lapsed record lives ONLY in the injected directory.
+    const home = mkdtempSync(join(tmpdir(), 'em-injected-'));
+    homes.push(home);
+    const dir = dirOf(home);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'license.json'),
+      JSON.stringify({
+        key: 'TEST-KEY',
+        organization_id: 'org_test',
+        status: 'granted',
+        expires_at: null,
+        activation_id: 'act_test',
+        device_hash: 'dev_test',
+        display_key: '****-TEST',
+        last_validated_at: new Date(Date.now() - LAPSED_AGE_MS).toISOString(),
+      })
+    );
+
+    // `fx.home` is module-level and never reset, so without this it would still
+    // point at whatever lapsed home the previous test built, and this test would
+    // pass even if the injection were ignored. An empty home here means the
+    // default path finds NO license: only the injected store can produce stubs.
+    const emptyHome = mkdtempSync(join(tmpdir(), 'em-empty-'));
+    homes.push(emptyHome);
+    fx.home = emptyHome;
+
+    const server = new EditmameiServer({ licenseStore: { dir } }) as unknown as ServerProbe;
+    await server.loadModules();
+
+    const registered = names(server);
+    for (const name of toolsInTier('pro')) expect(registered).toContain(name);
+
+    // The stub's own answer must come from the same store. Read from the empty
+    // default home instead, it would find no record and fall back to the
+    // "active again, restart" line.
+    const def = server.toolRegistry.get(toolsInTier('pro')[0]) as {
+      handler: () => Promise<{ content: Array<{ text: string }> }>;
+    };
+    const res = await def.handler();
+    expect(res.content[0].text).toContain('Pro is not unlocking');
+  });
+
+  it('never registers a dev- or none-tier name (the cross-surface tier invariant)', async () => {
+    buildLicenseOnlyHome({ ageMs: LAPSED_AGE_MS });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const registered = names(server);
+    for (const name of [...toolsInTier('dev'), ...toolsInTier('none')]) {
+      expect(registered).not.toContain(name);
+    }
+  });
+
+  it('leaves a pure Community install exactly as it was — no license, no Pro names', async () => {
+    buildLicenseOnlyHome({ license: false });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const registered = names(server);
+    for (const name of toolsInTier('pro')) expect(registered).not.toContain(name);
+  });
+
+  it('leaves an entitled install alone — a stub must never shadow a real handler', async () => {
+    // Entitled, module not yet provisioned: today this is a Community-looking boot
+    // that the background provision cures, and it must stay that way.
+    buildLicenseOnlyHome({ ageMs: 0 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const registered = names(server);
+    for (const name of toolsInTier('pro')) expect(registered).not.toContain(name);
+  });
+
+  it('a stub answers with the reason and the fix, and reports that it did nothing', async () => {
+    buildLicenseOnlyHome({ ageMs: LAPSED_AGE_MS });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const def = server.toolRegistry.get(toolsInTier('pro')[0]) as {
+      handler: () => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+    };
+    const res = await def.handler();
+    const text = res.content[0].text;
+
+    expect(text).toContain('Pro is not unlocking');
+    expect(text).toContain('quit the client fully');
+    expect(text).toContain('support@editmamei.com');
+    // isError, unlike the ping advisory: this call did NOT do what it was asked,
+    // and a clean result would read to the model as though the edit had happened.
+    expect(res.isError).toBe(true);
+  });
+});
+
+/**
+ * The freshness poll's own interval.
+ *
+ * It used to run on every boot, so a host that restarts often paid a full
+ * provision round trip each time to re-learn what it learned minutes ago. The
+ * marker is scheduling only — it can never stop an installed module from loading.
+ */
+describe('EditmameiServer.ensureEntitledModuleFresh — once a day, not once a boot', () => {
+  it('polls the first time and no-ops on a restart inside the interval', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const fake = fakeDelivery('9.9.10');
+    let firstCalls = 0;
+    await server.ensureEntitledModuleFresh({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        firstCalls++;
+        return fake.fetchImpl(url, init);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+    expect(firstCalls).toBeGreaterThan(0);
+
+    // A second boot moments later: same machine, same home, no network at all.
+    const second = new EditmameiServer() as unknown as ServerProbe;
+    await second.loadModules();
+    let secondCalls = 0;
+    await second.ensureEntitledModuleFresh({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        secondCalls++;
+        return fake.fetchImpl(url, init);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+    expect(secondCalls).toBe(0);
+  });
+
+  it('polls again once the interval has passed', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const fake = fakeDelivery('9.9.10');
+    await server.ensureEntitledModuleFresh({
+      config: cfg,
+      fetchImpl: fake.fetchImpl,
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+
+    let calls = 0;
+    await server.ensureEntitledModuleFresh({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        calls++;
+        return fake.fetchImpl(url, init);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+      now: () => Date.now() + MODULE_FRESH_AFTER_MS + 1,
+    });
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  it('a marker from the future does not park the poll — it polls and restamps', async () => {
+    // A clock that jumped forward and back would otherwise leave a marker no
+    // present time can ever pass.
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    updateCheckState({ module_retry_after: Date.now() + 365 * 24 * 60 * 60 * 1000 });
+
+    const fake = fakeDelivery('9.9.10');
+    let calls = 0;
+    await server.ensureEntitledModuleFresh({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        calls++;
+        return fake.fetchImpl(url, init);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  it('stamps the attempt, so a failing poll does not re-fire on the next boot either', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => jsonRes(500, { error: 'server' }),
+        signingKeys: [],
+        sleep: async () => {},
+      });
+
+      let calls = 0;
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => {
+          calls++;
+          return jsonRes(500, { error: 'server' });
+        },
+        signingKeys: [],
+        sleep: async () => {},
+      });
+      expect(calls).toBe(0);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+});
+
+/**
+ * The parts of this change that only exist once the pieces are wired together:
+ * a failed background module update reaching the ping advisory, a stub answering
+ * correctly when entitlement returns mid-session, and the freshness marker's two
+ * different waits. Each of these would survive the deletion of a line in the
+ * production path if it were only tested a layer at a time.
+ */
+describe('Pro failure visibility — the wiring between the pieces', () => {
+  type PingProbe = ServerProbe & {
+    session: { connection: unknown };
+    snippetClient: unknown;
+    updateInfo: unknown;
+    pingPhotoshop(): Promise<{ content: Array<{ text: string }> }>;
+  };
+
+  it('a failed background module update reaches the next ping', async () => {
+    // The flag is set by the module lifecycle and read by the advisory source.
+    // Nothing else observes it, so without this the whole chain could be deleted
+    // and every other test would still pass.
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer({
+      licenseAdvisory: ({ moduleUpdateFailed }) => (moduleUpdateFailed ? 'MODULE-FAILED' : null),
+    }) as unknown as PingProbe;
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = null;
+    await server.loadModules();
+
+    // Before the failure there is nothing to say.
+    expect((await server.pingPhotoshop()).content[0].text).not.toContain('MODULE-FAILED');
+
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => jsonRes(500, { error: 'server' }),
+        signingKeys: [],
+        sleep: async () => {},
+        now: () => Date.now() + MODULE_FRESH_AFTER_MS + 1,
+      });
+    } finally {
+      stderr.mockRestore();
+    }
+
+    expect((await server.pingPhotoshop()).content[0].text).toContain('MODULE-FAILED');
+  });
+
+  it('a stub says "restart", not "Pro is unlocked", when entitlement returns mid-session', async () => {
+    // The stubs were registered at boot and cannot become real handlers without a
+    // restart. Answering with the ordinary advisory here would open "Pro is
+    // unlocked" on a call that just refused to run, and omit the only fix there is.
+    const home = buildLicenseOnlyHome({ ageMs: LAPSED_AGE_MS });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    // Entitlement comes back while the session is up (a background refresh).
+    writeFileSync(
+      join(dirOf(home), 'license.json'),
+      JSON.stringify({
+        key: 'TEST-KEY',
+        organization_id: 'org_test',
+        status: 'granted',
+        expires_at: null,
+        activation_id: 'act_test',
+        device_hash: 'dev_test',
+        display_key: '****-TEST',
+        last_validated_at: new Date().toISOString(),
+      })
+    );
+
+    const def = server.toolRegistry.get(toolsInTier('pro')[0]) as {
+      handler: () => Promise<{ content: Array<{ text: string }> }>;
+    };
+    const text = (await def.handler()).content[0].text;
+    expect(text).toContain('Restart your MCP client');
+    expect(text).not.toContain('Pro is unlocked');
+  });
+
+  it('a stub never shadows a real Pro handler', async () => {
+    // Structurally guaranteed by the branch the stubs live on, but it is the
+    // invariant that would hurt most if it broke: a stub over a working handler
+    // would take Pro away from a paying, entitled user.
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const def = server.toolRegistry.get('ps_list_actions') as {
+      tool: { description: string };
+      handler: () => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+    };
+    expect(def.tool.description).toBe('fixture'); // the module's own, not a stub's
+    const res = await def.handler();
+    expect(res.content[0].text).toBe('ok');
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('a failed poll with NO module installed retries soon, not tomorrow', async () => {
+    // With nothing installed this poll is not a freshness check, it is the
+    // install — and the only boot path that performs one. Parking it for a day
+    // over one bad network moment would be slower to recover than the per-boot
+    // polling the interval replaces.
+    buildLicenseOnlyHome({ ageMs: 0 }); // entitled, no module on disk
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => jsonRes(500, { error: 'server' }),
+        signingKeys: [],
+        sleep: async () => {},
+      });
+
+      // Still parked in the short window...
+      let early = 0;
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => {
+          early++;
+          return jsonRes(500, { error: 'server' });
+        },
+        signingKeys: [],
+        sleep: async () => {},
+      });
+      expect(early).toBe(0);
+
+      // ...but free again long before the full interval would have expired.
+      let later = 0;
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => {
+          later++;
+          return jsonRes(500, { error: 'server' });
+        },
+        signingKeys: [],
+        sleep: async () => {},
+        now: () => Date.now() + MODULE_RETRY_AFTER_FAILURE_MS + 1_000,
+      });
+      expect(later).toBeGreaterThan(0);
+      expect(MODULE_RETRY_AFTER_FAILURE_MS).toBeLessThan(MODULE_FRESH_AFTER_MS);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });

@@ -137,9 +137,13 @@ It replaces coordinate guessing. The AI names a location in words, local vision 
 
 Buy Pro at [editmamei.com/pricing](https://editmamei.com/pricing), then activate it. Pro is delivered as a downloaded module: activating your license makes Editmamei fetch and load the Pro module alongside your Community install, so nothing gets reinstalled. If you run Editmamei through Claude Code or another npm client, run `editmamei activate YOUR-KEY` in your terminal and restart the client (check status anytime with `editmamei license`). If you use the Claude Desktop extension, open **Settings → Extensions → Editmamei**, paste your key into the **Pro license key** field, save, and restart Claude Desktop. Full walkthrough at [editmamei.com/activate](https://editmamei.com/activate). See [pro-features.md](pro-features.md) for what Pro adds.
 
-### Pro stopped unlocking after an update. How do I fix it?
+### Pro stopped unlocking. How do I fix it?
 
-Run `editmamei repair` in a terminal. It re-downloads the Pro module and touches nothing else: your templates, settings, session logs, and license at `~/.editmamei/` stay put. Restart your AI client afterwards. If Pro still doesn't unlock, email [support@editmamei.com](mailto:support@editmamei.com).
+Run `editmamei license` first. Its last line says whether Pro is unlocked and, if not, why: `grace-expired` means your license hasn't checked in recently enough, `revoked` or `expired` are subscription states, and `granted` means the license is fine and you just need to restart your AI client so the module loads.
+
+The most common cause is `grace-expired` on a healthy subscription, which usually means your AI client is restarting Editmamei faster than the license check can finish. Quit the client completely, wait a minute, start it once, and leave it running; if checks have been failing for a while, Pro can take a few hours to come back rather than returning at the next start. If `Last check` in that output is within the past week yet Pro still says `grace-expired`, the cause is a system clock that was once set ahead, and the fix is different: see [a clock set behind](troubleshooting.md#a-clock-set-behind). If you use the Claude Desktop extension and recently installed a new bundle, also check your key is still in **Settings → Extensions → Editmamei → Pro license key**.
+
+`editmamei repair` re-downloads the Pro module and is the right fix for a damaged download, not for a license that isn't checking in, so try it after `editmamei license` rather than before. Full walkthrough in [troubleshooting.md](troubleshooting.md#pro-tools-are-missing-or-pro-shows-as-community). If none of it helps, email [support@editmamei.com](mailto:support@editmamei.com).
 
 ### Do you offer a free trial?
 

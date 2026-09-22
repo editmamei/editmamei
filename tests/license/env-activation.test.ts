@@ -184,7 +184,12 @@ describe('maybeActivateFromEnv', () => {
       throw new Error('network down');
     };
     await expect(
-      maybeActivateFromEnv({ EDITMAMEI_LICENSE_KEY: 'X' }, { dir, config: CFG, fetchImpl: boom })
+      // No-op backoff: the thrown fetch is retried, and this test is about
+      // booting as Community regardless, not the retry schedule.
+      maybeActivateFromEnv(
+        { EDITMAMEI_LICENSE_KEY: 'X' },
+        { dir, config: CFG, fetchImpl: boom, client: { sleep: async () => {} } }
+      )
     ).resolves.toBeUndefined();
     expect(existsSync(join(dir, 'license.json'))).toBe(false);
   });
