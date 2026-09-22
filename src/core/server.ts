@@ -34,6 +34,7 @@ import { GoSnippetClient, coreBinaryName } from '../api/snippet-client.js';
 import { isProEntitled } from '../license/entitlement.js';
 import { createPingLicenseRefresher } from '../license/ping-refresh.js';
 import { licenseAdvisory } from '../license/advisory.js';
+import type { LicenseStoreOptions } from '../license/store.js';
 import type { ProvisionOptions } from '../delivery/provision.js';
 import { runScript } from '../utils/run-script.js';
 import { listTemplates } from '../utils/template-storage.js';
@@ -140,6 +141,16 @@ export interface EditmameiServerOptions {
    * is the whole reason the flag exists and would otherwise be untestable.
    */
   licenseAdvisory?: (opts: { moduleUpdateFailed: boolean }) => string | null;
+  /**
+   * Where the module lifecycle reads the license record and the check-state
+   * sidecar. Same hazard as `licenseAdvisory` above and the same cure: the stub
+   * registration and the freshness poll both read `~/.editmamei`, so on a machine
+   * that has ever activated Pro a lapsed record there would register Pro stubs
+   * into any test that builds a server, and a test injecting a delivery
+   * `fetchImpl` would write that machine's real sidecar and park its module poll.
+   * Defaults to the real directory, which is what the host wants.
+   */
+  licenseStore?: LicenseStoreOptions;
 }
 
 export class EditmameiServer {
@@ -311,6 +322,8 @@ export class EditmameiServer {
 
   /** Source of the license advisory text; see EditmameiServerOptions. */
   private readonly licenseAdvisorySource: (opts: { moduleUpdateFailed: boolean }) => string | null;
+  /** Store location for the module lifecycle's license reads; see EditmameiServerOptions. */
+  private readonly licenseStoreOptions: LicenseStoreOptions;
 
   /**
    * Whether this session has already delivered the license advisory. Once is the
@@ -320,6 +333,7 @@ export class EditmameiServer {
   private licenseAdvisoryShown = false;
 
   constructor(opts: EditmameiServerOptions = {}) {
+    this.licenseStoreOptions = opts.licenseStore ?? {};
     this.logger = new Logger('EditmameiServer');
     this.session = new Session();
 
@@ -723,6 +737,7 @@ export class EditmameiServer {
     this.moduleLifecycle = new ModuleLifecycle({
       toolRegistry: this.toolRegistry,
       logger: this.logger,
+      licenseStore: this.licenseStoreOptions,
       assertToolsClassified: () => this.assertToolsClassified(),
       classifyTool: (name) => this.classifyTool(name),
       onModuleUpdate: (outcome) => {

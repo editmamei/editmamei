@@ -1153,6 +1153,38 @@ describe('EditmameiServer.loadModules — explain-only Pro stubs for a lapsed li
     expect(registered).toContain('ps_ping'); // the CE surface is untouched
   });
 
+  it('reads the injected store rather than this machine, with no home mock in play', async () => {
+    // Every other case here isolates by mocking `node:os` homedir, which is global
+    // and easy to omit: `settingsDir()` honours only an explicit option, never an
+    // env var, so a suite run on a machine that has ever activated Pro would read
+    // that developer's own license and register Pro stubs into unrelated tests.
+    // `licenseStore` is the explicit way out, and this pins that it is honoured:
+    // the lapsed record lives ONLY in the injected directory.
+    const home = mkdtempSync(join(tmpdir(), 'em-injected-'));
+    homes.push(home);
+    const dir = dirOf(home);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'license.json'),
+      JSON.stringify({
+        key: 'TEST-KEY',
+        organization_id: 'org_test',
+        status: 'granted',
+        expires_at: null,
+        activation_id: 'act_test',
+        device_hash: 'dev_test',
+        display_key: '****-TEST',
+        last_validated_at: new Date(Date.now() - LAPSED_AGE_MS).toISOString(),
+      })
+    );
+
+    const server = new EditmameiServer({ licenseStore: { dir } }) as unknown as ServerProbe;
+    await server.loadModules();
+
+    const registered = names(server);
+    for (const name of toolsInTier('pro')) expect(registered).toContain(name);
+  });
+
   it('never registers a dev- or none-tier name (the cross-surface tier invariant)', async () => {
     buildLicenseOnlyHome({ ageMs: LAPSED_AGE_MS });
     const server = new EditmameiServer() as unknown as ServerProbe;

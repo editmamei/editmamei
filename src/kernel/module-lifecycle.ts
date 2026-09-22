@@ -35,7 +35,12 @@ import {
   VERSION_RE,
   type ProvisionOptions,
 } from '../delivery/provision.js';
-import { readLicense, readCheckState, updateCheckState } from '../license/store.js';
+import {
+  readLicense,
+  readCheckState,
+  updateCheckState,
+  type LicenseStoreOptions,
+} from '../license/store.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
 import { Kernel } from './kernel.js';
 import { HOST_MIN_ABI, KERNEL_ABI } from './host-api.js';
@@ -147,6 +152,17 @@ export interface ModuleLifecycleDeps {
    * need to stub it; the host wires it to `TelemetryClient.setModuleUpdate`.
    */
   onModuleUpdate?: (outcome: 'updated' | 'failed') => void;
+  /**
+   * Where the license record and the check-state sidecar are read from and written
+   * to. Defaults to the real `~/.editmamei`, which is what the host wants and what
+   * a test must never touch: `settingsDir()` honours only this option, never an
+   * env var, so without an injection point a suite run on a machine that has ever
+   * activated Pro reads that developer's own license. A lapsed record there would
+   * register the Pro stubs into any test that builds a server, and an injected
+   * `fetchImpl` would park that machine's real module poll by writing its sidecar.
+   * The same hazard `EditmameiServerOptions.licenseAdvisory` is gated against.
+   */
+  licenseStore?: LicenseStoreOptions;
 }
 
 /**
@@ -183,6 +199,15 @@ export class ModuleLifecycle {
 
   constructor(private readonly deps: ModuleLifecycleDeps) {}
 
+  /**
+   * Store location for every license and check-state read in this class. Empty by
+   * default, which resolves to the real `~/.editmamei` — so production behaviour is
+   * unchanged and a test that wants isolation has one place to inject it.
+   */
+  private get store(): LicenseStoreOptions {
+    return this.deps.licenseStore ?? {};
+  }
+
   get proModule(): ProModuleLocation | null {
     return this._proModule;
   }
@@ -205,7 +230,7 @@ export class ModuleLifecycle {
    *  3. Otherwise (CE, or a Pro build with no module yet) → null.
    */
   resolveProModule(): ProModuleLocation | null {
-    if (isProEntitled()) {
+    if (isProEntitled(this.store)) {
       // Boot-time re-verification: re-hash + re-check the Ed25519 signature of the
       // retained artifact against the pinned key and regenerate the decrypted tree
       // before we import it, so a local code-swap between install and boot can't
@@ -494,8 +519,8 @@ export class ModuleLifecycle {
    * same surface for the same person, minus the working handlers.
    */
   private registerLapsedProStubs(): void {
-    if (readLicense() === null) return;
-    if (isProEntitled()) return;
+    if (readLicense(this.store) === null) return;
+    if (isProEntitled(this.store)) return;
 
     const names: string[] = [];
     for (const name of toolsInTier('pro')) {
@@ -529,7 +554,7 @@ export class ModuleLifecycle {
           content: [
             {
               type: 'text' as const,
-              text: isProEntitled()
+              text: isProEntitled(this.store)
                 ? PRO_RESTART_TO_LOAD
                 : (licenseAdvisory() ?? PRO_RESTART_TO_LOAD),
             },
@@ -558,14 +583,14 @@ export class ModuleLifecycle {
   computeModuleStatus(): ModuleStatusInfo | null {
     // Gate on a license RECORD, not entitlement: a lapsed subscriber (record present but
     // grace-expired) is exactly the case we want visible. A free CE user has no record.
-    if (!readLicense()) return null;
+    if (!readLicense(this.store)) return null;
     const installed = readInstalledModule(PRO_SKU);
     return {
       module: PRO_SKU,
       outcome: classifyModuleOutcome({
         proModuleLoaded: this._proModule !== null,
         skipReason: this._moduleSkipReason,
-        entitled: isProEntitled(),
+        entitled: isProEntitled(this.store),
       }),
       module_version: installed?.version ?? null,
       abi: installed?.abi ?? null,
@@ -593,7 +618,7 @@ export class ModuleLifecycle {
   ): Promise<void> {
     const reason = this._moduleSkipReason;
     if (reason === null) return;
-    const license = readLicense();
+    const license = readLicense(this.store);
     if (!license) {
       // No cached key → repair can't help either (it needs the same key). Point at
       // activate, not repair.
@@ -728,12 +753,12 @@ export class ModuleLifecycle {
     // never both fetch the manifest in one boot.
     if (this._moduleSkipReason !== null) return;
     // Only entitled users have a module to keep fresh (a lapsed/free install no-ops).
-    if (!isProEntitled()) return;
+    if (!isProEntitled(this.store)) return;
     // Never poll the delivery service under the test runner unless a fake fetch is
     // injected (mirrors shouldCheckForUpdate — the suite makes no real network calls).
     const underTest = process.env.VITEST !== undefined || process.env.NODE_ENV === 'test';
     if (underTest && !delivery.fetchImpl) return;
-    const license = readLicense();
+    const license = readLicense(this.store);
     if (!license) return; // entitled-without-a-cached-key shouldn't happen; provision needs one.
 
     // Once a day, not once a boot. A published module changes at release cadence,
@@ -742,7 +767,7 @@ export class ModuleLifecycle {
     // MODULE_FRESH_AFTER_MS.
     const now = (delivery.now ?? Date.now)();
     const freshAfterMs = delivery.freshAfterMs ?? MODULE_FRESH_AFTER_MS;
-    const retryAfter = readCheckState().module_retry_after;
+    const retryAfter = readCheckState(this.store).module_retry_after;
     // A marker further out than the interval itself cannot have come from a
     // correct clock (a machine set ahead, then corrected), so it is discarded
     // rather than honoured — otherwise a bad clock could park the poll for as
@@ -757,7 +782,7 @@ export class ModuleLifecycle {
     // from costing an uninstalled user a day of Pro (MODULE_RETRY_AFTER_FAILURE_MS).
     const alreadyInstalled = readInstalledModule(PRO_SKU) !== null;
     const failureWaitMs = alreadyInstalled ? freshAfterMs : MODULE_RETRY_AFTER_FAILURE_MS;
-    updateCheckState({ module_retry_after: now + failureWaitMs });
+    updateCheckState({ module_retry_after: now + failureWaitMs }, this.store);
 
     // Deferred + guarded the same way as reprovisionIfModuleSkipped above — see that
     // method's comment on why the callback is invoked outside the try/catch.
@@ -814,7 +839,7 @@ export class ModuleLifecycle {
     // marker stamped before the poll to the full interval. A 'failed' outcome
     // deliberately leaves the shorter wait in place: see the stamp above.
     if (outcome !== 'failed') {
-      updateCheckState({ module_retry_after: now + freshAfterMs });
+      updateCheckState({ module_retry_after: now + freshAfterMs }, this.store);
     }
     if (outcome !== null) {
       try {
