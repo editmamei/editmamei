@@ -10,6 +10,41 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.5.1] — 2026-09-22
+
+### Added
+
+- **A troubleshooting guide.** Step-by-step fixes for Pro not unlocking, Photoshop not responding,
+  checking whether an update actually applied, and running two installs on one machine.
+  - The install guide now separates the three ways Editmamei updates: an `npx` config (nothing to
+    do), a global npm install (update it yourself), and the Claude Desktop extension (replace the
+    bundle).
+
+### Changed
+
+- **Usage telemetry now records what it had to discard.** Session summaries include counts of
+  events dropped before they could be sent, so missing usage data can be told apart from less
+  usage. The new fields are listed on the privacy page.
+  - A startup that resends queued telemetry no longer sends again what it already delivered.
+
+### Fixed
+
+- **Pro no longer locks when your AI client restarts it often.** A client that restarted
+  Editmamei many times in a short spell could stop the license from checking in, so Pro locked
+  even though the license was fine.
+  - A license check that hits a busy moment is retried, and a failed one now waits before trying
+    again instead of retrying on every start.
+  - The Pro module update check runs at most once a day rather than on every start.
+
+- **You are told why Pro isn't working, and what to do about it.** When Pro is locked or its
+  checks aren't getting through, your assistant now gets the reason and the fix once per session,
+  instead of the Pro tools quietly disappearing.
+  - `ps_ping` carries the note, worded for the actual cause: a client restarting too fast, an
+    ended or expired subscription, a failed module update, or a system clock that was once set
+    ahead.
+  - Pro tools stay listed while a license isn't unlocking. Calling one explains what is wrong,
+    rather than your assistant reporting that the tool doesn't exist.
+
 ## [1.5.0] — 2026-09-18
 
 ### Added
