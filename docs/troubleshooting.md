@@ -62,10 +62,11 @@ Break the cycle by giving it one clean run:
 2. Wait about a minute.
 3. Start it once, and leave it running.
 
-Give it time before you judge it. After a run of failed checks, Editmamei deliberately waits before
-trying again, so Pro can take a few hours to come back rather than returning at the next start.
-Restarting again resets that wait and puts you back in the loop, which is the thing you're trying
-to get out of.
+Give it time before you judge it. If checks have been failing repeatedly, Editmamei deliberately
+waits before trying again, so Pro can take a few hours to come back rather than returning at the
+next start. Restarting does not shorten that wait, so leave the client running rather than cycling
+it. If checks haven't been failing, the next start picks one up straight away and Pro should return
+on it.
 
 Then run `editmamei license`. `Last check` should show today's date and `Pro` should read
 `unlocked`. Restart the client once more so the Pro tools load.
