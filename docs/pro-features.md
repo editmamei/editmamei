@@ -15,7 +15,7 @@ Pro is available now. Community is free; Pro is a paid license you buy at [editm
 - **Claude Code / npm clients:** run `editmamei activate YOUR-KEY` in your terminal, then restart your AI client. Check status anytime with `editmamei license`.
 - **Claude Desktop extension:** open **Settings → Extensions → Editmamei**, paste your key into the **Pro license key** field, save, and restart Claude Desktop.
 
-One license covers two devices; switch a device with `editmamei deactivate` or from your account portal. Pro works offline between periodic check-ins (roughly daily, with a seven-day grace window), and if a subscription lapses Editmamei keeps running as Community rather than locking you out. If Pro stops unlocking after an update, run `editmamei repair` to re-download the module; your templates, settings, and license stay untouched. Full walkthrough: [editmamei.com/activate](https://editmamei.com/activate).
+One license covers two devices; switch a device with `editmamei deactivate` or from your account portal. Pro works offline between periodic check-ins (roughly daily, with a seven-day grace window), and if a subscription lapses Editmamei keeps running as Community rather than locking you out. If Pro stops unlocking, run `editmamei license` to see whether the license is the problem before reaching for `editmamei repair`, which re-downloads the module and fixes a damaged download rather than a license that isn't checking in. Either way your templates, settings, and license stay untouched. Step-by-step: [troubleshooting.md](troubleshooting.md#pro-tools-are-missing-or-pro-shows-as-community). Full activation walkthrough: [editmamei.com/activate](https://editmamei.com/activate).
 
 ---
 

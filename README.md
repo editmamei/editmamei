@@ -150,6 +150,7 @@ The source in this repository is the same code published to npm, so none of the 
 - **Install:** [docs/installation.md](docs/installation.md)
 - **Getting started:** [docs/getting-started.md](docs/getting-started.md)
 - **FAQ:** [docs/faq.md](docs/faq.md)
+- **Troubleshooting:** [docs/troubleshooting.md](docs/troubleshooting.md)
 - **Pro features:** [docs/pro-features.md](docs/pro-features.md)
 - **Roadmap:** [docs/roadmap.md](docs/roadmap.md)
 - **Bugs and feature requests:** [the issue tracker](https://github.com/editmamei/editmamei/issues). If something's broken, ask your assistant to "report a problem" (or run `editmamei report`) to drop an anonymized diagnostic bundle in your Downloads folder, then attach it to the issue.
