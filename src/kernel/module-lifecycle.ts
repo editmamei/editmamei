@@ -20,7 +20,9 @@ import { Logger } from '../utils/logger.js';
 import { ToolRegistry } from '../core/tool-registry.js';
 import { EDITION } from '../edition.js';
 import { resolveProBinaryPath } from '../api/snippet-client.js';
-import { isProEntitled } from '../license/entitlement.js';
+import { isProEntitled, REFRESH_AFTER_MS } from '../license/entitlement.js';
+import { licenseAdvisory, PRO_RESTART_TO_LOAD } from '../license/advisory.js';
+import { toolsInTier } from '../core/tool-tiers.js';
 import {
   loadVerifiedModule,
   readInstalledModule,
@@ -33,11 +35,49 @@ import {
   VERSION_RE,
   type ProvisionOptions,
 } from '../delivery/provision.js';
-import { readLicense } from '../license/store.js';
+import { readLicense, readCheckState, updateCheckState } from '../license/store.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
 import { Kernel } from './kernel.js';
 import { HOST_MIN_ABI, KERNEL_ABI } from './host-api.js';
 import { VERSION } from '../version.js';
+
+/**
+ * Minimum gap between Pro-module freshness polls, persisted across restarts in the
+ * license check-state sidecar. Set to the license cache's own REFRESH_AFTER_MS
+ * rather than a second independent knob: both are once-a-day boot-path network on
+ * the same license-keyed channel, and two constants for one cadence is one more
+ * pair to keep in step.
+ *
+ * Before this the poll ran on EVERY boot, so a host that restarts often paid a
+ * full provision round trip each time to re-learn what it learned minutes ago. The
+ * marker is scheduling only: it can never stop an installed module from loading,
+ * and an absent or malformed one reads as "poll now".
+ */
+export const MODULE_FRESH_AFTER_MS = REFRESH_AFTER_MS;
+
+/**
+ * How long to wait after a FAILED poll when there is no module installed at all.
+ *
+ * With one installed, a failed poll costs nothing — the existing module still
+ * works and tomorrow is soon enough to ask again. With none, this poll is not a
+ * freshness check at all: it is the install, and it is the only boot path that
+ * performs one for an entitled user (the self-heal covers a module that is
+ * present but unusable, which is a different state). Parking that for a day over
+ * one bad network moment would leave an entitled user with no Pro until tomorrow
+ * — slower to recover than the per-boot polling this interval replaces, which
+ * would be a poor trade in exactly the case that matters most.
+ */
+export const MODULE_RETRY_AFTER_FAILURE_MS = 15 * 60_000;
+
+/**
+ * The shared description on every explain-only Pro stub (see
+ * `registerLapsedProStubs`). One line, identical for every name: it ships in
+ * `tools/list` once per stub, so per-tool prose here would be paid for dozens of
+ * times over to say the same thing.
+ */
+const PRO_STUB_DESCRIPTION =
+  'Unavailable right now: this Editmamei Pro tool needs an active license on this machine. ' +
+  'Call it to get the reason and how to restore it, then relay that to the user.';
 
 /** Where a downloaded module's handlers are imported from + its go-core binary dir. */
 export interface ProModuleLocation {
@@ -298,8 +338,12 @@ export class ModuleLifecycle {
     // Pro module from its install dir. This is the "install free CE → buy → unlock" path.
     // A null proModule can still carry a 'corrupt' skip reason set in
     // resolveProModule (entitled + a pointer file present but unverifiable) — the
-    // self-heal in start() acts on that. Nothing more to load here.
-    if (!this._proModule) return;
+    // self-heal in start() acts on that. Nothing more to LOAD here, but a license
+    // holder whose Pro is not unlocking gets the explain-only stubs instead.
+    if (!this._proModule) {
+      this.registerLapsedProStubs();
+      return;
+    }
 
     // Net 1 — ABI gate. A downloaded module below HOST_MIN_ABI was built against a
     // host contract this build no longer supports; skip it before importing and
@@ -417,6 +461,90 @@ export class ModuleLifecycle {
       );
       this._moduleSkipReason = 'incompatible';
     }
+  }
+
+  /**
+   * Register the Pro tool NAMES as explain-only stubs when this install has a
+   * license record but no live entitlement.
+   *
+   * Without them the Pro tools simply are not there, and the model answers "I
+   * don't have a tool for that" — the one answer that tells a license holder
+   * nothing about why, and nothing about what to do. A stub keeps the name in the
+   * catalogue and answers with the reason and the fix instead. This restores
+   * intended behaviour rather than changing the surface: the catalogue of names is
+   * the same one `tool-tiers.ts` already publishes, and an entitled user (whose
+   * real handlers are registered by the module load below) and a Community user
+   * (no record) both see exactly what they saw before.
+   *
+   * Gated on HAVING A RECORD — the same gate `computeModuleStatus` uses, and for
+   * the same reason: someone who never bought Pro has no record, and must never
+   * see Pro tool names. Only reached when no Pro module resolved at all, so a real
+   * handler can never be shadowed by a stub.
+   *
+   * The names come from `toolsInTier('pro')` — never a hand-written list, which
+   * would drift, and never `dev`/`none`, which must not appear as `ps_*` names on
+   * any user-facing surface (`tool-tiers.ts` is the single source of truth, and a
+   * test enforces it).
+   *
+   * `isToolAllowedInEdition` is deliberately NOT consulted, which looks wrong until
+   * you notice the downloaded module doesn't consult it either: that gate governs
+   * the host's BUILT-IN tools per build edition, while a Pro name reaching a user
+   * is governed by their ENTITLEMENT. A Community-edition host with a valid license
+   * already registers these exact names from the downloaded module, and this is the
+   * same surface for the same person, minus the working handlers.
+   */
+  private registerLapsedProStubs(): void {
+    if (readLicense() === null) return;
+    if (isProEntitled()) return;
+
+    const names: string[] = [];
+    for (const name of toolsInTier('pro')) {
+      // Classify FIRST. `assertToolsClassified()` runs over the whole registry at
+      // boot and throws on a name it cannot place, so registering a tier-'pro' name
+      // that no longer has a group entry would turn a missing table row into a hard
+      // boot failure — on a Community host, for a license holder, where previously
+      // nothing was registered and nothing broke. Every other path that adds tools
+      // has a net for this; skipping the odd name is this one's.
+      try {
+        this.deps.classifyTool(name);
+      } catch {
+        this.deps.logger.warn(`Skipping Pro stub for unclassified tool '${name}'.`);
+        continue;
+      }
+      names.push(name);
+      this.deps.toolRegistry.register(name, {
+        tool: {
+          name,
+          description: PRO_STUB_DESCRIPTION,
+          inputSchema: { type: 'object', properties: {} },
+          annotations: { title: name, readOnlyHint: true, idempotentHint: true },
+        },
+        // Recomputed per call, not captured at boot: entitlement can come back
+        // mid-session (a background refresh succeeds), and the answer should then
+        // say so rather than repeat a verdict from minutes ago. In that case the
+        // advisory is the WRONG answer — it would open "Pro is unlocked" on a call
+        // that just refused to run — so the entitled case is routed to the restart
+        // message, which is the actual fix: a module does not load mid-session.
+        handler: async () => ({
+          content: [
+            {
+              type: 'text' as const,
+              text: isProEntitled()
+                ? PRO_RESTART_TO_LOAD
+                : (licenseAdvisory() ?? PRO_RESTART_TO_LOAD),
+            },
+          ],
+          // isError, UNLIKE the ps_ping advisory. Ping genuinely succeeds and
+          // returns a normal payload; this call did NOT do what it was asked, and
+          // a clean result would read to the model as "the edit happened".
+          isError: true,
+        }),
+      });
+    }
+    this.deps.logger.info(
+      `Pro is not unlocked on this machine — registered ${names.length} Pro tool name(s) ` +
+        `as explain-only stubs so the reason is answerable.`
+    );
   }
 
   /**
@@ -589,7 +717,12 @@ export class ModuleLifecycle {
    * start() passes nothing (baked delivery config + pinned signing keys).
    */
   async ensureEntitledModuleFresh(
-    delivery: Pick<ProvisionOptions, 'config' | 'fetchImpl' | 'signingKeys' | 'sleep'> = {}
+    delivery: Pick<ProvisionOptions, 'config' | 'fetchImpl' | 'signingKeys' | 'sleep'> & {
+      /** Injected clock (tests). Defaults to Date.now. */
+      now?: () => number;
+      /** Override the freshness interval (tests). Defaults to MODULE_FRESH_AFTER_MS. */
+      freshAfterMs?: number;
+    } = {}
   ): Promise<void> {
     // A skipped module is the self-heal's job — stay mutually exclusive so the two
     // never both fetch the manifest in one boot.
@@ -602,6 +735,30 @@ export class ModuleLifecycle {
     if (underTest && !delivery.fetchImpl) return;
     const license = readLicense();
     if (!license) return; // entitled-without-a-cached-key shouldn't happen; provision needs one.
+
+    // Once a day, not once a boot. A published module changes at release cadence,
+    // so re-asking on every restart re-learns the same answer — and a host that
+    // restarts often pays a full provision round trip each time to do it. See
+    // MODULE_FRESH_AFTER_MS.
+    const now = (delivery.now ?? Date.now)();
+    const freshAfterMs = delivery.freshAfterMs ?? MODULE_FRESH_AFTER_MS;
+    const retryAfter = readCheckState().module_retry_after;
+    // A marker further out than the interval itself cannot have come from a
+    // correct clock (a machine set ahead, then corrected), so it is discarded
+    // rather than honoured — otherwise a bad clock could park the poll for as
+    // long as the bogus value said, with nothing able to clear it.
+    if (retryAfter !== undefined && now < retryAfter && retryAfter - now <= freshAfterMs) return;
+
+    // Stamp BEFORE polling, at the shorter of the two waits, so a crash or a kill
+    // mid-poll still leaves a bounded marker rather than re-firing every boot —
+    // that per-boot loop is the behaviour being replaced. A poll that settles
+    // cleanly extends this to the full interval at the end of the method; one
+    // that fails keeps the short wait, which is what stops a single bad moment
+    // from costing an uninstalled user a day of Pro (MODULE_RETRY_AFTER_FAILURE_MS).
+    const alreadyInstalled = readInstalledModule(PRO_SKU) !== null;
+    const failureWaitMs = alreadyInstalled ? freshAfterMs : MODULE_RETRY_AFTER_FAILURE_MS;
+    updateCheckState({ module_retry_after: now + failureWaitMs });
+
     // Deferred + guarded the same way as reprovisionIfModuleSkipped above — see that
     // method's comment on why the callback is invoked outside the try/catch.
     let outcome: 'updated' | 'failed' | null = null;
@@ -652,6 +809,12 @@ export class ModuleLifecycle {
           `${err instanceof Error ? err.message : String(err)}`
       );
       outcome = 'failed';
+    }
+    // Settled cleanly — an install, or a poll that found nothing to do. Extend the
+    // marker stamped before the poll to the full interval. A 'failed' outcome
+    // deliberately leaves the shorter wait in place: see the stamp above.
+    if (outcome !== 'failed') {
+      updateCheckState({ module_retry_after: now + freshAfterMs });
     }
     if (outcome !== null) {
       try {

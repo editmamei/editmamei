@@ -2300,3 +2300,104 @@ describe('telemetry: setInstallAssets carries only the fields this ping observed
     expect(call.action_sets).toBe(3);
   });
 });
+
+// ===========================================================================
+// The ps_ping license advisory. ps_ping already triggers the license refresh
+// and already throws the result away, so a license holder whose Pro is dark got
+// no signal on the one channel the user actually reads. It rides the ping TEXT
+// for the same reason the update notice does: an MCP server's stderr never
+// reaches anyone, and a tool result does.
+//
+// Its source is injected here. The real one reads ~/.editmamei and is inert
+// under the test runner — without that, every ping assertion in this file would
+// pass or fail according to the developer machine's own license state.
+// ===========================================================================
+describe('ps_ping license advisory', () => {
+  type AdvisoryPingServer = {
+    session: { connection: unknown };
+    updateInfo: unknown;
+    snippetClient: unknown;
+    pingPhotoshop(): Promise<{
+      content: Array<{ text: string }>;
+      structuredContent: Record<string, unknown>;
+      isError?: boolean;
+    }>;
+  };
+
+  const ADVISORY = 'Pro is not unlocking. Fix: quit the client fully.';
+
+  function advisoryServer(source: () => string | null): AdvisoryPingServer {
+    const server = new EditmameiServer({
+      licenseAdvisory: source,
+    }) as unknown as AdvisoryPingServer;
+    // info:null → the round trip fails fast and the ping answers "not
+    // connected", which must carry the advisory like every other ping shape.
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = null;
+    return server;
+  }
+
+  it('adds nothing at all when there is nothing to say', async () => {
+    // A Community user and a healthy Pro user both land here, and both must pay
+    // zero extra tokens for a problem they do not have.
+    const server = advisoryServer(() => null);
+    const res = await server.pingPhotoshop();
+    // An exact pin, not a `not.toContain`: the point is that NOTHING was
+    // appended, which only an equality check can prove.
+    expect(res.content[0].text).toBe('Photoshop did not respond');
+  });
+
+  it('carries the advisory when there is', async () => {
+    const server = advisoryServer(() => ADVISORY);
+    const res = await server.pingPhotoshop();
+    expect(res.content[0].text).toContain(ADVISORY);
+  });
+
+  it('says it once per session, not once per ping', async () => {
+    let calls = 0;
+    const server = advisoryServer(() => {
+      calls++;
+      return ADVISORY;
+    });
+
+    expect((await server.pingPhotoshop()).content[0].text).toContain(ADVISORY);
+    expect((await server.pingPhotoshop()).content[0].text).not.toContain(ADVISORY);
+    expect((await server.pingPhotoshop()).content[0].text).not.toContain(ADVISORY);
+    // Latched after it lands — the source is not consulted again either.
+    expect(calls).toBe(1);
+  });
+
+  it('keeps looking until there IS something to say, then latches', async () => {
+    // The module-update failure that feeds this arrives after the transport
+    // connects, so an early silent ping must not spend the one chance to speak.
+    let ready = false;
+    const server = advisoryServer(() => (ready ? ADVISORY : null));
+
+    expect((await server.pingPhotoshop()).content[0].text).not.toContain(ADVISORY);
+    ready = true;
+    expect((await server.pingPhotoshop()).content[0].text).toContain(ADVISORY);
+    expect((await server.pingPhotoshop()).content[0].text).not.toContain(ADVISORY);
+  });
+
+  it('is never shaped as a failure — the ping itself worked', async () => {
+    const server = advisoryServer(() => ADVISORY);
+    const res = await server.pingPhotoshop();
+    expect(res.isError).toBeUndefined();
+    expect(res.structuredContent.connected).toBe(false);
+  });
+
+  it('sits after the update notice rather than displacing it', async () => {
+    const server = advisoryServer(() => ADVISORY);
+    server.updateInfo = {
+      current: '0.18.0',
+      latest: '0.19.0',
+      channel: 'npm',
+      how_to_update: 'Run: npm install -g editmamei@latest (then restart your MCP client).',
+      fixed_tools: [] as string[],
+    };
+    const text = (await server.pingPhotoshop()).content[0].text;
+    expect(text).toContain('v0.19.0');
+    expect(text.indexOf(ADVISORY)).toBeGreaterThan(text.indexOf('v0.19.0'));
+  });
+});

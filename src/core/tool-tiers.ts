@@ -319,7 +319,11 @@ export function tierOf(toolName: string): Tier {
   return tier;
 }
 
-/** All tool names belonging to a given tier. Used by build scripts. */
+/**
+ * All tool names belonging to a given tier. Used by build scripts, and at runtime
+ * by the boot path — this table is the ONLY source for the Pro names the host puts
+ * in front of a user, so a tier change here changes what they see.
+ */
 export function toolsInTier(tier: Tier): string[] {
   return Object.entries(TOOL_TIERS)
     .filter(([, t]) => t === tier)

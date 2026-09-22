@@ -33,6 +33,7 @@ import { createHash } from 'node:crypto';
 import { GoSnippetClient, coreBinaryName } from '../api/snippet-client.js';
 import { isProEntitled } from '../license/entitlement.js';
 import { createPingLicenseRefresher } from '../license/ping-refresh.js';
+import { licenseAdvisory } from '../license/advisory.js';
 import type { ProvisionOptions } from '../delivery/provision.js';
 import { runScript } from '../utils/run-script.js';
 import { listTemplates } from '../utils/template-storage.js';
@@ -127,6 +128,18 @@ export const BACKGROUND_VERSION_PROBE_TIMEOUT_MS = 3_000;
 export interface EditmameiServerOptions {
   shouldCheckForUpdate?: typeof shouldCheckForUpdate;
   checkForUpdateWithStatus?: typeof checkForUpdateWithStatus;
+  /**
+   * Source of the `ps_ping` license advisory (see `buildLicenseAdvisoryNote`).
+   * Production passes nothing and gets the real one; the default is inert under
+   * the test runner because it reads `~/.editmamei`, and without that gate every
+   * ping assertion in the suite would depend on the developer machine's own
+   * license state. A test that wants the advisory injects one here.
+   *
+   * It takes the same argument the real one does, so an injected source can still
+   * observe whether a background module update failed this session — that wiring
+   * is the whole reason the flag exists and would otherwise be untestable.
+   */
+  licenseAdvisory?: (opts: { moduleUpdateFailed: boolean }) => string | null;
 }
 
 export class EditmameiServer {
@@ -288,6 +301,23 @@ export class EditmameiServer {
    * under the test runner.
    */
   private readonly refreshLicenseOnPing = createPingLicenseRefresher();
+
+  /**
+   * Set once a background Pro-module task reports a failed update this session.
+   * Feeds the license advisory — a module that could not be updated is one of the
+   * three things worth telling a license holder about.
+   */
+  private moduleUpdateFailed = false;
+
+  /** Source of the license advisory text; see EditmameiServerOptions. */
+  private readonly licenseAdvisorySource: (opts: { moduleUpdateFailed: boolean }) => string | null;
+
+  /**
+   * Whether this session has already delivered the license advisory. Once is the
+   * point: the reader pays for every token of it, and an advisory repeated on
+   * every ping is one the model learns to skip past.
+   */
+  private licenseAdvisoryShown = false;
 
   constructor(opts: EditmameiServerOptions = {}) {
     this.logger = new Logger('EditmameiServer');
@@ -537,8 +567,49 @@ export class EditmameiServer {
       });
     };
 
+    // Inert under the test runner unless a test injects one — the real advisory
+    // reads ~/.editmamei, and a suite whose ping output depended on the developer's
+    // own license would pass or fail by machine. Mirrors how refreshIfStale and
+    // ensureEntitledModuleFresh already gate their own real-world reads.
+    this.licenseAdvisorySource =
+      opts.licenseAdvisory ??
+      ((advisoryOpts) => {
+        if (process.env.VITEST !== undefined || process.env.NODE_ENV === 'test') return null;
+        return licenseAdvisory(advisoryOpts);
+      });
+
     this.registerTools();
     this.setupHandlers();
+  }
+
+  /**
+   * The license advisory suffix for a `ps_ping` response — a leading space plus the
+   * advisory, or an empty string when there is nothing to say or it has already
+   * been said this session.
+   *
+   * Silent for a Community user and for a healthy Pro user, so the common case
+   * pays nothing at all. Never an error: `pingPhotoshop` deliberately answers with
+   * a normal content payload on every path, connected or not, and shaping this as
+   * a failure would bury the one thing we want relayed under an alarm about a ping
+   * that actually worked.
+   *
+   * Returns a `stamp()` alongside the text rather than latching here. The advisory
+   * is computed early in the ping but the response is built hundreds of lines
+   * later, down any of several branches — latching at computation would spend the
+   * session's one chance to speak on a ping that then threw on its way to a reply,
+   * and the user would never see it. `stamp()` is called as each branch builds its
+   * text, so the latch tracks delivery rather than intent.
+   */
+  private buildLicenseAdvisoryNote(): { note: string; stamp: () => void } {
+    if (this.licenseAdvisoryShown) return { note: '', stamp: () => {} };
+    const text = this.licenseAdvisorySource({ moduleUpdateFailed: this.moduleUpdateFailed });
+    if (!text) return { note: '', stamp: () => {} };
+    return {
+      note: ' ' + text,
+      stamp: () => {
+        this.licenseAdvisoryShown = true;
+      },
+    };
   }
 
   private registerTools() {
@@ -654,7 +725,10 @@ export class EditmameiServer {
       logger: this.logger,
       assertToolsClassified: () => this.assertToolsClassified(),
       classifyTool: (name) => this.classifyTool(name),
-      onModuleUpdate: (outcome) => this.telemetry.setModuleUpdate(outcome),
+      onModuleUpdate: (outcome) => {
+        if (outcome === 'failed') this.moduleUpdateFailed = true;
+        this.telemetry.setModuleUpdate(outcome);
+      },
     });
     const proModule = this.moduleLifecycle.resolveProModule();
     this.kernel = new Kernel({
@@ -980,6 +1054,17 @@ export class EditmameiServer {
     if (this.updateCheck) await this.updateCheck;
     const update = await this.buildUpdateNotice();
 
+    // License advisory, appended to whichever branch below answers. Computed once
+    // per ping and empty unless this machine has a license problem worth naming.
+    // `withAdvisory` both appends it and marks it delivered, so the once-per-session
+    // latch is spent only by a branch that actually returns — see
+    // buildLicenseAdvisoryNote.
+    const advisory = this.buildLicenseAdvisoryNote();
+    const withAdvisory = (text: string): string => {
+      advisory.stamp();
+      return text + advisory.note;
+    };
+
     const connection = this.session.getConnection();
 
     // Discovery-signal fetch. Each branch is independent; failures in one
@@ -1062,9 +1147,10 @@ export class EditmameiServer {
         content: [
           {
             type: 'text' as const,
-            text:
+            text: withAdvisory(
               'Photoshop does not appear to be running. Start Photoshop, then call ps_ping again.' +
-              update.note,
+                update.note
+            ),
           },
         ],
         structuredContent: {
@@ -1109,7 +1195,7 @@ export class EditmameiServer {
           content: [
             {
               type: 'text' as const,
-              text: (reason ?? 'Photoshop did not respond') + update.note,
+              text: withAdvisory((reason ?? 'Photoshop did not respond') + update.note),
             },
           ],
           structuredContent: {
@@ -1161,7 +1247,12 @@ export class EditmameiServer {
         this.lastDocDepth = null;
         this.lastDocMode = null;
         return {
-          content: [{ type: 'text' as const, text: 'Photoshop did not respond' + update.note }],
+          content: [
+            {
+              type: 'text' as const,
+              text: withAdvisory('Photoshop did not respond' + update.note),
+            },
+          ],
           structuredContent: {
             connected: false,
             update_available: this.updateInfo,
@@ -1263,12 +1354,13 @@ export class EditmameiServer {
       content: [
         {
           type: 'text' as const,
-          text:
+          text: withAdvisory(
             `Connected to Photoshop (v${version}). ` +
-            `${actionSetsCount} custom action set(s), ${userTemplates} saved template(s), ` +
-            `${openDocuments.length} open document(s)${openDocuments.length ? ': ' + openDocuments.join(', ') : ''}` +
-            `${degradedNote}.` +
-            update.note,
+              `${actionSetsCount} custom action set(s), ${userTemplates} saved template(s), ` +
+              `${openDocuments.length} open document(s)${openDocuments.length ? ': ' + openDocuments.join(', ') : ''}` +
+              `${degradedNote}.` +
+              update.note
+          ),
         },
       ],
       structuredContent: {
