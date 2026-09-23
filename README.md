@@ -15,6 +15,12 @@ It serves photographers and retouchers who want to edit by conversation just as 
 
 **[editmamei.com](https://editmamei.com)** · [Docs](docs/getting-started.md) · [Report a bug](https://github.com/editmamei/editmamei/issues)
 
+<p align="center">
+  <img src="docs/assets/stay-removal-replay.gif" width="420" alt="A rigging stay across a coastline photo is selected in three segments and removed with content-aware fill, then graded, with each tool call shown in a console strip under the photo">
+</p>
+
+<p align="center"><sub>A rigging stay removed in three content-aware fills, replayed call by call from the session log. The Camera Raw grade at the end is a <a href="docs/pro-features.md">Pro</a> tool.</sub></p>
+
 ## How it works
 
 Editmamei is a pure MCP **stdio** server written in Node. Your AI client launches it as a subprocess and calls its tools over stdio. Each tool builds a small Photoshop script and runs it in your local Photoshop over the platform's native automation channel:
