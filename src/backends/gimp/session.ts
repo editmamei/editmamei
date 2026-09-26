@@ -1227,10 +1227,19 @@ export class GimpSession {
 
   /**
    * `text` with the session root folder cut out: error messages reach the model, and the root
-   * lives under the user's home folder, so its full path carries the username.
+   * lives under the user's home folder, so its full path carries the username. Python's OSError
+   * text quotes a path in repr form, which doubles every Windows backslash, and GIMP may print it
+   * with forward slashes, so those spellings are cut too (longest first).
    */
   #redact(text: string): string {
-    return text.split(this.rootDir).join('<GIMP session folder>');
+    const spellings = [
+      ...new Set([
+        this.rootDir.replace(/\\/g, '\\\\'),
+        this.rootDir,
+        this.rootDir.replace(/\\/g, '/'),
+      ]),
+    ].sort((a, b) => b.length - a.length);
+    return spellings.reduce((out, s) => out.split(s).join('<GIMP session folder>'), text);
   }
 
   #removeSessionDir(dir: string): void {

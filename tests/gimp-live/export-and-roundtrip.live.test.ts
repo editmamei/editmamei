@@ -120,14 +120,23 @@ describe.skipIf(!install)('export options, metadata stripping, and .xcf round tr
     }
   });
 
-  it.each(['out.png', 'out.jpg', 'out.xcf'])(
-    'a write into a missing folder is gimp_op_failed naming only the file (%s)',
-    async (name) => {
+  it.each([
+    ['out.png', false],
+    ['out.jpg', false],
+    ['out.xcf', false],
+    ['out.png', true],
+  ])(
+    'a write into a missing folder is gimp_op_failed naming only the file (%s, forward slashes: %s)',
+    async (name, forwardSlashes) => {
       const opened = await session.call<{ image: number }>('open', { path: rampPath });
       try {
         const missing = join(workDir, 'no-such-folder');
+        const target = join(missing, name);
         const err = (await session
-          .call('export', { image: opened.image, path: join(missing, name) })
+          .call('export', {
+            image: opened.image,
+            path: forwardSlashes ? target.replace(/\\/g, '/') : target,
+          })
           .catch((e: unknown) => e)) as { code: string; message: string };
         expect(err).toMatchObject({ code: 'gimp_op_failed' });
         expect(err.message).toContain(name);

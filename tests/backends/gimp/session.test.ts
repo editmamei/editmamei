@@ -509,6 +509,33 @@ describe('GimpSession', () => {
     expect((err as GimpError).message).toContain('preview-1234.jpg');
   });
 
+  it.each([
+    ['repr-escaped (doubled backslashes)', (p: string) => p.replace(/\\/g, '\\\\')],
+    ['forward-slash', (p: string) => p.replace(/\\/g, '/')],
+  ])(
+    'a bridge error quoting the session folder in %s form is redacted too',
+    async (_form, spell) => {
+      let root = '';
+      const h = harness({
+        responder: (op) => {
+          if (op === 'ping') return { major: 3, minor: 2, micro: 6 };
+          // What Python's OSError prints: the path in repr form.
+          const quoted = spell(join(root, 'rpc', 'req-7.json'));
+          throw Object.assign(new Error(`[Errno 2] No such file or directory: '${quoted}'`), {
+            code: 'gimp_op_failed',
+          });
+        },
+      });
+      root = h.rootDir;
+      const err = (await h.session.call('preview', {}).catch((e: unknown) => e)) as GimpError;
+      expect(err.code).toBe('gimp_op_failed');
+      // A path without backslashes has no escaped or slash variant; the assertion still holds.
+      expect(err.message).not.toContain(spell(h.rootDir));
+      expect(err.message).not.toContain(h.rootDir);
+      expect(err.message).toContain('<GIMP session folder>');
+    }
+  );
+
   it('a gimp_timeout says the session was stopped and how to recover, since the kill loses the open images', async () => {
     const h = harness({ hangOps: new Set(['slow']) });
     await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({

@@ -698,11 +698,11 @@ describe.skipIf(!install)('adjust: per-type pixel verifiers', () => {
         await session.call('export', { image: opened.image, path: after });
         const a = readPng(before);
         const b = readPng(after);
-        if (type === 'noise_reduction') {
+        if (type === 'noise_reduction' && process.platform !== 'win32') {
           // The listed params round-trip exactly (asserted above), but gegl:noise-reduction does
           // not render bit-identically twice on the macOS and Linux GIMP builds (CI measured a
-          // max diff of 21 and 12, with Windows at 0), so this type is held to a near-identical
-          // render instead of an exact one.
+          // max diff of 21 and 12, with Windows at 0), so there this type is held to a
+          // near-identical render instead of an exact one.
           let sum = 0;
           for (let i = 0; i < a.data.length; i++) sum += Math.abs(a.data[i]! - b.data[i]!);
           expect(sum / a.data.length, 'mean abs diff').toBeLessThan(1);

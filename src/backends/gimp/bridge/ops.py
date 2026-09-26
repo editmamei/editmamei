@@ -1210,7 +1210,9 @@ def _export_stripped(dup, path, options=None):
         detail = result.index(1) if result.length() > 1 else result.index(0).value_nick
         # GIMP's message quotes the full path ("Could not open '<path>' for writing"); keep just
         # the file name, as every other message here does.
-        detail = str(detail).replace(Gio.File.new_for_path(path).get_path() or path, name)
+        detail = str(detail)
+        for spelling in sorted({Gio.File.new_for_path(path).get_path() or path, path}, key=len, reverse=True):
+            detail = detail.replace(spelling, name)
         raise lib.OpError('gimp_op_failed', 'could not write %s: %s' % (name, detail))
 
 

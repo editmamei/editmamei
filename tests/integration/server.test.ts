@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2049,6 +2050,27 @@ describe('GIMP session shutdown wiring', () => {
     await expect(server.gimpBackend.call('ping', {})).rejects.toMatchObject({
       code: 'gimp_session_restarted',
     });
+  });
+
+  it('hands the configured gimp_path to the GimpBackend, so a re-detect after a boot timeout finds that install', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'em-server-gimp-path-'));
+    const configured = join(dir, 'custom-gimp-console.exe');
+    writeFileSync(configured, '');
+    try {
+      const editors = {
+        ...resolveEditorRegistration({ gimp: null, timedOut: true }, 'gimp'),
+        gimpPathOverride: configured,
+      };
+      const server = new EditmameiServer({ editors }) as unknown as {
+        gimpBackend: { prepare(): Promise<void>; install: { path: string } | null };
+        stop(): Promise<void>;
+      };
+      await server.gimpBackend.prepare();
+      expect(server.gimpBackend.install?.path).toBe(configured);
+      await server.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('stop() is a no-op when no editors option registered GIMP at all (the pre-GIMP construction path)', async () => {
