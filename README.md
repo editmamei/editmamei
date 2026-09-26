@@ -75,7 +75,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**83 tools across 16 capability groups** (62 Community, 21 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license.
+**103 tools total.** The Photoshop surface is **87 tools across 16 capability groups** (62 Community, 25 Pro), every one namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. Alongside it, a second, independent editor surface drives headless GIMP: **16 `gimp_*` tools, Community, currently in beta**, see [GIMP (beta)](#gimp-beta) below. Pro's additions are Photoshop-only; GIMP has no Pro tier.
 
 | Group | Edition | Tools |
 | --- | --- | --- |
@@ -101,14 +101,28 @@ These are the choices that shape the surface, and the reason an AI assistant can
 | **Templates** | Pro | `template_create_evidence` · `template_save` · `template_list` · `template_apply` · `template_verify` · `template_recall` · `template_delete` |
 | **Automation** | Pro | `list_actions` · `play_action` · `execute_script` · `batch` |
 
+**GIMP (beta), a separate namespace, all Community:**
+
+| Group | Edition | Tools |
+| --- | --- | --- |
+| **GIMP** | Community (beta) | `gimp_ping` · `gimp_overview` · `gimp_open_document` · `gimp_close_document` · `gimp_save_xcf` · `gimp_export` · `gimp_inspect` · `gimp_add_adjustment` · `gimp_filter` · `gimp_crop_document` · `gimp_resize_image` · `gimp_transform_canvas` · `gimp_create_mask` · `gimp_get_preview` · `gimp_get_histogram` · `gimp_compare` |
+
 ## Editions
 
 - **Community** is free and covers the everyday editing surface: documents, layers, selections (including AI Select Subject and Select Sky), non-destructive adjustments, filters, masks, type, retouching, on-device perception, and the inspect/verify primitives.
 - **Pro** adds Camera Raw develop, the grounded precision tools (warp, named-object masks, precision placement), subject-instance targeting, face-mesh perception, the reproducible-template system, and Photoshop Actions plus the scripting escape hatch.
 
+Pro is a Photoshop-only upgrade: it adds nothing to the GIMP surface below.
+
 The split is detailed in [pro-features.md](docs/pro-features.md). Pricing is at [editmamei.com](https://editmamei.com).
 
 This repository holds the Community source. Pro is a separately licensed module and its source is not published here; Community never imports it, so this tree builds and runs on its own.
+
+## GIMP (beta)
+
+Editmamei can also drive GIMP, headless, as a second editor alongside (or instead of) Photoshop. When GIMP 3.2+ is detected on your machine, a `gimp_*` tool set registers next to the `ps_*` one; use it when you ask for GIMP, or when Photoshop isn't available. There's no visible window: edits happen in a background `gimp-console` process, and you follow along through rendered previews in the conversation instead of watching a window change.
+
+The beta covers documents (open, save `.xcf`, export), 13 non-destructive adjustment types, geometric masks, crop/resize/rotate/flip, and the same preview/histogram/compare verification primitives the Photoshop side has. It doesn't yet cover heal/clone, AI subject or sky selection, text, or undo for geometry changes. Full details, requirements, and troubleshooting: [docs/gimp.md](docs/gimp.md).
 
 ## Build from source
 
@@ -151,6 +165,7 @@ The source in this repository is the same code published to npm, so none of the 
 - **Getting started:** [docs/getting-started.md](docs/getting-started.md)
 - **FAQ:** [docs/faq.md](docs/faq.md)
 - **Troubleshooting:** [docs/troubleshooting.md](docs/troubleshooting.md)
+- **GIMP (beta):** [docs/gimp.md](docs/gimp.md)
 - **Pro features:** [docs/pro-features.md](docs/pro-features.md)
 - **Roadmap:** [docs/roadmap.md](docs/roadmap.md)
 - **Bugs and feature requests:** [the issue tracker](https://github.com/editmamei/editmamei/issues). If something's broken, ask your assistant to "report a problem" (or run `editmamei report`) to drop an anonymized diagnostic bundle in your Downloads folder, then attach it to the issue.

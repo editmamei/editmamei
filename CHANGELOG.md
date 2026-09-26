@@ -10,6 +10,28 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-09-26
+
+### Added
+
+- **GIMP support, in beta.** Editmamei can now edit photos in GIMP 3.2, which runs in the
+  background with nothing installed into it. You follow the work through previews in chat, and the
+  saved `.xcf` keeps every adjustment as a live filter you can change in GIMP afterwards.
+  - Sixteen `gimp_*` tools cover opening and closing images, thirteen non-destructive adjustments
+    (curves, levels, exposure, brightness and contrast, hue and saturation, colour balance, colour
+    temperature, shadows and highlights, saturation, vibrance, sharpen, noise reduction and
+    Gaussian blur), masks for those adjustments, crop, resize, rotate and flip, `.xcf` saving,
+    export to JPEG, PNG, WebP and TIFF with metadata removed, and previews, histograms and
+    before/after comparisons.
+  - The tools appear when GIMP is found in its standard install location, or when you point
+    Editmamei at it with the `gimp_path` setting or `EDITMAMEI_GIMP_PATH`. On Linux, the Flathub
+    Flatpak is found too. The Photoshop tools are unchanged.
+  - Set `editor` to `gimp` (or `EDITMAMEI_EDITOR=gimp`) to use GIMP even when Photoshop is
+    installed.
+  - Not in the beta yet: healing and cloning, subject or sky selection, text, new layers, and
+    undo. Crop, resize, rotate and flip can't be undone in the session, so save the `.xcf` first.
+  - Pro features are Photoshop-only. See the [GIMP guide](docs/gimp.md).
+
 ## [1.5.1] — 2026-09-22
 
 ### Added

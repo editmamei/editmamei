@@ -56,7 +56,11 @@ Earlier versions (Photoshop 2025 / 2024 / 2023 / 2022) may work (the DOM-level A
 
 ### Does Editmamei work on Linux?
 
-No. Editmamei drives Photoshop through Windows COM automation or macOS AppleScript / OSA, both OS-specific. Photoshop itself is not supported on Linux.
+Not with Photoshop. Editmamei drives Photoshop through Windows COM automation or macOS AppleScript / OSA, both OS-specific, and Photoshop itself isn't supported on Linux. GIMP is: see the next question.
+
+### Does Editmamei work with GIMP?
+
+Yes, as a beta. Editmamei can drive GIMP headless as a second editor, on Windows, macOS, or Linux, with GIMP 3.2 or newer. Use it when you ask for GIMP, or when Photoshop isn't available. It covers a smaller slice of editing than the Photoshop side today: documents, 13 non-destructive adjustment types, geometric masks, crop/resize/rotate/flip, and the same kind of preview/histogram verification. See [docs/gimp.md](gimp.md) for requirements, detection, and what it can't do yet. It's Community only; Pro's tools are Photoshop-only.
 
 ### Does it need an internet connection?
 

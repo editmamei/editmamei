@@ -238,6 +238,17 @@ The `uninstall` subcommand removes Editmamei from your MCP client configs. The `
 
 ---
 
+## GIMP (beta)
+
+Editmamei can also drive GIMP, headless, as a second editor. Nothing extra to install on the
+Editmamei side: if GIMP 3.2 or newer is found in its usual install location, the `gimp_*` tools
+register automatically alongside the Photoshop ones the next time your AI client starts. If GIMP is
+installed somewhere non-standard, point at it with the `EDITMAMEI_GIMP_PATH` env var or the
+`gimp_path` setting; to force one editor over the other, pin `editor` to `photoshop` or `gimp`. Full
+requirements, detection locations, and troubleshooting: [docs/gimp.md](gimp.md).
+
+---
+
 ## Pro
 
 Pro is a downloaded **module**, not a separate install. Keep your Community setup as-is; when you activate a license, Editmamei fetches the signed Pro module and loads it alongside Community after a restart. Buy at [editmamei.com/pricing](https://editmamei.com/pricing), then activate with your license key: with an npm install, run `editmamei activate YOUR-KEY` and restart your client; with the Claude Desktop extension, paste your key into **Settings → Extensions → Editmamei → Pro license key** and restart. The license re-validates roughly daily in the background; if a subscription lapses there's a seven-day grace window, then Editmamei keeps running as Community rather than locking you out. Full steps at [editmamei.com/activate](https://editmamei.com/activate). See [pro-features.md](pro-features.md) for what Pro adds and [roadmap.md](roadmap.md) for what's planned next.
