@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
+import { GimpError } from '../backends/gimp/errors.js';
 
 /**
  * gimp_ping / gimp_overview — the GIMP-editor twins of ps_ping / ps_overview.
@@ -55,14 +56,23 @@ async function gimpPing(gimp: GimpBackend): Promise<ToolResult> {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // `gimp_starting` is not a failed connection — it's still starting, and
+    // the caller should just ask again shortly. Reported distinctly (but
+    // still never isError, and still connected: false — nothing is ready to
+    // dispatch ops against yet) so the caller can tell "come back later"
+    // from "actually broken".
+    const isStarting = error instanceof GimpError && error.code === 'gimp_starting';
     return {
-      content: [{ type: 'text' as const, text: `Not connected to GIMP: ${message}` }],
+      content: [
+        { type: 'text' as const, text: isStarting ? message : `Not connected to GIMP: ${message}` },
+      ],
       structuredContent: {
         connected: false,
         gimp_version: null,
         session_state: 'cold',
         open_images: [],
         install_path_basename: installBasename,
+        ...(isStarting ? { starting: true } : {}),
       },
     };
   }
@@ -218,14 +228,18 @@ export function createGimpCoreTools(gimp: GimpBackend): ToolDefinition[] {
         description:
           'Test connection to the headless GIMP session and report session-start discovery ' +
           'signals. Starts the session on the FIRST call if it is not already running — this cold ' +
-          'start takes roughly 4-5 seconds, so expect the first gimp_ping (or any first gimp_* ' +
-          'call) in a session to be slow; every call after that is fast. Read-only and idempotent. ' +
-          'Call this once at the start of a GIMP-editing task to confirm liveness before invoking ' +
-          'any other gimp_* tool. **Also call `gimp_overview` after this** — it returns the ' +
-          'headless workflow contract (curve laws, ledger vs. readback, geometry-before-masks ' +
-          'ordering) so you can plan well; GIMP semantics differ from Photoshop in ways that ' +
-          'matter. Never returns an error — a failed connection is reported via `connected: false` ' +
-          'plus an explanatory message, the same posture ps_ping takes.',
+          'start is usually just a few seconds (about 10 seconds on macOS), so expect the first ' +
+          'gimp_ping (or any first gimp_* call) in a session to be a bit slow; every call after ' +
+          'that is fast. The VERY FIRST launch on a machine can instead take a few minutes (GIMP ' +
+          'building its font cache, scanning plug-ins, macOS Gatekeeper) — during that window ' +
+          'gimp_ping reports `starting: true` in structuredContent rather than failing; call it ' +
+          'again in about 30 seconds. Read-only and idempotent. Call this once at the start of a ' +
+          'GIMP-editing task to confirm liveness before invoking any other gimp_* tool. **Also ' +
+          'call `gimp_overview` after this** — it returns the headless workflow contract (curve ' +
+          'laws, ledger vs. readback, geometry-before-masks ordering) so you can plan well; GIMP ' +
+          'semantics differ from Photoshop in ways that matter. Never returns an error — a failed ' +
+          'connection (or one still starting) is reported via `connected: false` plus an ' +
+          'explanatory message, the same posture ps_ping takes.',
         inputSchema: pingSchema,
         outputSchema: {
           type: 'object',
@@ -238,6 +252,12 @@ export function createGimpCoreTools(gimp: GimpBackend): ToolDefinition[] {
               items: { type: 'object', properties: { image: { type: 'number' } } },
             },
             install_path_basename: { type: ['string', 'null'] },
+            starting: {
+              type: 'boolean',
+              description:
+                'Present and true only when the session is still on its very first launch — ' +
+                'call gimp_ping again in about 30 seconds.',
+            },
           },
         },
         annotations: {

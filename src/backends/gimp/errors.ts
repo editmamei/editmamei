@@ -13,6 +13,7 @@
 export const GIMP_ERROR_CODES = [
   'gimp_not_installed',
   'gimp_start_failed',
+  'gimp_starting',
   'gimp_python_missing',
   'gimp_version_unsupported',
   'gimp_session_restarted',

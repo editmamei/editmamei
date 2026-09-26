@@ -536,6 +536,10 @@ describe('gimp_* error classification, produced through the real registry', () =
   const CASES: Array<[string, string]> = [
     ['gimp_not_installed: no GIMP install was found on this machine.', 'gimp_not_installed'],
     ['gimp_start_failed: could not start GIMP at "gimp-console.exe": ENOENT', 'gimp_start_failed'],
+    [
+      'gimp_starting: GIMP is still starting. Call gimp_ping again in about 30 seconds.',
+      'gimp_starting',
+    ],
     ['gimp_python_missing: this GIMP install has no Python support', 'gimp_python_missing'],
     [
       'gimp_version_unsupported: Editmamei needs GIMP 3.2 or newer; found 3.0.0',

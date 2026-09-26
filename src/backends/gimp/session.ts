@@ -86,7 +86,25 @@ interface PingResult {
   micro: number;
 }
 
-const READY_TIMEOUT_MS = 60_000;
+/**
+ * Overall deadline for ONE start attempt (spawn through ready+ping) — long
+ * enough to cover a first-ever launch on a machine doing one-time setup
+ * (font cache, plug-in scan, Gatekeeper on macOS can each add tens of
+ * seconds). NOT the bound any single MCP call waits on — see
+ * `CALL_READY_WAIT_MS` — because an MCP client commonly cuts a request off
+ * around 60s, well inside this window.
+ */
+export const READY_TIMEOUT_MS = 180_000;
+/**
+ * How long a single call will wait for an in-flight start (fresh or joined)
+ * before giving up on THIS call and reporting `gimp_starting` — deliberately
+ * shorter than `READY_TIMEOUT_MS` and than a typical MCP client's own request
+ * timeout. The start itself is NOT cancelled when this elapses: it keeps
+ * running in the background (`#startPromise` stays assigned), so the next
+ * call joins the SAME attempt instead of tree-killing a half-started GIMP and
+ * throwing away whatever first-launch work it already did.
+ */
+export const CALL_READY_WAIT_MS = 45_000;
 const PING_TIMEOUT_MS = 10_000;
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_GRACE_MS = 5_000;
@@ -234,6 +252,15 @@ export class GimpSession {
   /** Bumped every time a running session dies unexpectedly (crash or our own timeout kill). */
   private deadGeneration = 0;
   private sweepDone = false;
+  /**
+   * The currently in-flight `#startFresh()` attempt, if one is running —
+   * `#joinOrStart` is the ONLY place this is set or read. A call that finds
+   * one already here JOINS it (awaits the same promise, capped at
+   * `CALL_READY_WAIT_MS`) instead of starting a second, competing attempt.
+   * Cleared once the attempt it points at settles, whichever way, so the
+   * NEXT start begins a fresh attempt rather than reusing a stale one.
+   */
+  private startPromise: Promise<void> | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private shuttingDown = false;
   /**
@@ -373,16 +400,65 @@ export class GimpSession {
       throw this.lastFailure;
     }
     if (this.sessionState !== 'ready') {
-      await this.#startFresh();
-      // #startFresh can await for up to ~2s (the stale-process kill-confirm
+      await this.#joinOrStart();
+      // #joinOrStart can await for up to ~2s (the stale-process kill-confirm
       // wait) before ever spawning anything, and again while waiting for
-      // readiness — shutdown() can land in either gap. Re-checking here,
-      // AFTER the await returns, is what stops a call from proceeding to
-      // #send against a session that finished closing while this call was
-      // waiting its turn.
+      // readiness (capped at CALL_READY_WAIT_MS) — shutdown() can land in
+      // any of those gaps. Re-checking here, AFTER the await returns, is
+      // what stops a call from proceeding to #send against a session that
+      // finished closing while this call was waiting its turn.
       this.#assertOpen();
     }
     return this.#send<T>(op, args, timeoutMs);
+  }
+
+  /**
+   * Ensures a start attempt is running — joining one already in flight
+   * rather than starting a second, competing one — and waits for THIS call's
+   * turn on it, capped at `CALL_READY_WAIT_MS`. If that cap elapses first,
+   * throws `gimp_starting` and returns control to the caller WITHOUT
+   * touching the attempt itself: it keeps running under `#startPromise`, so
+   * the next call to reach here (queued behind this one, or issued later)
+   * joins the exact same attempt instead of `#startFresh()` tree-killing a
+   * half-started GIMP and re-paying its first-launch cost.
+   *
+   * The attempt's own promise gets a no-op `.catch` the instant it's
+   * created — independent of whether anyone ever ends up awaiting it — so a
+   * background start that ultimately fails (crash, the 180s deadline, a
+   * spawn error) after every caller waiting on it has already timed out
+   * never surfaces as an unhandled rejection.
+   */
+  async #joinOrStart(): Promise<void> {
+    if (!this.startPromise) {
+      const newAttempt = this.#startFresh();
+      newAttempt.catch(() => {
+        /* handled below by whichever call is still waiting, if any; this
+         * exists so a caller-less failure is never unhandled */
+      });
+      this.startPromise = newAttempt;
+      const clearIfCurrent = () => {
+        if (this.startPromise === newAttempt) this.startPromise = undefined;
+      };
+      newAttempt.then(clearIfCurrent, clearIfCurrent);
+    }
+    const attempt = this.startPromise;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<true>((resolve) => {
+      timer = setTimeout(() => resolve(true), CALL_READY_WAIT_MS);
+    });
+    try {
+      const raced = await Promise.race([attempt.then(() => false as const), timedOut]);
+      if (raced === true) {
+        throw new GimpError(
+          'gimp_starting',
+          'GIMP is still starting. The first launch on a machine can take a few minutes while ' +
+            'GIMP builds its caches. Call gimp_ping again in about 30 seconds.'
+        );
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -661,7 +737,7 @@ export class GimpSession {
       // Observed FIRST, every iteration: without this, a shutdown() issued
       // while still 'starting' would otherwise sit here polling a directory
       // that shutdown() may already have removed for up to the full
-      // READY_TIMEOUT_MS (60s) before ever noticing — this is what makes a
+      // READY_TIMEOUT_MS (180s) before ever noticing — this is what makes a
       // shutdown mid-start reject almost immediately (within one
       // POLL_INTERVAL_MS) instead.
       this.#assertOpen();

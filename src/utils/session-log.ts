@@ -244,6 +244,7 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
   //    open would misclassify as `other`. ────────────────────────────────
   { errorClass: 'gimp_not_installed', pattern: /\bgimp_not_installed\b/ },
   { errorClass: 'gimp_start_failed', pattern: /\bgimp_start_failed\b/ },
+  { errorClass: 'gimp_starting', pattern: /\bgimp_starting\b/ },
   { errorClass: 'gimp_python_missing', pattern: /\bgimp_python_missing\b/ },
   { errorClass: 'gimp_version_unsupported', pattern: /\bgimp_version_unsupported\b/ },
   { errorClass: 'gimp_session_restarted', pattern: /\bgimp_session_restarted\b/ },

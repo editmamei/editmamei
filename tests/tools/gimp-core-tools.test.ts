@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createGimpCoreTools } from '@editmamei/tools/gimp-core-tools.ts';
+import { GimpError } from '@editmamei/backends/gimp/errors.ts';
 import { makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
 import { callTool, assertToolShape } from '../fixtures/tool-helpers.ts';
 
@@ -53,6 +54,21 @@ describe('createGimpCoreTools', () => {
       const result = await callTool(tools, 'gimp_ping');
       expect(result.isError).toBeFalsy();
       expect(result.structuredContent).toMatchObject({ connected: false, gimp_version: null });
+    });
+
+    it('reports starting: true (still never isError) when the session is on a slow first launch', async () => {
+      const gimp = makeGimpBackend({
+        throwFor: () =>
+          new GimpError(
+            'gimp_starting',
+            'GIMP is still starting. Call gimp_ping again in about 30 seconds.'
+          ),
+      });
+      const tools = createGimpCoreTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_ping');
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({ connected: false, starting: true });
+      expect((result.content?.[0] as { text: string }).text).toContain('Call gimp_ping again');
     });
   });
 
