@@ -98,7 +98,26 @@ def op_test_add_foreign_filter(args):
     return {'filter_id': f.get_id(), 'name': f.get_name()}
 
 
+def op_test_metadata_tag(args):
+    """One tag from the metadata GIMP loaded with the image (None when absent): proves a fixture's
+    metadata actually reached GIMP, so a stripped export means something."""
+    md = _image(args).get_metadata()
+    tag = lib.require(args, 'tag')
+    if md is None:
+        return {'value': None}
+    for getter in ('try_get_tag_string', 'get_tag_string'):
+        fn = getattr(md, getter, None)
+        if fn is None:
+            continue
+        try:
+            return {'value': fn(tag)}
+        except Exception:
+            continue
+    return {'value': None}
+
+
 OPS.update({
+    'test_metadata_tag': op_test_metadata_tag,
     'select_mask': op_test_select_mask,
     'export_mask': op_test_export_mask,
     'test_select_rect': op_test_select_rect,

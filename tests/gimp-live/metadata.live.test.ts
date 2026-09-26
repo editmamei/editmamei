@@ -18,10 +18,15 @@ import {
   findTiffIfd0,
   findPngChunks,
   pngHasXmpItxt,
+  pngTextPayloads,
+  gpsLatitudeBytes,
   findRiffChunks,
   readySession,
   LIVE_READY_TIMEOUT_MS,
+  TEST_OPS_PY,
+  FIXTURE_GPS_LATITUDE,
 } from './support.ts';
+import { deflateSync } from 'node:zlib';
 
 // This file alone, not the project default -- see adjust.live.test.ts's identical comment.
 vi.setConfig({ testTimeout: 30_000 });
@@ -30,7 +35,31 @@ const install: GimpInstall | null = await detectGimp();
 
 const XMP_MARKER = 'editmamei-test-xmp-marker';
 const GPS_IFD_POINTER_TAG = 0x8825;
+const EXIF_IFD_POINTER_TAG = 0x8769;
+const IPTC_TAG = 33723;
 const XMP_TAG = 700;
+
+/**
+ * Every place in a PNG a GPS position or the XMP marker could hide: the raw file bytes, and every
+ * text chunk's payload decompressed, searching both the raw GPS rational bytes and their hex
+ * spelling (how a "Raw profile type exif" text chunk carries EXIF).
+ */
+function pngLeaks(png: Buffer, gpsBytes: Buffer): string[] {
+  const leaks: string[] = [];
+  const hex = gpsBytes.toString('hex');
+  const haystacks: Array<[string, Buffer]> = [['file bytes', png]];
+  for (const { keyword, text } of pngTextPayloads(findPngChunks(png))) {
+    haystacks.push([`text chunk "${keyword}"`, text]);
+  }
+  for (const [where, buf] of haystacks) {
+    if (buf.includes(XMP_MARKER)) leaks.push(`XMP marker in ${where}`);
+    if (buf.includes(gpsBytes)) leaks.push(`GPS bytes in ${where}`);
+    if (buf.toString('latin1').replace(/\s+/g, '').toLowerCase().includes(hex)) {
+      leaks.push(`hex GPS bytes in ${where}`);
+    }
+  }
+  return leaks;
+}
 
 describe.skipIf(!install)('metadata stripping (byte-level)', () => {
   let workDir: string;
@@ -39,7 +68,13 @@ describe.skipIf(!install)('metadata stripping (byte-level)', () => {
 
   beforeAll(async () => {
     workDir = mkdtempSync(join(tmpdir(), 'em-gimp-metadata-'));
-    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+    // The test-only bridge (fixtures/test_ops.py): its test_metadata_tag op confirms GIMP loaded
+    // the fixture's metadata. Every export still goes through the shipped writer.
+    session = new GimpSession({
+      install: install!,
+      rootDir: join(workDir, 'session-root'),
+      opsPyPath: TEST_OPS_PY,
+    });
     await readySession(session);
     sourcePath = join(workDir, 'gps-xmp-source.jpg');
     writeGpsXmpJpeg(sourcePath);
@@ -54,8 +89,51 @@ describe.skipIf(!install)('metadata stripping (byte-level)', () => {
     const { exif, xmp } = findJpegApp1Segments(readFileSync(sourcePath));
     expect(exif.length).toBeGreaterThan(0);
     expect(findTiffIfd0(exif[0]!).has(GPS_IFD_POINTER_TAG)).toBe(true);
+    expect(findTiffIfd0(exif[0]!).has(EXIF_IFD_POINTER_TAG)).toBe(true);
+    expect(gpsLatitudeBytes(exif[0]!)).toEqual(FIXTURE_GPS_LATITUDE);
     expect(xmp.length).toBeGreaterThan(0);
     expect(xmp[0]!.includes(XMP_MARKER)).toBe(true);
+  });
+
+  it('GIMP really loads the fixture GPS position (so a stripped export is not a vacuous pass)', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: sourcePath });
+    try {
+      const lat = await session.call<{ value: string | null }>('test_metadata_tag', {
+        image: opened.image,
+        tag: 'Exif.GPSInfo.GPSLatitude',
+      });
+      expect(lat.value).toBeTruthy();
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('the PNG leak search finds metadata in a compressed zTXt EXIF profile and a compressed iTXt XMP packet (positive control)', () => {
+    const { exif } = findJpegApp1Segments(readFileSync(sourcePath));
+    const gps = gpsLatitudeBytes(exif[0]!);
+    const chunk = (type: string, data: Buffer) => {
+      const length = Buffer.alloc(4);
+      length.writeUInt32BE(data.length, 0);
+      return Buffer.concat([length, Buffer.from(type, 'ascii'), data, Buffer.alloc(4)]);
+    };
+    const exifProfile = Buffer.concat([
+      Buffer.from('Raw profile type exif\0\0', 'latin1'),
+      deflateSync(Buffer.from(`\nexif\n  ${exif[0]!.length}\n${exif[0]!.toString('hex')}\n`, 'latin1')),
+    ]);
+    const xmpPacket = Buffer.concat([
+      Buffer.from('XML:com.adobe.xmp\0\x01\x00\0\0', 'latin1'),
+      deflateSync(Buffer.from(`<x:xmpmeta>${XMP_MARKER}</x:xmpmeta>`, 'utf8')),
+    ]);
+    const png = Buffer.concat([
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      chunk('IHDR', Buffer.alloc(13)),
+      chunk('zTXt', exifProfile),
+      chunk('iTXt', xmpPacket),
+      chunk('IEND', Buffer.alloc(0)),
+    ]);
+    const leaks = pngLeaks(png, gps);
+    expect(leaks).toContain('hex GPS bytes in text chunk "Raw profile type exif"');
+    expect(leaks).toContain('XMP marker in text chunk "XML:com.adobe.xmp"');
   });
 
   it('export to jpeg strips EXIF/GPS and XMP', async () => {
@@ -76,9 +154,13 @@ describe.skipIf(!install)('metadata stripping (byte-level)', () => {
     try {
       const outPath = join(workDir, 'out.png');
       await session.call('export', { image: opened.image, path: outPath });
-      const chunks = findPngChunks(readFileSync(outPath));
+      const png = readFileSync(outPath);
+      const chunks = findPngChunks(png);
       expect(chunks.has('eXIf')).toBe(false);
       expect(pngHasXmpItxt(chunks)).toBe(false);
+      // And nowhere else: every tEXt/zTXt/iTXt payload, decompressed, and the raw bytes.
+      const gps = gpsLatitudeBytes(findJpegApp1Segments(readFileSync(sourcePath)).exif[0]!);
+      expect(pngLeaks(png, gps)).toEqual([]);
     } finally {
       await session.call('close', { image: opened.image });
     }
@@ -97,14 +179,20 @@ describe.skipIf(!install)('metadata stripping (byte-level)', () => {
     }
   });
 
-  it('export to tiff strips the GPSInfo IFD pointer and the XMP tag', async () => {
+  it('export to tiff strips the GPSInfo and EXIF IFD pointers, the XMP tag, and the IPTC tag', async () => {
     const opened = await session.call<{ image: number }>('open', { path: sourcePath });
     try {
       const outPath = join(workDir, 'out.tiff');
       await session.call('export', { image: opened.image, path: outPath });
-      const tags = findTiffIfd0(readFileSync(outPath));
+      const tiff = readFileSync(outPath);
+      const tags = findTiffIfd0(tiff);
       expect(tags.has(GPS_IFD_POINTER_TAG)).toBe(false);
+      expect(tags.has(EXIF_IFD_POINTER_TAG)).toBe(false);
       expect(tags.has(XMP_TAG)).toBe(false);
+      expect(tags.has(IPTC_TAG)).toBe(false);
+      const gps = gpsLatitudeBytes(findJpegApp1Segments(readFileSync(sourcePath)).exif[0]!);
+      expect(tiff.includes(gps)).toBe(false);
+      expect(tiff.includes(XMP_MARKER)).toBe(false);
     } finally {
       await session.call('close', { image: opened.image });
     }

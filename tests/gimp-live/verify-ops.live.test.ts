@@ -16,9 +16,11 @@ import {
   writeCheckerboard,
   writeNoisyField,
   writeIndexedPng,
+  writeColorSwatches,
   readySession,
   LIVE_READY_TIMEOUT_MS,
 } from './support.ts';
+import { HISTOGRAM_BIN_COUNT } from '@editmamei/tools/gimp-verify-tools.ts';
 
 // This file alone, not the project default -- see adjust.live.test.ts's identical comment.
 vi.setConfig({ testTimeout: 30_000 });
@@ -162,6 +164,45 @@ describe.skipIf(!install)('verify ops: preview / histogram / compare', () => {
       // luminance uses babl's Y' (perceptual luma) weighting, not a flat R=G=B average, but on
       // this grayscale ramp (R=G=B everywhere) the two coincide.
       expect(Math.abs(hist.channels.luminance.mean - independentMean)).toBeLessThan(1);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('histogram (exact) on colour swatches: each channel matches independently decoded pixels, with 256 bins', async () => {
+    // A grey ramp has R=G=B everywhere, so a channel swapped or mis-strided in the bridge's
+    // RGB read would still pass there. Distinct per-channel values catch it.
+    const swatchesPath = join(workDir, 'swatches.png');
+    writeColorSwatches(swatchesPath);
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    try {
+      const hist = await session.call<{
+        pixels: number;
+        channels: Record<'red' | 'green' | 'blue', { mean: number; bins: number[] }>;
+      }>('histogram', {
+        image: opened.image,
+        exact: true,
+        channels: ['red', 'green', 'blue'],
+      });
+      const refPath = join(workDir, 'swatches-ref.png');
+      await session.call('export', { image: opened.image, path: refPath });
+      const ref = readPng(refPath);
+      expect(hist.pixels).toBe(ref.width * ref.height);
+      (['red', 'green', 'blue'] as const).forEach((channel, c) => {
+        const counts = new Array<number>(HISTOGRAM_BIN_COUNT).fill(0);
+        let sum = 0;
+        for (let y = 0; y < ref.height; y++) {
+          for (let x = 0; x < ref.width; x++) {
+            const v = pixelAt(ref, x, y)[c]!;
+            sum += v;
+            counts[v]!++;
+          }
+        }
+        const stats = hist.channels[channel];
+        expect(stats.bins, `${channel} bins`).toHaveLength(HISTOGRAM_BIN_COUNT);
+        expect(Math.abs(stats.mean - sum / hist.pixels), `${channel} mean`).toBeLessThan(0.01);
+        expect(stats.bins, `${channel} bins match the decoded pixels`).toEqual(counts);
+      });
     } finally {
       await session.call('close', { image: opened.image });
     }

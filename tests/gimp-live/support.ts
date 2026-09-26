@@ -558,6 +558,64 @@ export function pngHasXmpItxt(chunks: Map<string, Buffer[]>): boolean {
   return false;
 }
 
+/**
+ * The text payload of every `tEXt`, `zTXt`, and `iTXt` chunk, decompressed where the chunk is
+ * compressed. Metadata can ride in any of them: GIMP writes XMP as `iTXt`, and Exiv2-style tools
+ * commonly write EXIF as a `zTXt` "Raw profile type exif" (hex text), so checking `eXIf` and the
+ * XMP `iTXt` keyword alone would miss it.
+ */
+export function pngTextPayloads(chunks: Map<string, Buffer[]>): Array<{ keyword: string; text: Buffer }> {
+  const out: Array<{ keyword: string; text: Buffer }> = [];
+  for (const data of chunks.get('tEXt') ?? []) {
+    const nul = data.indexOf(0);
+    out.push({ keyword: data.subarray(0, nul).toString('latin1'), text: data.subarray(nul + 1) });
+  }
+  for (const data of chunks.get('zTXt') ?? []) {
+    const nul = data.indexOf(0);
+    // keyword \0 compression-method(1 byte, 0 = zlib) compressed-text
+    out.push({
+      keyword: data.subarray(0, nul).toString('latin1'),
+      text: inflateSync(data.subarray(nul + 2)),
+    });
+  }
+  for (const data of chunks.get('iTXt') ?? []) {
+    // keyword \0 compression-flag compression-method language-tag \0 translated-keyword \0 text
+    const nul = data.indexOf(0);
+    const compressed = data[nul + 1] === 1;
+    const langEnd = data.indexOf(0, nul + 3);
+    const transEnd = data.indexOf(0, langEnd + 1);
+    const body = data.subarray(transEnd + 1);
+    out.push({
+      keyword: data.subarray(0, nul).toString('latin1'),
+      text: compressed ? inflateSync(body) : body,
+    });
+  }
+  return out;
+}
+
+/**
+ * The raw bytes of GPSLatitude (3 RATIONALs) from an EXIF TIFF structure, reached through IFD0's
+ * GPSInfo pointer: the exact byte sequence a leaked GPS position would carry, to search output
+ * files for (raw, or hex-encoded as a text chunk would hold it).
+ */
+export function gpsLatitudeBytes(exifTiff: Buffer): Buffer {
+  const little = exifTiff.subarray(0, 2).toString('ascii') === 'II';
+  const readU16 = (o: number) => (little ? exifTiff.readUInt16LE(o) : exifTiff.readUInt16BE(o));
+  const readU32 = (o: number) => (little ? exifTiff.readUInt32LE(o) : exifTiff.readUInt32BE(o));
+  const gpsPointer = findTiffIfd0(exifTiff).get(0x8825);
+  if (!gpsPointer) throw new Error('no GPSInfo pointer in IFD0');
+  const gpsIfd = gpsPointer.values[0]!;
+  const count = readU16(gpsIfd);
+  for (let i = 0; i < count; i++) {
+    const entry = gpsIfd + 2 + i * 12;
+    if (readU16(entry) === 2 /* GPSLatitude */) {
+      const offset = readU32(entry + 8);
+      return Buffer.from(exifTiff.subarray(offset, offset + 24));
+    }
+  }
+  throw new Error('no GPSLatitude in the GPS IFD');
+}
+
 /** RIFF chunks by FourCC, for a WebP file -- used to find (or confirm the absence of) 'EXIF'/
  * 'XMP ' chunks the same way `findPngChunks` does for PNG. */
 export function findRiffChunks(buf: Buffer): Map<string, Buffer[]> {
@@ -581,19 +639,97 @@ export function findRiffChunks(buf: Buffer): Map<string, Buffer[]> {
 }
 
 /**
- * A real (8x8) JPEG carrying genuine GPS EXIF (Exif.GPSInfo.GPSLatitude/Longitude with their
- * Ref tags, so IFD0 has a real GPSInfo IFD pointer, tag 0x8825) AND a real XMP packet
- * (Xmp.dc.description) -- generated once with GIMP's own metadata API and export config
- * (include-exif/include-xmp explicitly True), embedded here as base64 so the fixture is
- * self-contained. `findJpegApp1Segments` + `findTiffIfd0` on its own `exif` payload confirm
+ * A real (8x8) JPEG carrying GPS EXIF (IFD0 has a GPSInfo IFD pointer, tag 0x8825, though its
+ * GPS IFD holds only GPSLatitudeRef -- `writeGpsXmpJpeg` swaps in EXIF with real coordinates)
+ * AND a real XMP packet (Xmp.dc.description) -- generated once with GIMP's own metadata API and
+ * export config (include-exif/include-xmp explicitly True), embedded here as base64 so the
+ * fixture is self-contained. `findJpegApp1Segments` + `findTiffIfd0` on the written file confirm
  * both are genuinely present before any test trusts this fixture to prove something is stripped.
  */
 export const GPS_XMP_JPEG_BASE64 =
   '/9j/4AAQSkZJRgABAQEBLAEsAAD/4Qe+RXhpZgAASUkqAAgAAAAHABoBBQABAAAAYgAAABsBBQABAAAAagAAACgBAwABAAAAAgAAADEBAgALAAAAcgAAADIBAgAUAAAAfgAAAGmHBAABAAAAkgAAACWIBAABAAAAuAAAAMoAAAAsAQAAAQAAACwBAAABAAAAR0lNUCAzLjIuNgAAMjAyNjowOToyNiAwMToyNjozMwACABCQAgAHAAAAsAAAAAGgAwABAAAAAQAAAAAAAAAtMDQ6MDAAAAEAAQACAAIAAABOAAAAAAAAAAkA/gAEAAEAAAABAAAAAAEEAAEAAAAAAQAAAQEEAAEAAAAAAQAAAgEDAAMAAAA8AQAAAwEDAAEAAAAGAAAABgEDAAEAAAAGAAAAFQEDAAEAAAADAAAAAQIEAAEAAABCAQAAAgIEAAEAAABzBgAAAAAAAAgACAAIAP/Y/+AAEEpGSUYAAQEAAAEAAQAA/9sAQwAIBgYHBgUIBwcHCQkICgwUDQwLCwwZEhMPFB0aHx4dGhwcICQuJyAiLCMcHCg3KSwwMTQ0NB8nOT04MjwuMzQy/9sAQwEJCQkMCwwYDQ0YMiEcITIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy/8AAEQgBAAEAAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/aAAwDAQACEQMRAD8A+f6KKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAP/9kA/+ENQmh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC8APD94cGFja2V0IGJlZ2luPSLvu78iIGlkPSJXNU0wTXBDZWhpSHpyZVN6TlRjemtjOWQiPz4gPHg6eG1wbWV0YSB4bWxuczp4PSJhZG9iZTpuczptZXRhLyIgeDp4bXB0az0iWE1QIENvcmUgNC40LjAtRXhpdjIiPiA8cmRmOlJERiB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiPiA8cmRmOkRlc2NyaXB0aW9uIHJkZjphYm91dD0iIiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RFdnQ9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZUV2ZW50IyIgeG1sbnM6R0lNUD0iaHR0cDovL3d3dy5naW1wLm9yZy94bXAvIiB4bWxuczpkYz0iaHR0cDovL3B1cmwub3JnL2RjL2VsZW1lbnRzLzEuMS8iIHhtbG5zOnhtcD0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wLyIgeG1wTU06RG9jdW1lbnRJRD0iZ2ltcDpkb2NpZDpnaW1wOmYyMjI5MTZkLWFmMzctNGMwNi1hOTVmLWM4NmYzOTQ1N2Q3NiIgeG1wTU06SW5zdGFuY2VJRD0ieG1wLmlpZDo2ZDdmZDMyMi1iMmMxLTQ1MDMtODMyMS0wZmZiMjJjNWI1ODAiIHhtcE1NOk9yaWdpbmFsRG9jdW1lbnRJRD0ieG1wLmRpZDo5NTg4YTMyNS00NjBjLTQxZjktYmJiOS05NTJlYmJmNGM1YTciIEdJTVA6QVBJPSIzLjAiIEdJTVA6UGxhdGZvcm09IldpbmRvd3MiIEdJTVA6VGltZVN0YW1wPSIxNzkwNDAwMzkzNjYxNTE3IiBHSU1QOlZlcnNpb249IjMuMi42IiBkYzpGb3JtYXQ9ImltYWdlL2pwZWciIHhtcDpDcmVhdG9yVG9vbD0iR0lNUCIgeG1wOk1ldGFkYXRhRGF0ZT0iMjAyNi0wOS0yNlQwMToyNjozMy0wNDowMCIgeG1wOk1vZGlmeURhdGU9IjIwMjYtMDktMjZUMDE6MjY6MzMtMDQ6MDAiPiA8eG1wTU06SGlzdG9yeT4gPHJkZjpTZXE+IDxyZGY6bGkgc3RFdnQ6YWN0aW9uPSJzYXZlZCIgc3RFdnQ6Y2hhbmdlZD0iLyIgc3RFdnQ6aW5zdGFuY2VJRD0ieG1wLmlpZDo3OTRjM2I0Yi1hMmM1LTRiZTItODc2ZC1iNDI2ZjA5MThjNGYiIHN0RXZ0OnNvZnR3YXJlQWdlbnQ9IkdJTVAgMy4yLjYgKFdpbmRvd3MpIiBzdEV2dDp3aGVuPSIyMDI2LTA5LTI2VDAxOjI2OjMzLTA0Ii8+IDwvcmRmOlNlcT4gPC94bXBNTTpIaXN0b3J5PiA8ZGM6ZGVzY3JpcHRpb24+IDxyZGY6QWx0PiA8cmRmOmxpIHhtbDpsYW5nPSJ4LWRlZmF1bHQiPmVkaXRtYW1laS10ZXN0LXhtcC1tYXJrZXI8L3JkZjpsaT4gPC9yZGY6QWx0PiA8L2RjOmRlc2NyaXB0aW9uPiA8L3JkZjpEZXNjcmlwdGlvbj4gPC9yZGY6UkRGPiA8L3g6eG1wbWV0YT4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA8P3hwYWNrZXQgZW5kPSJ3Ij8+/9sAQwADAgIDAgIDAwMDBAMDBAUIBQUEBAUKBwcGCAwKDAwLCgsLDQ4SEA0OEQ4LCxAWEBETFBUVFQwPFxgWFBgSFBUU/9sAQwEDBAQFBAUJBQUJFA0LDRQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU/8IAEQgAEAAQAwERAAIRAQMRAf/EABUAAQEAAAAAAAAAAAAAAAAAAAAI/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAABlQAH/8QAFBABAAAAAAAAAAAAAAAAAAAAIP/aAAgBAQABBQIf/8QAFBEBAAAAAAAAAAAAAAAAAAAAIP/aAAgBAwEBPwEf/8QAFBEBAAAAAAAAAAAAAAAAAAAAIP/aAAgBAgEBPwEf/8QAFBABAAAAAAAAAAAAAAAAAAAAIP/aAAgBAQAGPwIf/8QAFBABAAAAAAAAAAAAAAAAAAAAIP/aAAgBAQABPyEf/9oADAMBAAIAAwAAABCST//EABQRAQAAAAAAAAAAAAAAAAAAACD/2gAIAQMBAT8QH//EABQRAQAAAAAAAAAAAAAAAAAAACD/2gAIAQIBAT8QH//EABQQAQAAAAAAAAAAAAAAAAAAACD/2gAIAQEAAT8QH//Z';
 
-/** Writes `GPS_XMP_JPEG_BASE64` to `path`. */
+/** GPSLatitude as written into the fixture: 40/1, 26/1, 4612/100 (little-endian RATIONALs). */
+export const FIXTURE_GPS_LATITUDE = Buffer.from(
+  [40, 1, 26, 1, 4612, 100].flatMap((n) => {
+    const b = Buffer.alloc(4);
+    b.writeUInt32LE(n, 0);
+    return [...b];
+  })
+);
+
+/**
+ * A small EXIF TIFF (little-endian) with an Exif IFD (ExifVersion) and a GPS IFD carrying real
+ * GPSLatitude/GPSLongitude RATIONALs and their Ref tags. The base64 fixture above only has a
+ * GPSLatitudeRef, which gives a byte-level check nothing to search for.
+ */
+function gpsExifTiff(): Buffer {
+  const buf = Buffer.alloc(170);
+  buf.write('II', 0, 'latin1');
+  buf.writeUInt16LE(42, 2);
+  buf.writeUInt32LE(8, 4);
+  let pos = 8;
+  const entry = (tag: number, type: number, count: number, value: number | Buffer) => {
+    buf.writeUInt16LE(tag, pos);
+    buf.writeUInt16LE(type, pos + 2);
+    buf.writeUInt32LE(count, pos + 4);
+    if (typeof value === 'number') buf.writeUInt32LE(value, pos + 8);
+    else value.copy(buf, pos + 8);
+    pos += 12;
+  };
+  // IFD0 @8: the Exif and GPS IFD pointers.
+  buf.writeUInt16LE(2, pos);
+  pos += 2;
+  entry(0x8769, 4, 1, 38);
+  entry(0x8825, 4, 1, 56);
+  buf.writeUInt32LE(0, pos); // no next IFD
+  // Exif IFD @38: ExifVersion.
+  pos = 38;
+  buf.writeUInt16LE(1, pos);
+  pos += 2;
+  entry(0x9000, 7, 4, Buffer.from('0230', 'latin1'));
+  buf.writeUInt32LE(0, pos);
+  // GPS IFD @56: version, N/W refs, and the coordinates as RATIONALs at 122 and 146.
+  pos = 56;
+  buf.writeUInt16LE(5, pos);
+  pos += 2;
+  entry(0x0000, 1, 4, Buffer.from([2, 3, 0, 0]));
+  entry(0x0001, 2, 2, Buffer.from('N\0', 'latin1'));
+  entry(0x0002, 5, 3, 122);
+  entry(0x0003, 2, 2, Buffer.from('W\0', 'latin1'));
+  entry(0x0004, 5, 3, 146);
+  buf.writeUInt32LE(0, pos);
+  FIXTURE_GPS_LATITUDE.copy(buf, 122);
+  [79, 1, 58, 1, 5600, 100].forEach((n, i) => buf.writeUInt32LE(n, 146 + i * 4));
+  return buf;
+}
+
+/** `jpeg` with its EXIF APP1 segment replaced by `gpsExifTiff()`; every other segment kept. */
+function withGpsCoordinates(jpeg: Buffer): Buffer {
+  const EXIF_SIG = Buffer.from('Exif\0\0', 'latin1');
+  let pos = 2;
+  while (pos + 4 <= jpeg.length && jpeg[pos] === 0xff) {
+    const marker = jpeg[pos + 1]!;
+    const length = jpeg.readUInt16BE(pos + 2);
+    const payload = jpeg.subarray(pos + 4, pos + 2 + length);
+    if (marker === 0xe1 && payload.subarray(0, EXIF_SIG.length).equals(EXIF_SIG)) {
+      const newPayload = Buffer.concat([EXIF_SIG, gpsExifTiff()]);
+      const header = Buffer.from([0xff, 0xe1, 0, 0]);
+      header.writeUInt16BE(newPayload.length + 2, 2);
+      return Buffer.concat([jpeg.subarray(0, pos), header, newPayload, jpeg.subarray(pos + 2 + length)]);
+    }
+    if (marker === 0xda) break;
+    pos += 2 + length;
+  }
+  throw new Error('no EXIF APP1 segment to replace');
+}
+
+/**
+ * Writes the fixture JPEG: `GPS_XMP_JPEG_BASE64`'s image and XMP packet, with its EXIF replaced by
+ * one carrying real GPS coordinates (`gpsExifTiff`).
+ */
 export function writeGpsXmpJpeg(path: string): void {
-  writeFileSync(path, Buffer.from(GPS_XMP_JPEG_BASE64, 'base64'));
+  writeFileSync(path, withGpsCoordinates(Buffer.from(GPS_XMP_JPEG_BASE64, 'base64')));
 }
 
 // ---- session readiness (a slow first GIMP launch) --------------------------

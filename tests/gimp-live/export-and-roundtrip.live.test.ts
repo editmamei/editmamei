@@ -299,6 +299,7 @@ describe.skipIf(!install)('export options, metadata stripping, and .xcf round tr
       ['vibrance', { vibrance: 20 }],
       ['sharpen', { radius: 2, amount: 0.5 }],
       ['noise_reduction', { strength: 2 }],
+      ['gaussian_blur', { radius: 1.5 }],
     ];
     for (const [type, params] of adjustCalls) {
       await session.call('adjust', { image: opened.image, type, ...params });
@@ -339,5 +340,76 @@ describe.skipIf(!install)('export options, metadata stripping, and .xcf round tr
 
     expect(maxAbsDiff(beforeRender, afterRender)).toBe(0);
     await session.call('close', { image: reopened.image });
+  });
+
+  it('.xcf round trip: after reopen, a filter can be re-edited by its listed id, hidden, and deleted, and each changes the render', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: rampPath });
+    await session.call('adjust', { image: opened.image, type: 'exposure', exposure: 0.5, name: 'Lift' });
+    await session.call('adjust', {
+      image: opened.image,
+      type: 'brightness_contrast',
+      contrast: 30,
+      name: 'Punch',
+    });
+    const xcfPath = join(workDir, 'manage-roundtrip.xcf');
+    await session.call('export', { image: opened.image, path: xcfPath });
+    await session.call('close', { image: opened.image });
+
+    const { image } = await session.call<{ image: number }>('open', { path: xcfPath });
+    try {
+      let step = 0;
+      const render = async () => {
+        const path = join(workDir, `manage-${step++}.png`);
+        await session.call('export', { image, path });
+        return readPng(path);
+      };
+      type Listed = {
+        filters: Array<{ filter_id: number; name: string; params: Record<string, unknown> }>;
+      };
+      const list = () => session.call<Listed>('filter', { image, op: 'list' });
+
+      const reopened = await render();
+      const lift = (await list()).filters.find((f) => f.name === 'Lift')!;
+      expect(lift.params).toEqual({ exposure: 0.5, black_level: 0 });
+
+      // Re-edit by the listed id.
+      await session.call('adjust', {
+        image,
+        type: 'exposure',
+        filter_id: lift.filter_id,
+        exposure: 1.5,
+      });
+      const reedited = await render();
+      expect(maxAbsDiff(reopened, reedited)).toBeGreaterThan(10);
+      expect((await list()).filters.find((f) => f.name === 'Lift')!.params).toEqual({
+        exposure: 1.5,
+        black_level: 0,
+      });
+
+      // Hide and show again.
+      const punch = (await list()).filters.find((f) => f.name === 'Punch')!;
+      await session.call('filter', {
+        image,
+        op: 'set_visibility',
+        filter_id: punch.filter_id,
+        visible: false,
+      });
+      const hidden = await render();
+      expect(maxAbsDiff(reedited, hidden)).toBeGreaterThan(5);
+      await session.call('filter', {
+        image,
+        op: 'set_visibility',
+        filter_id: punch.filter_id,
+        visible: true,
+      });
+      expect(maxAbsDiff(reedited, await render())).toBe(0);
+
+      // Delete: the render matches hiding it, and it is gone from the stack.
+      await session.call('filter', { image, op: 'delete', filter_id: punch.filter_id });
+      expect(maxAbsDiff(hidden, await render())).toBe(0);
+      expect((await list()).filters.map((f) => f.name)).toEqual(['Lift']);
+    } finally {
+      await session.call('close', { image });
+    }
   });
 });
