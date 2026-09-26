@@ -49,11 +49,13 @@ describe('community edition, GIMP detected, unpinned', () => {
     expect(server.toolRegistry.count()).toBeGreaterThan(50);
 
     // The gimp_* tools a community build carries are exactly the ones the
-    // tier table allows there — the SAME edition filter
-    // (isToolAllowedInEdition) that governs every other tool.
+    // tier table allows there, through the SAME edition filter
+    // (isToolAllowedInEdition) that governs every other tool. All 16 ship in
+    // the beta; pinning the count keeps an empty tier from passing as equal.
     const expectedGimp = toolsInTier('community')
       .filter((n) => n.startsWith('gimp_'))
       .sort();
+    expect(expectedGimp).toHaveLength(16);
     expect(names.filter((n) => n.startsWith('gimp_')).sort()).toEqual(expectedGimp);
   });
 });

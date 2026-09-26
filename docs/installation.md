@@ -241,7 +241,7 @@ The `uninstall` subcommand removes Editmamei from your MCP client configs. The `
 ## GIMP (beta)
 
 Editmamei can also drive GIMP, headless, as a second editor. Nothing extra to install on the
-Editmamei side: if GIMP 3.2 or newer is found in its usual install location, the `gimp_*` tools
+Editmamei side: if GIMP 3.2 is found in its usual install location, the `gimp_*` tools
 register automatically alongside the Photoshop ones the next time your AI client starts. If GIMP is
 installed somewhere non-standard, point at it with the `EDITMAMEI_GIMP_PATH` env var or the
 `gimp_path` setting; to force one editor over the other, pin `editor` to `photoshop` or `gimp`. Full

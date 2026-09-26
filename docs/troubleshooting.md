@@ -193,7 +193,7 @@ the npm side thinks, and check the **Pro license key** field for what the extens
 
 A few common ones; the full list lives in [docs/gimp.md](gimp.md#troubleshooting).
 
-- **GIMP isn't detected.** Check it's 3.2 or newer and installed in one of the
+- **GIMP isn't detected.** Check it's GIMP 3.2 and installed in one of the
   [conventional locations](gimp.md#detection). If it's somewhere else, point at it with
   `EDITMAMEI_GIMP_PATH` or the `gimp_path` setting, and restart your AI client.
 - **`gimp_starting` keeps coming back.** The very first launch on a machine can take a few minutes

@@ -63,7 +63,7 @@ run. These are the keys:
 | `ps_path` | string \| null | `null` | Pin a specific Photoshop binary. `null` = auto-detect (the `PHOTOSHOP_PATH` env var still wins if set). |
 | `update_check` | boolean | `true` (on) | Check the public npm registry at startup for a newer version (see "Update check" below). The opt-out tier. |
 | `editor` | string | `"auto"` | Pin which editor(s) register at boot: `auto`, `photoshop`, or `gimp`. The `EDITMAMEI_EDITOR` env var still wins if set. See [docs/gimp.md](gimp.md#pinning-the-editor). |
-| `gimp_path` | string \| null | `null` | Pin a specific GIMP binary (or the literal `flatpak`). `null` = auto-detect (the `EDITMAMEI_GIMP_PATH` env var still wins if set). See [docs/gimp.md](gimp.md#pointing-at-a-custom-install). |
+| `gimp_path` | string \| null | `null` | Pin a specific GIMP binary (an absolute path; `EDITMAMEI_GIMP_PATH=flatpak` is the way to use Flatpak). `null` = auto-detect (the `EDITMAMEI_GIMP_PATH` env var still wins if set). See [docs/gimp.md](gimp.md#pointing-at-a-custom-install). |
 
 `install_id` is a random value; it is **not** derived from your username, machine name, email,
 or any other identifier.

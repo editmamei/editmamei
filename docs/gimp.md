@@ -27,9 +27,9 @@ previews in the conversation instead of watching a window change. See
 
 ## Requirements
 
-- **GIMP 3.2 or newer.** GIMP 3.0 and 3.1 are refused outright with a clear version error. A newer
-  3.x (3.3 and up) is allowed and runs, but logs a warning that it's newer than the tested 3.2.x
-  line: Editmamei hasn't been verified against it yet.
+- **GIMP 3.2.** GIMP 3.0 and 3.1 are refused outright with a clear version error, and so is any
+  version outside the 3.x line. A newer 3.x (3.3 and up) is allowed and runs, but logs a warning
+  that it's newer than the tested 3.2.x line: Editmamei hasn't been verified against it yet.
 - **Windows, macOS, or Linux.** GIMP itself runs on all three; Editmamei's Photoshop side only
   supports Windows and macOS, so GIMP is currently the only editor Editmamei supports on Linux.
 - GIMP must be built with Python support (`python-fu-eval`). Every official GIMP 3.2 build ships
@@ -70,11 +70,11 @@ variable to the absolute path of your `gimp-console` binary, in your MCP client 
 }
 ```
 
-On Linux, if you run GIMP through Flatpak from a non-standard location, set this to the literal value
-`flatpak` instead of a path.
+On Linux, to launch GIMP through Flatpak, set the environment variable to the literal value
+`flatpak` instead of a path. This works only in the environment variable, not in the settings file.
 
 The same thing can be set persistently in `~/.editmamei/settings.json` as the `gimp_path` key (a
-plain absolute path, or `flatpak`), or with `editmamei config set gimp_path <path>`. The env var wins
+plain absolute path), or with `editmamei config set gimp_path <path>`. The env var wins
 over the settings file for the current run. An install that doesn't actually exist at the configured
 path falls back to the normal auto-detect search rather than failing outright.
 
@@ -101,12 +101,13 @@ folder, so a person following along can keep that file open and refresh it. `gim
 `gimp_compare` are the numeric checks alongside it.
 
 `gimp_get_preview` and `gimp_compare`'s optional before/after previews both respect the
-`privacy.send_previews_to_llm` setting, the same as the Photoshop side: when it's off, no image
-bytes go to the model, only the dimensions and the file name. See
+`privacy.send_previews_to_llm` setting: when it's off, no image bytes go to the model, only the
+numbers. `latest-preview.jpg` is still written on your own disk. See
 [privacy.md](privacy.md#what-you-control).
 
 When you're done, `gimp_save_xcf` writes a `.xcf` you can open in the real GIMP application to see the
-result directly, with every filter still live and re-editable there too.
+result directly, with every filter still live and re-editable there too. The `.xcf` keeps the photo's original
+metadata (including any GPS location); only `gimp_export` removes it.
 
 ---
 
@@ -117,7 +118,7 @@ result directly, with every filter still live and re-editable there too.
 - **Non-destructive adjustments** (`gimp_add_adjustment`), 13 types: curves, levels, exposure,
   brightness/contrast, hue/saturation, color balance, color temperature, shadows/highlights,
   saturation, vibrance, sharpen, noise reduction, gaussian blur. Each stays live and re-editable by
-  its `filter_id` until you export.
+  its `filter_id`; exporting writes a flattened copy and leaves the live document as it was.
 - **Masks:** `gimp_create_mask` builds a geometric mask (rectangle, ellipse, linear or radial
   gradient) that a new adjustment can be confined to.
 - **Geometry:** crop, resize, rotate (arbitrary angle, for straightening), flip.
@@ -163,7 +164,7 @@ Cropping is the one exception and is always safe.
 
 ### GIMP isn't detected
 
-Check that GIMP 3.2 or newer is installed in one of the [conventional locations](#detection) for your
+Check that GIMP 3.2 is installed in one of the [conventional locations](#detection) for your
 OS. If it's somewhere else, point at it directly with `EDITMAMEI_GIMP_PATH` or the `gimp_path`
 setting: see [Pointing at a custom install](#pointing-at-a-custom-install). Restart your AI client
 after changing either one; the server reads them once at startup.
