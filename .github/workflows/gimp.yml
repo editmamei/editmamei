@@ -99,6 +99,8 @@ jobs:
       - name: gimp-live suite (fails loudly, not silently, if GIMP wasn't actually found)
         env:
           EDITMAMEI_REQUIRE_GIMP: '1'
+          # The large-image timing test runs only on the scheduled build.
+          EDITMAMEI_GIMP_PERF: ${{ github.event_name == 'schedule' && '1' || '0' }}
         run: npx vitest run tests/gimp-live
 
   gimp-linux:
@@ -144,4 +146,6 @@ jobs:
       - name: gimp-live suite
         env:
           EDITMAMEI_REQUIRE_GIMP: '1'
+          # The large-image timing test runs only on the scheduled build.
+          EDITMAMEI_GIMP_PERF: ${{ github.event_name == 'schedule' && '1' || '0' }}
         run: npx vitest run tests/gimp-live

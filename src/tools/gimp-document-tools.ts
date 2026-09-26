@@ -182,11 +182,11 @@ const exportSchema: JsonSchemaObject = {
     },
     tiff_compression: {
       type: 'string',
-      enum: ['none', 'lzw', 'packbits', 'jpeg', 'ccittfax3', 'ccittfax4', 'adobe_deflate'],
+      enum: ['none', 'lzw', 'packbits', 'jpeg', 'adobe_deflate'],
       default: 'none',
       description:
-        'TIFF only: compression scheme. ccittfax3/ccittfax4 are bilevel-only schemes — do not use ' +
-        'them on an RGB photo (they produce a degenerate, unreadable file). Ignored for other formats.',
+        'TIFF only: compression scheme (lzw and adobe_deflate are lossless; jpeg is lossy). ' +
+        'Ignored for other formats.',
     },
     lossless: {
       type: 'boolean',
