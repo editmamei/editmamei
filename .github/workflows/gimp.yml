@@ -3,7 +3,8 @@
 # survival, export options, and the `.xcf` round trip). This is deliberately a SEPARATE workflow
 # from `ci.yml` rather than a job in it: it needs an unattended GIMP install and a real live
 # GIMP process per test file, which is a different (and slower) shape of job than the rest of the
-# suite, and only runs when GIMP backend files change.
+# suite, and runs only when a pull request touches the GIMP surface (the paths below) -- the
+# default `npm test` in ci.yml excludes tests/gimp-live, so this is the only place it runs.
 #
 # Three jobs: `gimp-windows` (the supported platform, required-check-eligible once green),
 # `gimp-macos` (advisory — a GitHub-hosted macOS runner is a FRESH machine every run, with none of
@@ -16,8 +17,18 @@ name: GIMP live suite
 on:
   pull_request:
     paths:
-      - 'src/backends/gimp/**'
+      - 'src/backends/**'
+      - 'src/tools/gimp-*.ts'
+      - 'src/modules/gimp/**'
+      - 'src/core/server.ts'
+      - 'src/utils/tool-helpers.ts'
+      - 'src/utils/operation-timeouts.ts'
+      - 'scripts/copy-gimp-bridge.ts'
+      - 'scripts/lib/build-common.ts'
+      - 'package.json'
+      - 'package-lock.json'
       - 'tests/gimp-live/**'
+      - 'tests/fixtures/fake-gimp-session.ts'
       - '.github/workflows/gimp.yml'
   workflow_dispatch:
   # The installer is pinned (URL + checksum below), so this does not catch GIMP itself drifting --
@@ -49,10 +60,11 @@ env:
 jobs:
   gimp-windows:
     # The supported platform for the GIMP backend -- see this workflow's `gimp-linux` job for the
-    # advisory cross-platform attempt. This job is path-filtered (see `on.pull_request.paths`
-    # above), so a PR that never touches those paths never runs it at all -- that makes it
-    # unsuitable as a REQUIRED status check (a required check that never runs on a given PR blocks
-    # that PR forever), so any branch protection rule listing required checks must not name it.
+    # advisory cross-platform attempt. Runs on every pull request that touches the GIMP surface
+    # (`on.pull_request.paths` above). Whether it is a required status check is set in branch
+    # protection, not here. Note for that setting: this workflow is path-filtered, so it does not
+    # run at all on a PR outside those paths, and a required check that never reports can hold such
+    # a PR open.
     name: gimp-live (windows)
     runs-on: windows-latest
     timeout-minutes: 15
@@ -112,7 +124,7 @@ jobs:
           EDITMAMEI_REQUIRE_GIMP: '1'
           # The large-image timing test runs only on the scheduled build.
           EDITMAMEI_GIMP_PERF: ${{ github.event_name == 'schedule' && '1' || '0' }}
-        run: npx vitest run tests/gimp-live
+        run: npm run test:gimp
 
   gimp-macos:
     # Advisory, NOT a required check yet -- same posture as `gimp-linux` below: promote once green
@@ -207,7 +219,7 @@ jobs:
           EDITMAMEI_REQUIRE_GIMP: '1'
           # The large-image timing test runs only on the scheduled build.
           EDITMAMEI_GIMP_PERF: ${{ github.event_name == 'schedule' && '1' || '0' }}
-        run: npx vitest run tests/gimp-live
+        run: npm run test:gimp
 
   gimp-linux:
     # Advisory, NOT a required check -- a genuinely separate, non-required job, never
@@ -254,4 +266,4 @@ jobs:
           EDITMAMEI_REQUIRE_GIMP: '1'
           # The large-image timing test runs only on the scheduled build.
           EDITMAMEI_GIMP_PERF: ${{ github.event_name == 'schedule' && '1' || '0' }}
-        run: npx vitest run tests/gimp-live
+        run: npm run test:gimp

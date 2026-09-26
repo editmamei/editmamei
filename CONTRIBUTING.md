@@ -55,6 +55,12 @@ touches snippet generation, say so in the PR and describe what you tested agains
 Photoshop, including the version and platform. A maintainer will validate on the platforms you
 could not reach.
 
+The GIMP backend has a live suite in `tests/gimp-live` that drives a real headless GIMP 3.2. It
+is not part of `npm test`. With GIMP installed, run it with `npm run test:gimp` (build first:
+it also checks the bridge staged into `dist/`), or one file at a time with
+`npx vitest run tests/gimp-live/<file>`. Set `EDITMAMEI_REQUIRE_GIMP=1` to make a missing GIMP
+fail the run instead of skipping it.
+
 ## Pull requests
 
 - Branch from `dev`. `main` is the released branch.
