@@ -835,6 +835,32 @@ export function copyProModels(destDistDir: string): number {
   return files.length;
 }
 
+/**
+ * Stage the GIMP bridge's Python source (`ops.py`, `lib.py` — NOT
+ * `test_lib.py`, which never ships) into
+ * `<destDistDir>/backends/gimp/bridge/`. Mirrors `copyModels`: `tsc` compiles
+ * `.ts` only, so the `.py` files it never touches need a hand copy, at
+ * exactly the offset `session.ts`'s `resolveOpsPyPath()` resolves at
+ * runtime (a sibling `bridge/` of the compiled `dist/backends/gimp/`).
+ * Returns the count copied.
+ */
+export function copyGimpBridge(destDistDir: string): number {
+  const srcDir = join(REPO_ROOT, 'src', 'backends', 'gimp', 'bridge');
+  const destDir = join(destDistDir, 'backends', 'gimp', 'bridge');
+  mkdirSync(destDir, { recursive: true });
+  const files = ['ops.py', 'lib.py'];
+  let count = 0;
+  for (const f of files) {
+    const src = join(srcDir, f);
+    if (!existsSync(src)) {
+      throw new Error(`copyGimpBridge: expected bridge file missing: ${src}`);
+    }
+    copyFileSync(src, join(destDir, f));
+    count++;
+  }
+  return count;
+}
+
 export async function runBuild(edition: Edition, tag: string): Promise<void> {
   const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
   const version = pkg.version as string;
@@ -877,6 +903,9 @@ export async function runBuild(edition: Edition, tag: string): Promise<void> {
   // Stage the local-vision models into dist/models/ (before checksums cover them).
   const modelCount = copyModels(join(packageDir(edition), 'dist'));
   console.error(`[${tag}] copied ${modelCount} detection model(s) → dist/models/`);
+  // Stage the GIMP bridge's Python source (before checksums cover it too).
+  const bridgeCount = copyGimpBridge(join(packageDir(edition), 'dist'));
+  console.error(`[${tag}] copied ${bridgeCount} GIMP bridge file(s) → dist/backends/gimp/bridge/`);
   writeChecksums(edition);
   console.error(`[${tag}] wrote package.json, distribution files, SHA256SUMS`);
   console.error(`[${tag}] done.`);

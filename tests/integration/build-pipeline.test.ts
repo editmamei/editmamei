@@ -13,6 +13,7 @@ import {
   devProCoreOutPath,
   copyModels,
   copyProModels,
+  copyGimpBridge,
 } from '../../scripts/lib/build-common.ts';
 import {
   coreBinaryName,
@@ -78,6 +79,20 @@ describe('build pipeline scaffolding', () => {
         // A test-only checkout without the weight stages nothing (no dir).
         expect(existsSync(join(dest, 'models', 'pro'))).toBe(false);
       }
+    } finally {
+      rmSync(dest, { recursive: true, force: true });
+    }
+  });
+
+  it('copyGimpBridge stages ops.py and lib.py (never test_lib.py) into <dist>/backends/gimp/bridge', () => {
+    const dest = mkdtempSync(join(tmpdir(), 'em-gimp-bridge-'));
+    try {
+      const count = copyGimpBridge(dest);
+      expect(count).toBe(2);
+      const bridgeDir = join(dest, 'backends', 'gimp', 'bridge');
+      expect(existsSync(join(bridgeDir, 'ops.py'))).toBe(true);
+      expect(existsSync(join(bridgeDir, 'lib.py'))).toBe(true);
+      expect(existsSync(join(bridgeDir, 'test_lib.py'))).toBe(false);
     } finally {
       rmSync(dest, { recursive: true, force: true });
     }

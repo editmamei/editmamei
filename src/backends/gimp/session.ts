@@ -1,0 +1,969 @@
+/**
+ * Drives one headless `gimp-console` process: a single warm GIMP, started
+ * lazily on the first call, serving named operations over JSON request/
+ * response files — see `bridge/ops.py`'s file header for the transport this
+ * mirrors.
+ *
+ * Model-supplied values only ever travel inside request/response JSON files;
+ * the only text handed to GIMP on its command line is `BATCH_LINE`, a fixed
+ * constant that never varies with user input — the two paths GIMP needs
+ * (`ops.py`, the session dir) travel through the environment instead
+ * (`EM_GIMP_OPS`, `EM_GIMP_SESSION`), which sidesteps ever having to quote a
+ * path into a Python string literal (a real Windows username may contain an
+ * apostrophe, which breaks naive `'...'`-quoting).
+ */
+
+import {
+  spawn as nodeSpawn,
+  spawnSync,
+  type ChildProcess,
+  type SpawnOptions,
+} from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  copyFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Logger } from '../../utils/logger.js';
+import { userOwnedTempRoot } from '../../utils/temp.js';
+import { GimpError, GIMP_ERROR_CODES, type GimpErrorCode } from './errors.js';
+import type { GimpInstall } from './detect.js';
+
+export type SpawnFn = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions
+) => ChildProcess;
+
+export type GimpSessionState = 'idle' | 'starting' | 'ready' | 'dead' | 'closed';
+
+export interface GimpSessionOptions {
+  readonly install: GimpInstall;
+  /** Parent of every per-process session dir. Default a per-user private cache dir (see `defaultRootDir`). */
+  rootDir?: string;
+  /** Injected for tests — a fake, EventEmitter-backed `ChildProcess`. */
+  spawn?: SpawnFn;
+  /** Injected clock (tests). Defaults to `Date.now`. */
+  now?: () => number;
+  logger?: Logger;
+  /**
+   * Injected tree-kill (tests assert it was called rather than exercising a
+   * real `taskkill`/`process.kill(-pid, ...)` against a fake pid). Defaults
+   * to `defaultTreeKill`.
+   */
+  killTree?: (proc: ChildProcess) => void;
+  /**
+   * Injected for tests — the POSIX-only ownership/writability check in
+   * `#ensureRootDir` runs on macOS/Linux only, which this dev/CI machine
+   * isn't, so these seams are what make that branch testable at all.
+   * Defaults to the real values.
+   */
+  platform?: string;
+  /** Defaults to `() => process.getuid?.()` (always `undefined` on Windows). */
+  getuid?: () => number | undefined;
+  /** Defaults to a real `fs.statSync`-based `{uid, mode}` lookup. */
+  statRootDir?: (path: string) => { uid: number; mode: number };
+  /** Defaults to the real `fs.chmodSync`. */
+  chmodRootDir?: (path: string, mode: number) => void;
+  /** Defaults to a real `fs.readFileSync(path, 'utf8')`. Injected so the response-read retry/error paths are testable without faking OS-level file locks. */
+  readRespFile?: (path: string) => string;
+}
+
+interface PingResult {
+  major: number;
+  minor: number;
+  micro: number;
+}
+
+const READY_TIMEOUT_MS = 60_000;
+const PING_TIMEOUT_MS = 10_000;
+const DEFAULT_CALL_TIMEOUT_MS = 30_000;
+export const SHUTDOWN_GRACE_MS = 5_000;
+/**
+ * After a tree-kill during shutdown, how much longer to wait for the actual
+ * `exit` event before giving up and removing the session dir anyway. A
+ * tree-kill call (real `taskkill`/`process.kill(-pid, ...)`) is
+ * fire-and-forget — it does not guarantee the process has exited by the
+ * time it returns — so this is what stands between "kill requested" and
+ * "safe to delete the directory GIMP might still have files open in."
+ */
+export const KILL_CONFIRM_MS = 2_000;
+/**
+ * Pre-ready exit classification normally waits for 'close' (stdio fully
+ * flushed) rather than 'exit', so it reads complete output — but a child
+ * that survives its parent's exit while still holding the stdio pipes open
+ * (e.g. a grandchild process GIMP spawned) means 'close' may never fire at
+ * all. This bounds how long 'exit' alone waits for 'close' to show up before
+ * classifying with whatever output was captured by then.
+ */
+const CLOSE_AFTER_EXIT_GRACE_MS = 500;
+const ORPHAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const POLL_INTERVAL_MS = 2;
+const MAX_CAPTURED_OUTPUT = 8 * 1024;
+const RESP_READ_RETRY_ATTEMPTS = 5;
+const RESP_READ_RETRY_DELAY_MS = 20;
+
+const KNOWN_ERROR_CODES = new Set<GimpErrorCode>(GIMP_ERROR_CODES);
+
+const RESTARTED_MESSAGE = 'GIMP stopped; open images and unapplied work are gone — reopen the file';
+
+/**
+ * The ONE string ever passed to `-b`. It carries no path, no username, no
+ * anything model- or user-supplied — it just reads two env vars and hands
+ * off to the bridge's `serve()`, which loops until told to stop. Because this
+ * is a constant, there is no quoting rule to get wrong; the two real paths
+ * (`ops.py`, the session dir) travel via `env` below instead. Env vars set
+ * on the child process do reach `python-fu-eval`, including values that
+ * contain apostrophes.
+ */
+export const BATCH_LINE =
+  "import os; g = {}; exec(open(os.environ['EM_GIMP_OPS'], encoding='utf-8').read(), g); g['serve'](os.environ['EM_GIMP_SESSION'])";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Absolute path to the bridge's `ops.py`. `scripts/copy-gimp-bridge.ts` stages
+ * `src/backends/gimp/bridge/*.py` to `dist/backends/gimp/bridge/*.py` — the
+ * same relative offset from THIS module's own directory in both places
+ * (`src/backends/gimp/` under vitest, `dist/backends/gimp/` at runtime), so a
+ * single `join(HERE, 'bridge', 'ops.py')` resolves correctly either way with
+ * no dev/prod branch.
+ */
+export function resolveOpsPyPath(): string {
+  return join(HERE, 'bridge', 'ops.py');
+}
+
+/** `<per-user private cache dir>/gimp` — never `os.tmpdir()`, which is world-readable/writable on POSIX. */
+export function defaultRootDir(): string {
+  return join(userOwnedTempRoot(), 'gimp');
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isEnoentError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'ENOENT';
+}
+
+function isRetryableReadError(err: unknown): boolean {
+  const code =
+    typeof err === 'object' && err !== null ? (err as { code?: string }).code : undefined;
+  return code === 'EBUSY' || code === 'EPERM';
+}
+
+/**
+ * GIMP's batch-interpreter SELECTION failing outright (Python support isn't
+ * compiled into this GIMP build at all, so the "python-fu-eval" interpreter
+ * is never registered) is the ONLY signal that should classify as
+ * gimp_python_missing. GIMP's generic per-call wrapper — "procedure
+ * execution of python-fu-eval failed: <any exception from OUR bridge
+ * code>" — means the interpreter DOES exist and something else went wrong (a
+ * bug in ops.py, a bad batch line, ...); that must NOT be sticky, since
+ * fixing the underlying cause (or just retrying) can succeed against the
+ * exact same install.
+ *
+ * These three strings are GIMP's real wording, extracted from
+ * `gimp-console-3.exe` 3.2.6 (with `%s` substituted for `python-fu-eval`,
+ * the only interpreter this bridge ever selects):
+ *   "The batch interpreter '%s' is not available. Batch mode disabled."
+ *   "No batch interpreters are available. Batch mode disabled."
+ *   "The procedure '%s' is not a valid batch interpreter."
+ * Not exercised against an actual Python-less GIMP build (every install
+ * reachable while building this bundled its own Python) — the strings
+ * themselves come straight from the binary, not from documentation.
+ */
+const PYTHON_INTERPRETER_MISSING_RE =
+  /The batch interpreter '[^']*' is not available\. Batch mode disabled\.|No batch interpreters are available\. Batch mode disabled\.|The procedure '[^']*' is not a valid batch interpreter\./;
+
+/**
+ * The real tree-kill: Windows `taskkill /PID <pid> /T /F` (kills the whole
+ * process tree — GIMP starts a script-fu extension child of its own);
+ * POSIX `process.kill(-pid, 'SIGKILL')` against the process GROUP (the
+ * session is spawned `detached: true` there for exactly this), falling back
+ * to killing just the one process if group-kill isn't available.
+ */
+export function defaultTreeKill(proc: ChildProcess): void {
+  if (proc.exitCode !== null || proc.pid === undefined) return; // already exited
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true });
+    return;
+  }
+  try {
+    process.kill(-proc.pid, 'SIGKILL');
+  } catch {
+    try {
+      proc.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+export class GimpSession {
+  private readonly install: GimpInstall;
+  private readonly rootDir: string;
+  private readonly spawnFn: SpawnFn;
+  private readonly clock: () => number;
+  private readonly logger: Logger;
+  private readonly killTreeFn: (proc: ChildProcess) => void;
+  private readonly platform: string;
+  private readonly getuid: () => number | undefined;
+  private readonly statRootDir: (path: string) => { uid: number; mode: number };
+  private readonly chmodRootDir: (path: string, mode: number) => void;
+  private readonly readRespFile: (path: string) => string;
+
+  private sessionState: GimpSessionState = 'idle';
+  private version: string | undefined;
+
+  private proc: ChildProcess | undefined;
+  private sessionDir: string | undefined;
+  private rpcDir: string | undefined;
+  private output = '';
+  private nextId = 1;
+  private queue: Promise<void> = Promise.resolve();
+  /** Bumped every time a running session dies unexpectedly (crash or our own timeout kill). */
+  private deadGeneration = 0;
+  private sweepDone = false;
+  private shutdownPromise: Promise<void> | undefined;
+  private shuttingDown = false;
+  /**
+   * Set once for a failure class that will never resolve itself by
+   * relaunching (an unsupported GIMP version; the configured binary not
+   * existing at all). Every call after that fails fast with the SAME error
+   * instead of paying a ~5s cold-start attempt that is certain to repeat it.
+   * A readiness timeout is deliberately NOT sticky — that can be transient
+   * host load, so the next call is allowed to try again.
+   */
+  private stickyError: GimpError | undefined;
+  /**
+   * The real cause of the most recent death, whatever it was. Read by
+   * `#dispatch` for a call that's stale-generation (in-flight or queued
+   * behind the death, per the generation comment on `call()` above): a
+   * failure during a START (never reached 'ready') sets this to the SPECIFIC
+   * classified error (python missing, exited before ready, ready-timeout,
+   * ...) so those calls get the real cause instead of the generic
+   * "session restarted" wording, which is reserved for a session that WAS
+   * ready and then died mid-flight (set with no argument to `#markDead`).
+   */
+  private lastFailure: GimpError = new GimpError('gimp_session_restarted', RESTARTED_MESSAGE);
+
+  constructor(opts: GimpSessionOptions) {
+    this.install = opts.install;
+    this.rootDir = opts.rootDir ?? defaultRootDir();
+    this.spawnFn = opts.spawn ?? (nodeSpawn as SpawnFn);
+    this.clock = opts.now ?? Date.now;
+    this.logger = opts.logger ?? new Logger('GimpSession');
+    this.killTreeFn = opts.killTree ?? defaultTreeKill;
+    this.platform = opts.platform ?? process.platform;
+    this.getuid = opts.getuid ?? (() => process.getuid?.());
+    this.statRootDir =
+      opts.statRootDir ??
+      ((path) => {
+        const st = statSync(path);
+        return { uid: st.uid, mode: st.mode };
+      });
+    this.chmodRootDir = opts.chmodRootDir ?? chmodSync;
+    this.readRespFile = opts.readRespFile ?? ((path) => readFileSync(path, 'utf8'));
+  }
+
+  get state(): GimpSessionState {
+    return this.sessionState;
+  }
+
+  get gimpVersion(): string | undefined {
+    return this.version;
+  }
+
+  /** Where the human-follows-along preview lives; refreshed by `copyToLatestPreview`. */
+  latestPreviewPath(): string {
+    return join(this.rootDir, 'latest-preview.jpg');
+  }
+
+  /** Copy a rendered preview to the well-known path a person can keep open, atomically (write-then-rename). */
+  copyToLatestPreview(src: string): void {
+    // Routed through the same checked/locked-down root-dir creation every
+    // session dir goes through — this can run before any session has ever
+    // started (a caller might just want the preview path), so it can't rely
+    // on `#startFresh` having already called it.
+    this.#ensureRootDir();
+    const dest = this.latestPreviewPath();
+    const tmp = `${dest}.tmp`;
+    copyFileSync(src, tmp);
+    renameSync(tmp, dest);
+  }
+
+  /**
+   * Dispatch one operation. Calls are strictly serialized — one GIMP, one
+   * request in flight at a time — so `queue` is a plain promise chain rather
+   * than anything more elaborate. Because it's serial, exactly one
+   * `#dispatch` ever executes concurrently, which is what makes the
+   * generation check below sufficient without extra locking.
+   */
+  async call<T = unknown>(
+    op: string,
+    args: Record<string, unknown> = {},
+    callOpts: { timeoutMs?: number } = {}
+  ): Promise<T> {
+    // Captured NOW, synchronously, before this call waits its turn: it
+    // records "how many crashes had already happened when the caller issued
+    // this call." A call issued before a crash that hasn't been restarted
+    // from yet — i.e. one that was already in flight or sitting in the
+    // queue when the session died — carries a strictly older generation
+    // than a call issued afterward (even one issued moments later, once the
+    // caller has seen the failure or simply tries again). That's exactly the
+    // in-flight/queued vs. next-call distinction the lifecycle contract
+    // wants, and it falls out of a single counter with no extra bookkeeping.
+    const myGeneration = this.deadGeneration;
+    const run = this.queue.then(() =>
+      this.#dispatch<T>(op, args, callOpts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, myGeneration)
+    );
+    // The shared queue itself must never end up permanently rejected, or
+    // every call after the first failure would hang forever waiting its turn.
+    this.queue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  /** Graceful `rpc/shutdown` → wait → tree-kill on timeout → remove the session dir. Idempotent and memoised. */
+  async shutdown(): Promise<void> {
+    if (!this.shutdownPromise) this.shutdownPromise = this.#shutdownOnce();
+    return this.shutdownPromise;
+  }
+
+  // ---- lifecycle ------------------------------------------------------------
+
+  async #dispatch<T>(
+    op: string,
+    args: Record<string, unknown>,
+    timeoutMs: number,
+    myGeneration: number
+  ): Promise<T> {
+    this.#assertOpen();
+    if (this.stickyError) {
+      throw this.stickyError;
+    }
+    if (this.sessionState === 'dead' && myGeneration < this.deadGeneration) {
+      throw this.lastFailure;
+    }
+    if (this.sessionState !== 'ready') {
+      await this.#startFresh();
+      // #startFresh can await for up to ~2s (the stale-process kill-confirm
+      // wait) before ever spawning anything, and again while waiting for
+      // readiness — shutdown() can land in either gap. Re-checking here,
+      // AFTER the await returns, is what stops a call from proceeding to
+      // #send against a session that finished closing while this call was
+      // waiting its turn.
+      this.#assertOpen();
+    }
+    return this.#send<T>(op, args, timeoutMs);
+  }
+
+  /**
+   * Throws `GimpError('gimp_session_restarted', 'session closed')` if
+   * `shutdown()` has started (or finished) since the last check — the ONE
+   * place that question is asked, so every `await` inside `#dispatch` and
+   * `#startFresh` that could straddle a shutdown re-checks through this
+   * rather than re-deriving the condition ad hoc at each call site. Most
+   * critically, this is what stops `#startFresh`'s stale-process
+   * kill-and-confirm wait (up to `KILL_CONFIRM_MS`) from resurrecting a
+   * session that finished closing while that wait was in flight: without
+   * this check, the code that runs right after it — sweeping the old dir,
+   * flipping state to `'starting'`, spawning a brand new GIMP — would run
+   * unconditionally, leaving a fresh process nobody will ever manage or kill
+   * (`shutdown()` only ever runs once, and by then it's already returned).
+   * `procToKillIfTripped`, when given, is tree-killed before throwing — for
+   * a call site where a process was already spawned by the time this runs.
+   */
+  #assertOpen(procToKillIfTripped?: ChildProcess): void {
+    if (!this.shuttingDown && this.sessionState !== 'closed') return;
+    if (procToKillIfTripped) this.killTreeFn(procToKillIfTripped);
+    throw new GimpError('gimp_session_restarted', 'session closed');
+  }
+
+  async #startFresh(): Promise<void> {
+    this.#assertOpen();
+    // A previous process may still be alive (e.g. this restart was
+    // triggered by a timeout whose kill hasn't actually reaped it yet, or
+    // by a crash we detected before the OS finished tearing it down).
+    // Tree-kill it and WAIT for it to actually confirm exit (bounded) before
+    // dropping its directory — otherwise its stale `exit`/`error` listeners
+    // would fire later, and removing the directory while GIMP might still
+    // have it open would be the exact race #shutdownOnce also guards against.
+    const staleProc = this.proc;
+    const staleDir = this.sessionDir;
+    if (staleProc && staleProc.exitCode === null) {
+      await this.#killAndConfirmExit(staleProc);
+      // This wait can take up to KILL_CONFIRM_MS (2s) — long enough for a
+      // shutdown() to start AND finish while it was running. Nothing of
+      // ours is spawned yet, so there's nothing to kill; just don't go on
+      // to sweep the (already-removed-by-shutdown, or about-to-be) stale
+      // dir, flip state back to 'starting', and spawn a brand new,
+      // unmanaged GIMP behind shutdown()'s back.
+      this.#assertOpen();
+    }
+    if (staleDir) {
+      this.#removeSessionDir(staleDir);
+    }
+
+    this.sessionState = 'starting';
+    this.#ensureRootDir();
+    if (!this.sweepDone) {
+      this.sweepDone = true;
+      this.#sweepOrphans();
+    }
+
+    const sessionDir = mkdtempSync(join(this.rootDir, `session-${process.pid}-`));
+    const rpcDir = join(sessionDir, 'rpc');
+    mkdirSync(rpcDir, { recursive: true });
+    this.sessionDir = sessionDir;
+    this.rpcDir = rpcDir;
+    this.nextId = 1;
+    this.output = '';
+
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      EM_GIMP_OPS: resolveOpsPyPath(),
+      EM_GIMP_SESSION: sessionDir,
+    };
+    // GIMP under Flatpak runs in its own pid namespace, so the host's
+    // parent pid isn't visible inside the sandbox — the bridge's
+    // is_process_alive check would see it as already gone and exit the
+    // session about a second after it becomes ready. Flatpak installs skip
+    // the parent-death check entirely: a crashed driver can orphan a
+    // Flatpak GIMP process until the next session's stale-dir cleanup runs
+    // (that cleanup removes the old session DIRECTORY; the orphaned process
+    // itself keeps running until the user closes it or reboots).
+    if (this.install.launch.command !== 'flatpak') {
+      env.EM_GIMP_PARENT_PID = String(process.pid);
+    }
+    const { command, args } = this.install.launch;
+    const fullArgs = [
+      ...args,
+      '-i',
+      '--batch-interpreter=python-fu-eval',
+      '-b',
+      BATCH_LINE,
+      '--quit',
+    ];
+
+    let proc: ChildProcess;
+    try {
+      proc = this.spawnFn(command, fullArgs, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+        env,
+      });
+    } catch (err) {
+      const gimpErr = this.#classifySpawnFailure(err);
+      this.#markDead(gimpErr);
+      throw gimpErr;
+    }
+    this.proc = proc;
+    proc.stdout?.on('data', (d) => {
+      this.output = (this.output + String(d)).slice(-MAX_CAPTURED_OUTPUT);
+    });
+    proc.stderr?.on('data', (d) => {
+      this.output = (this.output + String(d)).slice(-MAX_CAPTURED_OUTPUT);
+    });
+
+    let spawnError: unknown;
+    // Set on 'close' (stdio streams fully flushed), NOT 'exit' — 'exit' can
+    // fire before all buffered stdout/stderr has actually been delivered
+    // via the 'data' events above, so classifying on it risks reading
+    // `this.output` before the very message that would classify it (e.g.
+    // the python-fu-eval diagnostic) has arrived. #waitForReady's poll loop
+    // is the ONE place that reacts to this, so there is normally exactly one
+    // classification per start attempt, not a race between two.
+    let preReadyCloseCode: number | null | undefined;
+    let closeGraceTimer: ReturnType<typeof setTimeout> | undefined;
+    proc.on('exit', (code, signal) => {
+      // A listener from an already-superseded process (this session moved
+      // on to a newer `this.proc` since this one was spawned) — ignore it,
+      // or its late 'exit' would mark a perfectly healthy new session dead.
+      if (proc !== this.proc) return;
+      // Our own timeout-kill path already marked the session dead before
+      // killing it; a deliberate shutdown() sets `shuttingDown` before
+      // writing rpc/shutdown, BEFORE this event can fire — either way,
+      // this is the "nobody expected it" branch, not those two.
+      if (this.sessionState === 'dead' || this.sessionState === 'closed') return;
+      if (this.shuttingDown) {
+        this.sessionState = 'closed';
+        return;
+      }
+      if (this.sessionState === 'starting') {
+        // Normally classified on 'close' below, once stdio is flushed — but
+        // a surviving child holding the stdio pipes open (e.g. a grandchild
+        // GIMP spawned) can mean 'close' never fires at all. Give it a
+        // bounded head start; if it hasn't shown up by then, classify with
+        // whatever output was actually captured rather than hang the rest
+        // of READY_TIMEOUT_MS waiting for an event that isn't coming.
+        closeGraceTimer = setTimeout(() => {
+          if (preReadyCloseCode === undefined) preReadyCloseCode = code;
+        }, CLOSE_AFTER_EXIT_GRACE_MS);
+        closeGraceTimer.unref?.();
+        return;
+      }
+      this.logger.warn('GIMP process exited unexpectedly', { code, signal });
+      this.#markDead();
+    });
+    proc.on('close', (code) => {
+      if (proc !== this.proc) return;
+      if (this.sessionState !== 'starting') return;
+      clearTimeout(closeGraceTimer);
+      preReadyCloseCode = code;
+    });
+    proc.on('error', (err) => {
+      if (proc !== this.proc) return;
+      spawnError = err;
+      if (this.sessionState !== 'dead' && this.sessionState !== 'closed') {
+        this.logger.error('GIMP process error', err);
+        // Classified even here (not just below, in #waitForReady's own
+        // catch): an 'error' event can arrive well after readiness too, and
+        // this is the only listener that would ever see it in that case.
+        this.#markDead(this.#classifySpawnFailure(err));
+      }
+    });
+
+    try {
+      await this.#waitForReady(
+        rpcDir,
+        () => spawnError,
+        () => preReadyCloseCode
+      );
+    } catch (err) {
+      // #assertOpen FIRST: if this failed because #waitForReady's own abort
+      // check tripped (shutdown() landed while we were waiting), that's
+      // shutdown()'s error to report, not a fresh 'dead' classification —
+      // and shutdown() already owns killing this exact process (`this.proc`
+      // was assigned before this await started), so no extra kill is passed
+      // in here.
+      this.#assertOpen();
+      const gimpErr = err as GimpError;
+      this.#markDead(gimpErr);
+      this.killTreeFn(proc);
+      throw gimpErr;
+    }
+    // Reached readiness, but shutdown() may have landed in the gap between
+    // the event that satisfied #waitForReady and this line running.
+    this.#assertOpen(proc);
+
+    let ping: PingResult;
+    try {
+      ping = await this.#send<PingResult>('ping', {}, PING_TIMEOUT_MS);
+    } catch (err) {
+      this.#assertOpen();
+      const gimpErr = err as GimpError;
+      this.#markDead(gimpErr);
+      this.killTreeFn(proc);
+      throw gimpErr;
+    }
+    this.#assertOpen(proc);
+    this.version = `${ping.major}.${ping.minor}.${ping.micro}`;
+    if (ping.major !== 3 || ping.minor < 2) {
+      const err = new GimpError(
+        'gimp_version_unsupported',
+        `Editmamei needs GIMP 3.2 or newer; found ${this.version}`
+      );
+      this.stickyError = err; // this install will never report a different version
+      this.#markDead(err);
+      this.killTreeFn(proc);
+      throw err;
+    }
+    if (ping.minor > 2) {
+      this.logger.warn(
+        `GIMP ${this.version} is newer than the tested 3.2.x line; continuing untested`
+      );
+    }
+
+    this.#assertOpen(proc);
+    this.sessionState = 'ready';
+  }
+
+  /**
+   * Validate (and, on first creation, lock down) the root directory every
+   * session dir lives under. Never `os.tmpdir()` — that's world-writable on
+   * most POSIX systems, so anything living directly under it is guessable
+   * and, if the parent allows it, tamperable by another local user.
+   */
+  #ensureRootDir(): void {
+    mkdirSync(this.rootDir, { recursive: true, mode: 0o700 });
+    if (this.platform === 'win32') return;
+
+    const st = this.statRootDir(this.rootDir);
+    const uid = this.getuid();
+    if (uid !== undefined && st.uid !== uid) {
+      throw new GimpError(
+        'gimp_start_failed',
+        `refusing to use GIMP temp root ${this.rootDir}: owned by a different user (uid ${st.uid})`
+      );
+    }
+    if ((st.mode & 0o022) !== 0) {
+      throw new GimpError(
+        'gimp_start_failed',
+        `refusing to use GIMP temp root ${this.rootDir}: group- or other-writable (mode ${(st.mode & 0o777).toString(8)})`
+      );
+    }
+    // Correct any drift from a prior run (e.g. an umask that widened it) now
+    // that we know it's ours.
+    this.chmodRootDir(this.rootDir, 0o700);
+  }
+
+  #classifySpawnFailure(err: unknown): GimpError {
+    const command = this.install.launch.command;
+    if (isEnoentError(err)) {
+      const gimpErr = new GimpError(
+        'gimp_start_failed',
+        `GIMP not found at "${command}" (ENOENT) — check the install path`
+      );
+      this.stickyError = gimpErr; // the configured binary does not exist; relaunching won't help
+      return gimpErr;
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return new GimpError('gimp_start_failed', `could not start GIMP at "${command}": ${message}`);
+  }
+
+  async #waitForReady(
+    rpcDir: string,
+    getSpawnError: () => unknown,
+    getPreReadyCloseCode: () => number | null | undefined
+  ): Promise<void> {
+    const readyPath = join(rpcDir, 'ready');
+    const deadline = this.clock() + READY_TIMEOUT_MS;
+    while (!existsSync(readyPath)) {
+      // Observed FIRST, every iteration: without this, a shutdown() issued
+      // while still 'starting' would otherwise sit here polling a directory
+      // that shutdown() may already have removed for up to the full
+      // READY_TIMEOUT_MS (60s) before ever noticing — this is what makes a
+      // shutdown mid-start reject almost immediately (within one
+      // POLL_INTERVAL_MS) instead.
+      this.#assertOpen();
+      // Checked BEFORE exitCode: Node commonly reports a spawn failure like
+      // ENOENT via the async 'error' event without ever setting a
+      // meaningful exitCode (or sets one that reads as an ordinary crash,
+      // e.g. -2) — that must classify as "GIMP not found", not "GIMP exited
+      // before it became ready".
+      const spawnErr = getSpawnError();
+      if (spawnErr) throw this.#classifySpawnFailure(spawnErr);
+      // 'close' (stdio fully flushed), not exitCode/'exit': see the comment
+      // where preReadyCloseCode is set, in #startFresh.
+      const closeCode = getPreReadyCloseCode();
+      if (closeCode !== undefined) throw this.#classifyPreReadyExit(closeCode);
+      if (this.clock() > deadline) {
+        // Deliberately NOT sticky: a slow/loaded host is a plausible,
+        // transient cause, so the next call gets to try again.
+        throw new GimpError(
+          'gimp_start_failed',
+          `GIMP did not become ready within ${READY_TIMEOUT_MS}ms`
+        );
+      }
+      await sleep(POLL_INTERVAL_MS);
+    }
+  }
+
+  #classifyPreReadyExit(exitCode: number | null): GimpError {
+    this.logger.debug('GIMP exited before ready', { exitCode, tail: this.output.slice(-500) });
+    if (PYTHON_INTERPRETER_MISSING_RE.test(this.output)) {
+      const gimpErr = new GimpError(
+        'gimp_python_missing',
+        'this GIMP install has no Python support (python-fu-eval is missing) — reinstall GIMP with Python support enabled'
+      );
+      this.stickyError = gimpErr; // this install's GIMP binary will never suddenly grow Python support
+      return gimpErr;
+    }
+    return new GimpError(
+      'gimp_start_failed',
+      `GIMP exited (code ${exitCode}) before it became ready`
+    );
+  }
+
+  async #send<T>(op: string, args: Record<string, unknown>, timeoutMs: number): Promise<T> {
+    const proc = this.proc;
+    const rpcDir = this.rpcDir;
+    if (!proc || !rpcDir) {
+      throw new GimpError('gimp_start_failed', 'GIMP session has no active process');
+    }
+
+    const id = this.nextId++;
+    const reqPath = join(rpcDir, `req-${id}.json`);
+    const respPath = join(rpcDir, `resp-${id}.json`);
+    // `resp` is deliberately NOT part of the request body — the bridge
+    // derives the response path itself from the id, so a malformed or
+    // tampered request can't steer a write anywhere else on disk.
+    writeFileSync(`${reqPath}.tmp`, JSON.stringify({ id, op, args }));
+    renameSync(`${reqPath}.tmp`, reqPath);
+
+    const deadline = this.clock() + timeoutMs;
+    while (!existsSync(respPath)) {
+      if (proc.exitCode !== null) {
+        // A graceful shutdown() kills this same process, so this branch is
+        // also how an in-flight call notices one landing underneath it.
+        // #markDead is skipped in that case — shutdown() alone owns the
+        // 'closed' transition, and a call reaching here after it already
+        // ran must not resurrect a 'closed' session back to 'dead'.
+        if (!this.shuttingDown) this.#markDead();
+        throw new GimpError('gimp_session_restarted', RESTARTED_MESSAGE);
+      }
+      if (this.clock() > deadline) {
+        if (!this.shuttingDown) this.#markDead();
+        this.killTreeFn(proc);
+        throw new GimpError('gimp_timeout', `${op} did not respond within ${timeoutMs}ms`);
+      }
+      await sleep(POLL_INTERVAL_MS);
+    }
+
+    const raw = await this.#readResponse(respPath, op);
+    try {
+      unlinkSync(respPath);
+    } catch {
+      /* best effort */
+    }
+
+    if (!raw.ok) {
+      const code: GimpErrorCode =
+        raw.code && KNOWN_ERROR_CODES.has(raw.code as GimpErrorCode)
+          ? (raw.code as GimpErrorCode)
+          : 'gimp_op_failed';
+      this.logger.debug('GIMP op failed', op, raw.error, raw.trace);
+      throw new GimpError(code, raw.error ?? `${op} failed`);
+    }
+    return raw.result as T;
+  }
+
+  /**
+   * Read + parse a response file. Retries briefly on EBUSY/EPERM (an
+   * anti-virus or file-indexer lock momentarily holding a just-renamed file
+   * on Windows) — mirrors the same hardening on the bridge's own read of
+   * request files (`lib.read_request`). A body that reads fine but isn't
+   * valid JSON becomes a `gimp_op_failed` GimpError rather than an
+   * uncaught SyntaxError.
+   */
+  async #readResponse<T>(
+    respPath: string,
+    op: string
+  ): Promise<{ ok: boolean; result?: T; error?: string; code?: string; trace?: string }> {
+    let raw: string | undefined;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < RESP_READ_RETRY_ATTEMPTS; attempt++) {
+      try {
+        raw = this.readRespFile(respPath);
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (!isRetryableReadError(err)) {
+          // Never the raw fs error: a caller matching on GimpError.code
+          // (every other failure path in this class throws one) would
+          // otherwise have to special-case this one spot.
+          throw new GimpError(
+            'gimp_op_failed',
+            `${op}: could not read the response file (${(err as Error).message})`
+          );
+        }
+        await sleep(RESP_READ_RETRY_DELAY_MS);
+      }
+    }
+    if (raw === undefined) {
+      const message = lastErr instanceof Error ? lastErr.message : String(lastErr);
+      throw new GimpError(
+        'gimp_op_failed',
+        `${op}: could not read the response file after ${RESP_READ_RETRY_ATTEMPTS} attempts (${message})`
+      );
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      throw new GimpError(
+        'gimp_op_failed',
+        `${op}: response was not valid JSON (${(err as Error).message})`
+      );
+    }
+    // A bridge response is always a JSON OBJECT with at least a boolean
+    // `ok` — reject anything else (null, an array, a bare number) here
+    // rather than let the caller's `if (!raw.ok)` throw a TypeError on it.
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      typeof (parsed as { ok?: unknown }).ok !== 'boolean'
+    ) {
+      throw new GimpError('gimp_op_failed', `${op}: response was not a well-formed object`);
+    }
+    return parsed as { ok: boolean; result?: T; error?: string; code?: string; trace?: string };
+  }
+
+  async #shutdownOnce(): Promise<void> {
+    // Set FIRST, unconditionally, in every branch below — #dispatch's
+    // race-guard (`this.shuttingDown`) must already be true before this
+    // method does anything else observable, or a call() reaching #dispatch
+    // in the gap could still try to send against — or relaunch behind — a
+    // session in the middle of shutting down.
+    this.shuttingDown = true;
+    const proc = this.proc;
+
+    if (!proc) {
+      this.sessionState = 'closed';
+      if (this.sessionDir) this.#removeSessionDir(this.sessionDir);
+      return;
+    }
+    if (proc.exitCode !== null) {
+      // Already gone — nothing to kill or wait for.
+      this.sessionState = 'closed';
+      if (this.sessionDir) this.#removeSessionDir(this.sessionDir);
+      return;
+    }
+    if (this.sessionState === 'dead') {
+      // A prior crash/timeout marked this dead, but that alone does NOT
+      // guarantee the OLD process has actually exited — a timeout's own
+      // tree-kill is fire-and-forget. Kill it (harmless if it's already on
+      // its way out) and wait for confirmation before touching its
+      // directory, same as the graceful path below.
+      await this.#killAndConfirmExit(proc);
+      this.sessionState = 'closed';
+      if (this.sessionDir) this.#removeSessionDir(this.sessionDir);
+      return;
+    }
+
+    // 'starting' or 'ready', process looks alive: the graceful path.
+    try {
+      writeFileSync(join(this.rpcDir!, 'shutdown'), '');
+    } catch {
+      /* process may already be on its way out */
+    }
+
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const graceExpired = new Promise<boolean>((resolve) => {
+      graceTimer = setTimeout(() => resolve(true), SHUTDOWN_GRACE_MS);
+    });
+    // `.once`, not `.on`: this same unresolved promise is handed to
+    // #killAndConfirmExit below, so it must still be armed at that point.
+    const exited = new Promise<boolean>((resolve) => proc.once('exit', () => resolve(false)));
+    const timedOut = await Promise.race([exited, graceExpired]);
+    clearTimeout(graceTimer);
+    if (timedOut) {
+      await this.#killAndConfirmExit(proc, exited);
+    }
+
+    this.sessionState = 'closed';
+    if (this.sessionDir) this.#removeSessionDir(this.sessionDir);
+  }
+
+  /**
+   * Tree-kill `proc` and wait for it to actually confirm exit, bounded by
+   * `KILL_CONFIRM_MS`, before returning — a tree-kill call (real
+   * `taskkill`/`process.kill(-pid, ...)`) is fire-and-forget, so it does not
+   * itself guarantee the process has exited by the time it returns, and
+   * removing a session dir GIMP might still have files open in would be
+   * exactly the race this closes. Logs (never throws) if the process never
+   * confirms within the bound — the caller proceeds either way, since
+   * hanging forever on a truly wedged process is worse than the residual
+   * risk.
+   *
+   * `existingExited`, when given, is an ALREADY-ARMED `.once('exit', ...)`
+   * promise the caller set up earlier (so the kill can't be issued before
+   * anything is listening); otherwise one is created fresh.
+   */
+  async #killAndConfirmExit(proc: ChildProcess, existingExited?: Promise<boolean>): Promise<void> {
+    this.killTreeFn(proc);
+    const exited =
+      existingExited ?? new Promise<boolean>((resolve) => proc.once('exit', () => resolve(false)));
+    let confirmTimer: ReturnType<typeof setTimeout> | undefined;
+    const confirmTimedOut = new Promise<boolean>((resolve) => {
+      confirmTimer = setTimeout(() => resolve(true), KILL_CONFIRM_MS);
+    });
+    const stillRunning = await Promise.race([exited.then(() => false), confirmTimedOut]);
+    clearTimeout(confirmTimer);
+    if (stillRunning) {
+      this.logger.warn('GIMP process did not confirm exit after tree-kill; proceeding anyway', {
+        sessionDir: this.sessionDir,
+      });
+    }
+  }
+
+  /**
+   * `err`, when given, is the SPECIFIC classified cause (a start failure) —
+   * recorded so calls already queued behind this generation get told the
+   * real reason instead of a generic "restarted" message. Omitted for a
+   * mid-session death (the session WAS ready and something killed it), where
+   * the generic message is the honest one: nothing about the crash is
+   * specific to any one queued call.
+   */
+  #markDead(err?: GimpError): void {
+    // A 'closed' session already finished shutting down — nothing should
+    // ever move it back to 'dead' (a late event from the OLD process
+    // racing shutdown(), for instance). 'closed' is terminal.
+    if (this.sessionState === 'dead' || this.sessionState === 'closed') return;
+    this.sessionState = 'dead';
+    this.deadGeneration++;
+    this.lastFailure = err ?? new GimpError('gimp_session_restarted', RESTARTED_MESSAGE);
+  }
+
+  #removeSessionDir(dir: string): void {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      this.logger.warn('Could not remove GIMP session dir', dir, err);
+    }
+  }
+
+  /**
+   * Once per instance, on the first start: remove sibling `session-*` dirs
+   * under `rootDir` whose embedded pid is no longer alive AND whose mtime is
+   * older than 24h. Never touches the dir this instance is about to create,
+   * nor anything not matching the naming pattern.
+   */
+  #sweepOrphans(): void {
+    let entries: string[];
+    try {
+      entries = readdirSync(this.rootDir);
+    } catch {
+      return;
+    }
+    const cutoff = this.clock() - ORPHAN_MAX_AGE_MS;
+    for (const name of entries) {
+      const match = /^session-(\d+)-/.exec(name);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const dir = join(this.rootDir, name);
+      let mtimeMs: number;
+      try {
+        mtimeMs = statSync(dir).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (mtimeMs >= cutoff) continue;
+      if (this.#isPidAlive(pid)) continue;
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        this.logger.warn('Could not remove orphaned GIMP session dir', dir, err);
+      }
+    }
+  }
+
+  /** `process.kill(pid, 0)` sends no signal — it only probes whether the pid exists and is signalable. */
+  #isPidAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      // ESRCH: no such process — safe to reclaim. Anything else (e.g. EPERM,
+      // meaning it exists but we lack permission to signal it) is treated as
+      // alive: sweeping is a cleanup convenience, never worth a false
+      // positive against a process that's actually still running.
+      return (err as { code?: string }).code !== 'ESRCH';
+    }
+  }
+}
