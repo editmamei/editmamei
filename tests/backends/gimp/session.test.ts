@@ -522,20 +522,27 @@ describe('GimpSession', () => {
     // 5,000 "ms" per read: enough for the loop below to blow past the 180s
     // deadline within well under 100 real poll iterations (a few hundred
     // real ms), while staying small enough that #joinOrStart's OWN
-    // CALL_READY_WAIT_MS cap (computed from this same injected clock) still
-    // resolves to a genuinely multi-second real setTimeout, not ~0 -- a much
-    // bigger per-call jump (e.g. 100_000) races the cap's real timer against
-    // the poll loop's real 2ms sleeps and can flakily win, misreporting
-    // gimp_starting instead of the deadline's own gimp_start_failed.
-    const now = () => {
+    // CALL_READY_WAIT_MS cap (computed from this same injected MONOTONIC
+    // clock -- see nowMonotonic) still resolves to a genuinely multi-second
+    // real setTimeout, not ~0. A much bigger per-call jump (e.g. 100_000)
+    // would make `remaining` compute to ~0 almost immediately, and a ~0ms
+    // real setTimeout DETERMINISTICALLY (not flakily -- Node fires the
+    // earliest-due timer first, and 0ms beats every subsequent real 2ms
+    // poll sleep every time) wins the race against the poll loop actually
+    // reaching the deadline check, misreporting gimp_starting instead of
+    // the deadline's own gimp_start_failed.
+    const nowMonotonic = () => {
       calls++;
       return calls * 5_000;
     };
     const rootDir = mkdtempSync(join(tmpdir(), 'em-gimp-session-'));
     registerCleanup(rootDir);
     const spawn: SpawnFn = () => makeStubChild().child; // never writes ready
-    const { session } = buildSession({ rootDir, spawn, now });
-    await expect(session.call('ping', {})).rejects.toMatchObject({ code: 'gimp_start_failed' });
+    const { session } = buildSession({ rootDir, spawn, nowMonotonic });
+    await expect(session.call('ping', {})).rejects.toMatchObject({
+      code: 'gimp_start_failed',
+      message: expect.stringContaining('did not become ready within'),
+    });
   });
 
   it('shutdown() during "starting" makes the pending call reject almost immediately, not wait out the 180s ready timeout', async () => {
@@ -566,11 +573,13 @@ describe('GimpSession', () => {
     it('a single call capped at CALL_READY_WAIT_MS rejects with gimp_starting without killing the process, leaving the session "starting"', async () => {
       const rootDir = mkdtempSync(join(tmpdir(), 'em-gimp-session-'));
       registerCleanup(rootDir);
-      // Fake timers BEFORE construction: GimpSession's default clock is
-      // `Date.now`, captured at construction time, so it must already be the
-      // faked implementation for `this.clock()` (the 180s READY_TIMEOUT_MS
-      // deadline check, and the issuedAt-based CALL_READY_WAIT_MS cap) to
-      // track fake-time advances at all.
+      // Fake timers: `setTimeout` (the CALL_READY_WAIT_MS cap's own timer,
+      // and #waitForReady's POLL_INTERVAL_MS sleeps) is what actually needs
+      // faking here for `vi.advanceTimersByTimeAsync` below to work. The
+      // default monotonic clock (real `performance.now()`) stays real and
+      // unfaked -- that's fine, since only the tiny REAL gap between
+      // `issuedAt`'s capture and `remaining`'s own computation matters, not
+      // either value's absolute magnitude.
       vi.useFakeTimers();
       let spawnCount = 0;
       const killTreeSpy = vi.fn();
@@ -733,6 +742,14 @@ describe('GimpSession', () => {
         call3.catch(() => {});
         await vi.advanceTimersByTimeAsync(5);
         expect(spawnCount).toBe(2);
+
+        // call3's own background start is still running (never writes
+        // ready) -- shut it down rather than leaving it dangling.
+        const shutdownPromise = session.shutdown();
+        await vi.advanceTimersByTimeAsync(SHUTDOWN_GRACE_MS);
+        await vi.advanceTimersByTimeAsync(KILL_CONFIRM_MS);
+        await shutdownPromise;
+        expect(session.state).toBe('closed');
       } finally {
         process.off('unhandledRejection', onUnhandledRejection);
       }
@@ -774,6 +791,14 @@ describe('GimpSession', () => {
       call2.catch(() => {});
       await vi.advanceTimersByTimeAsync(5);
       expect(spawnCount).toBe(2);
+
+      // call2's own background start is still running (never writes ready)
+      // -- shut it down rather than leaving it dangling.
+      const shutdownPromise = session.shutdown();
+      await vi.advanceTimersByTimeAsync(SHUTDOWN_GRACE_MS);
+      await vi.advanceTimersByTimeAsync(KILL_CONFIRM_MS);
+      await shutdownPromise;
+      expect(session.state).toBe('closed');
     });
 
     it('two calls issued together during a cold start both reject with gimp_starting at ~CALL_READY_WAIT_MS, not sequentially (issuedAt is captured per call, not per dispatch turn)', async () => {
@@ -787,17 +812,215 @@ describe('GimpSession', () => {
       // its turn on the serialized queue.
       const call1 = session.call('ping', {});
       const call2 = session.call('open', {});
-      call1.catch(() => {});
-      call2.catch(() => {});
+      // Settlement tracked via plain flags (attached NOW, before any
+      // advancing) rather than `await expect(...).rejects...` directly:
+      // under the OLD, buggy per-dispatch-turn timing this fix replaced,
+      // call2 wouldn't settle until a SECOND full CALL_READY_WAIT_MS had
+      // elapsed -- a bare `await` on its rejection would then hang this
+      // test out to vitest's own test timeout instead of failing with a
+      // clear, immediate assertion. Reading a flag can never hang.
+      let call1Settled: { code?: unknown } | 'pending' = 'pending';
+      let call2Settled: { code?: unknown } | 'pending' = 'pending';
+      call1.then(
+        () => {
+          call1Settled = {};
+        },
+        (err: { code?: unknown }) => {
+          call1Settled = err;
+        }
+      );
+      call2.then(
+        () => {
+          call2Settled = {};
+        },
+        (err: { code?: unknown }) => {
+          call2Settled = err;
+        }
+      );
 
       // A single CALL_READY_WAIT_MS advance (plus a small buffer, nowhere
       // near a second full cap) is enough for BOTH to give up -- if call2
       // instead measured its own wait from when it reached dispatch (after
       // call1 already gave up), it would need close to 2x this to reject.
       await vi.advanceTimersByTimeAsync(CALL_READY_WAIT_MS + 50);
+      await Promise.resolve(); // flush the .then handlers above
 
-      await expect(call1).rejects.toMatchObject({ code: 'gimp_starting' });
-      await expect(call2).rejects.toMatchObject({ code: 'gimp_starting' });
+      expect(call1Settled).toMatchObject({ code: 'gimp_starting' });
+      expect(call2Settled).toMatchObject({ code: 'gimp_starting' });
+
+      const shutdownPromise = session.shutdown();
+      await vi.advanceTimersByTimeAsync(SHUTDOWN_GRACE_MS);
+      await vi.advanceTimersByTimeAsync(KILL_CONFIRM_MS);
+      await shutdownPromise;
+      expect(session.state).toBe('closed');
+    });
+
+    it('a monotonic clock that jumps BACKWARD after issuedAt still caps the call at CALL_READY_WAIT_MS (remaining is clamped on both ends, not just floored at 0)', async () => {
+      const rootDir = mkdtempSync(join(tmpdir(), 'em-gimp-session-'));
+      registerCleanup(rootDir);
+      vi.useFakeTimers();
+      let reads = 0;
+      // The FIRST read (call()'s `issuedAt`) returns a baseline; every read
+      // after that jumps BACKWARD by 50,000 -- simulating a monotonic clock
+      // source moving backward (against its own contract, but exactly the
+      // shape a misbehaving clock or a wall-clock-style regression would
+      // take). Without `Math.min(CALL_READY_WAIT_MS, ...)`, `remaining`
+      // would balloon to ~180,000ms (issuedAt ends up far ABOVE the current
+      // reading) instead of the intended ~30,000ms cap -- silently
+      // recreating the exact "gimp_starting forever" bug this cap exists to
+      // prevent.
+      const nowMonotonic = () => {
+        reads++;
+        return reads === 1 ? 100_000 : 100_000 - 50_000 * (reads - 1);
+      };
+      const spawn: SpawnFn = () => makeStubChild().child; // never writes ready
+      const { session } = buildSession({ rootDir, spawn, nowMonotonic });
+
+      const call = session.call('ping', {});
+      let settled: { code?: unknown } | 'pending' = 'pending';
+      call.then(
+        () => {
+          settled = {};
+        },
+        (err: { code?: unknown }) => {
+          settled = err;
+        }
+      );
+
+      // Exactly CALL_READY_WAIT_MS, not the ~180,000ms an unclamped
+      // `remaining` would need -- if the clamp regressed, this would leave
+      // `settled` at 'pending' and fail cleanly below, not hang.
+      await vi.advanceTimersByTimeAsync(CALL_READY_WAIT_MS);
+      await Promise.resolve();
+
+      expect(settled).toMatchObject({ code: 'gimp_starting' });
+
+      const shutdownPromise = session.shutdown();
+      await vi.advanceTimersByTimeAsync(SHUTDOWN_GRACE_MS);
+      await vi.advanceTimersByTimeAsync(KILL_CONFIRM_MS);
+      await shutdownPromise;
+      expect(session.state).toBe('closed');
+    });
+  });
+
+  describe('lastStartOrigin', () => {
+    it('is "cold" on this session\'s very first start', async () => {
+      const h = harness();
+      await h.session.call('ping', {});
+      expect(h.session.lastStartOrigin).toBe('cold');
+    });
+
+    it('stays "cold" for a retry after a first start that crashed before ever becoming ready — sessionState alone (dead/starting) can\'t tell that apart from a real restart, only everReady can', async () => {
+      const rootDir = mkdtempSync(join(tmpdir(), 'em-gimp-session-'));
+      registerCleanup(rootDir);
+      let stub: ReturnType<typeof makeStubChild> | undefined;
+      const spawn: SpawnFn = () => {
+        stub = makeStubChild();
+        return stub.child; // never writes ready; crashed manually below
+      };
+      const { session } = buildSession({ rootDir, spawn });
+
+      const call1 = session.call('ping', {});
+      call1.catch(() => {});
+      await sleep(10); // let #startFresh spawn and enter #waitForReady's poll loop
+      expect(session.lastStartOrigin).toBe('cold'); // set synchronously at the top of THIS attempt
+
+      stub!.emitExit(1, null); // crash before ever becoming ready
+      await expect(call1).rejects.toMatchObject({ code: 'gimp_start_failed' });
+      expect(session.state).toBe('dead');
+      expect(session.lastStartOrigin).toBe('cold'); // never reached ready -- still cold
+
+      // A retry after that -- also 'cold', since `everReady` is still false.
+      const call2 = session.call('ping', {});
+      call2.catch(() => {});
+      await sleep(10);
+      expect(session.lastStartOrigin).toBe('cold');
+
+      stub!.emitExit(1, null); // crash the retry too, so nothing dangles
+      await expect(call2).rejects.toMatchObject({ code: 'gimp_start_failed' });
+    });
+
+    it('becomes "restarted" once a session that reached ready dies and restarts', async () => {
+      const h = harness({ hangOps: new Set(['slow']) });
+      await h.session.call('ping', {}); // reaches ready
+      expect(h.session.lastStartOrigin).toBe('cold');
+
+      await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({
+        code: 'gimp_timeout',
+      });
+      expect(h.session.state).toBe('dead');
+
+      await h.session.call('ping', {}); // the next call restarts it
+      expect(h.session.state).toBe('ready');
+      expect(h.session.lastStartOrigin).toBe('restarted');
+    });
+
+    it('gimp_starting reads "first launch" wording when the origin is cold', async () => {
+      const rootDir = mkdtempSync(join(tmpdir(), 'em-gimp-session-'));
+      registerCleanup(rootDir);
+      vi.useFakeTimers();
+      const spawn: SpawnFn = () => makeStubChild().child; // never writes ready
+      const { session } = buildSession({ rootDir, spawn });
+
+      const call = session.call('ping', {});
+      call.catch(() => {});
+      await vi.advanceTimersByTimeAsync(CALL_READY_WAIT_MS);
+      await expect(call).rejects.toMatchObject({
+        code: 'gimp_starting',
+        message: expect.stringContaining('The first launch on a machine can take a few minutes'),
+      });
+
+      const shutdownPromise = session.shutdown();
+      await vi.advanceTimersByTimeAsync(SHUTDOWN_GRACE_MS);
+      await vi.advanceTimersByTimeAsync(KILL_CONFIRM_MS);
+      await shutdownPromise;
+    });
+
+    it('gimp_starting reads "restarting" wording when the origin is restarted', async () => {
+      const rootDir = mkdtempSync(join(tmpdir(), 'em-gimp-session-'));
+      const servers: FakeGimpServer[] = [];
+      let spawnCount = 0;
+      const spawn: SpawnFn = (_c, _a, options) => {
+        spawnCount++;
+        const env = options.env as Record<string, string>;
+        const { child } = makeStubChild();
+        const rpcDir = join(env.EM_GIMP_SESSION, 'rpc');
+        if (spawnCount === 1) {
+          // First launch: becomes ready normally.
+          writeReady(rpcDir);
+          servers.push(new FakeGimpServer(rpcDir, pingOk));
+        }
+        // Second (restart) launch: never writes ready -- so the call
+        // capped at CALL_READY_WAIT_MS below observes gimp_starting with
+        // origin 'restarted', not a fast reconnect.
+        return child;
+      };
+      const { session } = buildSession({ rootDir, spawn });
+      registerCleanup(rootDir, servers);
+
+      await session.call('ping', {}); // reaches ready -- everReady becomes true
+      expect(session.state).toBe('ready');
+
+      // A real mid-session crash (not our own timeout/shutdown kill).
+      const proc = (session as unknown as { proc: ChildProcess }).proc;
+      (proc as unknown as { exitCode: number | null }).exitCode = 1;
+      proc.emit('exit', 1, null);
+      expect(session.state).toBe('dead');
+
+      vi.useFakeTimers();
+      const call = session.call('ping', {}); // triggers the restart
+      call.catch(() => {});
+      await vi.advanceTimersByTimeAsync(CALL_READY_WAIT_MS);
+      await expect(call).rejects.toMatchObject({
+        code: 'gimp_starting',
+        message: expect.stringContaining('GIMP is restarting after stopping unexpectedly'),
+      });
+      expect(session.lastStartOrigin).toBe('restarted');
+
+      const shutdownPromise = session.shutdown();
+      await vi.advanceTimersByTimeAsync(SHUTDOWN_GRACE_MS);
+      await vi.advanceTimersByTimeAsync(KILL_CONFIRM_MS);
+      await shutdownPromise;
     });
   });
 
@@ -1076,9 +1299,10 @@ describe('GimpSession', () => {
     // why this jumps by 5,000 rather than a much bigger number: it must
     // still comfortably clear the 180s deadline within a fast, real-time
     // poll loop, WITHOUT also collapsing #joinOrStart's own
-    // CALL_READY_WAIT_MS cap (computed off this same injected clock) down
-    // to a real ~0ms timer that could race — and flakily beat — that loop.
-    const now = () => {
+    // CALL_READY_WAIT_MS cap (computed off this same injected MONOTONIC
+    // clock) down to a real ~0ms timer that would deterministically (Node
+    // fires the earliest-due timer first) beat that loop to the punch.
+    const nowMonotonic = () => {
       calls++;
       return calls * 5_000;
     };
@@ -1090,7 +1314,7 @@ describe('GimpSession', () => {
       spawnCount++;
       return makeStubChild().child; // never writes ready, never exits on its own
     };
-    const { session } = buildSession({ rootDir, spawn, now, killTree: killTreeSpy });
+    const { session } = buildSession({ rootDir, spawn, nowMonotonic, killTree: killTreeSpy });
 
     // First call: readiness times out fast (the injected clock), leaving
     // `this.proc` pointing at a stub that never actually exits (killTreeSpy
@@ -1178,8 +1402,9 @@ describe('GimpSession', () => {
       let calls = 0;
       // Small per-read jump (see the "injected clock" comment on the
       // similarly-shaped test above) so it doesn't also collapse
-      // #joinOrStart's own CALL_READY_WAIT_MS cap into a racy ~0ms timer.
-      const now = () => {
+      // #joinOrStart's own CALL_READY_WAIT_MS cap into a ~0ms timer that
+      // would deterministically beat the poll loop to the deadline check.
+      const nowMonotonic = () => {
         calls++;
         return calls * 5_000;
       };
@@ -1190,9 +1415,15 @@ describe('GimpSession', () => {
         spawnCount++;
         return makeStubChild().child; // never writes ready
       };
-      const { session } = buildSession({ rootDir, spawn, now });
-      await expect(session.call('ping', {})).rejects.toMatchObject({ code: 'gimp_start_failed' });
-      await expect(session.call('ping', {})).rejects.toMatchObject({ code: 'gimp_start_failed' });
+      const { session } = buildSession({ rootDir, spawn, nowMonotonic });
+      await expect(session.call('ping', {})).rejects.toMatchObject({
+        code: 'gimp_start_failed',
+        message: expect.stringContaining('did not become ready within'),
+      });
+      await expect(session.call('ping', {})).rejects.toMatchObject({
+        code: 'gimp_start_failed',
+        message: expect.stringContaining('did not become ready within'),
+      });
       expect(spawnCount).toBe(2); // retried, not sticky
     });
   });
@@ -1473,6 +1704,29 @@ describe('GimpSession', () => {
         message: expect.stringContaining('owned by a different user'),
       });
       expect(h.getSpawnCalls()).toBe(0); // refused before ever spawning GIMP
+    });
+
+    it('a refused root leaves the session "dead", not stuck "starting" forever, and the next call retries fresh (not sticky)', async () => {
+      // #ensureRootDir throws SYNCHRONOUSLY, before this attempt ever
+      // spawns anything -- nothing else would ever call #markDead for it,
+      // so without #startFresh's own try/catch around this section,
+      // sessionState would sit at 'starting' permanently.
+      let statCalls = 0;
+      const h = posixHarness({
+        statRootDir: () => {
+          statCalls++;
+          return { uid: 2000, mode: 0o700 }; // persistently refused
+        },
+      });
+      await expect(h.session.call('ping', {})).rejects.toMatchObject({ code: 'gimp_start_failed' });
+      expect(h.session.state).toBe('dead'); // not stuck at 'starting'
+      expect(h.getSpawnCalls()).toBe(0);
+
+      // Not sticky (unlike ENOENT / version-unsupported): the next call
+      // retries fresh, invoking #ensureRootDir again rather than failing
+      // fast against a cached error.
+      await expect(h.session.call('ping', {})).rejects.toMatchObject({ code: 'gimp_start_failed' });
+      expect(statCalls).toBe(2);
     });
 
     it('refuses a group-writable root (mode 0o770)', async () => {

@@ -54,8 +54,24 @@ export interface GimpSessionOptions {
   rootDir?: string;
   /** Injected for tests — a fake, EventEmitter-backed `ChildProcess`. */
   spawn?: SpawnFn;
-  /** Injected clock (tests). Defaults to `Date.now`. */
+  /**
+   * Injected WALL clock (tests) — real epoch ms, the only thing `#sweepOrphans`
+   * compares against (a file's real `mtimeMs`). Defaults to `Date.now`. NOT
+   * used for any deadline/cap computation — see `nowMonotonic`.
+   */
   now?: () => number;
+  /**
+   * Injected MONOTONIC clock (tests) — backs every deadline/cap computation:
+   * `call()`'s `issuedAt`, `#joinOrStart`'s `CALL_READY_WAIT_MS` cap,
+   * `#waitForReady`'s `READY_TIMEOUT_MS` deadline, and `#send`'s per-op
+   * timeout. Defaults to `performance.now()`, deliberately NOT `Date.now`:
+   * a wall clock can jump backward (an NTP correction, a manual clock set),
+   * which would make a deadline never trip, and forward by a large amount
+   * across a system suspend, which would make one trip instantly on wake
+   * and kill a healthy, still-starting GIMP. `performance.now()` is
+   * monotonic and does not count suspended time.
+   */
+  nowMonotonic?: () => number;
   logger?: Logger;
   /**
    * Injected tree-kill (tests assert it was called rather than exercising a
@@ -99,9 +115,14 @@ export const READY_TIMEOUT_MS = 180_000;
  * How long a single call will wait for an in-flight start (fresh or joined)
  * before giving up on THIS call and reporting `gimp_starting` — deliberately
  * shorter than `READY_TIMEOUT_MS` and than a typical MCP client's own request
- * timeout. Kept well under it even accounting for the rest of a cold
- * `gimp_ping`: up to ~2s of stale-process kill-confirm before a start even
- * begins, plus this wait, plus the `ping` RPC's own `PING_TIMEOUT_MS` —
+ * timeout. Rest of a cold `gimp_ping`'s worst case, on top of this wait: up
+ * to ~2s of stale-process kill-confirm before a start even begins, and, once
+ * ready, the OUTER ping RPC itself — which runs on whatever's left of the
+ * calling tool's own budget (`GimpBackend.call()`, `operation-timeouts.ts`),
+ * NOT `PING_TIMEOUT_MS` (that only bounds `#startFresh`'s own EARLIER,
+ * internal bootstrap ping, a separate RPC). `GimpBackend.call()` also runs
+ * its one-time boot-timeout `maybeRedetect()` retry before any of this
+ * clock starts ticking, adding a further, one-time cost on top. Still
  * comfortably inside a ~60s client timeout. The start itself is NOT
  * cancelled when this elapses: it keeps running in the background
  * (`#startPromise` stays assigned), so the next call joins the SAME attempt
@@ -235,7 +256,10 @@ export class GimpSession {
   private readonly install: GimpInstall;
   private readonly rootDir: string;
   private readonly spawnFn: SpawnFn;
+  /** Wall clock — `#sweepOrphans` only. See the `now` option's doc comment. */
   private readonly clock: () => number;
+  /** Monotonic clock — every deadline/cap computation. See the `nowMonotonic` option's doc comment. */
+  private readonly monotonicClock: () => number;
   private readonly logger: Logger;
   private readonly killTreeFn: (proc: ChildProcess) => void;
   private readonly platform: string;
@@ -266,16 +290,27 @@ export class GimpSession {
    */
   private startPromise: Promise<void> | undefined;
   /**
+   * Set once this session ever reaches 'ready', and never unset — what
+   * `startOrigin` is actually derived from. `sessionState` alone can't tell
+   * "first launch" apart from "recovering from a crash": a first launch that
+   * hit the 180s deadline (or crashed before ever becoming ready) leaves
+   * `sessionState` at 'dead'/'starting' exactly the same way a crash AFTER
+   * a successful launch does. Whether this instance was EVER ready is the
+   * one fact that actually distinguishes them.
+   */
+  private everReady = false;
+  /**
    * How this current (or most recently settled) start attempt began: 'cold'
-   * when it started from 'idle' — this session's very first launch —
-   * 'restarted' for anything else (recovering from a crash, a timeout kill,
-   * or simply restarting a previously-'ready' session). Set at the very top
-   * of `#startFresh`, before anything else in that attempt can move
-   * `sessionState` on. Read via `lastStartOrigin` by `gimp_ping` (through
-   * `GimpBackend.startOrigin`) so a caller capped at `gimp_starting` — or
-   * one that just watched a `starting` session finish becoming ready again
-   * — can tell "first launch" apart from "recovering from a crash", which
-   * `sessionState` alone can't distinguish once an attempt is under way.
+   * when this session has never reached 'ready' before (including a first
+   * launch that is merely slow, or one that failed outright before ever
+   * connecting); 'restarted' once it has (recovering from a crash, a
+   * timeout kill, or simply restarting a previously-'ready' session). Set
+   * at the very top of `#startFresh` from `everReady`, before anything else
+   * in that attempt can run. Read via `lastStartOrigin` by `gimp_ping`
+   * (through `GimpBackend.startOrigin`) so a caller capped at
+   * `gimp_starting` — or one that just watched a `starting` session finish
+   * becoming ready again — can tell "first launch" apart from "recovering
+   * from a crash".
    */
   private startOrigin: 'cold' | 'restarted' | undefined;
   /**
@@ -327,6 +362,7 @@ export class GimpSession {
     this.rootDir = opts.rootDir ?? defaultRootDir();
     this.spawnFn = opts.spawn ?? (nodeSpawn as SpawnFn);
     this.clock = opts.now ?? Date.now;
+    this.monotonicClock = opts.nowMonotonic ?? (() => performance.now());
     this.logger = opts.logger ?? new Logger('GimpSession');
     this.killTreeFn = opts.killTree ?? defaultTreeKill;
     this.platform = opts.platform ?? process.platform;
@@ -416,7 +452,7 @@ export class GimpSession {
     // serialized queue — otherwise a second call queued behind a first
     // that's already mid-wait would answer at ~2x CALL_READY_WAIT_MS
     // instead of alongside the first.
-    const issuedAt = this.clock();
+    const issuedAt = this.monotonicClock();
     const run = this.queue.then(() =>
       this.#dispatch<T>(
         op,
@@ -519,7 +555,15 @@ export class GimpSession {
     }
     const attempt = this.startPromise;
 
-    const remaining = Math.max(0, issuedAt + CALL_READY_WAIT_MS - this.clock());
+    // Clamped on BOTH ends, not just floored at 0: the monotonic clock is not
+    // expected to jump backward in real use, but if it somehow did (or a test
+    // clock is misbehaving), an unclamped upper bound would let `remaining`
+    // balloon past CALL_READY_WAIT_MS — silently recreating the exact
+    // "gimp_starting forever" bug this cap exists to prevent.
+    const remaining = Math.min(
+      CALL_READY_WAIT_MS,
+      Math.max(0, issuedAt + CALL_READY_WAIT_MS - this.monotonicClock())
+    );
     this.activeWaiters++;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<true>((resolve) => {
@@ -571,11 +615,12 @@ export class GimpSession {
   async #startFresh(): Promise<void> {
     this.#assertOpen();
     // Recorded HERE, before anything else in this attempt can move
-    // `sessionState` on: 'cold' means this is this session's very first-ever
-    // launch (starting from 'idle'); anything else ('dead' from a prior
-    // crash/timeout-kill, or a stale 'starting'/'ready' being restarted
-    // from) means GIMP had already been up before and is now restarting.
-    this.startOrigin = this.sessionState === 'idle' ? 'cold' : 'restarted';
+    // `sessionState` on, and derived from `everReady` — NOT `sessionState`:
+    // 'dead'/'starting' looks identical whether this is a first launch that
+    // simply hit the 180s deadline (or crashed before ever connecting) or a
+    // real restart after a session that WAS ready. Only `everReady`
+    // actually distinguishes them.
+    this.startOrigin = this.everReady ? 'restarted' : 'cold';
     // A previous process may still be alive (e.g. this restart was
     // triggered by a timeout whose kill hasn't actually reaped it yet, or
     // by a crash we detected before the OS finished tearing it down).
@@ -600,19 +645,42 @@ export class GimpSession {
     }
 
     this.sessionState = 'starting';
-    this.#ensureRootDir();
-    if (!this.sweepDone) {
-      this.sweepDone = true;
-      this.#sweepOrphans();
-    }
+    // Everything here is synchronous (no `await` until the spawn below), so
+    // a failure — a locked-down/foreign-owned root dir, a full disk, a
+    // permissions error creating the session dir — must be caught and
+    // classified right here: nothing else ever will be. Left uncaught,
+    // `sessionState` would stay 'starting' forever (no process was ever
+    // spawned, so there's nothing for any exit/error listener to react to
+    // and call `#markDead`), and every later `gimp_ping` would keep
+    // reporting a session stuck mid-launch instead of the real, likely
+    // persistent cause.
+    let sessionDir: string;
+    let rpcDir: string;
+    try {
+      this.#ensureRootDir();
+      if (!this.sweepDone) {
+        this.sweepDone = true;
+        this.#sweepOrphans();
+      }
 
-    const sessionDir = mkdtempSync(join(this.rootDir, `session-${process.pid}-`));
-    const rpcDir = join(sessionDir, 'rpc');
-    mkdirSync(rpcDir, { recursive: true });
-    this.sessionDir = sessionDir;
-    this.rpcDir = rpcDir;
-    this.nextId = 1;
-    this.output = '';
+      sessionDir = mkdtempSync(join(this.rootDir, `session-${process.pid}-`));
+      rpcDir = join(sessionDir, 'rpc');
+      mkdirSync(rpcDir, { recursive: true });
+      this.sessionDir = sessionDir;
+      this.rpcDir = rpcDir;
+      this.nextId = 1;
+      this.output = '';
+    } catch (err) {
+      const gimpErr =
+        err instanceof GimpError
+          ? err
+          : new GimpError(
+              'gimp_start_failed',
+              `could not prepare the GIMP session directory: ${err instanceof Error ? err.message : String(err)}`
+            );
+      this.#markDead(gimpErr);
+      throw gimpErr;
+    }
 
     const env: Record<string, string | undefined> = {
       ...process.env,
@@ -772,6 +840,7 @@ export class GimpSession {
 
     this.#assertOpen(proc);
     this.sessionState = 'ready';
+    this.everReady = true;
   }
 
   /**
@@ -823,7 +892,7 @@ export class GimpSession {
     getPreReadyCloseCode: () => number | null | undefined
   ): Promise<void> {
     const readyPath = join(rpcDir, 'ready');
-    const deadline = this.clock() + READY_TIMEOUT_MS;
+    const deadline = this.monotonicClock() + READY_TIMEOUT_MS;
     while (!existsSync(readyPath)) {
       // Observed FIRST, every iteration: without this, a shutdown() issued
       // while still 'starting' would otherwise sit here polling a directory
@@ -843,7 +912,7 @@ export class GimpSession {
       // where preReadyCloseCode is set, in #startFresh.
       const closeCode = getPreReadyCloseCode();
       if (closeCode !== undefined) throw this.#classifyPreReadyExit(closeCode);
-      if (this.clock() > deadline) {
+      if (this.monotonicClock() > deadline) {
         // Deliberately NOT sticky: a slow/loaded host is a plausible,
         // transient cause, so the next call gets to try again.
         throw new GimpError(
@@ -887,7 +956,7 @@ export class GimpSession {
     writeFileSync(`${reqPath}.tmp`, JSON.stringify({ id, op, args }));
     renameSync(`${reqPath}.tmp`, reqPath);
 
-    const deadline = this.clock() + timeoutMs;
+    const deadline = this.monotonicClock() + timeoutMs;
     while (!existsSync(respPath)) {
       if (proc.exitCode !== null) {
         // A graceful shutdown() kills this same process, so this branch is
@@ -898,7 +967,7 @@ export class GimpSession {
         if (!this.shuttingDown) this.#markDead();
         throw new GimpError('gimp_session_restarted', RESTARTED_MESSAGE);
       }
-      if (this.clock() > deadline) {
+      if (this.monotonicClock() > deadline) {
         if (!this.shuttingDown) this.#markDead();
         this.killTreeFn(proc);
         throw new GimpError('gimp_timeout', `${op} did not respond within ${timeoutMs}ms`);
