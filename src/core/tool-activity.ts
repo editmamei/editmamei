@@ -186,9 +186,17 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'ps_text',
 ]);
 
-/**
- * The Pro raw-develop tool. The host clears its pending raw-develop advisory when this tool
- * opens a developed file (`EditmameiServer.trackRawDevelopState`); the name lives here so the
- * CE-shipped server carries no Pro tool name of its own.
+/*
+ * Tool names the host tracks by behaviour. `EditmameiServer.trackRawDevelopState` keeps a
+ * one-slot "raw opened, not yet developed" advisory: it is only raised while the Camera Raw
+ * filter tool is registered, and it clears when that tool runs or when the raw-develop tool
+ * opens a developed file. Both are Pro tools, so their names live here rather than in the
+ * CE-shipped server. Every name in this file must be a TOOL_TIERS key; the exports are pinned
+ * by tests/core/tool-activity.test.ts.
  */
+
+/** The Pro raw-develop tool (develops a raw file, then opens it). */
 export const RAW_DEVELOP_TOOL = 'ps_develop_raw';
+
+/** The Pro Camera Raw filter tool (a develop pass on the open document). */
+export const CAMERA_RAW_TOOL = 'ps_apply_camera_raw';

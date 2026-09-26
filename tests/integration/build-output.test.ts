@@ -20,7 +20,7 @@ import { join, resolve } from 'node:path';
 import { readdir } from 'node:fs/promises';
 import { toolsInTier } from '@editmamei/core/tool-tiers.ts';
 import { packageFilesList } from '../../scripts/lib/build-common.ts';
-import { isProNameAllowed } from '../helpers/pro-name-allowlist.ts';
+import { isProNameAllowed, proNameLiteralsIn } from '../helpers/pro-name-allowlist.ts';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const CE_PKG_DIR = join(REPO_ROOT, 'packages', 'ce');
@@ -141,11 +141,8 @@ describe.skipIf(!bundlesBuilt)('CE bundle composition', () => {
     const leaks: Array<{ file: string; tool: string }> = [];
     for (const rel of jsFiles) {
       const contents = readFileSync(join(CE_DIST, rel), 'utf8');
-      for (const name of PRO_TOOL_NAMES) {
-        if (isProNameAllowed(rel, name)) continue;
-        if (contents.includes(`'${name}'`) || contents.includes(`"${name}"`)) {
-          leaks.push({ file: rel, tool: name });
-        }
+      for (const name of proNameLiteralsIn(contents, PRO_TOOL_NAMES)) {
+        if (!isProNameAllowed(rel, name)) leaks.push({ file: rel, tool: name });
       }
     }
     expect(

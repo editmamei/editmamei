@@ -5,7 +5,7 @@ import { Logger } from '../utils/logger.js';
 import { ToolRegistry, type ToolResult } from './tool-registry.js';
 import { tierOf } from './tool-tiers.js';
 import { groupOf, GROUPS, type ToolGroup } from './tool-groups.js';
-import { RAW_DEVELOP_TOOL } from './tool-activity.js';
+import { CAMERA_RAW_TOOL, RAW_DEVELOP_TOOL } from './tool-activity.js';
 import { EDITION } from '../edition.js';
 import { VERSION } from '../version.js';
 import { Session } from './session.js';
@@ -944,7 +944,7 @@ export class EditmameiServer {
     if (result.isError) return;
     if (name === 'ps_open_document') {
       const sc = result.structuredContent as { is_raw_source?: unknown } | undefined;
-      if (sc?.is_raw_source === true && this.toolRegistry.get('ps_apply_camera_raw')) {
+      if (sc?.is_raw_source === true && this.toolRegistry.get(CAMERA_RAW_TOOL)) {
         const opened = sc as { document_name?: unknown; file_path?: unknown };
         markRawOpened(String(opened.document_name ?? ''), String(opened.file_path ?? ''));
       } else {
@@ -960,7 +960,7 @@ export class EditmameiServer {
       // sidecar and develops nothing.
       const sc = result.structuredContent as { opened?: unknown } | undefined;
       if (sc?.opened === true) clearPendingRawDevelop();
-    } else if (name === 'ps_apply_camera_raw' || name === 'ps_close_document') {
+    } else if (name === CAMERA_RAW_TOOL || name === 'ps_close_document') {
       clearPendingRawDevelop();
     }
   }
