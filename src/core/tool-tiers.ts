@@ -302,8 +302,7 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // and styling one, in a single flat op enum.
   ps_text: 'community',
 
-  // gimp_* — the second-editor beta surface. Tier set per the standing
-  // dev-default-then-promote gate; registered only when a GIMP
+  // gimp_* — the second-editor beta surface, registered only when a GIMP
   // install is detected (or the editor pin forces it) at boot — see
   // src/backends/detect-editors.ts / src/modules/gimp/index.ts.
   gimp_ping: 'dev',

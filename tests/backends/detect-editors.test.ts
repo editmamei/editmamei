@@ -274,6 +274,24 @@ describe('resolveBootEditors', () => {
     );
   });
 
+  it('hands the configured path on as gimpPathOverride, so a later re-detect honours it too', async () => {
+    const detectEditorsFn = vi.fn(async () => ({ gimp: null, timedOut: true }));
+    const fromEnv = await resolveBootEditors({
+      settings: makeSettings({ gimp_path: 'C:/from-settings/gimp-console.exe' }),
+      env: { EDITMAMEI_GIMP_PATH: 'C:/from-env/gimp-console.exe' },
+      detectEditorsFn,
+    });
+    expect(fromEnv.gimpPathOverride).toBe('C:/from-env/gimp-console.exe');
+    const fromSettings = await resolveBootEditors({
+      settings: makeSettings({ gimp_path: 'C:/from-settings/gimp-console.exe' }),
+      env: {},
+      detectEditorsFn,
+    });
+    expect(fromSettings.gimpPathOverride).toBe('C:/from-settings/gimp-console.exe');
+    const unset = await resolveBootEditors({ settings: makeSettings(), env: {}, detectEditorsFn });
+    expect(unset).not.toHaveProperty('gimpPathOverride');
+  });
+
   it('builds no override at all when neither EDITMAMEI_GIMP_PATH nor gimp_path is set — detectGimp runs with its own defaults', async () => {
     vi.mocked(detectGimp).mockResolvedValue(null);
     await resolveBootEditors({ settings: makeSettings({ gimp_path: null }), env: {} });

@@ -32,6 +32,11 @@ export interface GimpBackendOptions {
   gimpDetectionTimedOut?: boolean;
   /** Injected for tests — re-runs detection after a boot timeout. Defaults to the real `detectGimp`. */
   detectGimpFn?: () => Promise<GimpInstall | null>;
+  /**
+   * The configured GIMP path (see `EditorRegistrationDecision.gimpPathOverride`). The default
+   * post-timeout retry detects with it, the same way boot detection did.
+   */
+  gimpPath?: string;
 }
 
 export class GimpBackend {
@@ -60,7 +65,12 @@ export class GimpBackend {
     this.installInfo = install;
     this.sessionFactory = opts.sessionFactory ?? ((o) => new GimpSession(o));
     this.sessionOptions = opts.sessionOptions ?? {};
-    this.detectGimpFn = opts.detectGimpFn ?? (() => detectGimp());
+    const gimpPath = opts.gimpPath;
+    this.detectGimpFn =
+      opts.detectGimpFn ??
+      (gimpPath
+        ? () => detectGimp({ env: { ...process.env, EDITMAMEI_GIMP_PATH: gimpPath } })
+        : () => detectGimp());
     this.redetectPending = opts.gimpDetectionTimedOut === true && install === null;
   }
 

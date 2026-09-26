@@ -120,6 +120,26 @@ describe.skipIf(!install)('export options, metadata stripping, and .xcf round tr
     }
   });
 
+  it.each(['out.png', 'out.jpg', 'out.xcf'])(
+    'a write into a missing folder is gimp_op_failed naming only the file (%s)',
+    async (name) => {
+      const opened = await session.call<{ image: number }>('open', { path: rampPath });
+      try {
+        const missing = join(workDir, 'no-such-folder');
+        const err = (await session
+          .call('export', { image: opened.image, path: join(missing, name) })
+          .catch((e: unknown) => e)) as { code: string; message: string };
+        expect(err).toMatchObject({ code: 'gimp_op_failed' });
+        expect(err.message).toContain(name);
+        expect(err.message).not.toContain(missing);
+        expect(err.message).not.toContain('no-such-folder');
+        expect(existsSync(missing)).toBe(false);
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+    }
+  );
+
   it('webp: lossless produces a different file than a lossy export', async () => {
     const opened = await session.call<{ image: number }>('open', { path: rampPath });
     try {

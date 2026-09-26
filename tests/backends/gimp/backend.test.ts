@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { GimpBackend } from '@editmamei/backends/gimp/backend.ts';
 import { GimpError } from '@editmamei/backends/gimp/errors.ts';
 import type { GimpSession, GimpSessionOptions } from '@editmamei/backends/gimp/session.ts';
@@ -163,6 +166,24 @@ describe('GimpBackend', () => {
       await backend.prepare();
       expect(backend.latestPreviewPath()).toBe('/fake/session/latest-preview.jpg');
       expect(detectGimpFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('the default re-detect honours the configured gimp_path, not only the standard install locations', async () => {
+      // A configured path that exists nowhere near a standard install location.
+      const dir = mkdtempSync(join(tmpdir(), 'em-gimp-configured-'));
+      const configured = join(dir, 'custom-gimp-console.exe');
+      writeFileSync(configured, '');
+      try {
+        const backend = new GimpBackend(null, {
+          sessionFactory: () => makeFakeSession() as unknown as GimpSession,
+          gimpDetectionTimedOut: true,
+          gimpPath: configured,
+        });
+        await backend.prepare();
+        expect(backend.install).toMatchObject({ source: 'env', path: configured });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     it('without a boot timeout there is no re-detect: a real miss stays gimp_not_installed', async () => {

@@ -369,6 +369,7 @@ export class EditmameiServer {
     if (this.editorOpts.registerGimp) {
       this.gimpBackend = new GimpBackend(this.editorOpts.gimpInstall, {
         gimpDetectionTimedOut: this.editorOpts.gimpDetectionTimedOut,
+        gimpPath: this.editorOpts.gimpPathOverride,
       });
     }
     this.logger = new Logger('EditmameiServer');

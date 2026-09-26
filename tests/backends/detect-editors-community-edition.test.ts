@@ -68,6 +68,13 @@ describe("resolveBootEditors on a community-edition build, pinned to 'gimp'", ()
     });
   });
 
+  it('skips GIMP detection entirely when no gimp_* tool ships at community tier', async () => {
+    setGimpTiers('dev');
+    const detectEditorsFn = vi.fn(async () => ({ gimp: SAMPLE_INSTALL, timedOut: false }));
+    await resolveBootEditors({ settings: makeSettings(), env: {}, detectEditorsFn });
+    expect(detectEditorsFn).not.toHaveBeenCalled();
+  });
+
   it('registers gimp_* (using what boot detected) when the gimp_* tools ship at community tier', async () => {
     setGimpTiers('community');
     const detectEditorsFn = vi.fn(async () => ({ gimp: SAMPLE_INSTALL, timedOut: false }));

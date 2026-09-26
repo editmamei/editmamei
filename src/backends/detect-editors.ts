@@ -30,7 +30,7 @@ const logger = new Logger('DetectEditors');
  * True when at least one `gimp_*` tool would actually register in the given
  * edition — computed from `TOOL_TIERS` + the tier/edition gate every other
  * built-in tool goes through (`isToolAllowedInEdition`). While the `gimp_*`
- * tools sit at tier `'dev'` (tiers are set per the standing promote gate),
+ * tools sit at tier `'dev'`,
  * this is `true` only in a `'dev'` edition build, and a `'community'`/`'pro'`
  * build filters every one of them out at `src/modules/gimp/index.ts`'s
  * registration step regardless of what boot decides here.
@@ -104,6 +104,12 @@ export interface EditorRegistrationDecision {
    * ever registers gimp_* with a `null` install, so there's nothing to retry.
    */
   gimpDetectionTimedOut: boolean;
+  /**
+   * The configured GIMP path (`EDITMAMEI_GIMP_PATH`, else settings `gimp_path`), when one is set:
+   * `GimpBackend`'s post-timeout retry must look there too, not only in the standard install
+   * locations. Set by `resolveBootEditors`; absent when nothing is configured.
+   */
+  gimpPathOverride?: string;
 }
 
 /**
@@ -219,10 +225,12 @@ export async function resolveBootEditors(
         detectGimp({ ...o, env: { ...(o?.env ?? env), EDITMAMEI_GIMP_PATH: gimpPathOverride } })
     : undefined;
   const detectEditorsFn = opts.detectEditorsFn ?? detectEditors;
-  const detected = await detectEditorsFn({ detectGimp: detectGimpOverride });
-  return resolveEditorRegistration(
-    detected,
-    effectiveSettings.editor,
-    anyGimpToolAllowedInEdition(EDITION)
-  );
+  const gimpToolsAllowed = anyGimpToolAllowedInEdition(EDITION);
+  // A build that can register no gimp_* tool ignores what detection finds, so don't spend the
+  // detection time box on it before every boot's handshake.
+  const detected = gimpToolsAllowed
+    ? await detectEditorsFn({ detectGimp: detectGimpOverride })
+    : { gimp: null, timedOut: false };
+  const decision = resolveEditorRegistration(detected, effectiveSettings.editor, gimpToolsAllowed);
+  return gimpPathOverride ? { ...decision, gimpPathOverride } : decision;
 }

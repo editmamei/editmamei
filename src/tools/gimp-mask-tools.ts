@@ -108,7 +108,7 @@ export function createGimpMaskTools(gimp: GimpBackend): ToolDefinition[] {
         annotations: {
           title: 'Create GIMP Mask',
           readOnlyHint: false,
-          destructiveHint: false,
+          destructiveHint: true, // replaces a same-named channel not in use by a filter
           idempotentHint: false,
           openWorldHint: true,
         },

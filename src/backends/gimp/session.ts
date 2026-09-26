@@ -85,8 +85,8 @@ export interface GimpSessionOptions {
   killTree?: (proc: ChildProcess) => void;
   /**
    * Injected for tests — the POSIX-only ownership/writability check in
-   * `#ensureRootDir` runs on macOS/Linux only, which this dev/CI machine
-   * isn't, so these seams are what make that branch testable at all.
+   * `#ensureRootDir` runs on macOS/Linux only, so these seams are what make
+   * that branch testable on a Windows machine.
    * Defaults to the real values.
    */
   platform?: string;
@@ -714,8 +714,13 @@ export class GimpSession {
       throw gimpErr;
     }
 
+    // GIMP and its plug-ins get the user's environment minus Editmamei's own settings
+    // (EDITMAMEI_*, which can carry credentials), none of which the bridge reads.
+    const inherited = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('EDITMAMEI_'))
+    );
     const env: Record<string, string | undefined> = {
-      ...process.env,
+      ...inherited,
       EM_GIMP_OPS: this.opsPyPath,
       EM_GIMP_SESSION: sessionDir,
     };
@@ -1043,7 +1048,8 @@ export class GimpSession {
           `that image id is not open. The GIMP session restarted, so ${LOST_WORK}`
         );
       }
-      throw new GimpError(code, raw.error ?? `${op} failed`);
+      // Bridge exception text can name a render path under the session folder.
+      throw new GimpError(code, this.#redact(raw.error ?? `${op} failed`));
     }
     // A fresh open means the caller holds a valid id again; a later "no open image" is its own
     // mistake, not the restart's.

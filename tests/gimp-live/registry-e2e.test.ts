@@ -12,8 +12,8 @@
  * validation (schema + absolute-path checks), the GimpBackend seam, and the
  * real bridge together, in one pass.
  *
- * Isolation: `homedir()` is mocked to a throwaway temp directory for the
- * life of this file, so constructing a real `EditmameiServer` here reads
+ * Isolation: `homedir()` is mocked to a throwaway temp directory once GIMP
+ * detection has run (detection needs the real home), so constructing a real `EditmameiServer` here reads
  * and writes a settings.json / session-log NDJSON under that temp home —
  * never the real `~/.editmamei`. `GimpBackend`'s own root dir follows
  * `userOwnedTempRoot()`, which is `%LOCALAPPDATA%\editmamei\tmp` on Windows
@@ -29,7 +29,9 @@ import { join } from 'node:path';
 const fx = vi.hoisted(() => ({ home: '' }));
 vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>();
-  return { ...actual, homedir: () => fx.home };
+  // The real home until fx.home is set: GIMP detection must see the real one (a Flatpak
+  // `--user` install lives under it), while the server built below must see the fake one.
+  return { ...actual, homedir: () => fx.home || actual.homedir() };
 });
 
 import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts';
@@ -91,16 +93,13 @@ function writeTinyPng(path: string, width: number, height: number): void {
   writeFileSync(path, png);
 }
 
-// Set synchronously, before the top-level detectGimp() call below, so that
-// call sees the fake home too on a platform whose detector reads homedir()
-// (macOS/Linux) — this platform's (Windows) detector doesn't, but the order
-// costs nothing and keeps the file portable.
-fx.home = mkdtempSync(join(tmpdir(), 'em-gimp-registry-e2e-home-'));
-
 // Top-level await, not beforeAll — see session.live.test.ts's identical
 // comment: describe.skipIf() reads its condition at collection time,
-// synchronously, before any async hook runs.
+// synchronously, before any async hook runs. Detection runs against the REAL
+// home (the macOS/Linux detectors look under it); the fake home is set right
+// after, before anything constructs a server.
 const install: GimpInstall | null = await detectGimp();
+fx.home = mkdtempSync(join(tmpdir(), 'em-gimp-registry-e2e-home-'));
 
 it('GIMP must actually be detected when EDITMAMEI_REQUIRE_GIMP=1 (registry e2e)', () => {
   if (!REQUIRE_GIMP) return;

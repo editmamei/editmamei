@@ -100,6 +100,21 @@ describe('createGimpVerifyTools', () => {
       expect((result.structuredContent as { path: string | null }).path).toBeNull();
     });
 
+    it('a render GIMP never wrote is gimp_op_failed, without the temp path Node would name', async () => {
+      const gimp = makeGimpBackendWithRealPaths({
+        result: { width: 16, height: 16, proxy: true },
+      });
+      gimp.tempPath = (name: string) => join(scratchDir, 'never-written', name);
+      const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_preview', { image: 1 });
+      expect(result.isError).toBe(true);
+      const text = JSON.stringify(result.content);
+      expect(text).toContain('gimp_op_failed');
+      expect(text).toContain('the render was not written');
+      expect(text).not.toContain('never-written');
+      expect(text).not.toContain('ENOENT');
+    });
+
     it('reports the preview file by name only, never a full path (it carries the username)', async () => {
       const gimp = makeGimpBackendWithRealPaths({
         result: { width: 1024, height: 683, proxy: true },
@@ -346,6 +361,25 @@ describe('createGimpVerifyTools', () => {
       const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: deny });
       const result = await callTool(tools, 'gimp_compare', { image: 1, mode: 'before_after' });
       expect((result.content?.at(-1) as { text: string }).text).not.toMatch(/send_previews_to_llm/);
+    });
+
+    it('a before/after render GIMP never wrote is gimp_op_failed, without the temp path', async () => {
+      const gimp = makeGimpBackendWithRealPaths({
+        result: { before: {}, after: {}, delta: {}, proxy: true },
+      });
+      gimp.tempPath = (name: string) => join(scratchDir, 'never-written', name);
+      const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_compare', {
+        image: 1,
+        mode: 'before_after',
+        include_previews: true,
+      });
+      expect(result.isError).toBe(true);
+      const text = JSON.stringify(result.content);
+      expect(text).toContain('gimp_op_failed');
+      expect(text).toContain('the render was not written');
+      expect(text).not.toContain(scratchDir.replace(/\\/g, '\\\\'));
+      expect(text).not.toContain('never-written');
     });
 
     it("an unknown mode is refused before any dispatch (schema enum rejects it; the handler's own unknownDiscriminator fallback is unreachable while the enum stands)", async () => {

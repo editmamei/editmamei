@@ -696,7 +696,20 @@ describe.skipIf(!install)('adjust: per-type pixel verifiers', () => {
         });
         const after = join(workDir, `roundtrip-${type}-after.png`);
         await session.call('export', { image: opened.image, path: after });
-        expect(maxAbsDiff(readPng(before), readPng(after))).toBe(0);
+        const a = readPng(before);
+        const b = readPng(after);
+        if (type === 'noise_reduction') {
+          // The listed params round-trip exactly (asserted above), but gegl:noise-reduction does
+          // not render bit-identically twice on the macOS and Linux GIMP builds (CI measured a
+          // max diff of 21 and 12, with Windows at 0), so this type is held to a near-identical
+          // render instead of an exact one.
+          let sum = 0;
+          for (let i = 0; i < a.data.length; i++) sum += Math.abs(a.data[i]! - b.data[i]!);
+          expect(sum / a.data.length, 'mean abs diff').toBeLessThan(1);
+          expect(maxAbsDiff(a, b)).toBeLessThanOrEqual(32);
+        } else {
+          expect(maxAbsDiff(a, b)).toBe(0);
+        }
       } finally {
         await session.call('close', { image: opened.image });
       }

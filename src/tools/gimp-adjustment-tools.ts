@@ -25,7 +25,7 @@ import { GIMP_IMAGE_PROP, GIMP_LAYER_PROP, pickSchemaDeclaredKeys } from './gimp
  * merge-not-reset behavior a re-edit depends on. So per-type numeric
  * fields intentionally omit `default:` here (the create-time default is
  * documented in each field's own description instead) — the one deliberate
- * exception to the "always declare default" convention in `tool-surface.md`,
+ * exception to the "always declare default" convention in `docs/engineering/tool-design.md`,
  * because the convention's own premise (an omitted field always resolves to
  * ONE fixed value) is false for this tool.
  *

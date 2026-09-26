@@ -249,8 +249,8 @@ export function applyUpdateCheckEnvOverride(
 }
 
 /**
- * Apply a Claude-Desktop-injected `editor` pin override at boot. Same
- * rationale as `applyUpdateCheckEnvOverride`: `EDITMAMEI_EDITOR` wins for THIS
+ * Apply an `EDITMAMEI_EDITOR` env override of the `editor` pin at boot. Same
+ * precedence as `applyUpdateCheckEnvOverride`: `EDITMAMEI_EDITOR` wins for THIS
  * process when it names a recognized pin; an unrecognized or absent value
  * leaves the settings.json value standing. In-memory only — never written
  * back, so settings.json stays the source of truth on the npm/CLI path.

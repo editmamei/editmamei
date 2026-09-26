@@ -475,6 +475,40 @@ describe('GimpSession', () => {
     }
   );
 
+  it("GIMP's environment keeps the user's variables but drops Editmamei's own EDITMAMEI_* settings", async () => {
+    vi.stubEnv('EDITMAMEI_TEST_SECRET', 'do-not-pass');
+    vi.stubEnv('EM_TEST_USER_VAR', 'kept');
+    try {
+      const h = harness();
+      await h.session.call('open', {});
+      const env = h.spawnCalls[0]!.env;
+      expect(env.EDITMAMEI_TEST_SECRET).toBeUndefined();
+      expect(Object.keys(env).filter((k) => k.toUpperCase().startsWith('EDITMAMEI_'))).toEqual([]);
+      expect(env.EM_TEST_USER_VAR).toBe('kept');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('a bridge error naming a file under the session folder reaches the caller with that folder cut out', async () => {
+    let root = '';
+    const h = harness({
+      responder: (op) => {
+        if (op === 'ping') return { major: 3, minor: 2, micro: 6 };
+        throw Object.assign(new Error(`could not read ${join(root, 'preview-1234.jpg')}`), {
+          code: 'gimp_op_failed',
+        });
+      },
+    });
+    root = h.rootDir;
+    const err = await h.session.call('preview', {}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GimpError);
+    expect((err as GimpError).code).toBe('gimp_op_failed');
+    expect((err as GimpError).message).not.toContain(h.rootDir);
+    expect((err as GimpError).message).toContain('<GIMP session folder>');
+    expect((err as GimpError).message).toContain('preview-1234.jpg');
+  });
+
   it('a gimp_timeout says the session was stopped and how to recover, since the kill loses the open images', async () => {
     const h = harness({ hangOps: new Set(['slow']) });
     await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({

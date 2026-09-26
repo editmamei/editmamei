@@ -7,6 +7,7 @@ import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers.js';
 import { loadSettings } from '../core/settings.js';
 import { Logger } from '../utils/logger.js';
+import { GimpError } from '../backends/gimp/errors.js';
 import {
   GIMP_IMAGE_PROP,
   GIMP_REGION_PROP,
@@ -35,6 +36,18 @@ import {
 const logger = new Logger('GimpVerifyTools');
 
 const CHANNELS = ['luminance', 'red', 'green', 'blue'] as const;
+
+/**
+ * Read a render GIMP was asked to write. A missing file becomes a plain `gimp_op_failed`: Node's
+ * own error would name the temp path, which sits under the user's home folder.
+ */
+async function readRender(path: string): Promise<Buffer> {
+  try {
+    return await readFile(path);
+  } catch {
+    throw new GimpError('gimp_op_failed', 'GIMP reported success but the render was not written');
+  }
+}
 
 /** `lib.channel_stats`'s histogram: one bin per 8-bit level, index = the 0-255 value. */
 export const HISTOGRAM_BIN_COUNT = 256;
@@ -83,7 +96,7 @@ async function gimpGetPreview(
         region: args.region,
         out_path: renderPath,
       });
-      const bytes = await readFile(renderPath);
+      const bytes = await readRender(renderPath);
       // Publishing the human-follows-along copy is best effort: the render itself succeeded, and
       // a failed rename (a viewer holding the file open on Windows, another session publishing at
       // the same moment) must not turn that into an error.
@@ -308,8 +321,8 @@ async function gimpCompare(
       const previewsWithheld = Boolean(args.include_previews) && !wantsPreviews;
       if (wantsPreviews && beforePath && afterPath) {
         const [beforeBytes, afterBytes] = await Promise.all([
-          readFile(beforePath),
-          readFile(afterPath),
+          readRender(beforePath),
+          readRender(afterPath),
         ]);
         content.push({
           type: 'image' as const,

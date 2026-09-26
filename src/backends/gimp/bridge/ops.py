@@ -1202,7 +1202,16 @@ def _export_stripped(dup, path, options=None):
     cfg.set_property('image', dup)
     cfg.set_property('file', Gio.File.new_for_path(path))
     _strip_metadata(cfg, fmt)
-    proc.run(cfg)
+    # A failed write does not raise: run() returns an EXECUTION_ERROR status with GIMP's message
+    # as the second value (verified live, GIMP 3.2.6, writing into a missing directory).
+    result = proc.run(cfg)
+    if result.index(0) != Gimp.PDBStatusType.SUCCESS:
+        name = os.path.basename(path)
+        detail = result.index(1) if result.length() > 1 else result.index(0).value_nick
+        # GIMP's message quotes the full path ("Could not open '<path>' for writing"); keep just
+        # the file name, as every other message here does.
+        detail = str(detail).replace(Gio.File.new_for_path(path).get_path() or path, name)
+        raise lib.OpError('gimp_op_failed', 'could not write %s: %s' % (name, detail))
 
 
 def op_export(args):
@@ -1218,7 +1227,13 @@ def op_export(args):
     img = _image(args)
     path = lib.require(args, 'path')
     if path.lower().endswith('.xcf'):
-        Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, img, Gio.File.new_for_path(path), None)
+        # file_save reports a failed write by returning False, not by raising (verified live).
+        if not Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, img, Gio.File.new_for_path(path), None):
+            raise lib.OpError(
+                'gimp_op_failed',
+                'could not save %s (check that the folder exists and is writable)'
+                % os.path.basename(path),
+            )
     else:
         dup, _flat = _composite(img)
         try:

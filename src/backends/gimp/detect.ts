@@ -4,8 +4,8 @@
  * Unlike the Photoshop detectors (`src/platform/windows-detector.ts`,
  * `macos-detector.ts`), which run at `PhotoshopConnection` construction and
  * are allowed a registry/Spotlight round trip, this runs inside
- * `detectEditors()`'s shared time box (`detect-editors.ts`) alongside the PS
- * probe — so it never spawns anything, not even `gimp-console --version`.
+ * `detectEditors()`'s time box (`detect-editors.ts`) before the server's
+ * handshake — so it never spawns anything, not even `gimp-console --version`.
  * Version gating happens later, at first session start, via the bridge's
  * `ping` (`session.ts`).
  *
