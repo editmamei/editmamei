@@ -105,6 +105,46 @@ describe('createGimpAdjustmentTools', () => {
     expect(gimp.lastCall().args).toMatchObject({ from_kelvin: 6500, to_kelvin: 8000 });
   });
 
+  it('a NEW vibrance filter created with no vibrance given flags in the text that only saturation changed', async () => {
+    const gimp = makeGimpBackend({
+      result: { filter_id: 5, name: 'Vibrance', type: 'vibrance', mask: null },
+    });
+    const tools = createGimpAdjustmentTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_add_adjustment', {
+      image: 1,
+      type: 'vibrance',
+      saturation: 1.2,
+    });
+    expect((result.content?.[0] as { text: string }).text).toContain('vibrance defaulted to 0');
+  });
+
+  it('a NEW vibrance filter that DOES set vibrance is not flagged', async () => {
+    const gimp = makeGimpBackend({
+      result: { filter_id: 6, name: 'Vibrance', type: 'vibrance', mask: null },
+    });
+    const tools = createGimpAdjustmentTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_add_adjustment', {
+      image: 1,
+      type: 'vibrance',
+      vibrance: 40,
+    });
+    expect((result.content?.[0] as { text: string }).text).not.toContain('vibrance defaulted to 0');
+  });
+
+  it('a re-edit (filter_id given) of a vibrance filter is never flagged, even without vibrance', async () => {
+    const gimp = makeGimpBackend({
+      result: { filter_id: 7, name: 'Vibrance', type: 'vibrance', mask: null },
+    });
+    const tools = createGimpAdjustmentTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_add_adjustment', {
+      image: 1,
+      type: 'vibrance',
+      filter_id: 7,
+      saturation: 1.2,
+    });
+    expect((result.content?.[0] as { text: string }).text).not.toContain('vibrance defaulted to 0');
+  });
+
   it('maps a bridge invalid_argument error through toolGimpErrorResult', async () => {
     // exposure: 5 is within the SCHEMA's own -10..10 bound, so validateArgs lets it
     // through to the (fake) bridge, which is what actually throws here — this is

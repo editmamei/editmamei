@@ -207,9 +207,11 @@ const adjustSchema: JsonSchemaObject = {
       minimum: -100,
       maximum: 100,
       description:
-        'hue_saturation: -100..100 percent (default 0 when creating). vibrance: 0..10 scale ' +
-        '(default 1.0 when creating). The bridge enforces the precise range for whichever `type` ' +
-        'you gave.',
+        'hue_saturation: -100..100 percent (default 0 when creating), the field that actually ' +
+        "adjusts saturation for that type. vibrance: a SEPARATE, plain saturation multiplier " +
+        "layered on top of the vibrance field below — 1.0 = unchanged (default when creating), " +
+        "0..10 scale. It is NOT the vibrance knob; normally leave it alone and use `vibrance` " +
+        "instead. The bridge enforces the precise range for whichever `type` you gave.",
     },
     lightness: {
       type: 'number',
@@ -317,7 +319,12 @@ const adjustSchema: JsonSchemaObject = {
       type: 'number',
       minimum: -100,
       maximum: 100,
-      description: 'vibrance only. Default (when creating): 0.',
+      description:
+        'vibrance only. THE vibrance control — a vibrance adjustment must set this field, not ' +
+        '`saturation` (a separate, plain multiplier for this type that normally stays at its ' +
+        'default). Positive values boost muted/less-saturated colours more than already-saturated ' +
+        'ones (skin tones move less than a bright sky); negative desaturates the same way in ' +
+        'reverse. Default (when creating): 0.',
     },
     // ---- sharpen ----
     amount: {
@@ -355,6 +362,15 @@ async function gimpAddAdjustment(
       type: string;
       mask: string | null;
     }>('adjust', pickSchemaDeclaredKeys(adjustSchema, args));
+    // A NEW vibrance filter with no `vibrance` given is the mistake this
+    // tool's own schema wording tries to head off (see the `vibrance` field
+    // doc comment) — `saturation` alone does nothing to it. Flagged in the
+    // text rather than silently accepted, without touching the merge-not-
+    // reset contract (nothing here changes what's sent to the bridge).
+    const isNewVibranceWithNoVibrance =
+      rawArgs.filter_id === undefined &&
+      rawArgs.type === 'vibrance' &&
+      rawArgs.vibrance === undefined;
     return {
       content: [
         {
@@ -362,7 +378,10 @@ async function gimpAddAdjustment(
           text:
             `${result.filter_id !== undefined && rawArgs.filter_id !== undefined ? 'Updated' : 'Added'} ` +
             `${result.type} filter "${result.name}" (id ${result.filter_id})` +
-            (result.mask ? ` confined to mask "${result.mask}".` : '.'),
+            (result.mask ? ` confined to mask "${result.mask}".` : '.') +
+            (isNewVibranceWithNoVibrance
+              ? ' vibrance defaulted to 0 — only saturation changed; set `vibrance` to actually boost muted colours.'
+              : ''),
         },
       ],
       structuredContent: result as unknown as Record<string, unknown>,
@@ -382,7 +401,9 @@ export function createGimpAdjustmentTools(gimp: GimpBackend): ToolDefinition[] {
           'stays live and re-editable; nothing bakes into pixels until gimp_export. `type` picks ' +
           'the adjustment: curves, levels, exposure, brightness_contrast, hue_saturation, ' +
           'color_balance, color_temperature, shadows_highlights, saturation, vibrance, sharpen, ' +
-          'noise_reduction. curves: ONE filter per channel — add separate filters for red and blue ' +
+          'noise_reduction. For type vibrance, the knob is the `vibrance` field — `saturation` on ' +
+          'that type is a separate plain multiplier that normally stays untouched. ' +
+          'curves: ONE filter per channel — add separate filters for red and blue ' +
           'rather than one filter for both; points are [input, output] 0-255 pairs including the ' +
           "endpoints. A re-edit (filter_id) MERGES: any field you omit keeps the filter's existing " +
           "value, so re-editing {contrast: 50} on a brightness_contrast filter doesn't reset " +
