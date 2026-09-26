@@ -18,6 +18,8 @@ export interface FakeGimpBackendOptions {
   gimpVersion?: string;
   /** Defaults to 'ready' (a warm session). Set to 'idle' / 'dead' to test gimp_ping's cold/restarted labeling. */
   state?: string;
+  /** Defaults to undefined (no start attempt has ever begun). Set alongside `state: 'starting'` to test gimp_ping's origin-aware labeling. */
+  startOrigin?: 'cold' | 'restarted';
 }
 
 const DEFAULT_INSTALL: GimpInstall = {
@@ -41,6 +43,7 @@ export class FakeGimpBackend {
   private readonly throwForFn?: (op: string, args: Record<string, unknown>) => unknown;
   private readonly version?: string;
   private readonly sessionState: string;
+  private readonly origin?: 'cold' | 'restarted';
 
   constructor(opts: FakeGimpBackendOptions = {}) {
     this.installInfo = opts.install === undefined ? DEFAULT_INSTALL : opts.install;
@@ -49,6 +52,7 @@ export class FakeGimpBackend {
     this.throwForFn = opts.throwFor;
     this.version = opts.gimpVersion;
     this.sessionState = opts.state ?? 'ready';
+    this.origin = opts.startOrigin;
   }
 
   get installed(): boolean {
@@ -65,6 +69,10 @@ export class FakeGimpBackend {
 
   get state(): string {
     return this.sessionState;
+  }
+
+  get startOrigin(): 'cold' | 'restarted' | undefined {
+    return this.origin;
   }
 
   async call<T = unknown>(op: string, args: Record<string, unknown> = {}): Promise<T> {

@@ -70,6 +70,48 @@ describe('createGimpCoreTools', () => {
       expect(result.structuredContent).toMatchObject({ connected: false, starting: true });
       expect((result.content?.[0] as { text: string }).text).toContain('Call gimp_ping again');
     });
+
+    it('reports session_state restarted (not warm) when the prior state was "starting" and its origin was a restart', async () => {
+      const gimp = makeGimpBackend({
+        result: { major: 3, minor: 2, micro: 6, images: [] },
+        state: 'starting',
+        startOrigin: 'restarted',
+      });
+      const tools = createGimpCoreTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_ping');
+      expect(result.structuredContent).toMatchObject({ connected: true, session_state: 'restarted' });
+    });
+
+    it('reports session_state cold when the prior state was "starting" and its origin was the first-ever launch', async () => {
+      const gimp = makeGimpBackend({
+        result: { major: 3, minor: 2, micro: 6, images: [] },
+        state: 'starting',
+        startOrigin: 'cold',
+      });
+      const tools = createGimpCoreTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_ping');
+      expect(result.structuredContent).toMatchObject({ connected: true, session_state: 'cold' });
+    });
+
+    it('the gimp_starting (still-starting) branch itself reports session_state from the attempt origin, not a hard-coded cold', async () => {
+      const gimp = makeGimpBackend({
+        state: 'starting',
+        startOrigin: 'restarted',
+        throwFor: () =>
+          new GimpError(
+            'gimp_starting',
+            'GIMP is restarting after stopping unexpectedly. Call gimp_ping again in about 30 seconds.'
+          ),
+      });
+      const tools = createGimpCoreTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_ping');
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        connected: false,
+        starting: true,
+        session_state: 'restarted',
+      });
+    });
   });
 
   describe('gimp_overview', () => {

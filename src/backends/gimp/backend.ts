@@ -82,6 +82,11 @@ export class GimpBackend {
     return this.session?.state ?? 'idle';
   }
 
+  /** See `GimpSession.lastStartOrigin`'s doc comment — undefined before any start has ever begun. */
+  get startOrigin(): 'cold' | 'restarted' | undefined {
+    return this.session?.lastStartOrigin;
+  }
+
   private ensureSession(): GimpSession {
     if (this.closed) {
       // Same code + wording GimpSession itself uses when a call reaches it

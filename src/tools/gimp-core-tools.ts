@@ -28,13 +28,24 @@ async function gimpPing(gimp: GimpBackend): Promise<ToolResult> {
   const installBasename = gimp.install ? basename(gimp.install.path) : null;
   try {
     const result = await gimp.call<PingBridgeResult>('ping', {});
-    // The bridge's own state was 'idle' (never started) or 'dead' (crashed /
-    // timed-out-killed) the instant BEFORE this call — #dispatch's lazy
-    // #startFresh is what just took it to 'ready'. 'idle' -> cold start;
-    // 'dead' -> a crash/timeout the caller should know happened; anything
-    // else ('starting'/'ready', a session already warm) -> warm.
+    // The bridge's own state was 'idle' (never started), 'dead' (crashed /
+    // timed-out-killed), or 'starting' (a background start already under
+    // way, joined by this very call) the instant BEFORE this call —
+    // #dispatch's lazy #startFresh/#joinOrStart is what just took it to
+    // 'ready'. 'idle' -> cold start; 'dead' -> a crash/timeout the caller
+    // should know happened; 'starting' -> defer to the ORIGIN of that
+    // attempt (`gimp.startOrigin`, set when the attempt began — could be a
+    // fresh 'cold' launch or a 'restarted' recovery), since "starting" alone
+    // doesn't say which; anything else ('ready', a session already warm
+    // before this call) -> warm.
     const sessionState: 'cold' | 'warm' | 'restarted' =
-      priorState === 'idle' ? 'cold' : priorState === 'dead' ? 'restarted' : 'warm';
+      priorState === 'idle'
+        ? 'cold'
+        : priorState === 'dead'
+          ? 'restarted'
+          : priorState === 'starting'
+            ? (gimp.startOrigin ?? 'restarted')
+            : 'warm';
     const version = `${result.major}.${result.minor}.${result.micro}`;
     const openImages = (result.images ?? []).map((image) => ({ image }));
     return {
@@ -69,7 +80,10 @@ async function gimpPing(gimp: GimpBackend): Promise<ToolResult> {
       structuredContent: {
         connected: false,
         gimp_version: null,
-        session_state: 'cold',
+        // Origin-aware even here: a `gimp_starting` thrown while RECOVERING
+        // from a crash is still 'restarted', not 'cold' — same reasoning as
+        // the success branch above.
+        session_state: isStarting ? (gimp.startOrigin ?? 'cold') : 'cold',
         open_images: [],
         install_path_basename: installBasename,
         ...(isStarting ? { starting: true } : {}),
