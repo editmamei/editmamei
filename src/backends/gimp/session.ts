@@ -99,12 +99,16 @@ export const READY_TIMEOUT_MS = 180_000;
  * How long a single call will wait for an in-flight start (fresh or joined)
  * before giving up on THIS call and reporting `gimp_starting` — deliberately
  * shorter than `READY_TIMEOUT_MS` and than a typical MCP client's own request
- * timeout. The start itself is NOT cancelled when this elapses: it keeps
- * running in the background (`#startPromise` stays assigned), so the next
- * call joins the SAME attempt instead of tree-killing a half-started GIMP and
- * throwing away whatever first-launch work it already did.
+ * timeout. Kept well under it even accounting for the rest of a cold
+ * `gimp_ping`: up to ~2s of stale-process kill-confirm before a start even
+ * begins, plus this wait, plus the `ping` RPC's own `PING_TIMEOUT_MS` —
+ * comfortably inside a ~60s client timeout. The start itself is NOT
+ * cancelled when this elapses: it keeps running in the background
+ * (`#startPromise` stays assigned), so the next call joins the SAME attempt
+ * instead of tree-killing a half-started GIMP and throwing away whatever
+ * first-launch work it already did.
  */
-export const CALL_READY_WAIT_MS = 45_000;
+export const CALL_READY_WAIT_MS = 30_000;
 const PING_TIMEOUT_MS = 10_000;
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_GRACE_MS = 5_000;
@@ -261,6 +265,40 @@ export class GimpSession {
    * NEXT start begins a fresh attempt rather than reusing a stale one.
    */
   private startPromise: Promise<void> | undefined;
+  /**
+   * How this current (or most recently settled) start attempt began: 'cold'
+   * when it started from 'idle' — this session's very first launch —
+   * 'restarted' for anything else (recovering from a crash, a timeout kill,
+   * or simply restarting a previously-'ready' session). Set at the very top
+   * of `#startFresh`, before anything else in that attempt can move
+   * `sessionState` on. Read via `lastStartOrigin` by `gimp_ping` (through
+   * `GimpBackend.startOrigin`) so a caller capped at `gimp_starting` — or
+   * one that just watched a `starting` session finish becoming ready again
+   * — can tell "first launch" apart from "recovering from a crash", which
+   * `sessionState` alone can't distinguish once an attempt is under way.
+   */
+  private startOrigin: 'cold' | 'restarted' | undefined;
+  /**
+   * A start-attempt failure nobody was actually watching when it happened —
+   * every call that had been waiting on it had already given up with its
+   * own `gimp_starting` (see `activeWaiters`), so nobody ever saw the REAL
+   * cause. Stashed here so the NEXT call surfaces it once, instead of
+   * quietly kicking off (and likely re-timing-out on) a brand new attempt
+   * that would just report `gimp_starting` all over again, forever, with
+   * the actual cause (a crash, the 180s deadline, ...) never reaching
+   * anyone. Cleared the instant a call reads it.
+   */
+  private unobservedStartFailure: GimpError | undefined;
+  /**
+   * How many calls are CURRENTLY inside `#joinOrStart`'s own race against
+   * the in-flight attempt, waiting to see whether IT resolves first or
+   * their own `CALL_READY_WAIT_MS` cap does. Read by the attempt's
+   * rejection handler (registered before any waiter's own race arm — see
+   * the ordering comment in `#joinOrStart`) to decide whether a failure was
+   * actually seen by somebody, or needs to be stashed in
+   * `unobservedStartFailure` instead.
+   */
+  private activeWaiters = 0;
   private shutdownPromise: Promise<void> | undefined;
   private shuttingDown = false;
   /**
@@ -309,6 +347,11 @@ export class GimpSession {
 
   get gimpVersion(): string | undefined {
     return this.version;
+  }
+
+  /** See the `startOrigin` field doc comment above. */
+  get lastStartOrigin(): 'cold' | 'restarted' | undefined {
+    return this.startOrigin;
   }
 
   /** Where the human-follows-along preview lives; refreshed by `copyToLatestPreview`. */
@@ -366,8 +409,22 @@ export class GimpSession {
     // in-flight/queued vs. next-call distinction the lifecycle contract
     // wants, and it falls out of a single counter with no extra bookkeeping.
     const myGeneration = this.deadGeneration;
+    // Captured NOW too, alongside myGeneration: several calls issued
+    // together (before any of them has reached its turn on `queue`) must
+    // each measure their OWN CALL_READY_WAIT_MS cap from the moment THEY
+    // were issued, not from whenever they happen to reach the front of the
+    // serialized queue — otherwise a second call queued behind a first
+    // that's already mid-wait would answer at ~2x CALL_READY_WAIT_MS
+    // instead of alongside the first.
+    const issuedAt = this.clock();
     const run = this.queue.then(() =>
-      this.#dispatch<T>(op, args, callOpts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, myGeneration)
+      this.#dispatch<T>(
+        op,
+        args,
+        callOpts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+        myGeneration,
+        issuedAt
+      )
     );
     // The shared queue itself must never end up permanently rejected, or
     // every call after the first failure would hang forever waiting its turn.
@@ -390,7 +447,8 @@ export class GimpSession {
     op: string,
     args: Record<string, unknown>,
     timeoutMs: number,
-    myGeneration: number
+    myGeneration: number,
+    issuedAt: number
   ): Promise<T> {
     this.#assertOpen();
     if (this.stickyError) {
@@ -400,7 +458,7 @@ export class GimpSession {
       throw this.lastFailure;
     }
     if (this.sessionState !== 'ready') {
-      await this.#joinOrStart();
+      await this.#joinOrStart(issuedAt);
       // #joinOrStart can await for up to ~2s (the stale-process kill-confirm
       // wait) before ever spawning anything, and again while waiting for
       // readiness (capped at CALL_READY_WAIT_MS) — shutdown() can land in
@@ -415,25 +473,43 @@ export class GimpSession {
   /**
    * Ensures a start attempt is running — joining one already in flight
    * rather than starting a second, competing one — and waits for THIS call's
-   * turn on it, capped at `CALL_READY_WAIT_MS`. If that cap elapses first,
+   * turn on it, capped at `CALL_READY_WAIT_MS` measured from `issuedAt`
+   * (when the CALLER issued this call — see the comment on `call()` — not
+   * whenever it happens to reach this method). If that cap elapses first,
    * throws `gimp_starting` and returns control to the caller WITHOUT
    * touching the attempt itself: it keeps running under `#startPromise`, so
    * the next call to reach here (queued behind this one, or issued later)
    * joins the exact same attempt instead of `#startFresh()` tree-killing a
    * half-started GIMP and re-paying its first-launch cost.
    *
-   * The attempt's own promise gets a no-op `.catch` the instant it's
-   * created — independent of whether anyone ever ends up awaiting it — so a
-   * background start that ultimately fails (crash, the 180s deadline, a
-   * spawn error) after every caller waiting on it has already timed out
-   * never surfaces as an unhandled rejection.
+   * If a start attempt already failed for real while nobody was watching
+   * (see `unobservedStartFailure`'s doc comment), that's surfaced here
+   * FIRST, before starting anything new — otherwise every following call
+   * would just kick off (and likely re-time-out on) a fresh attempt and
+   * report `gimp_starting` forever, with the real cause (a crash, the 180s
+   * deadline, a spawn error, ...) never reaching anyone.
    */
-  async #joinOrStart(): Promise<void> {
+  async #joinOrStart(issuedAt: number): Promise<void> {
     if (!this.startPromise) {
+      if (this.unobservedStartFailure) {
+        const err = this.unobservedStartFailure;
+        this.unobservedStartFailure = undefined;
+        throw err;
+      }
       const newAttempt = this.#startFresh();
-      newAttempt.catch(() => {
-        /* handled below by whichever call is still waiting, if any; this
-         * exists so a caller-less failure is never unhandled */
+      // Registered BEFORE `this.startPromise` is even assigned — and
+      // therefore before any waiter's own `Promise.race` arm further below
+      // can attach ITS reaction to this same promise. Reactions on one
+      // promise fire in registration order, so THIS handler always runs
+      // FIRST when `newAttempt` rejects, before any currently-waiting call
+      // has had a chance to decrement `activeWaiters` in its own `finally`.
+      // That ordering is what makes `activeWaiters` a trustworthy "was
+      // anyone actually watching, right now, at the instant of failure"
+      // check, rather than a race against it.
+      newAttempt.catch((err: unknown) => {
+        if (this.activeWaiters > 0) return; // a waiter is mid-race and will see this rejection itself
+        this.unobservedStartFailure =
+          err instanceof GimpError ? err : new GimpError('gimp_start_failed', String(err));
       });
       this.startPromise = newAttempt;
       const clearIfCurrent = () => {
@@ -443,21 +519,30 @@ export class GimpSession {
     }
     const attempt = this.startPromise;
 
+    const remaining = Math.max(0, issuedAt + CALL_READY_WAIT_MS - this.clock());
+    this.activeWaiters++;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<true>((resolve) => {
-      timer = setTimeout(() => resolve(true), CALL_READY_WAIT_MS);
+      timer = setTimeout(() => resolve(true), remaining);
     });
     try {
       const raced = await Promise.race([attempt.then(() => false as const), timedOut]);
       if (raced === true) {
+        // Worded from `startOrigin` (set at the top of `#startFresh`, well
+        // before this cap could ever fire) so a caller recovering from a
+        // crash doesn't hear "first launch" — it isn't one.
+        const restarting = this.startOrigin === 'restarted';
         throw new GimpError(
           'gimp_starting',
-          'GIMP is still starting. The first launch on a machine can take a few minutes while ' +
-            'GIMP builds its caches. Call gimp_ping again in about 30 seconds.'
+          restarting
+            ? 'GIMP is restarting after stopping unexpectedly. Call gimp_ping again in about 30 seconds.'
+            : 'GIMP is still starting. The first launch on a machine can take a few minutes while ' +
+                'GIMP builds its caches. Call gimp_ping again in about 30 seconds.'
         );
       }
     } finally {
       clearTimeout(timer);
+      this.activeWaiters--;
     }
   }
 
@@ -485,6 +570,12 @@ export class GimpSession {
 
   async #startFresh(): Promise<void> {
     this.#assertOpen();
+    // Recorded HERE, before anything else in this attempt can move
+    // `sessionState` on: 'cold' means this is this session's very first-ever
+    // launch (starting from 'idle'); anything else ('dead' from a prior
+    // crash/timeout-kill, or a stale 'starting'/'ready' being restarted
+    // from) means GIMP had already been up before and is now restarting.
+    this.startOrigin = this.sessionState === 'idle' ? 'cold' : 'restarted';
     // A previous process may still be alive (e.g. this restart was
     // triggered by a timeout whose kill hasn't actually reaped it yet, or
     // by a crash we detected before the OS finished tearing it down).
