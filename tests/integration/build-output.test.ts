@@ -89,6 +89,30 @@ async function walk(root: string, prefix = ''): Promise<string[]> {
 
 const bundlesBuilt = existsSync(CE_DIST) && existsSync(PRO_DIST);
 
+// The GIMP bridge is Python the build copies next to the compiled backend
+// (scripts/copy-gimp-bridge.ts), not something tsc emits, so nothing else
+// notices if a build stops staging it. Checked in both the dev dist (npm run
+// build) and the CE package dist (npm run build:ce, what the .mcpb and npm
+// ship); each is skipped only when that build hasn't been run.
+const DEV_DIST = join(REPO_ROOT, 'dist');
+describe.each([
+  ['dev dist', DEV_DIST],
+  ['CE package dist', CE_DIST],
+])('the GIMP bridge in the %s', (_label, distDir) => {
+  const bridgeDir = join(distDir, 'backends', 'gimp', 'bridge');
+  it.skipIf(!existsSync(distDir))('ships ops.py and lib.py, and never test_lib.py', () => {
+    expect(existsSync(join(bridgeDir, 'ops.py')), 'ops.py').toBe(true);
+    expect(existsSync(join(bridgeDir, 'lib.py')), 'lib.py').toBe(true);
+    expect(existsSync(join(bridgeDir, 'test_lib.py')), 'test_lib.py must not ship').toBe(false);
+    // And only those: a stray test helper or fixture must not ride along either.
+    expect(
+      readdirSync(bridgeDir)
+        .filter((f) => f.endsWith('.py'))
+        .sort()
+    ).toEqual(['lib.py', 'ops.py']);
+  });
+});
+
 describe.skipIf(!bundlesBuilt)('CE bundle composition', () => {
   // -------------------------------------------------------------------------
   // Slice 3d-3c: Pro is a DOWNLOADED module loaded via dynamic import, never

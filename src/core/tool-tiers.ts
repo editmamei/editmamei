@@ -301,6 +301,26 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // text-tools — one op-discriminated tool covering both creating a text layer
   // and styling one, in a single flat op enum.
   ps_text: 'community',
+
+  // gimp_* — the second-editor beta surface, registered only when a GIMP
+  // install is detected (or the editor pin forces it) at boot — see
+  // src/backends/detect-editors.ts / src/modules/gimp/index.ts.
+  gimp_ping: 'dev',
+  gimp_overview: 'dev',
+  gimp_open_document: 'dev',
+  gimp_close_document: 'dev',
+  gimp_save_xcf: 'dev',
+  gimp_export: 'dev',
+  gimp_inspect: 'dev',
+  gimp_add_adjustment: 'dev',
+  gimp_filter: 'dev',
+  gimp_crop_document: 'dev',
+  gimp_resize_image: 'dev',
+  gimp_transform_canvas: 'dev',
+  gimp_create_mask: 'dev',
+  gimp_get_preview: 'dev',
+  gimp_get_histogram: 'dev',
+  gimp_compare: 'dev',
 };
 
 /**

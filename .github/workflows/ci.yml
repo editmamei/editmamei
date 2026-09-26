@@ -67,6 +67,10 @@ jobs:
         run: npm run typecheck
 
       - name: test
+        env:
+          # bridge-python.test.ts runs the GIMP bridge's own Python unit tests; on a runner that is
+          # supposed to have Python, a missing interpreter must fail the job, not skip the file.
+          EDITMAMEI_REQUIRE_PYTHON: '1'
         run: npm test
 
       - name: go build + test
@@ -137,6 +141,10 @@ jobs:
         run: npm run typecheck
 
       - name: test
+        env:
+          # bridge-python.test.ts runs the GIMP bridge's own Python unit tests; on a runner that is
+          # supposed to have Python, a missing interpreter must fail the job, not skip the file.
+          EDITMAMEI_REQUIRE_PYTHON: '1'
         run: npm test
 
       - name: go build + test

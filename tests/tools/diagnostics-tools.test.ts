@@ -17,6 +17,7 @@ function fakeBundle(over: Partial<DiagnosticBundle> = {}): DiagnosticBundle {
     node_version: 'v20.0.0',
     install_id: 'a'.repeat(32),
     ps_version: '27.7.0',
+    gimp_version: null,
     mcp_client: 'claude-ai 0.1.0',
     settings: {
       telemetry_usage: true,

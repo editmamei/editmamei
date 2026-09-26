@@ -5,7 +5,32 @@ import { fileURLToPath } from 'node:url';
 import { EditmameiServer } from '@editmamei/core/server.ts';
 import { TOOL_TIERS, isToolAllowedInEdition, tierOf } from '@editmamei/core/tool-tiers.ts';
 import { TOOL_GROUPS } from '@editmamei/core/tool-groups.ts';
+import type { GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
+
+/**
+ * Registers BOTH the ps_* and gimp_* surfaces for the universe-enumeration
+ * tests below — a plain `new EditmameiServer()` only ever registers ps_*
+ * (the no-`editors`-option default), which leaves every gimp_* tool
+ * unregistered and makes its 16 TOOL_TIERS rows look orphaned or
+ * unclassifiable, when the real gap is that this construction never asked
+ * for gimp_* at all. The install is a fake, plausible-looking path — nothing
+ * spawns at registration time, `GimpBackend` only starts a session lazily on
+ * its first `call()`, which these tests never make.
+ */
+const FAKE_GIMP_INSTALL: GimpInstall = {
+  source: 'conventional',
+  path: 'C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe',
+  launch: { command: 'C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe', args: [] },
+};
+const BOTH_EDITORS_OPTS = {
+  editors: {
+    registerPhotoshop: true,
+    registerGimp: true,
+    gimpInstall: FAKE_GIMP_INSTALL,
+    gimpDetectionTimedOut: false,
+  },
+};
 
 // Every `new EditmameiServer()` below builds its own SessionLog with no `dir`
 // override — redirect it to a per-test temp dir so this file's constructions
@@ -54,12 +79,13 @@ const TRANSITION_ORPHANS = new Set([
  */
 describe('TOOL_TIERS classification table', () => {
   it('classifies every registered tool', async () => {
-    const server = new EditmameiServer() as unknown as {
+    const server = new EditmameiServer(BOTH_EDITORS_OPTS) as unknown as {
       toolRegistry: { list(): Array<{ name: string }> };
       loadModules(): Promise<void>;
     };
     // Pro is a downloaded module loaded via dynamic import; pull it in so the
-    // assertion covers the FULL live surface (CE built-in + Pro), not just CE.
+    // assertion covers the FULL live surface (CE built-in + Pro + gimp_*),
+    // not just CE.
     await server.loadModules();
     const registered = server.toolRegistry.list().map((t) => t.name);
     const missing = registered.filter((name) => !(name in TOOL_TIERS));
@@ -80,12 +106,13 @@ describe('TOOL_TIERS classification table', () => {
         for (const name of Object.keys(TOOL_TIERS)) {
           TOOL_TIERS[name] = 'community';
         }
-        const server = new EditmameiServer() as unknown as {
+        const server = new EditmameiServer(BOTH_EDITORS_OPTS) as unknown as {
           toolRegistry: { list(): Array<{ name: string }> };
           loadModules(): Promise<void>;
         };
         // Pro tools come from the downloaded module (dynamic import); load it so
-        // the orphan check sees the full registered surface.
+        // the orphan check sees the full registered surface (CE built-in + Pro
+        // + gimp_*).
         await server.loadModules();
         const registered = new Set(server.toolRegistry.list().map((t) => t.name));
         const orphans = Object.keys(saved).filter(

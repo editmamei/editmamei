@@ -454,10 +454,12 @@ describe('overview tool markdown leak guard', () => {
  * distinguish a renamed tool from a dropped one, and both must fail loudly.
  */
 import { ceFactories } from '@editmamei/modules/ce/index.ts';
+import { gimpFactories } from '@editmamei/modules/gimp/index.ts';
 import { createSceneTools } from '@editmamei/tools/scene-tools.ts';
 import { createSequenceTools } from '@editmamei/tools/sequence-tools.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
+import { makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
 import { isToolAllowedInEdition, toolsInTier } from '@editmamei/core/tool-tiers.ts';
 
 const SCHEMA_WALK_MAX_DEPTH = 50;
@@ -762,6 +764,11 @@ describe('CE tool surface leak guard', () => {
   // hasTool answers yes — the description this scans must be the one a fully
   // populated registry produces, not a degraded variant.
   const sequenceCandidates = createSequenceTools(sceneInvokeTool, () => true);
+  // gimp_* — all `gimpFactories` (src/modules/gimp/index.ts), scanned the same
+  // way as ceFactories. The edition filter below keeps only the gimp_* tools
+  // whose tier the edition allows (tiers are set per the standing promote
+  // gate), so a tool promoted to 'community' is scanned with no test to update.
+  const gimpCandidates = gimpFactories.flatMap((f) => f(makeGimpBackend().asBackend()));
 
   it('scans every factory ce/index.ts itself registers (secondary regression guard; see the name-set completeness check below for the primary one)', () => {
     // ce/index.ts has 28 CE-tier factories today. This is a floor, not an
@@ -777,9 +784,12 @@ describe('CE tool surface leak guard', () => {
   // factories should already register only community tools, but if a
   // dev-tier tool shipped without being moved out, the filter catches
   // it before scanning.
-  const ceTools = [...ceCandidates, ...sceneCandidates, ...sequenceCandidates].filter((def) =>
-    isToolAllowedInEdition(def.tool.name, 'community')
-  );
+  const ceTools = [
+    ...ceCandidates,
+    ...sceneCandidates,
+    ...sequenceCandidates,
+    ...gimpCandidates,
+  ].filter((def) => isToolAllowedInEdition(def.tool.name, 'community'));
 
   // 'community' classified ambient tools (registered directly in server.ts
   // rather than through a ceFactories entry) live in the server source, not

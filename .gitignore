@@ -12,6 +12,11 @@ go-core/bin/
 go-core/build/
 go-core/templates.enc
 
+# Python bytecode cache (bridge/lib.py + test_lib.py run standalone via
+# `python -m unittest`, which leaves __pycache__ next to them)
+__pycache__/
+*.pyc
+
 # Logs
 *.log
 npm-debug.log*

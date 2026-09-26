@@ -20,6 +20,15 @@ afterEach(async () => {
 
 const io = () => ({ dir, out: (s: string) => out.push(s), err: (s: string) => err.push(s) });
 
+// `gimp_path` is now validated by `requireAbsoluteGimpPath`, which defaults
+// to `process.platform` (a real GIMP install only ever lives on the host
+// running it) — a hardcoded Windows-style `C:/...` literal is not absolute
+// under POSIX and would fail on a macOS CI runner.
+const gimpPathExample =
+  process.platform === 'win32'
+    ? 'C:/GIMP/bin/gimp-console-3.2.exe'
+    : '/opt/gimp/bin/gimp-console-3.2';
+
 describe('config list', () => {
   it('prints the full settings JSON', () => {
     runConfig(['list'], io());
@@ -80,6 +89,35 @@ describe('config set', () => {
     runConfig(['set', 'ps_path', '/tmp/x'], io());
     runConfig(['set', 'ps_path', ''], io());
     expect(loadSettings({ dir }).settings.ps_path).toBeNull();
+  });
+
+  it('sets gimp_path and clears it with "null" or empty string', () => {
+    runConfig(['set', 'gimp_path', gimpPathExample], io());
+    expect(loadSettings({ dir }).settings.gimp_path).toBe(gimpPathExample);
+    runConfig(['set', 'gimp_path', 'null'], io());
+    expect(loadSettings({ dir }).settings.gimp_path).toBeNull();
+  });
+
+  it('rejects a relative gimp_path value with a clear message', () => {
+    expect(() => runConfig(['set', 'gimp_path', 'gimp-console.exe'], io())).toThrow();
+    expect(err.join('')).toContain('Invalid value for gimp_path');
+    expect(err.join('')).toMatch(/absolute path/);
+    expect(loadSettings({ dir }).settings.gimp_path).toBeNull();
+  });
+
+  it('rejects a UNC gimp_path value', () => {
+    expect(() =>
+      runConfig(['set', 'gimp_path', '\\\\server\\share\\gimp-console.exe'], io())
+    ).toThrow();
+    expect(err.join('')).toMatch(/UNC|device path/);
+  });
+
+  it('sets the editor pin to a recognized value and rejects an unrecognized one', () => {
+    runConfig(['set', 'editor', 'gimp'], io());
+    expect(loadSettings({ dir }).settings.editor).toBe('gimp');
+    runConfig(['set', 'editor', 'PHOTOSHOP'], io()); // case-insensitive
+    expect(loadSettings({ dir }).settings.editor).toBe('photoshop');
+    expect(() => runConfig(['set', 'editor', 'nonsense'], io())).toThrow();
   });
 
   it('rejects a non-boolean value for a boolean key', () => {

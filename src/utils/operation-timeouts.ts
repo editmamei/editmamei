@@ -246,6 +246,43 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // one would be handed to a platform runner as a timeout. If this tool ever
   // gains a direct script, give that call an explicit timeoutMs.
   ps_sequence: Number.POSITIVE_INFINITY,
+
+  // ── gimp_* ──────────────────────────────────────────────────────────────
+  // Headroom for whichever op happens to pay the lazy session's cold start
+  // (measured live, GIMP 3.2.6: ~4-5.5s; paid once per server process, on
+  // the first gimp_* call of any kind). Most budgets below are still
+  // estimates; `gimp_resize_image` and `gimp_transform_canvas` are set from
+  // a real measurement (see tests/gimp-live's timing measurement) against a
+  // ~24MP synthetic image resized up to ~217MP — close to the bridge's own
+  // 250MP/30000px-per-side cap (`bridge/lib.py`'s MAX_RESIZE_MEGAPIXELS /
+  // MAX_RESIZE_SIDE_PX), the worst case these two tools can reach:
+  //   cold start ~5.4s + resize (24MP -> ~217MP) ~5.3s ≈ 10.7s measured
+  //   cold start ~5.4s + rotate+expand (on the ~217MP result) ~11.3s ≈ 16.7s measured
+  // Budgeted at roughly 3x the measured worst case, rounded up, to absorb a
+  // slower machine and a higher `precision` (16/32-bit moves 2-4x the bytes
+  // per pixel that measurement was taken at 8-bit). A timeout on either tool
+  // tree-kills the GIMP process (`session.ts`'s own contract) — the tool
+  // descriptions say so, since any unsaved work is lost when that happens.
+  gimp_ping: 20_000,
+  gimp_overview: 5_000, // pure static markdown, no bridge round trip — same as ps_overview
+  gimp_open_document: 30_000,
+  gimp_close_document: 15_000,
+  // Matched to gimp_export: saving a large document with live filters is no cheaper than
+  // exporting it, and a timeout here would destroy the very work the save was protecting.
+  gimp_save_xcf: 90_000,
+  gimp_export: 90_000,
+  gimp_inspect: 15_000,
+  gimp_add_adjustment: 20_000,
+  gimp_filter: 15_000,
+  gimp_crop_document: 20_000,
+  gimp_resize_image: 45_000,
+  gimp_transform_canvas: 60_000,
+  gimp_create_mask: 20_000,
+  gimp_get_preview: 30_000,
+  // exact: true renders the full-resolution composite, the same work gimp_export does, and it
+  // is the recommended final check before export.
+  gimp_get_histogram: 90_000,
+  gimp_compare: 45_000,
 };
 
 /**

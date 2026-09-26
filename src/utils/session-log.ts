@@ -64,6 +64,8 @@ export interface SessionLogMetaEntry {
   edition: string;
   platform: string;
   ps_version: string | null;
+  /** GIMP version string ("3.2.6"), once a GIMP session has reached readiness. Absent (not `null`) on a pre-GIMP schema line. */
+  gimp_version?: string | null;
   mcp_client: { name: string; version: string } | null;
 }
 
@@ -221,6 +223,35 @@ export function generateSessionId(now: Date = new Date()): string {
  * ordering was a plain slow Camera Raw open, not a modal.
  */
 export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> = [
+  // ── GIMP backend (first). Every `GimpError` message has a fixed
+  //    `<code>: ` prefix (see backends/gimp/errors.ts), but the TEXT a tool
+  //    handler actually returns wraps that with its own prefix first
+  //    (`toolGimpErrorResult`: "Error opening GIMP document: gimp_not_
+  //    installed: ..."), so the code is never at the START of the string a
+  //    session-log line records — these patterns match the code as a whole
+  //    word ANYWHERE in the text instead of anchoring on `^`. A bare
+  //    `gimp_..._..._` token is specific enough that it cannot collide with
+  //    ordinary Photoshop error prose, so it doesn't need to compete with
+  //    the generic classes below for a shared keyword like "timeout"/
+  //    "invalid" either way.
+  //    The `invalid_argument` GimpError code is deliberately NOT repeated
+  //    here — its sentences already match the generic `invalid_argument` row
+  //    below (must be / out of bounds / unsupported). `file_not_found` IS
+  //    repeated: the bridge's own message ("no file at <path>") doesn't
+  //    share vocabulary with the generic `file_not_found` row further down
+  //    (which matches Photoshop's "file not found" / "lut not found"
+  //    wording), so without a row anchored on the code itself a missing-file
+  //    open would misclassify as `other`. ────────────────────────────────
+  { errorClass: 'gimp_not_installed', pattern: /\bgimp_not_installed\b/ },
+  { errorClass: 'gimp_start_failed', pattern: /\bgimp_start_failed\b/ },
+  { errorClass: 'gimp_starting', pattern: /\bgimp_starting\b/ },
+  { errorClass: 'gimp_python_missing', pattern: /\bgimp_python_missing\b/ },
+  { errorClass: 'gimp_version_unsupported', pattern: /\bgimp_version_unsupported\b/ },
+  { errorClass: 'gimp_session_restarted', pattern: /\bgimp_session_restarted\b/ },
+  { errorClass: 'gimp_timeout', pattern: /\bgimp_timeout\b/ },
+  { errorClass: 'gimp_unsupported_file', pattern: /\bgimp_unsupported_file\b/ },
+  { errorClass: 'gimp_op_failed', pattern: /\bgimp_op_failed\b/ },
+  { errorClass: 'file_not_found', pattern: /\bfile_not_found\b/ },
   // ── Empty-envelope synthetics (must precede every cause-word class) ──────
   { errorClass: 'ps_empty_error', pattern: /returned an empty error|failed with no message/i },
   // ── Named-target-is-the-wrong-kind (hoisted for the same reason as the
@@ -625,6 +656,7 @@ export class SessionLog {
   private metaEmitted = false;
   private seq = 0;
   private psVersion: string | null = null;
+  private gimpVersion: string | null = null;
   private lastCallKey: string | null = null; // JSON(tool+args) for retry detection
   private getMcpClientFn?: () => { name: string; version: string } | null | undefined;
   // Held append-mode handle, opened lazily on the first write and reused
@@ -698,8 +730,20 @@ export class SessionLog {
     await this.emitMeta();
   }
 
+  /**
+   * Update the cached GIMP version and re-emit the meta line. Call once a
+   * GIMP session has reached readiness — the version isn't known any
+   * earlier than that (GIMP's own gate happens at first session start, not
+   * at boot-time install detection). Mirrors `setPsVersion` exactly.
+   */
+  async setGimpVersion(version: string): Promise<void> {
+    if (this.gimpVersion === version) return;
+    this.gimpVersion = version;
+    await this.emitMeta();
+  }
+
   private buildMetaEntry(): SessionLogMetaEntry {
-    return {
+    const base: SessionLogMetaEntry = {
       v: SESSION_LOG_SCHEMA_VERSION as 2,
       type: 'meta',
       ts: new Date().toISOString(),
@@ -710,6 +754,10 @@ export class SessionLog {
       ps_version: this.psVersion,
       mcp_client: this.getMcpClientFn?.() ?? null,
     };
+    // Omitted entirely (not even `null`) unless a GIMP session actually ran
+    // this session — a ps_*-only session's meta line must stay byte-for-byte
+    // what it was before gimp_version existed at all.
+    return this.gimpVersion !== null ? { ...base, gimp_version: this.gimpVersion } : base;
   }
 
   /** Write the meta line to disk. Fire-and-forget. */

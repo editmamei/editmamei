@@ -50,10 +50,10 @@ describe('READ_ONLY_TOOLS / KEPT_WORK_TOOLS', () => {
     }
   });
 
-  it('is exactly the original sixteen, six template/document additions, and two orchestration wrappers (24 total)', () => {
+  it('is exactly the original sixteen, six template/document additions, two orchestration wrappers, and six gimp_* read-only twins (30 total)', () => {
     // A size pin is deliberately brittle: it forces anyone adding an entry to
     // state why that tool does not count as an edit.
-    expect(READ_ONLY_TOOLS.size).toBe(24);
+    expect(READ_ONLY_TOOLS.size).toBe(30);
   });
 });
 
@@ -138,6 +138,12 @@ describe('classification mirror', () => {
   // automatically and the two stay in step without an edit.
   it('pins READ_ONLY_TOOLS membership (update the aggregation service when this fails)', () => {
     expect([...READ_ONLY_TOOLS].sort()).toEqual([
+      'gimp_compare',
+      'gimp_get_histogram',
+      'gimp_get_preview',
+      'gimp_inspect',
+      'gimp_overview',
+      'gimp_ping',
       'ps_batch',
       'ps_compare_regions',
       'ps_detect',
@@ -166,7 +172,12 @@ describe('classification mirror', () => {
   });
 
   it('pins KEPT_WORK_TOOLS membership (update the aggregation service when this fails)', () => {
-    expect([...KEPT_WORK_TOOLS].sort()).toEqual(['ps_export', 'ps_save_psd']);
+    expect([...KEPT_WORK_TOOLS].sort()).toEqual([
+      'gimp_export',
+      'gimp_save_xcf',
+      'ps_export',
+      'ps_save_psd',
+    ]);
   });
 });
 

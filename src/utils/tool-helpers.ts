@@ -23,6 +23,7 @@ import type { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
 import { runScript } from './run-script.js';
 import { validateArgs, type JsonSchemaObject, type JsonSchemaProperty } from './validate.js';
+import { GimpError } from '../backends/gimp/errors.js';
 
 /**
  * Appended to the error text when the message looks like Photoshop is stuck
@@ -84,6 +85,44 @@ export function toolErrorResult(prefix: string, error: unknown): ToolResult {
     ],
     isError: true,
   };
+}
+
+/**
+ * The GIMP-backend sibling of `toolErrorResult`. Same shape (one text
+ * content block, `isError: true`), but without the Photoshop pending/modal
+ * hint — a `GimpError` (session.ts / bridge/lib.py's `classify`) already
+ * carries an actionable sentence appropriate to ITS state (e.g.
+ * `gimp_session_restarted`'s "open images and unapplied work are gone —
+ * reopen the file"), so stapling on a Photoshop-shaped hint would be
+ * misleading rather than helpful. One catch-tail for every `gimp_*` handler,
+ * the same discipline `toolErrorResult` established for `ps_*`.
+ */
+export function toolGimpErrorResult(prefix: string, error: unknown): ToolResult {
+  const msg = error instanceof Error ? error.message : String(error);
+  return {
+    content: [{ type: 'text' as const, text: `${prefix}: ${msg}` }],
+    isError: true,
+  };
+}
+
+export { requireAbsoluteGimpPath } from './gimp-path.js';
+
+/**
+ * Refuses to overwrite an existing file unless `overwrite` is true — the same
+ * refusal contract every gimp_* write path (`gimp_export`/`gimp_save_xcf`)
+ * requires. `exists` is injectable so tests never touch the real filesystem.
+ */
+export function refuseExistingGimpFile(
+  path: string,
+  overwrite: boolean | undefined,
+  exists: (p: string) => boolean
+): void {
+  if (!overwrite && exists(path)) {
+    throw new GimpError(
+      'invalid_argument',
+      `"${path}" already exists — pass overwrite: true to replace it.`
+    );
+  }
 }
 
 /**

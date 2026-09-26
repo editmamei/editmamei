@@ -19,6 +19,9 @@ import {
   type SessionLogMetaEntry,
   type SessionLogCallEntry,
 } from '@editmamei/utils/session-log.ts';
+import { ToolRegistry } from '@editmamei/core/tool-registry.ts';
+import { createGimpDocumentTools } from '@editmamei/tools/gimp-document-tools.ts';
+import { makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
 
 // Wrap `open` (not the other fs/promises functions this file also uses
 // directly, like mkdtemp/readFile/rm/stat) so the "held handle" tests below
@@ -498,6 +501,97 @@ describe('classifyError', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// gimp_* error classification — through the REAL registry, not hand-written
+// strings. A tool handler's error text is never the bare GimpError message —
+// it's wrapped with the handler's own prefix first (`toolGimpErrorResult`,
+// e.g. "Error opening GIMP document: gimp_not_installed: ..."), so the only
+// trustworthy way to pin the classifier against it is to actually produce
+// that text through `ToolRegistry.execute()` the same way a real dispatch
+// would, then classify exactly what a call's `onCall` observer receives.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('gimp_* error classification, produced through the real registry', () => {
+  // `gimp_open_document`'s handler calls `requireAbsoluteGimpPath` with no
+  // explicit `platform` (it defaults to `process.platform`, same as every
+  // other gimp_* handler — a real GIMP session only ever runs on the host it
+  // started on). A hardcoded Windows-style `C:/...` literal is NOT absolute
+  // under POSIX, so it would fail that check before ever reaching the fake's
+  // `throwFor` on a macOS CI runner, capturing the wrong error entirely.
+  const OPEN_FILE_PATH = process.platform === 'win32' ? 'C:/photo.jpg' : '/photo.jpg';
+
+  /** Dispatches one gimp_open_document call through a real ToolRegistry and returns the error text the onCall observer saw (or undefined on success). */
+  async function dispatchAndCaptureError(thrown: Error): Promise<string | undefined> {
+    const gimp = makeGimpBackend({ throwFor: () => thrown });
+    let captured: string | undefined;
+    const registry = new ToolRegistry({
+      onCall: (entry) => {
+        captured = entry.error;
+      },
+    });
+    registry.registerAll(createGimpDocumentTools(gimp.asBackend()));
+    await registry.execute('gimp_open_document', { file_path: OPEN_FILE_PATH });
+    return captured;
+  }
+
+  const CASES: Array<[string, string]> = [
+    ['gimp_not_installed: no GIMP install was found on this machine.', 'gimp_not_installed'],
+    ['gimp_start_failed: could not start GIMP at "gimp-console.exe": ENOENT', 'gimp_start_failed'],
+    [
+      'gimp_starting: GIMP is still starting. Call gimp_ping again in about 30 seconds.',
+      'gimp_starting',
+    ],
+    ['gimp_python_missing: this GIMP install has no Python support', 'gimp_python_missing'],
+    [
+      'gimp_version_unsupported: Editmamei needs GIMP 3.2 or newer; found 3.0.0',
+      'gimp_version_unsupported',
+    ],
+    [
+      'gimp_session_restarted: GIMP stopped; open images and unapplied work are gone — reopen the file',
+      'gimp_session_restarted',
+    ],
+    ['gimp_timeout: open did not respond within 30000ms', 'gimp_timeout'],
+    [
+      'gimp_unsupported_file: GIMP could not open this .dng file (no raw loader)',
+      'gimp_unsupported_file',
+    ],
+    ['gimp_op_failed: open failed', 'gimp_op_failed'],
+    ['file_not_found: no file at /tmp/missing.jpg', 'file_not_found'],
+  ];
+
+  for (const [message, expectedClass] of CASES) {
+    it(`"${message}" (real tool result text) classifies as ${expectedClass}`, async () => {
+      const captured = await dispatchAndCaptureError(new Error(message));
+      expect(captured, 'onCall observer captured no error text').toBeDefined();
+      // The handler's own prefix rides ahead of the code in the real text —
+      // this is exactly the bug the anchored `^code:` patterns had.
+      expect(captured).toMatch(/^Error opening GIMP document: /);
+      expect(classifyError(captured)).toBe(expectedClass);
+    });
+  }
+
+  it('the invalid_argument GimpError code is NOT given its own row — it already matches the generic invalid_argument class through the real text', async () => {
+    const captured = await dispatchAndCaptureError(
+      new Error('invalid_argument: "file_path" must be an absolute path, got "x.jpg"')
+    );
+    expect(classifyError(captured)).toBe('invalid_argument');
+  });
+
+  it('the new gimp_* rows do not shadow existing ps_* classifications (a representative sample, unaffected by table order)', () => {
+    const psSamples: Array<[string, string]> = [
+      ['Layer not found: Curves 1', 'layer_not_found'],
+      ['No active document', 'no_document'],
+      ['Photoshop is not running', 'ps_not_running'],
+      ['Script execution timeout exceeded', 'timeout'],
+      ['Unknown adjustment type: vibrancy', 'invalid_argument'],
+      ['Content-Aware Fill requires an active selection. Make a selection first.', 'no_selection'],
+    ];
+    for (const [message, expectedClass] of psSamples) {
+      expect(classifyError(message), message).toBe(expectedClass);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // redactHomedirIn
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -920,6 +1014,47 @@ describe('SessionLog', () => {
 
     const metas = await readMetaLines(log.path);
     expect(metas).toHaveLength(2); // initial + one re-emit (not two)
+  });
+
+  it("gimp_version is OMITTED entirely (not `null`) from a ps_*-only session's meta line — byte-for-byte unchanged from before gimp_version existed", async () => {
+    const log = new SessionLog('no-gimp', { dir });
+    await log.append({ tool: 'ps_ping', args: {}, success: true, duration_ms: 1 });
+
+    const [meta] = await readMetaLines(log.path);
+    expect(Object.hasOwn(meta, 'gimp_version')).toBe(false);
+  });
+
+  it('setGimpVersion re-emits meta with the new gimp_version, once a GIMP session actually ran', async () => {
+    const log = new SessionLog('gimp-ver', { dir });
+    await log.append({ tool: 'gimp_ping', args: {}, success: true, duration_ms: 1 });
+    await log.setGimpVersion('3.2.6');
+
+    const metas = await readMetaLines(log.path);
+    expect(metas).toHaveLength(2);
+    expect(Object.hasOwn(metas[0], 'gimp_version')).toBe(false); // before setGimpVersion
+    expect(metas[1].gimp_version).toBe('3.2.6'); // after
+  });
+
+  it('setGimpVersion is a no-op when called with the same version', async () => {
+    const log = new SessionLog('gimp-ver-noop', { dir });
+    await log.append({ tool: 'gimp_ping', args: {}, success: true, duration_ms: 1 });
+    await log.setGimpVersion('3.2.6');
+    await log.setGimpVersion('3.2.6'); // second call — same version
+
+    const metas = await readMetaLines(log.path);
+    expect(metas).toHaveLength(2); // initial + one re-emit (not two)
+  });
+
+  it('setGimpVersion and setPsVersion compose — a session that used BOTH editors carries both fields', async () => {
+    const log = new SessionLog('both-editors', { dir });
+    await log.append({ tool: 'ps_ping', args: {}, success: true, duration_ms: 1 });
+    await log.setPsVersion('27.7.0');
+    await log.setGimpVersion('3.2.6');
+
+    const metas = await readMetaLines(log.path);
+    const last = metas.at(-1)!;
+    expect(last.ps_version).toBe('27.7.0');
+    expect(last.gimp_version).toBe('3.2.6');
   });
 
   // ──────────────────────────────────────────────────────────────────────────

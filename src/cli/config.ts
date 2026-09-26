@@ -6,6 +6,8 @@
  *   editmamei config list
  *   editmamei config get telemetry.usage
  *   editmamei config set telemetry.usage false
+ *   editmamei config set editor gimp
+ *   editmamei config set gimp_path "C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe"
  */
 
 import {
@@ -14,6 +16,7 @@ import {
   type Settings,
   type LoadSettingsOptions,
 } from '../core/settings.js';
+import { requireAbsoluteGimpPath } from '../utils/tool-helpers.js';
 
 export interface ConfigIo {
   out?: (s: string) => void;
@@ -39,6 +42,28 @@ function coerceBool(raw: string): boolean {
 function coercePath(raw: string): string | null {
   const v = raw.trim();
   return v === '' || v.toLowerCase() === 'null' ? null : v;
+}
+
+/**
+ * Same shape as `coercePath` (empty / "null" unsets), but a non-empty value
+ * must actually be usable by `GimpBackend` — the same absolute-local-path
+ * rules `requireAbsoluteGimpPath` enforces on every gimp_* tool's file
+ * arguments (no UNC/device paths, a drive letter on Windows, a stable
+ * resolved root). Rejecting a bad value HERE, at `config set` time, is a
+ * much better failure than discovering it later as every gimp_* call's
+ * `gimp_not_installed`/`gimp_start_failed` error.
+ */
+function coerceGimpPath(raw: string): string | null {
+  const v = raw.trim();
+  if (v === '' || v.toLowerCase() === 'null') return null;
+  requireAbsoluteGimpPath('gimp_path', v);
+  return v;
+}
+
+function coerceEditorPin(raw: string): 'auto' | 'photoshop' | 'gimp' {
+  const v = raw.trim().toLowerCase();
+  if (v === 'auto' || v === 'photoshop' || v === 'gimp') return v;
+  throw new Error(`expected one of auto|photoshop|gimp, got "${raw}"`);
 }
 
 /** The settable / readable surface. Dotted keys map to the nested settings shape. */
@@ -81,6 +106,20 @@ const KEYS: Record<string, KeySpec> = {
       s.update_check = v as boolean;
     },
     coerce: coerceBool,
+  },
+  editor: {
+    get: (s) => s.editor,
+    set: (s, v) => {
+      s.editor = v as Settings['editor'];
+    },
+    coerce: coerceEditorPin,
+  },
+  gimp_path: {
+    get: (s) => s.gimp_path,
+    set: (s, v) => {
+      s.gimp_path = v as string | null;
+    },
+    coerce: coerceGimpPath,
   },
 };
 

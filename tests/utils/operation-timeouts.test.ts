@@ -107,3 +107,19 @@ describe('getToolTimeoutMs — Object.prototype collision', () => {
     }
   });
 });
+
+/**
+ * A GIMP op that outlives its budget is tree-killed with the session, losing every open image.
+ * The save meant to protect the work, and the full-resolution histogram the overview recommends
+ * as the last check before export, do the same full-resolution work as gimp_export, so neither
+ * may get less time than it.
+ */
+describe('TOOL_TIMEOUT_BUDGETS_MS — GIMP full-resolution work', () => {
+  it('gimp_save_xcf and gimp_get_histogram get at least gimp_export budget', async () => {
+    vi.resetModules();
+    const { TOOL_TIMEOUT_BUDGETS_MS } = await import('@editmamei/utils/operation-timeouts.ts');
+    const exportBudget = TOOL_TIMEOUT_BUDGETS_MS['gimp_export']!;
+    expect(TOOL_TIMEOUT_BUDGETS_MS['gimp_save_xcf']).toBeGreaterThanOrEqual(exportBudget);
+    expect(TOOL_TIMEOUT_BUDGETS_MS['gimp_get_histogram']).toBeGreaterThanOrEqual(exportBudget);
+  });
+});

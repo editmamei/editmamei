@@ -167,6 +167,53 @@ describe('collectDiagnostics — privacy contract', () => {
     expect(bundle.note).not.toContain(SECRET_PATH_SEGMENT);
   });
 
+  it('gimp_version is null when no session meta line ever carried one (a ps_*-only session)', async () => {
+    const bundle = await collectDiagnostics({ homeDir: emHome, desktopLogDir });
+    expect(bundle.gimp_version).toBeNull();
+  });
+
+  it('recovers gimp_version from a session meta line that carried one', async () => {
+    const gimpMeta = {
+      v: 2,
+      type: 'meta',
+      ts: '2026-06-28T18:00:00.000Z',
+      session_id: 'sess2',
+      editmamei_version: '0.20.0',
+      edition: 'community',
+      platform: 'win32',
+      ps_version: null,
+      gimp_version: '3.2.6',
+      mcp_client: { name: 'claude-ai', version: '0.1.0' },
+    };
+    const gimpCall = {
+      v: 2,
+      type: 'call',
+      ts: '2026-06-28T18:00:01.000Z',
+      session_id: 'sess2',
+      seq: 1,
+      tool: 'gimp_ping',
+      args: {},
+      success: true,
+      duration_ms: 5,
+      editmamei_version: '0.20.0',
+      edition: 'community',
+      platform: 'win32',
+      ps_version: null,
+      result_bytes: 10,
+      retry_signal: false,
+    };
+    // A NEWER session than sess1 (later in listRecentSessionIds' ordering) —
+    // written to its own file so both are picked up as recent sessions.
+    writeFileSync(
+      join(sessionsDir, 'sess2.ndjson'),
+      [gimpMeta, gimpCall].map((o) => JSON.stringify(o)).join('\n') + '\n',
+      'utf8'
+    );
+
+    const bundle = await collectDiagnostics({ homeDir: emHome, desktopLogDir });
+    expect(bundle.gimp_version).toBe('3.2.6');
+  });
+
   it('degrades cleanly when there are no sessions and no Desktop log', async () => {
     const emptyHome = join(work, 'empty-home');
     const bundle = await collectDiagnostics({
@@ -177,6 +224,7 @@ describe('collectDiagnostics — privacy contract', () => {
     expect(bundle.recent_sessions).toEqual([]);
     expect(bundle.desktop_log).toEqual([]);
     expect(bundle.desktop_log_source).toBeNull();
+    expect(bundle.gimp_version).toBeNull();
   });
 });
 

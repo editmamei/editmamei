@@ -21,6 +21,8 @@ function makeSettings(over: Partial<Settings['telemetry']> = {}): Settings {
     privacy: { send_previews_to_llm: true },
     ps_path: null,
     update_check: true,
+    editor: 'auto',
+    gimp_path: null,
   };
 }
 
