@@ -1,12 +1,13 @@
 /**
  * Per-tool activity classification: which successful calls count as an edit, which count as
  * kept work, and which are neither. The telemetry client uses it for `edits_ok` / `kept_work`
- * in the session summary (`src/telemetry/activity.ts` re-exports it), and the host uses
- * `RAW_DEVELOP_TOOL` to track raw-develop state (`src/core/server.ts`).
+ * in the session summary (`src/telemetry/activity.ts` re-exports it), and CE code that needs to
+ * name one of those tools imports it from here: `RAW_DEVELOP_TOOL` and `CAMERA_RAW_TOOL` for the
+ * host's raw-develop tracking (`src/core/server.ts`) and its advisory text.
  *
  * It lives in `core/`, beside `tool-tiers.ts` and `tool-groups.ts`, because it is the same kind
- * of table: an inventory that names every tool, Pro tools included, by construction. The CE
- * build's Pro-name scan (`tests/integration/build-output.test.ts`) exempts these inventory
+ * of table: an inventory that names every tool, Pro tools included, by construction. The
+ * Pro-name scans (the allowlist in `tests/helpers/pro-name-allowlist.ts`) exempt these inventory
  * files wholesale; anywhere else in the CE build, a Pro tool name as a string literal is a
  * leak. Keep Pro names out of every other CE-shipped file by importing from here.
  *

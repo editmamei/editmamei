@@ -29,10 +29,9 @@
  *    lookup. The reference is harmless — it doesn't register a tool or carry an implementation.
  *  - `tools/scene-tools.js` — the CE Scene tools (ps_read_scene / select_by_reference)
  *    reference the Pro tool names `ps_select_subject_instance` and `ps_select_face_feature` as
- *    host.invokeTool DELEGATION targets: when the host is Pro-entitled the CE Scene flow routes
- *    through those Pro tools, else it uses a CE fallback (the CE-loads-Pro-module broker
- *    pattern, scene-model-v2). Those are name strings for runtime delegation, NOT Pro
- *    implementation — the Pro source stays in the pruned `*-pro.js` files.
+ *    host.invokeTool DELEGATION targets: the CE Scene flow routes through those tools when they
+ *    are registered, else it uses a CE fallback. Those are name strings for runtime
+ *    delegation, not implementation — the implementations stay in the pruned `*-pro.js` files.
  *  - `perception/grounding-locate.js` + `tools/{brush,image,layer-transform,selection,shape}-
  *    tools.js` — these carry `'ps_resolve_placement'` in their `placement`-param DESCRIPTIONS:
  *    a delegation/vocabulary REFERENCE, not an implementation. The locator TOOL is Pro (its
@@ -91,4 +90,19 @@ export function isPrunedFromCE(rel: string): boolean {
  */
 export function proNameLiteralsIn(contents: string, names: readonly string[]): string[] {
   return names.filter((name) => contents.includes(`'${name}'`) || contents.includes(`"${name}"`));
+}
+
+/**
+ * The names in `names` that appear anywhere in a line of CODE (comment lines skipped, and a
+ * trailing ` // ...` comment cut off), as a whole identifier. This catches what the exact-
+ * literal check above cannot: a name inside a longer string (`'consider ps_x first'`), a
+ * template literal, or a concatenation. Comments are skipped because the build strips them.
+ */
+export function proNamesInCodeLines(contents: string, names: readonly string[]): string[] {
+  const code = contents
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .map((line) => line.replace(/\s\/\/\s.*$/, ''))
+    .join('\n');
+  return names.filter((name) => new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`).test(code));
 }

@@ -14,6 +14,7 @@ import {
   isProNameAllowed,
   isPrunedFromCE,
   proNameLiteralsIn,
+  proNamesInCodeLines,
 } from '../helpers/pro-name-allowlist.ts';
 
 const SRC = resolve(import.meta.dirname, '..', '..', 'src');
@@ -29,8 +30,17 @@ function walk(root: string, prefix = ''): string[] {
   return out;
 }
 
+/** Every CE-shipped source file, relative to src/. */
+function ceShippedSources(): string[] {
+  return walk(SRC).filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts') && !isPrunedFromCE(f));
+}
+
+it('there are Pro tool names to scan for', () => {
+  expect(PRO_TOOL_NAMES.length).toBeGreaterThan(0);
+});
+
 describe('Pro-name scan helpers', () => {
-  const pro = PRO_TOOL_NAMES[0];
+  const pro = PRO_TOOL_NAMES[0] ?? 'ps_placeholder_tool';
 
   it('finds a quoted Pro name, but not a longer name or a doc-comment code span', () => {
     expect(proNameLiteralsIn(`x === '${pro}'`, [pro])).toEqual([pro]);
@@ -38,6 +48,20 @@ describe('Pro-name scan helpers', () => {
     expect(proNameLiteralsIn(`x === '${pro}_v2'`, [pro])).toEqual([]);
     expect(proNameLiteralsIn(`// mentions ${pro} in prose only`, [pro])).toEqual([]);
     expect(proNameLiteralsIn('/** see `' + pro + '` */', [pro])).toEqual([]);
+  });
+
+  it('the code-line check finds a name inside a longer string, a template, or a call', () => {
+    expect(proNamesInCodeLines(`const s = 'consider ${pro} first';`, [pro])).toEqual([pro]);
+    expect(proNamesInCodeLines('const s = `use ' + pro + ' now`;', [pro])).toEqual([pro]);
+    expect(proNamesInCodeLines(`f(${pro});`, [pro])).toEqual([pro]);
+  });
+
+  it('the code-line check skips comments and longer identifiers', () => {
+    expect(proNamesInCodeLines(`// ${pro} is described here`, [pro])).toEqual([]);
+    expect(proNamesInCodeLines(` * see ${pro}`, [pro])).toEqual([]);
+    expect(proNamesInCodeLines(`/* ${pro} */`, [pro])).toEqual([]);
+    expect(proNamesInCodeLines(`call(); // ${pro} trailing note`, [pro])).toEqual([]);
+    expect(proNamesInCodeLines(`const s = '${pro}_v2';`, [pro])).toEqual([]);
   });
 
   it('exempts the inventory files wholesale and spec/ metadata', () => {
@@ -73,27 +97,36 @@ describe('Pro-name scan helpers', () => {
 });
 
 describe('Pro tool names in CE source', () => {
-  it('the scan has something to check', () => {
-    expect(PRO_TOOL_NAMES.length).toBeGreaterThan(0);
+  it('the scan reads real files, and finds the names the inventory legitimately holds', () => {
+    // Positive control: without it, a broken walk or filter would scan nothing and pass.
+    const files = ceShippedSources();
+    expect(files.length).toBeGreaterThan(100);
+    expect(files).toContain('core/tool-activity.ts');
+    const inventory = readFileSync(join(SRC, 'core', 'tool-activity.ts'), 'utf8');
+    const found = proNameLiteralsIn(inventory, PRO_TOOL_NAMES);
+    expect(found.length).toBeGreaterThan(0);
+    expect(proNamesInCodeLines(inventory, PRO_TOOL_NAMES).length).toBeGreaterThan(0);
+    expect(found.every((name) => isProNameAllowed('core/tool-activity.js', name))).toBe(true);
   });
 
-  it('no Pro tool name appears as a string literal in CE-shipped source outside the allowlist', () => {
-    const files = walk(SRC).filter(
-      (f) => f.endsWith('.ts') && !f.endsWith('.d.ts') && !isPrunedFromCE(f)
-    );
+  it('no Pro tool name appears anywhere in CE-shipped code outside the allowlist', () => {
     const leaks: string[] = [];
-    for (const rel of files) {
+    for (const rel of ceShippedSources()) {
       const distRel = rel.replace(/\.ts$/, '.js');
-      const found = proNameLiteralsIn(readFileSync(join(SRC, rel), 'utf8'), PRO_TOOL_NAMES);
+      const contents = readFileSync(join(SRC, rel), 'utf8');
+      const found = new Set([
+        ...proNameLiteralsIn(contents, PRO_TOOL_NAMES),
+        ...proNamesInCodeLines(contents, PRO_TOOL_NAMES),
+      ]);
       for (const name of found) {
         if (!isProNameAllowed(distRel, name)) leaks.push(`  src/${rel}: ${name}`);
       }
     }
     expect(
       leaks,
-      'Pro tool name string literals in CE-shipped source (they ship in the CE build; import ' +
-        'the name from an inventory file such as core/tool-activity.ts, or add a scoped ' +
-        'exemption in tests/helpers/pro-name-allowlist.ts with its reason):\n' +
+      'Pro tool names in CE-shipped code (they ship in the CE build; import the name from an ' +
+        'inventory file such as core/tool-activity.ts, or add a scoped exemption in ' +
+        'tests/helpers/pro-name-allowlist.ts with its reason):\n' +
         leaks.join('\n')
     ).toEqual([]);
   });
