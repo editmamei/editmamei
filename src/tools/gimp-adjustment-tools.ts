@@ -22,7 +22,7 @@ import { GIMP_IMAGE_PROP, GIMP_LAYER_PROP, pickSchemaDeclaredKeys } from './gimp
  * `exposure`, `validateArgs` would silently inject that value into every
  * re-edit call that omits it — indistinguishable, bridge-side, from the
  * caller explicitly asking to RESET exposure to 0. That would defeat the
- * one behavior the plan calls out as load-bearing. So per-type numeric
+ * merge-not-reset behavior a re-edit depends on. So per-type numeric
  * fields intentionally omit `default:` here (the create-time default is
  * documented in each field's own description instead) — the one deliberate
  * exception to the "always declare default" convention in `tool-surface.md`,

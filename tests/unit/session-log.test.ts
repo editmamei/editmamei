@@ -511,6 +511,14 @@ describe('classifyError', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('gimp_* error classification, produced through the real registry', () => {
+  // `gimp_open_document`'s handler calls `requireAbsoluteGimpPath` with no
+  // explicit `platform` (it defaults to `process.platform`, same as every
+  // other gimp_* handler — a real GIMP session only ever runs on the host it
+  // started on). A hardcoded Windows-style `C:/...` literal is NOT absolute
+  // under POSIX, so it would fail that check before ever reaching the fake's
+  // `throwFor` on a macOS CI runner, capturing the wrong error entirely.
+  const OPEN_FILE_PATH = process.platform === 'win32' ? 'C:/photo.jpg' : '/photo.jpg';
+
   /** Dispatches one gimp_open_document call through a real ToolRegistry and returns the error text the onCall observer saw (or undefined on success). */
   async function dispatchAndCaptureError(thrown: Error): Promise<string | undefined> {
     const gimp = makeGimpBackend({ throwFor: () => thrown });
@@ -521,7 +529,7 @@ describe('gimp_* error classification, produced through the real registry', () =
       },
     });
     registry.registerAll(createGimpDocumentTools(gimp.asBackend()));
-    await registry.execute('gimp_open_document', { file_path: 'C:/photo.jpg' });
+    await registry.execute('gimp_open_document', { file_path: OPEN_FILE_PATH });
     return captured;
   }
 

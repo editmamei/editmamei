@@ -62,6 +62,7 @@ async function gimpGetPreview(
 ): Promise<ToolResult> {
   try {
     const args = validateArgs(previewSchema, rawArgs);
+    await gimp.prepare(); // a late-found install must be in place before the path helper runs
     const outPath = gimp.latestPreviewPath(); // the session's own well-known path — never caller-supplied
     const result = await gimp.call<{ width: number; height: number; proxy: boolean }>('preview', {
       image: args.image,
@@ -235,6 +236,7 @@ async function gimpCompare(
     }
 
     const wantsPreviews = Boolean(args.include_previews) && previewsAllowedFn();
+    if (wantsPreviews) await gimp.prepare();
     const beforePath = wantsPreviews
       ? gimp.tempPath(`compare-before-${randomUUID()}.jpg`)
       : undefined;

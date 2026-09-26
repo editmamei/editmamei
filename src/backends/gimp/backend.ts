@@ -12,7 +12,7 @@
  */
 
 import { GimpSession, type GimpSessionOptions } from './session.js';
-import type { GimpInstall } from './detect.js';
+import { detectGimp, type GimpInstall } from './detect.js';
 import { GimpError } from './errors.js';
 import { currentToolBudget } from '../../utils/tool-budget-context.js';
 
@@ -21,12 +21,31 @@ export interface GimpBackendOptions {
   sessionFactory?: (opts: GimpSessionOptions) => GimpSession;
   /** Extra `GimpSessionOptions` passed straight through (rootDir/spawn/clock/etc.) — tests only. */
   sessionOptions?: Omit<GimpSessionOptions, 'install'>;
+  /**
+   * True when boot's `detectEditors()` probe hit its time box rather than
+   * genuinely finding nothing, on a boot pinned to 'gimp' (the one case that
+   * registers gimp_* tools with a `null` install — see `resolveEditorRegistration`).
+   * A rushed 750ms probe timing out is not the same fact as "no GIMP on this
+   * machine", so a `null` install paired with this flag gets ONE unhurried
+   * `detectGimp()` retry on first use instead of being treated as permanent.
+   */
+  gimpDetectionTimedOut?: boolean;
+  /** Injected for tests — re-runs detection after a boot timeout. Defaults to the real `detectGimp`. */
+  detectGimpFn?: () => Promise<GimpInstall | null>;
 }
 
 export class GimpBackend {
-  private readonly installInfo: GimpInstall | null;
+  private installInfo: GimpInstall | null;
   private readonly sessionFactory: (opts: GimpSessionOptions) => GimpSession;
   private readonly sessionOptions: Omit<GimpSessionOptions, 'install'>;
+  private readonly detectGimpFn: () => Promise<GimpInstall | null>;
+  /**
+   * True until the one post-boot-timeout redetect has been attempted (win or
+   * lose). Never re-armed — a genuine second miss after an unhurried,
+   * non-time-boxed search is a real answer, not a rushed one, so it's safe to
+   * report `gimp_not_installed` from then on without retrying every call.
+   */
+  private redetectPending: boolean;
   private session: GimpSession | undefined;
   /**
    * Set once `shutdown()` has been called, even if no session was ever
@@ -41,9 +60,11 @@ export class GimpBackend {
     this.installInfo = install;
     this.sessionFactory = opts.sessionFactory ?? ((o) => new GimpSession(o));
     this.sessionOptions = opts.sessionOptions ?? {};
+    this.detectGimpFn = opts.detectGimpFn ?? (() => detectGimp());
+    this.redetectPending = opts.gimpDetectionTimedOut === true && install === null;
   }
 
-  /** Whether a GIMP install was actually resolved (vs. registered anyway — the boot-timeout case). */
+  /** Whether a GIMP install was actually resolved (vs. registered anyway — a 'gimp' pin with none found, even after the post-timeout redetect). */
   get installed(): boolean {
     return this.installInfo !== null;
   }
@@ -71,10 +92,11 @@ export class GimpBackend {
     }
     if (!this.installInfo) {
       // The registration matrix can register gimp_* tools with NO resolved
-      // install (a boot-timeout treated as "register both", or an
-      // `EDITMAMEI_EDITOR=gimp` pin on a machine with no GIMP) — every call
-      // fails with this one clear, actionable error instead of the surface
-      // silently not existing.
+      // install (an `EDITMAMEI_EDITOR=gimp` pin on a machine with no GIMP, or
+      // one where boot's time-boxed probe hadn't found it yet — see
+      // `maybeRedetect`, already attempted by the time `call()` reaches
+      // here) — every call fails with this one clear, actionable error
+      // instead of the surface silently not existing.
       throw new GimpError(
         'gimp_not_installed',
         'no GIMP install was found on this machine. Install GIMP 3.2 or newer, or point at a ' +
@@ -86,6 +108,20 @@ export class GimpBackend {
       this.session = this.sessionFactory({ install: this.installInfo, ...this.sessionOptions });
     }
     return this.session;
+  }
+
+  /**
+   * Runs the one post-boot-timeout `detectGimp()` retry, if one is still
+   * owed (see `redetectPending`'s doc comment). A no-op on every other call —
+   * both the already-resolved case and the already-attempted case return
+   * immediately without touching the filesystem again.
+   */
+  private async maybeRedetect(): Promise<void> {
+    if (!this.redetectPending) return;
+    this.redetectPending = false;
+    if (this.installInfo !== null) return;
+    const found = await this.detectGimpFn();
+    if (found) this.installInfo = found;
   }
 
   /**
@@ -101,6 +137,7 @@ export class GimpBackend {
     args: Record<string, unknown> = {},
     timeoutMs?: number
   ): Promise<T> {
+    await this.maybeRedetect();
     let effectiveTimeoutMs = timeoutMs;
     if (effectiveTimeoutMs === undefined) {
       const budget = currentToolBudget();
@@ -116,6 +153,15 @@ export class GimpBackend {
       }
     }
     return this.ensureSession().call<T>(op, args, { timeoutMs: effectiveTimeoutMs });
+  }
+
+  /**
+   * Runs any detection retry the boot-time time box left owed, so the synchronous path helpers
+   * below see an install found late. `call()` does this itself; a handler that needs a session
+   * path BEFORE its first `call()` awaits this first.
+   */
+  async prepare(): Promise<void> {
+    await this.maybeRedetect();
   }
 
   /** `<session root>/latest-preview.jpg` — the session's own helper; never build this path yourself. */

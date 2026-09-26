@@ -17,6 +17,20 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 const scratchDir = mkdtempSync(join(tmpdir(), 'gimp-document-tools-test-'));
 afterAll(() => rmSync(scratchDir, { recursive: true, force: true }));
 
+/**
+ * `requireAbsoluteGimpPath` (the tool layer's absolute-path gate every
+ * gimp_* handler calls) defaults to `process.platform` when the handler
+ * doesn't pass one explicitly — a real GIMP session only ever runs on the
+ * host it started on, so there's no `platform` param to inject through a
+ * tool schema the way `tool-helpers.test.ts` can inject it directly. These
+ * tests exercise that gate through the real tool handlers, so every example
+ * path must be absolute on WHATEVER platform the suite is actually running
+ * on — a hardcoded Windows-style `C:/...` literal is not absolute under
+ * POSIX and fails every one of these on a macOS CI runner.
+ */
+const absPath = (suffix: string): string =>
+  process.platform === 'win32' ? `C:/${suffix}` : `/${suffix}`;
+
 describe('createGimpDocumentTools', () => {
   it('returns 4 well-formed tools with these names', () => {
     const gimp = makeGimpBackend();
@@ -62,12 +76,12 @@ describe('createGimpDocumentTools', () => {
       });
       const tools = createGimpDocumentTools(gimp.asBackend());
       const result = await callTool(tools, 'gimp_open_document', {
-        file_path: 'C:/photos/dog.jpg',
+        file_path: absPath('photos/dog.jpg'),
         precision: '16',
       });
       expect(gimp.lastCall()).toEqual({
         op: 'open',
-        args: { path: 'C:/photos/dog.jpg', precision: '16' },
+        args: { path: absPath('photos/dog.jpg'), precision: '16' },
       });
       expect(result.isError).toBeFalsy();
       expect(result.structuredContent).toMatchObject({ image: 7, width: 800, height: 600 });
@@ -80,7 +94,7 @@ describe('createGimpDocumentTools', () => {
       });
       const tools = createGimpDocumentTools(gimp.asBackend());
       const result = await callTool(tools, 'gimp_open_document', {
-        file_path: 'C:/photos/raw.dng',
+        file_path: absPath('photos/raw.dng'),
       });
       expect(result.isError).toBe(true);
       expect((result.content?.[0] as { text: string }).text).toContain('gimp_unsupported_file');
@@ -109,9 +123,9 @@ describe('createGimpDocumentTools', () => {
     it('requires image and file_path', async () => {
       const gimp = makeGimpBackend();
       const tools = createGimpDocumentTools(gimp.asBackend());
-      expect((await callTool(tools, 'gimp_save_xcf', { file_path: 'C:/out.xcf' })).isError).toBe(
-        true
-      );
+      expect(
+        (await callTool(tools, 'gimp_save_xcf', { file_path: absPath('out.xcf') })).isError
+      ).toBe(true);
       expect((await callTool(tools, 'gimp_save_xcf', { image: 1 })).isError).toBe(true);
       expect(gimp.calls).toHaveLength(0);
     });
@@ -119,18 +133,27 @@ describe('createGimpDocumentTools', () => {
     it('rejects a non-.xcf extension', async () => {
       const gimp = makeGimpBackend();
       const tools = createGimpDocumentTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_save_xcf', { image: 1, file_path: 'C:/out.psd' });
+      const result = await callTool(tools, 'gimp_save_xcf', {
+        image: 1,
+        file_path: absPath('out.psd'),
+      });
       expect(result.isError).toBe(true);
       expect((result.content?.[0] as { text: string }).text).toMatch(/\.xcf/);
       expect(gimp.calls).toHaveLength(0);
     });
 
     it("dispatches op 'export' with the .xcf path", async () => {
-      const gimp = makeGimpBackend({ result: { path: 'C:/out.xcf', bytes: 1234 } });
+      const gimp = makeGimpBackend({ result: { path: absPath('out.xcf'), bytes: 1234 } });
       const tools = createGimpDocumentTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_save_xcf', { image: 1, file_path: 'C:/out.xcf' });
-      expect(gimp.lastCall()).toEqual({ op: 'export', args: { image: 1, path: 'C:/out.xcf' } });
-      expect(result.structuredContent).toEqual({ path: 'C:/out.xcf', bytes: 1234 });
+      const result = await callTool(tools, 'gimp_save_xcf', {
+        image: 1,
+        file_path: absPath('out.xcf'),
+      });
+      expect(gimp.lastCall()).toEqual({
+        op: 'export',
+        args: { image: 1, path: absPath('out.xcf') },
+      });
+      expect(result.structuredContent).toEqual({ path: absPath('out.xcf'), bytes: 1234 });
     });
 
     it('refuses to overwrite an existing file unless overwrite: true', async () => {
@@ -163,7 +186,7 @@ describe('createGimpDocumentTools', () => {
     it('requires image (file_path given alone)', async () => {
       const gimp = makeGimpBackend();
       const tools = createGimpDocumentTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_export', { file_path: 'C:/out.jpg' });
+      const result = await callTool(tools, 'gimp_export', { file_path: absPath('out.jpg') });
       expect(result.isError).toBe(true);
       expect(gimp.calls).toHaveLength(0);
     });
@@ -171,70 +194,73 @@ describe('createGimpDocumentTools', () => {
     it("refuses a .xcf file_path (that is gimp_save_xcf's job)", async () => {
       const gimp = makeGimpBackend();
       const tools = createGimpDocumentTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_export', { image: 1, file_path: 'C:/out.xcf' });
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('out.xcf'),
+      });
       expect(result.isError).toBe(true);
       expect((result.content?.[0] as { text: string }).text).toMatch(/gimp_save_xcf/);
       expect(gimp.calls).toHaveLength(0);
     });
 
     it('forwards only jpeg-relevant options for a .jpg path', async () => {
-      const gimp = makeGimpBackend({ result: { path: 'C:/out.jpg', bytes: 500 } });
+      const gimp = makeGimpBackend({ result: { path: absPath('out.jpg'), bytes: 500 } });
       const tools = createGimpDocumentTools(gimp.asBackend());
       await callTool(tools, 'gimp_export', {
         image: 1,
-        file_path: 'C:/out.jpg',
+        file_path: absPath('out.jpg'),
         quality: 80,
         png_compression: 9, // should be dropped — irrelevant to jpeg
       });
       expect(gimp.lastCall()).toEqual({
         op: 'export',
-        args: { image: 1, path: 'C:/out.jpg', quality: 80 },
+        args: { image: 1, path: absPath('out.jpg'), quality: 80 },
       });
     });
 
     it('forwards only png-relevant options (compression + bit_depth) for a .png path', async () => {
-      const gimp = makeGimpBackend({ result: { path: 'C:/out.png', bytes: 500 } });
+      const gimp = makeGimpBackend({ result: { path: absPath('out.png'), bytes: 500 } });
       const tools = createGimpDocumentTools(gimp.asBackend());
       await callTool(tools, 'gimp_export', {
         image: 1,
-        file_path: 'C:/out.png',
+        file_path: absPath('out.png'),
         png_compression: 5,
         bit_depth: 16,
         quality: 50, // irrelevant to png — should be dropped
       });
       expect(gimp.lastCall()).toEqual({
         op: 'export',
-        args: { image: 1, path: 'C:/out.png', compression: 5, bit_depth: 16 },
+        args: { image: 1, path: absPath('out.png'), compression: 5, bit_depth: 16 },
       });
     });
 
     it('forwards only tiff-relevant options (compression enum + bit_depth) for a .tif path', async () => {
-      const gimp = makeGimpBackend({ result: { path: 'C:/out.tif', bytes: 500 } });
+      const gimp = makeGimpBackend({ result: { path: absPath('out.tif'), bytes: 500 } });
       const tools = createGimpDocumentTools(gimp.asBackend());
       await callTool(tools, 'gimp_export', {
         image: 1,
-        file_path: 'C:/out.tif',
+        file_path: absPath('out.tif'),
         tiff_compression: 'lzw',
         bit_depth: 8,
       });
       expect(gimp.lastCall()).toEqual({
         op: 'export',
-        args: { image: 1, path: 'C:/out.tif', compression: 'lzw', bit_depth: 8 },
+        args: { image: 1, path: absPath('out.tif'), compression: 'lzw', bit_depth: 8 },
       });
     });
 
     it('forwards only webp-relevant options (quality + lossless) for a .webp path', async () => {
-      const gimp = makeGimpBackend({ result: { path: 'C:/out.webp', bytes: 500 } });
+      const gimp = makeGimpBackend({ result: { path: absPath('out.webp'), bytes: 500 } });
       const tools = createGimpDocumentTools(gimp.asBackend());
       await callTool(tools, 'gimp_export', {
         image: 1,
-        file_path: 'C:/out.webp',
+        file_path: absPath('out.webp'),
         quality: 70,
         lossless: true,
       });
       expect(gimp.lastCall()).toEqual({
         op: 'export',
-        args: { image: 1, path: 'C:/out.webp', quality: 70, lossless: true },
+        args: { image: 1, path: absPath('out.webp'), quality: 70, lossless: true },
       });
     });
 
@@ -249,10 +275,17 @@ describe('createGimpDocumentTools', () => {
     });
 
     it('reports format in structuredContent, derived from the extension (not the bridge)', async () => {
-      const gimp = makeGimpBackend({ result: { path: 'C:/out.png', bytes: 500 } });
+      const gimp = makeGimpBackend({ result: { path: absPath('out.png'), bytes: 500 } });
       const tools = createGimpDocumentTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_export', { image: 1, file_path: 'C:/out.png' });
-      expect(result.structuredContent).toEqual({ path: 'C:/out.png', bytes: 500, format: 'png' });
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('out.png'),
+      });
+      expect(result.structuredContent).toEqual({
+        path: absPath('out.png'),
+        bytes: 500,
+        format: 'png',
+      });
     });
   });
 });

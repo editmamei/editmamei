@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { Logger } from '@editmamei/utils/logger.ts';
 
 // Mocks the GIMP detector module so `resolveBootEditors`' env/gimp_path
 // wiring can be observed without ever touching the real filesystem — the
@@ -96,6 +97,7 @@ describe('resolveEditorRegistration', () => {
       registerPhotoshop: true,
       registerGimp: true,
       gimpInstall: SAMPLE_INSTALL,
+      gimpDetectionTimedOut: false,
     });
   });
 
@@ -104,6 +106,7 @@ describe('resolveEditorRegistration', () => {
       registerPhotoshop: true,
       registerGimp: false,
       gimpInstall: null,
+      gimpDetectionTimedOut: false,
     });
   });
 
@@ -112,6 +115,10 @@ describe('resolveEditorRegistration', () => {
       registerPhotoshop: true,
       registerGimp: false,
       gimpInstall: null,
+      // 'auto' never registers gimp_* with a null install in the first
+      // place, so there is nothing for GimpBackend to retry — always false
+      // outside the 'gimp' pin, regardless of what detection itself did.
+      gimpDetectionTimedOut: false,
     });
   });
 
@@ -121,6 +128,7 @@ describe('resolveEditorRegistration', () => {
         registerPhotoshop: true,
         registerGimp: false,
         gimpInstall: null,
+        gimpDetectionTimedOut: false,
       });
     }
   });
@@ -130,12 +138,52 @@ describe('resolveEditorRegistration', () => {
       registerPhotoshop: false,
       registerGimp: true,
       gimpInstall: null,
+      gimpDetectionTimedOut: false,
     });
     expect(resolveEditorRegistration(FOUND, 'gimp')).toEqual({
       registerPhotoshop: false,
       registerGimp: true,
       gimpInstall: SAMPLE_INSTALL,
+      gimpDetectionTimedOut: false,
     });
+  });
+
+  it("pin 'gimp' + a detection timeout carries gimpDetectionTimedOut: true — a rushed miss, not a permanent one", () => {
+    expect(resolveEditorRegistration(TIMED_OUT, 'gimp')).toEqual({
+      registerPhotoshop: false,
+      registerGimp: true,
+      gimpInstall: null,
+      gimpDetectionTimedOut: true,
+    });
+  });
+
+  it("pin 'gimp' + gimpToolsAllowed: false falls back to ps_* only, with a logged warning — a build with the surface registered but zero gimp_* tools actually shipped is nearly empty otherwise", () => {
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      expect(resolveEditorRegistration(FOUND, 'gimp', false)).toEqual({
+        registerPhotoshop: true,
+        registerGimp: false,
+        gimpInstall: null,
+        gimpDetectionTimedOut: false,
+      });
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("pin 'gimp' + gimpToolsAllowed: true (or omitted) registers GIMP normally — the default preserves today's behavior for every existing call site", () => {
+    expect(resolveEditorRegistration(FOUND, 'gimp', true)).toEqual(
+      resolveEditorRegistration(FOUND, 'gimp')
+    );
+  });
+
+  it("gimpToolsAllowed is never consulted outside the 'gimp' pin — auto/photoshop ignore it", () => {
+    for (const pin of ['auto', 'photoshop'] as const) {
+      expect(resolveEditorRegistration(FOUND, pin, false)).toEqual(
+        resolveEditorRegistration(FOUND, pin, true)
+      );
+    }
   });
 
   it("defaults the pin to 'auto' when omitted", () => {
@@ -185,6 +233,7 @@ describe('resolveBootEditors', () => {
       registerPhotoshop: true,
       registerGimp: true,
       gimpInstall: SAMPLE_INSTALL,
+      gimpDetectionTimedOut: false,
     });
   });
 
@@ -229,5 +278,33 @@ describe('resolveBootEditors', () => {
     vi.mocked(detectGimp).mockResolvedValue(null);
     await resolveBootEditors({ settings: makeSettings({ gimp_path: null }), env: {} });
     expect(detectGimp).toHaveBeenCalledWith();
+  });
+
+  it('treats an EMPTY EDITMAMEI_GIMP_PATH as unset — the settings gimp_path field still applies', async () => {
+    vi.mocked(detectGimp).mockResolvedValue(null);
+    await resolveBootEditors({
+      settings: makeSettings({ gimp_path: 'C:/from-settings/gimp-console.exe' }),
+      env: { EDITMAMEI_GIMP_PATH: '' },
+    });
+    expect(detectGimp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.objectContaining({ EDITMAMEI_GIMP_PATH: 'C:/from-settings/gimp-console.exe' }),
+      })
+    );
+  });
+
+  it("threads gimpDetectionTimedOut through to the final decision when pinned to 'gimp'", async () => {
+    const detectEditorsFn = vi.fn(async () => ({ gimp: null, timedOut: true }));
+    const result = await resolveBootEditors({
+      settings: makeSettings({ editor: 'gimp' }),
+      env: {},
+      detectEditorsFn,
+    });
+    expect(result).toEqual({
+      registerPhotoshop: false,
+      registerGimp: true,
+      gimpInstall: null,
+      gimpDetectionTimedOut: true,
+    });
   });
 });

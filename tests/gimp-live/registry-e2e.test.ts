@@ -117,7 +117,12 @@ describe.skipIf(!install)('gimp_* tools through the real server registry', () =>
   beforeAll(() => {
     workDir = mkdtempSync(join(tmpdir(), 'em-gimp-registry-e2e-'));
     server = new EditmameiServer({
-      editors: { registerPhotoshop: false, registerGimp: true, gimpInstall: install },
+      editors: {
+        registerPhotoshop: false,
+        registerGimp: true,
+        gimpInstall: install,
+        gimpDetectionTimedOut: false,
+      },
     });
     registry = (server as unknown as { toolRegistry: typeof registry }).toolRegistry;
   });

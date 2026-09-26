@@ -80,6 +80,10 @@ export class FakeGimpBackend {
     return this.staticResult as T;
   }
 
+  async prepare(): Promise<void> {
+    /* no-op: the fake has no detection to retry */
+  }
+
   latestPreviewPath(): string {
     return '/fake/gimp/latest-preview.jpg';
   }

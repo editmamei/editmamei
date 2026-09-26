@@ -1999,6 +1999,34 @@ describe('EditmameiServer.start() boot ordering', () => {
     ).toBe(1);
     expect(beforeConnect).toContain('await this.loadModules()');
   });
+
+  // Pinned the same way as the two tests above (source-level, not a live
+  // start() invocation) — these three post-connect background jobs are all
+  // Photoshop/Pro-only. Without the guard, `ensureEntitledModuleFresh` reads
+  // the real on-disk license store and, on a machine that happens to carry a
+  // Pro entitlement, does real network refresh work for a module that a
+  // 'gimp'-pinned boot (registerPhotoshop: false) never loaded and that
+  // contributes no tools to it at all.
+  it('the Photoshop warmup and the Pro module self-heal/refresh jobs are all gated on registerPhotoshop', () => {
+    const serverSrc = readFileSync(join(REPO_ROOT, 'src', 'core', 'server.ts'), 'utf8');
+    const startMatch = serverSrc.match(/async start\(\)\s*\{[\s\S]*?\n  \}/);
+    expect(startMatch, 'start() body not found in server.ts').toBeTruthy();
+    const startBody = startMatch![0];
+
+    const guardMatch = startBody.match(
+      /if \(this\.editorOpts\.registerPhotoshop\) \{([\s\S]*?)\n    \}/
+    );
+    expect(guardMatch, 'registerPhotoshop guard block not found in start()').toBeTruthy();
+    const guardedBody = guardMatch![1];
+
+    for (const call of [
+      'this.session.initialize(',
+      'this.reprovisionIfModuleSkipped(',
+      'this.ensureEntitledModuleFresh(',
+    ]) {
+      expect(guardedBody, `${call} not found inside the registerPhotoshop guard`).toContain(call);
+    }
+  });
 });
 
 // ===========================================================================
@@ -2034,6 +2062,97 @@ describe('GIMP session shutdown wiring', () => {
     expect(oncloseMatch, 'onclose assignment not found in server.ts').toBeTruthy();
     expect(oncloseMatch![0]).toMatch(/this\.gimpBackend/);
     expect(oncloseMatch![0]).toMatch(/\.shutdown\(\)/);
+  });
+});
+
+// ===========================================================================
+// The onCall hook's own setGimpVersion gate (`entry.success && entry.tool
+// .startsWith('gimp_') && this.gimpBackend?.gimpVersion`). Covered elsewhere:
+// SessionLog.setGimpVersion itself + the meta-line shape
+// (tests/unit/session-log.test.ts), and GimpBackend's own gimpVersion
+// resolution (tests/backends/gimp/backend.test.ts). This targets only the
+// server-level wiring between the two — mirrors the psVersion hook tests
+// above (`stamps sessionLog.setPsVersion alongside psVersion…`), swapping in
+// a fake gimpBackend so the test doesn't need a real GIMP session to reach
+// gimpVersion.
+// ===========================================================================
+type GimpVersionServer = {
+  gimpBackend: { gimpVersion?: string } | undefined;
+  sessionLog: { setGimpVersion(version: string): Promise<void> };
+  toolRegistry: {
+    register(
+      name: string,
+      def: {
+        tool: { name: string; description: string; inputSchema: object };
+        handler: () => Promise<{
+          content: unknown[];
+          structuredContent?: object;
+          isError?: boolean;
+        }>;
+      }
+    ): void;
+  };
+  handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+};
+
+describe('the onCall hook stamps sessionLog.setGimpVersion after a successful gimp_* call', () => {
+  it('calls setGimpVersion with the backend-reported version once a gimp_* call succeeds', async () => {
+    const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'gimp');
+    const server = new EditmameiServer({ editors }) as unknown as GimpVersionServer;
+    // Swaps in a fake backend that already reports a resolved version — this
+    // targets the onCall hook's own gating logic, not GimpBackend's real
+    // session-startup path (covered separately, see the block comment above).
+    server.gimpBackend = { gimpVersion: '3.2.6' };
+    const setGimpVersionSpy = vi.spyOn(server.sessionLog, 'setGimpVersion');
+    server.toolRegistry.register('gimp_test_fixture', {
+      tool: {
+        name: 'gimp_test_fixture',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => ({ content: [{ type: 'text', text: 'ok' }], structuredContent: {} }),
+    });
+
+    await server.handleToolCall('gimp_test_fixture', {});
+    await vi.waitFor(() => {
+      expect(setGimpVersionSpy).toHaveBeenCalledWith('3.2.6');
+    });
+  });
+
+  it('does not call setGimpVersion for a successful ps_*-named call, even with a gimpBackend version available', async () => {
+    const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'gimp');
+    const server = new EditmameiServer({ editors }) as unknown as GimpVersionServer;
+    server.gimpBackend = { gimpVersion: '3.2.6' };
+    const setGimpVersionSpy = vi.spyOn(server.sessionLog, 'setGimpVersion');
+    server.toolRegistry.register('ps_test_fixture', {
+      tool: {
+        name: 'ps_test_fixture',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => ({ content: [{ type: 'text', text: 'ok' }], structuredContent: {} }),
+    });
+
+    await server.handleToolCall('ps_test_fixture', {});
+    expect(setGimpVersionSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not call setGimpVersion for a FAILED gimp_* call, even with a gimpBackend version available', async () => {
+    const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'gimp');
+    const server = new EditmameiServer({ editors }) as unknown as GimpVersionServer;
+    server.gimpBackend = { gimpVersion: '3.2.6' };
+    const setGimpVersionSpy = vi.spyOn(server.sessionLog, 'setGimpVersion');
+    server.toolRegistry.register('gimp_test_fixture_fails', {
+      tool: {
+        name: 'gimp_test_fixture_fails',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => ({ content: [{ type: 'text', text: 'boom' }], isError: true }),
+    });
+
+    await server.handleToolCall('gimp_test_fixture_fails', {});
+    expect(setGimpVersionSpy).not.toHaveBeenCalled();
   });
 });
 

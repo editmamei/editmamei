@@ -272,20 +272,55 @@ describe('toolGimpErrorResult — the gimp_* catch tail', () => {
 });
 
 describe('requireAbsoluteGimpPath', () => {
-  it('accepts an ordinary drive-rooted Windows path, both slash directions', () => {
-    expect(requireAbsoluteGimpPath('file_path', 'C:\\photos\\dog.jpg')).toBe('C:\\photos\\dog.jpg');
-    expect(requireAbsoluteGimpPath('file_path', 'C:/photos/dog.jpg')).toBe('C:/photos/dog.jpg');
+  // `platform` picks `path.win32` vs `path.posix` semantics explicitly — every
+  // case below pins it rather than trusting `process.platform`, so this suite
+  // gives the identical answer on a Windows dev box and a macOS CI runner.
+
+  it('accepts an ordinary drive-rooted Windows path, both slash directions, on win32', () => {
+    expect(requireAbsoluteGimpPath('file_path', 'C:\\photos\\dog.jpg', 'win32')).toBe(
+      'C:\\photos\\dog.jpg'
+    );
+    expect(requireAbsoluteGimpPath('file_path', 'C:/photos/dog.jpg', 'win32')).toBe(
+      'C:/photos/dog.jpg'
+    );
   });
 
-  it('rejects a missing / non-string / empty value', () => {
-    expect(() => requireAbsoluteGimpPath('file_path', undefined)).toThrow(/required/);
-    expect(() => requireAbsoluteGimpPath('file_path', 42)).toThrow(/required/);
-    expect(() => requireAbsoluteGimpPath('file_path', '')).toThrow(/required/);
+  it('accepts an ordinary POSIX absolute path on darwin — no drive letter required', () => {
+    expect(requireAbsoluteGimpPath('file_path', '/Users/alex/photo.jpg', 'darwin')).toBe(
+      '/Users/alex/photo.jpg'
+    );
   });
 
-  it('rejects a plain relative path', () => {
-    expect(() => requireAbsoluteGimpPath('file_path', 'photo.jpg')).toThrow(/absolute path/);
-    expect(() => requireAbsoluteGimpPath('file_path', '..\\photo.jpg')).toThrow(/absolute path/);
+  it('rejects a missing / non-string / empty value, on either platform', () => {
+    for (const platform of ['win32', 'darwin']) {
+      expect(() => requireAbsoluteGimpPath('file_path', undefined, platform)).toThrow(/required/);
+      expect(() => requireAbsoluteGimpPath('file_path', 42, platform)).toThrow(/required/);
+      expect(() => requireAbsoluteGimpPath('file_path', '', platform)).toThrow(/required/);
+    }
+  });
+
+  it('rejects a plain relative path on win32', () => {
+    expect(() => requireAbsoluteGimpPath('file_path', 'photo.jpg', 'win32')).toThrow(
+      /absolute path/
+    );
+    expect(() => requireAbsoluteGimpPath('file_path', '..\\photo.jpg', 'win32')).toThrow(
+      /absolute path/
+    );
+  });
+
+  it('rejects a plain relative path on darwin', () => {
+    expect(() => requireAbsoluteGimpPath('file_path', 'photo.jpg', 'darwin')).toThrow(
+      /absolute path/
+    );
+    expect(() => requireAbsoluteGimpPath('file_path', '../photo.jpg', 'darwin')).toThrow(
+      /absolute path/
+    );
+  });
+
+  it('rejects a Windows-shaped drive-rooted path on darwin — POSIX has no drive-letter root, so it reads as relative', () => {
+    expect(() => requireAbsoluteGimpPath('file_path', 'C:/photos/dog.jpg', 'darwin')).toThrow(
+      /absolute path/
+    );
   });
 
   it.each([
@@ -293,8 +328,9 @@ describe('requireAbsoluteGimpPath', () => {
     ['a UNC share with forward slashes', '//server/share/photo.jpg'],
     ['a \\\\?\\ device path', '\\\\?\\C:\\photo.jpg'],
     ['a \\\\.\\ device path', '\\\\.\\PhysicalDrive0'],
-  ])('rejects %s', (_label, value) => {
-    expect(() => requireAbsoluteGimpPath('file_path', value)).toThrow(/UNC|device path/);
+  ])('rejects %s on either platform', (_label, value) => {
+    expect(() => requireAbsoluteGimpPath('file_path', value, 'win32')).toThrow(/UNC|device path/);
+    expect(() => requireAbsoluteGimpPath('file_path', value, 'darwin')).toThrow(/UNC|device path/);
   });
 
   it('on win32, rejects a path rooted at "\\" with no drive letter', () => {
@@ -302,24 +338,9 @@ describe('requireAbsoluteGimpPath', () => {
     expect(() => requireAbsoluteGimpPath('file_path', value, 'win32')).toThrow(/drive letter/);
   });
 
-  it('on a non-win32 platform, the drive-letter check is skipped, but the resolve/root sanity check still refuses an ambiguous root', () => {
-    const value = String.fromCharCode(92) + 'x.jpg';
-    // Not rejected FOR missing a drive letter (that check never runs)...
-    try {
-      requireAbsoluteGimpPath('file_path', value, 'darwin');
-      throw new Error('expected requireAbsoluteGimpPath to throw');
-    } catch (err) {
-      expect((err as Error).message).not.toMatch(/drive letter/);
-      // ...but the generic root-stability check (which runs on every
-      // platform) still catches the same ambiguity from a different angle.
-      expect((err as Error).message).toMatch(/stable absolute path/);
-    }
-  });
-
-  it('an ordinary absolute path is unaffected by the platform parameter', () => {
-    expect(requireAbsoluteGimpPath('file_path', 'C:/photos/dog.jpg', 'darwin')).toBe(
-      'C:/photos/dog.jpg'
-    );
+  it('on darwin, the same backslash-rooted value is rejected as not absolute at all — POSIX has no such root, so the drive-letter check never applies', () => {
+    const value = String.fromCharCode(92) + 'x.jpg'; // "\x.jpg"
+    expect(() => requireAbsoluteGimpPath('file_path', value, 'darwin')).toThrow(/absolute path/);
   });
 });
 

@@ -131,6 +131,46 @@ describe('GimpBackend', () => {
       );
     });
 
+    it('after a boot-time detection timeout, the first call re-detects once and uses an install found late', async () => {
+      const fake = makeFakeSession();
+      const detectGimpFn = vi.fn(async () => SAMPLE_INSTALL);
+      const sessionFactory = vi.fn((_o: GimpSessionOptions) => fake as unknown as GimpSession);
+      const backend = new GimpBackend(null, {
+        sessionFactory,
+        detectGimpFn,
+        gimpDetectionTimedOut: true,
+      });
+      await backend.call('ping', {});
+      await backend.call('ping', {});
+      expect(detectGimpFn).toHaveBeenCalledTimes(1);
+      expect(backend.installed).toBe(true);
+      expect(fake.calls.map((c) => c.op)).toEqual(['ping', 'ping']);
+    });
+
+    it('prepare() runs the owed re-detect so the path helpers work before the first call', async () => {
+      const fake = makeFakeSession();
+      const detectGimpFn = vi.fn(async () => SAMPLE_INSTALL);
+      const backend = new GimpBackend(null, {
+        sessionFactory: () => fake as unknown as GimpSession,
+        detectGimpFn,
+        gimpDetectionTimedOut: true,
+      });
+      expect(() => backend.latestPreviewPath()).toThrow(
+        expect.objectContaining({ code: 'gimp_not_installed' })
+      );
+      await backend.prepare();
+      expect(backend.latestPreviewPath()).toBe('/fake/session/latest-preview.jpg');
+      expect(detectGimpFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('without a boot timeout there is no re-detect: a real miss stays gimp_not_installed', async () => {
+      const detectGimpFn = vi.fn(async () => SAMPLE_INSTALL);
+      const backend = new GimpBackend(null, { detectGimpFn, gimpDetectionTimedOut: false });
+      await backend.prepare();
+      await expect(backend.call('ping', {})).rejects.toMatchObject({ code: 'gimp_not_installed' });
+      expect(detectGimpFn).not.toHaveBeenCalled();
+    });
+
     it('names the EDITMAMEI_GIMP_PATH env var and the gimp_path setting as the fix', async () => {
       const backend = new GimpBackend(null);
       await expect(backend.call('ping', {})).rejects.toThrow(/EDITMAMEI_GIMP_PATH/);

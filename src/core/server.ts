@@ -364,9 +364,12 @@ export class EditmameiServer {
       registerPhotoshop: true,
       registerGimp: false,
       gimpInstall: null,
+      gimpDetectionTimedOut: false,
     };
     if (this.editorOpts.registerGimp) {
-      this.gimpBackend = new GimpBackend(this.editorOpts.gimpInstall);
+      this.gimpBackend = new GimpBackend(this.editorOpts.gimpInstall, {
+        gimpDetectionTimedOut: this.editorOpts.gimpDetectionTimedOut,
+      });
     }
     this.logger = new Logger('EditmameiServer');
     this.session = new Session();
@@ -1566,27 +1569,35 @@ export class EditmameiServer {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
 
-    // Warm the Photoshop connection in the background — fire-and-forget. Every tool
-    // call (and ps_ping) establishes the connection lazily on first use, so
-    // nothing here is required for correctness; this just pays the first-connect cost
-    // ahead of the first real tool call when PS is already up. connect() swallows its
-    // own errors, so an unreachable Photoshop at boot is a silent no-op here. The
-    // trailing .catch guards the one path connect() can't — a synchronous throw from
-    // the PhotoshopConnection constructor — so it can't surface as an unhandledRejection.
-    void this.session.initialize().catch(() => undefined);
+    // Every job in this block is Photoshop/Pro-only — skipped entirely when
+    // `registerPhotoshop` is false (pinned to 'gimp'). Without this gate,
+    // `ensureEntitledModuleFresh` reads the real on-disk license store
+    // (`isProEntitled`) and, on a machine that happens to carry a Pro
+    // entitlement, goes on to do real network refresh work for a module that
+    // was never loaded and contributes no tools to this boot at all.
+    if (this.editorOpts.registerPhotoshop) {
+      // Warm the Photoshop connection in the background — fire-and-forget. Every tool
+      // call (and ps_ping) establishes the connection lazily on first use, so
+      // nothing here is required for correctness; this just pays the first-connect cost
+      // ahead of the first real tool call when PS is already up. connect() swallows its
+      // own errors, so an unreachable Photoshop at boot is a silent no-op here. The
+      // trailing .catch guards the one path connect() can't — a synchronous throw from
+      // the PhotoshopConnection constructor — so it can't surface as an unhandledRejection.
+      void this.session.initialize().catch(() => undefined);
 
-    // Background self-heal — the FIRST network of boot, deliberately AFTER connect
-    // (v0.20.0 invariant: loadModules stays filesystem/crypto-only; nothing reaches
-    // the network before the handshake). No-op unless loadModules flagged a skipped
-    // module; fully swallowed, so an offline/lapsed/down delivery just stays Community.
-    void this.reprovisionIfModuleSkipped();
+      // Background self-heal — the FIRST network of boot, deliberately AFTER connect
+      // (v0.20.0 invariant: loadModules stays filesystem/crypto-only; nothing reaches
+      // the network before the handshake). No-op unless loadModules flagged a skipped
+      // module; fully swallowed, so an offline/lapsed/down delivery just stays Community.
+      void this.reprovisionIfModuleSkipped();
 
-    // Background auto-update — the complement to the self-heal on the HEALTHY path:
-    // when the on-disk Pro module loaded fine but a NEWER version is published, pull
-    // it (closes the .mcpb auto-update gap).
-    // Mutually exclusive with the self-heal above (that owns moduleSkipReason !== null),
-    // so exactly one runs per boot. Same post-connect, fire-and-forget, swallowed shape.
-    void this.ensureEntitledModuleFresh();
+      // Background auto-update — the complement to the self-heal on the HEALTHY path:
+      // when the on-disk Pro module loaded fine but a NEWER version is published, pull
+      // it (closes the .mcpb auto-update gap).
+      // Mutually exclusive with the self-heal above (that owns moduleSkipReason !== null),
+      // so exactly one runs per boot. Same post-connect, fire-and-forget, swallowed shape.
+      void this.ensureEntitledModuleFresh();
+    }
 
     // Start the periodic telemetry flush, and flush a final batch + session summary when
     // the client disconnects. Transport close (stdin EOF) is the session-end signal for

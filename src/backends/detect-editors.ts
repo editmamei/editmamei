@@ -20,6 +20,26 @@
 
 import { detectGimp, type GimpInstall, type DetectGimpOptions } from './gimp/detect.js';
 import { applyEditorEnvOverride, type EditorPin, type Settings } from '../core/settings.js';
+import { TOOL_TIERS, isToolAllowedInEdition, type Tier } from '../core/tool-tiers.js';
+import { EDITION } from '../edition.js';
+import { Logger } from '../utils/logger.js';
+
+const logger = new Logger('DetectEditors');
+
+/**
+ * True when at least one `gimp_*` tool would actually register in the given
+ * edition — computed from `TOOL_TIERS` + the tier/edition gate every other
+ * built-in tool goes through (`isToolAllowedInEdition`). Every `gimp_*` tool
+ * ships at tier `'dev'` today, so this is `true` only in a `'dev'` edition
+ * build; a `'community'`/`'pro'` build filters every one of them out at
+ * `src/modules/gimp/index.ts`'s registration step regardless of what boot
+ * decides here.
+ */
+function anyGimpToolAllowedInEdition(edition: Tier): boolean {
+  return Object.keys(TOOL_TIERS).some(
+    (name) => name.startsWith('gimp_') && isToolAllowedInEdition(name, edition)
+  );
+}
 
 export interface DetectEditorsOptions {
   /** Time box in ms for the GIMP probe. Default 750. */
@@ -75,6 +95,15 @@ export interface EditorRegistrationDecision {
   registerGimp: boolean;
   /** Handed to `GimpBackend` when `registerGimp` — `null` when pinned to 'gimp' but nothing was actually found. */
   gimpInstall: GimpInstall | null;
+  /**
+   * True only when pinned to 'gimp' AND `detectEditors()`'s probe hit its
+   * time box rather than genuinely finding nothing — a rushed miss, not a
+   * real one. `GimpBackend` uses this to give itself one unhurried
+   * `detectGimp()` retry on first use instead of treating the time-boxed
+   * `null` as permanent. Always `false` for 'auto'/'photoshop': neither pin
+   * ever registers gimp_* with a `null` install, so there's nothing to retry.
+   */
+  gimpDetectionTimedOut: boolean;
 }
 
 /**
@@ -101,22 +130,57 @@ export interface EditorRegistrationDecision {
  * Both tool sets can be present at once (both register whenever GIMP is
  * found and the pin isn't 'gimp'); GIMP registering never excludes
  * Photoshop — only an explicit 'gimp' pin does that.
+ *
+ * `gimpToolsAllowed` (computed from `TOOL_TIERS` + the running `EDITION` —
+ * `anyGimpToolAllowedInEdition` above, or an injected value in tests) guards
+ * the 'gimp' pin against a build that would register the surface but ship
+ * NONE of its tools (every `gimp_*` tool is 'dev'-tier today, so this is the
+ * ordinary case for a shipped community/pro build). Without this, pinning
+ * 'gimp' on such a build leaves almost no tools registered at all —
+ * Photoshop off (the pin says so) and GIMP filtered down to zero by the
+ * edition gate. Falling back to `ps_*` with a logged warning is a real,
+ * usable surface instead of a near-empty one; the pin is a request for
+ * "prefer GIMP", not a demand to run with nothing.
  */
 export function resolveEditorRegistration(
   detected: DetectEditorsResult,
-  pin: EditorPin = 'auto'
+  pin: EditorPin = 'auto',
+  gimpToolsAllowed = true
 ): EditorRegistrationDecision {
   if (pin === 'gimp') {
-    return { registerPhotoshop: false, registerGimp: true, gimpInstall: detected.gimp };
+    if (!gimpToolsAllowed) {
+      logger.warn(
+        "editor pinned to 'gimp', but no gimp_* tool ships in this build — falling back to " +
+          'registering ps_* instead of leaving the tool surface almost empty.'
+      );
+      return {
+        registerPhotoshop: true,
+        registerGimp: false,
+        gimpInstall: null,
+        gimpDetectionTimedOut: false,
+      };
+    }
+    return {
+      registerPhotoshop: false,
+      registerGimp: true,
+      gimpInstall: detected.gimp,
+      gimpDetectionTimedOut: detected.timedOut,
+    };
   }
   if (pin === 'photoshop') {
-    return { registerPhotoshop: true, registerGimp: false, gimpInstall: null };
+    return {
+      registerPhotoshop: true,
+      registerGimp: false,
+      gimpInstall: null,
+      gimpDetectionTimedOut: false,
+    };
   }
   const gimpFound = detected.gimp !== null;
   return {
     registerPhotoshop: true,
     registerGimp: gimpFound,
     gimpInstall: gimpFound ? detected.gimp : null,
+    gimpDetectionTimedOut: false,
   };
 }
 
@@ -133,22 +197,32 @@ export interface ResolveBootEditorsOptions {
  * function: applies the `EDITMAMEI_EDITOR` env override onto the loaded
  * settings, resolves a `gimp_path` override (`EDITMAMEI_GIMP_PATH` wins over
  * the settings field, mirroring how `detectGimp` itself already treats that
- * env var) into a `detectGimp` override, runs `detectEditors`, and folds the
- * result through `resolveEditorRegistration`. `src/index.ts` calls this
- * directly instead of inlining the wiring so the whole decision can be
- * exercised with an injected settings object, env, and detector.
+ * env var — and, like `detectGimp`, treats an EMPTY string as unset rather
+ * than as an override to nothing, so the settings field still applies) into
+ * a `detectGimp` override, runs `detectEditors`, and folds the result
+ * through `resolveEditorRegistration`. `src/index.ts` calls this directly
+ * instead of inlining the wiring so the whole decision can be exercised with
+ * an injected settings object, env, and detector.
  */
 export async function resolveBootEditors(
   opts: ResolveBootEditorsOptions
 ): Promise<EditorRegistrationDecision> {
   const env = opts.env ?? process.env;
   const effectiveSettings = applyEditorEnvOverride(opts.settings, env);
-  const gimpPathOverride = env.EDITMAMEI_GIMP_PATH ?? effectiveSettings.gimp_path ?? undefined;
+  const envGimpPath = env.EDITMAMEI_GIMP_PATH;
+  const gimpPathOverride =
+    envGimpPath && envGimpPath.length > 0
+      ? envGimpPath
+      : (effectiveSettings.gimp_path ?? undefined);
   const detectGimpOverride = gimpPathOverride
     ? (o?: DetectGimpOptions) =>
         detectGimp({ ...o, env: { ...(o?.env ?? env), EDITMAMEI_GIMP_PATH: gimpPathOverride } })
     : undefined;
   const detectEditorsFn = opts.detectEditorsFn ?? detectEditors;
   const detected = await detectEditorsFn({ detectGimp: detectGimpOverride });
-  return resolveEditorRegistration(detected, effectiveSettings.editor);
+  return resolveEditorRegistration(
+    detected,
+    effectiveSettings.editor,
+    anyGimpToolAllowedInEdition(EDITION)
+  );
 }
