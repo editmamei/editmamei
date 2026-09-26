@@ -711,12 +711,11 @@ describe('GimpSession', () => {
       const rootDir = mkdtempSync(join(tmpdir(), 'em-gimp-session-'));
       registerCleanup(rootDir);
       // Fake timers: `setTimeout` (the CALL_READY_WAIT_MS cap's own timer,
-      // and #waitForReady's POLL_INTERVAL_MS sleeps) is what actually needs
-      // faking here for `vi.advanceTimersByTimeAsync` below to work. The
-      // default monotonic clock (real `performance.now()`) stays real and
-      // unfaked -- that's fine, since only the tiny REAL gap between
-      // `issuedAt`'s capture and `remaining`'s own computation matters, not
-      // either value's absolute magnitude.
+      // and #waitForReady's POLL_INTERVAL_MS sleeps) is what needs faking for
+      // `vi.advanceTimersByTimeAsync` below to work. Vitest fakes
+      // `performance` too by default, so the session's default monotonic
+      // clock advances with the fake timers: `issuedAt` and `remaining` are
+      // both read on that one fake clock.
       vi.useFakeTimers();
       let spawnCount = 0;
       const killTreeSpy = vi.fn();
@@ -1891,6 +1890,29 @@ describe('GimpSession', () => {
       // fast against a cached error.
       await expect(h.session.call('ping', {})).rejects.toMatchObject({ code: 'gimp_start_failed' });
       expect(statCalls).toBe(2);
+    });
+
+    it('a plain filesystem error preparing the session dir is wrapped as gimp_start_failed and leaves the session "dead"', async () => {
+      // A root path that is a FILE: mkdir/mkdtemp fail with a raw fs error, not a GimpError --
+      // the branch of #startFresh's catch that wraps it.
+      const parent = mkdtempSync(join(tmpdir(), 'em-gimp-session-'));
+      registerCleanup(parent);
+      const rootDir = join(parent, 'not-a-directory');
+      writeFileSync(rootDir, 'x');
+      let spawnCount = 0;
+      const { session } = buildSession({
+        rootDir,
+        spawn: () => {
+          spawnCount++;
+          return makeStubChild().child;
+        },
+      });
+      await expect(session.call('ping', {})).rejects.toMatchObject({
+        code: 'gimp_start_failed',
+        message: expect.stringContaining('could not prepare the GIMP session directory'),
+      });
+      expect(session.state).toBe('dead');
+      expect(spawnCount).toBe(0);
     });
 
     it('refuses a group-writable root (mode 0o770)', async () => {

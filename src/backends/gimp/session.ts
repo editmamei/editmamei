@@ -69,7 +69,10 @@ export interface GimpSessionOptions {
    * which would make a deadline never trip, and forward by a large amount
    * across a system suspend, which would make one trip instantly on wake
    * and kill a healthy, still-starting GIMP. `performance.now()` is
-   * monotonic and does not count suspended time.
+   * monotonic, so it never runs backward. On macOS and Linux it also stops
+   * while the machine is suspended; on Windows it keeps counting through a
+   * suspend, so a laptop that sleeps mid-start can still trip the deadline
+   * on wake there.
    */
   nowMonotonic?: () => number;
   logger?: Logger;
