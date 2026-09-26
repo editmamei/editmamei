@@ -16,7 +16,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { deflateSync } from 'node:zlib';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { GimpSession } from '@editmamei/backends/gimp/session.ts';
 import { readySession, LIVE_READY_TIMEOUT_MS } from './support.ts';
@@ -80,17 +81,17 @@ function writeTinyPng(path: string, width: number, height: number): void {
   writeFileSync(path, png);
 }
 
-/** Binary 8-bit PGM (P5): left half selected (255), right half not (0). */
-function writeHalfMaskPgm(path: string, width: number, height: number): void {
-  const header = Buffer.from(`P5\n${width} ${height}\n255\n`, 'ascii');
-  const data = Buffer.alloc(width * height);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      data[y * width + x] = x < width / 2 ? 255 : 0;
-    }
-  }
-  writeFileSync(path, Buffer.concat([header, data]));
-}
+/** The bridge as the build stages it (scripts/copy-gimp-bridge.ts), not the src/ copy. */
+const DIST_OPS_PY = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'dist',
+  'backends',
+  'gimp',
+  'bridge',
+  'ops.py'
+);
 
 // Top-level await, NOT a beforeAll: describe.skipIf()'s condition is read
 // at collection time, synchronously, before any async hook runs — an async
@@ -116,17 +117,14 @@ describe.skipIf(!install)('GimpSession against real headless GIMP', () => {
   let workDir: string;
   let session: GimpSession;
 
-  beforeAll(
-    async () => {
-      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-live-'));
-      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-      // A cold GIMP launch on a fresh machine can outlast CALL_READY_WAIT_MS
-      // (session.ts) -- retry through gimp_starting here, in the hook, so the
-      // test below keeps its own tighter timeout for the actual operations.
-      await readySession(session);
-    },
-    LIVE_READY_TIMEOUT_MS
-  );
+  beforeAll(async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-live-'));
+    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+    // A cold GIMP launch on a fresh machine can outlast CALL_READY_WAIT_MS
+    // (session.ts) -- retry through gimp_starting here, in the hook, so the
+    // test below keeps its own tighter timeout for the actual operations.
+    await readySession(session);
+  }, LIVE_READY_TIMEOUT_MS);
 
   afterAll(async () => {
     await session.shutdown();
@@ -202,12 +200,14 @@ describe.skipIf(!install)('GimpSession against real headless GIMP', () => {
     // The ledger, not libgimp's own (lossy) readback, is what proves this.
     expect(filters.filters[0]!.source).toBe('editmamei');
 
-    // ---- masked curve via select_mask -----------------------------------
-    const maskPath = join(workDir, 'mask.pgm');
-    writeHalfMaskPgm(maskPath, WIDTH, HEIGHT);
-    const mask = await session.call<{ channel: string; selected_pixels: number }>('select_mask', {
+    // ---- masked curve via create_mask -----------------------------------
+    const mask = await session.call<{ channel: string; selected_pixels: number }>('create_mask', {
       image: reopenedImage,
-      mask_path: maskPath,
+      type: 'rectangle',
+      x: 0,
+      y: 0,
+      width: WIDTH / 2,
+      height: HEIGHT,
       name: 'HalfMask',
     });
     expect(mask.selected_pixels).toBe((WIDTH * HEIGHT) / 2);
@@ -224,10 +224,26 @@ describe.skipIf(!install)('GimpSession against real headless GIMP', () => {
     expect(maskedCurve.mask).toBe('HalfMask');
 
     const filtersAfterMask = await session.call<{
-      filters: Array<{ name: string; params: { mask?: string } }>;
+      filters: Array<{ name: string; mask: string | null }>;
     }>('list_filters', { image: reopenedImage });
     const maskedRecord = filtersAfterMask.filters.find((f) => f.name === 'MaskedCurve');
-    expect(maskedRecord?.params.mask).toBe('HalfMask');
+    expect(maskedRecord?.mask).toBe('HalfMask');
+
+    // ---- the shipped bridge no longer answers the unexposed mask-file ops ------------------
+    // select_mask / export_mask read and wrote arbitrary paths and no tool used them.
+    for (const op of ['select_mask', 'export_mask']) {
+      await expect(
+        session.call(op, {
+          image: reopenedImage,
+          mask_path: join(workDir, 'x.pgm'),
+          path: join(workDir, 'x.pgm'),
+        }),
+        op
+      ).rejects.toMatchObject({
+        code: 'invalid_argument',
+        message: expect.stringContaining("unknown op '" + op + "'"),
+      });
+    }
 
     await session.call('close', { image: reopenedImage });
 
@@ -238,4 +254,58 @@ describe.skipIf(!install)('GimpSession against real headless GIMP', () => {
     expect(session.state).toBe('closed');
     expect(() => process.kill(pid!, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
   }, 60_000);
+});
+
+/**
+ * The shipped layout: GIMP runs `dist/backends/gimp/bridge/ops.py` and imports its sibling
+ * `lib.py` from there. Every other live test runs the src/ copy, so a staging mistake (a missing
+ * lib.py, a renamed file) would pass them all. Needs `npm run build` first, like any test that
+ * reads dist/.
+ */
+describe.skipIf(!install)('the built bridge in dist/', () => {
+  let workDir: string;
+  let session: GimpSession;
+
+  beforeAll(async () => {
+    expect(existsSync(DIST_OPS_PY), `${DIST_OPS_PY} is missing — run npm run build`).toBe(true);
+    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-dist-'));
+    session = new GimpSession({
+      install: install!,
+      rootDir: join(workDir, 'session-root'),
+      opsPyPath: DIST_OPS_PY,
+    });
+    await readySession(session);
+  }, LIVE_READY_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await session?.shutdown();
+    if (workDir) rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it('opens, adjusts, lists in tool units, and exports', async () => {
+    const pngPath = join(workDir, 'fixture.png');
+    writeTinyPng(pngPath, 32, 32);
+    const opened = await session.call<{ image: number }>('open', { path: pngPath });
+    try {
+      await session.call('adjust', {
+        image: opened.image,
+        type: 'brightness_contrast',
+        brightness: 25,
+      });
+      const listed = await session.call<{ filters: Array<{ params: Record<string, unknown> }> }>(
+        'filter',
+        { image: opened.image, op: 'list' }
+      );
+      expect(listed.filters[0]!.params).toEqual({ brightness: 25, contrast: 0 });
+      const outPath = join(workDir, 'out.png');
+      const exported = await session.call<{ bytes: number }>('export', {
+        image: opened.image,
+        path: outPath,
+      });
+      expect(exported.bytes).toBeGreaterThan(0);
+      expect(existsSync(outPath)).toBe(true);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
 });

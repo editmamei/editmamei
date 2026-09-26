@@ -56,12 +56,30 @@ def _image(args):
 def _layer(img, args):
     name = args.get('layer')
     if name:
-        layer = img.get_layer_by_name(name)
+        layer = img.get_layer_by_name(name)  # searches inside layer groups too
         if layer is None:
             raise ValueError('no layer named %r' % name)
         return layer
     selected = img.get_selected_layers()
     return selected[0] if selected else img.get_layers()[0]
+
+
+def _all_layers(img):
+    """Every layer in img, top of stack first, descending into layer groups (a group itself is
+    included, then its children). `img.get_layers()` is top-level only, and `_layer` can resolve a
+    layer nested inside a group, so every walk over the filter stack goes through this: a filter
+    on a nested layer must be listed, mirrored onto the proxy, ledger-tracked, and seen by the
+    geometry refusal like any other."""
+    out = []
+
+    def walk(items):
+        for item in items:
+            out.append(item)
+            if item.is_group():
+                walk(item.get_children())
+
+    walk(img.get_layers())
+    return out
 
 
 def _describe(img):
@@ -81,7 +99,7 @@ def _existing_filter(img, args, operation):
     other open image (or one already closed) and let a re-edit silently
     touch the wrong document."""
     filter_id = int(args['filter_id'])
-    for layer in img.get_layers():
+    for layer in _all_layers(img):
         for f in layer.get_filters():
             if f.get_id() == filter_id:
                 if f.get_operation_name() != operation:
@@ -128,7 +146,7 @@ def _proxy(img, max_px):
     proxy = PROXIES.get(key)
     if proxy is None or not proxy.is_valid():
         proxy = img.duplicate()
-        for layer in proxy.get_layers():
+        for layer in _all_layers(proxy):
             for f in layer.get_filters():
                 f.delete()
         w, h = proxy.get_width(), proxy.get_height()
@@ -164,7 +182,8 @@ def _mirror_filters(src_img, dst_img):
     filters, _unknown = _ledger_get(src_img)
     src_w = src_img.get_width()
     scale = (dst_img.get_width() / src_w) if src_w else 1.0
-    for src, dst in zip(src_img.get_layers(), dst_img.get_layers()):
+    # dst is a duplicate of src (see `_proxy`), so both walks yield the same layers in the same order.
+    for src, dst in zip(_all_layers(src_img), _all_layers(dst_img)):
         for f in reversed(src.get_filters()):  # get_filters() is top-first
             g = Gimp.DrawableFilter.new(dst, f.get_operation_name(), f.get_name())
             src_cfg, dst_cfg = f.get_config(), g.get_config()
@@ -263,7 +282,7 @@ def _ledger_put(img, filters, unknown, removed=None):
 
 
 def _unique_name(img, base):
-    taken = {f.get_name() for layer in img.get_layers() for f in layer.get_filters()}
+    taken = {f.get_name() for layer in _all_layers(img) for f in layer.get_filters()}
     name, n = base, 2
     while name in taken:
         name, n = '%s %d' % (base, n), n + 1
@@ -368,6 +387,11 @@ def _set_noise_reduction(cfg, params):
     cfg.set_property('iterations', params['iterations'])
 
 
+def _set_gaussian_blur(cfg, params):
+    cfg.set_property('std-dev-x', params['std-dev-x'])
+    cfg.set_property('std-dev-y', params['std-dev-y'])
+
+
 SETTERS = {
     'gimp:curves': _set_curves,
     'gimp:levels': _set_levels,
@@ -381,6 +405,7 @@ SETTERS = {
     'gegl:vibrance': _set_vibrance,
     'gegl:unsharp-mask': _set_sharpen,
     'gegl:noise-reduction': _set_noise_reduction,
+    'gegl:gaussian-blur': _set_gaussian_blur,
 }
 
 
@@ -388,7 +413,7 @@ def _channel_by_name(img, name):
     for ch in img.get_channels():
         if ch.get_name() == name:
             return ch
-    raise ValueError('no mask channel named %r (create one with select_mask)' % name)
+    raise ValueError('no mask channel named %r (create one with create_mask)' % name)
 
 
 def _append_masked(img, layer, f, mask):
@@ -484,6 +509,10 @@ def op_open(args):
     # (not just a precision-conversion failure specifically, which is all an earlier, narrower
     # version of this guard covered).
     try:
+        # XCF stores the selection, so a file saved from the GUI can arrive with one active. Every
+        # op here works on the whole canvas, and a transform with a selection active moves only
+        # the selected pixels (leaving a floating selection), so it is cleared on the way in.
+        Gimp.Selection.none(img)
         if precision != 'keep':
             # `convert_precision` does NOT raise on failure -- verified live that it returns
             # plain `False` (GIMP logs a "Calling error" to stderr, e.g. "must not be of type
@@ -513,9 +542,13 @@ def op_open(args):
 def _existing_ledger_params(img, args, operation):
     """The existing filter's own ledger `params`, when `args` names a `filter_id` for a
     bridge-applied filter of this exact operation -- the merge base a re-edit's builder resolves
-    unspecified fields against. None on create, or when the existing record isn't ours (readback
-    filters have no per-field params to merge from; the re-edit still proceeds, it just can't
-    preserve fields it never validated in the first place)."""
+    unspecified fields against. None on create.
+
+    A re-edit of a filter this bridge did NOT create is refused: its current values can't be read
+    back exactly (libgimp's readback is lossy, and there is no ledger record to merge from), so a
+    partial re-edit would reset every unmentioned field to the creation default, and recording the
+    result as ours would drop whatever mask the filter carries from the geometry refusal and the
+    preview proxy."""
     if args.get('filter_id') is None:
         return None
     f = _existing_filter(img, args, operation)
@@ -523,7 +556,10 @@ def _existing_ledger_params(img, args, operation):
     rec = filters.get(f.get_name())
     if rec and rec.get('operation') == operation:
         return rec['params']
-    return None
+    raise ValueError(
+        'filter %s was not created by Editmamei; its current values cannot be read back exactly. '
+        'Delete it and re-create it, or edit it in the GIMP GUI.' % f.get_id()
+    )
 
 
 def op_curves(args):
@@ -557,14 +593,14 @@ def op_levels(args):
         'channel': 'value', 'in_low': 0.0, 'in_high': 255.0, 'gamma': 1.0,
         'out_low': 0.0, 'out_high': 255.0,
     }
-    params = {
+    params = lib.validate_levels({
         'channel': args.get('channel', defaults['channel']),
         'in_low': float(args.get('in_low', defaults['in_low'])),
         'in_high': float(args.get('in_high', defaults['in_high'])),
         'gamma': float(args.get('gamma', defaults['gamma'])),
         'out_low': float(args.get('out_low', defaults['out_low'])),
         'out_high': float(args.get('out_high', defaults['out_high'])),
-    }
+    })
     return _apply_filter(img, args, 'gimp:levels', params, 'Levels', type_='levels')
 
 
@@ -597,17 +633,22 @@ def op_adjust(args):
 
 
 def op_list_filters(args):
-    """Bridge-applied filters report the ledger record (`source: editmamei`); anything else
-    reports libgimp's readback (`source: readback`), which is lossy for per-channel curves."""
+    """Bridge-applied filters report the ledger record (`source: editmamei`) with `params` in the
+    adjust tool's own field names and units (`lib.user_params`), so a listed value can be passed
+    straight back on a re-edit. Anything else reports libgimp's readback (`source: readback`):
+    raw GEGL property names and units, lossy for per-channel curves, with any value JSON can't
+    carry (a Gegl.Color, say) stringified."""
     img = _image(args)
     filters, _unknown = _ledger_get(img)
     out = []
-    for layer in img.get_layers():
+    for layer in _all_layers(img):
         for f in layer.get_filters():
             rec = filters.get(f.get_name())
             if rec and rec['operation'] == f.get_operation_name():
-                params, source, type_ = rec['params'], 'editmamei', rec.get('type')
-                mask = params.get('mask')
+                source = 'editmamei'
+                type_ = rec.get('type') or lib.OPERATION_TYPES.get(rec['operation'])
+                mask = rec['params'].get('mask')
+                params = lib.user_params(type_, rec['params'])
             else:
                 cfg, params, source, type_, mask = f.get_config(), {}, 'readback', None, None
                 for p in cfg.list_properties():
@@ -616,7 +657,7 @@ def op_list_filters(args):
                         v = _curve_points(v)
                     elif hasattr(v, 'value_nick'):
                         v = v.value_nick
-                    params[p.name] = v
+                    params[p.name] = lib.json_safe(v)
             out.append({'layer': layer.get_name(), 'filter_id': f.get_id(), 'name': f.get_name(),
                         'operation': f.get_operation_name(), 'type': type_, 'visible': f.get_visible(),
                         'source': source, 'mask': mask, 'params': params})
@@ -627,7 +668,7 @@ def _find_filter(img, filter_id):
     """Locate a filter by id AMONG img's own layers (same reasoning as `_existing_filter`: a
     global filter-id lookup could hand back one belonging to a different, possibly closed,
     image)."""
-    for layer in img.get_layers():
+    for layer in _all_layers(img):
         for f in layer.get_filters():
             if f.get_id() == filter_id:
                 return layer, f
@@ -699,7 +740,7 @@ def op_filter(args):
 # never refuses for this reason, since it verified correct.
 
 def _live_filter_names(img):
-    return {f.get_name() for layer in img.get_layers() for f in layer.get_filters()}
+    return {f.get_name() for layer in _all_layers(img) for f in layer.get_filters()}
 
 
 def _prune_stale_ledger_records(img):
@@ -728,7 +769,7 @@ def _classify_geometry_filters(img):
     `lib.merged_ledger_for_write` -- or one whose name/operation the ledger has no matching record
     for) must be treated as POSSIBLY masked, not silently assumed safe."""
     filters = _prune_stale_ledger_records(img)
-    live = [(f.get_name(), f.get_operation_name()) for layer in img.get_layers() for f in layer.get_filters()]
+    live = [(f.get_name(), f.get_operation_name()) for layer in _all_layers(img) for f in layer.get_filters()]
     return lib.classify_geometry_filters(filters, live)
 
 
@@ -752,6 +793,7 @@ def _refuse_if_masked_filters(img, op_name):
 
 def op_crop(args):
     img = _image(args)
+    Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     left, top = int(lib.require(args, 'left')), int(lib.require(args, 'top'))
     width, height = int(lib.require(args, 'width')), int(lib.require(args, 'height'))
     # `Image.crop(width, height, left, top)` is a raw resize-the-canvas primitive underneath --
@@ -777,6 +819,7 @@ def op_resize(args):
     given alone, the other side is derived to keep aspect; `long_edge` scales so the longer side
     lands there."""
     img = _image(args)
+    Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     _refuse_if_masked_filters(img, 'resize')
     width, height, long_edge = args.get('width'), args.get('height'), args.get('long_edge')
     w0, h0 = img.get_width(), img.get_height()
@@ -818,6 +861,9 @@ def op_rotate(args):
     against. Refuses outright when a masked filter is present -- see this section's own comment
     for why rotating the channel isn't enough to keep such a filter's rendering aligned."""
     img = _image(args)
+    # With a selection active, transform_rotate moves only the selected pixels and leaves a
+    # floating selection behind (see op_open).
+    Gimp.Selection.none(img)
     _refuse_if_masked_filters(img, 'rotate')
     degrees = float(lib.require(args, 'degrees'))
     expand = bool(args.get('expand', False))
@@ -846,6 +892,7 @@ def op_flip(args):
     if orientation not in _FLIP_ORIENTATIONS:
         raise ValueError('orientation must be one of %s' % sorted(_FLIP_ORIENTATIONS))
     img = _image(args)
+    Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     _refuse_if_masked_filters(img, 'flip')
     img.flip(_FLIP_ORIENTATIONS[orientation])
     _drop_proxies(img.get_id())
@@ -1176,8 +1223,7 @@ def op_export(args):
 
 def _replace_named_channel(img, name, w, h):
     """Remove any existing channel called `name` and insert a fresh, black-filled one of the
-    image's own size -- the same replace-by-name semantics `op_select_mask` already used,
-    factored out so `op_create_mask` shares it."""
+    image's own size -- `op_create_mask`'s replace-by-name semantics."""
     for existing in img.get_channels():
         if existing.get_name() == name:
             img.remove_channel(existing)
@@ -1210,43 +1256,13 @@ def _mask_name_in_use(img, name):
     return any(rec.get('params', {}).get('mask') == name for rec in filters.values())
 
 
-def op_select_mask(args):
-    """Load a mask (8-bit PGM at image size, >=128 = selected) into a named channel, which is
-    saved in the XCF, and make it the active selection. Same same-name-collision check
-    `create_mask` applies -- a channel currently used as a filter's mask can't be silently
-    replaced by this either."""
-    img = _image(args)
-    mask_path = lib.require(args, 'mask_path')
-    with open(mask_path, 'rb') as fh:
-        raw = fh.read()
-    w, h, data = lib.read_pgm(raw)
-    if (w, h) != (img.get_width(), img.get_height()):
-        raise ValueError('mask is %dx%d, image is %dx%d' % (w, h, img.get_width(), img.get_height()))
-    name = args.get('name', 'Mask')
-    if _mask_name_in_use(img, name):
-        raise ValueError(
-            'mask %r is already used by an existing filter; delete that filter or use a '
-            'different name' % name
-        )
-    ch = _replace_named_channel(img, name, w, h)
-    buf = ch.get_buffer()
-    buf.set(Gegl.Rectangle.new(0, 0, w, h), "Y' u8", data)
-    buf.flush()
-    ch.update(0, 0, w, h)
-    img.select_item(Gimp.ChannelOps.REPLACE, ch)
-    _drop_proxies(img.get_id())  # proxies were cut before this channel existed
-    selected = sum(1 for b in data if b >= 128)
-    return {'channel': name, 'selected_pixels': selected, 'fraction': round(selected / len(data), 4)}
-
-
 def op_create_mask(args):
     """Geometric mask -> a named channel (replacing any same-named channel not already in use as
     a filter's mask -- see `_mask_name_in_use`), leaving the selection cleared afterward.
 
     rectangle/ellipse: `Image.select_rectangle`/`select_ellipse`, optional `Selection.invert`,
     optional `Selection.feather`, then the resulting selection's pixels are copied into the
-    channel (same "selection buffer -> named channel" route `op_export_mask` already reads from
-    the other direction).
+    channel.
 
     gradient_linear/gradient_radial: `gegl:linear-gradient`/`gegl:radial-gradient` are NOT usable
     as drawable filters (verified live: their pspecs return None, `DrawableFilter.new` fails) --
@@ -1259,8 +1275,8 @@ def op_create_mask(args):
     has NO effect on a Channel fill's actual output either way: forcing RGB_PERCEPTUAL, forcing
     RGB_LINEAR, and leaving the context at whatever it already was all produced byte-identical
     output (an exact linear ramp -- x=128 reads 128) once read back correctly. What DOES control
-    the crossing point is the buffer format every reader of this channel (`export_mask`,
-    `select_mask`, `_channel_coverage`) uses -- `"Y' u8"` (perceptual/gamma-encoded, matching the
+    the crossing point is the buffer format every reader of this channel (`_channel_coverage`,
+    and the selection copy above) uses -- `"Y' u8"` (perceptual/gamma-encoded, matching the
     channel's own storage), not `'Y u8'` (linear light, which compresses the readback toward black,
     e.g. the geometric midpoint reading ~55 instead of ~128; this is what an earlier, incorrect
     version of this comment blamed on the blend color space instead). RGB_PERCEPTUAL is kept set
@@ -1393,20 +1409,6 @@ def op_select_none(args):
     return {'selection': 'none'}
 
 
-def op_export_mask(args):
-    """Write the active selection (default) or a named channel as an 8-bit PGM."""
-    img = _image(args)
-    path = lib.require(args, 'path')
-    src = img.get_selection() if args.get('channel') in (None, 'selection') else _channel_by_name(img, args['channel'])
-    w, h = img.get_width(), img.get_height()
-    # "Y' u8" (perceptual), not "Y u8" (linear) -- see `_channel_coverage`'s comment; a feathered
-    # or gradient mask's intermediate values would otherwise read back compressed.
-    data = src.get_buffer().get(Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
-    with open(path, 'wb') as fh:
-        fh.write(lib.write_pgm(w, h, data))
-    return {'path': path, 'width': w, 'height': h}
-
-
 def op_close(args):
     img = _image(args)
     _drop_proxies(img.get_id())
@@ -1421,7 +1423,7 @@ OPS = {
     'compare': op_compare, 'export': op_export, 'close': op_close,
     'crop': op_crop, 'resize': op_resize, 'rotate': op_rotate, 'flip': op_flip,
     'create_mask': op_create_mask, 'describe_operation': op_describe_operation,
-    'select_mask': op_select_mask, 'select_none': op_select_none, 'export_mask': op_export_mask,
+    'select_none': op_select_none,
 }
 
 

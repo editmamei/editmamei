@@ -1023,5 +1023,142 @@ class TestMetadataStripSettings(unittest.TestCase):
         self.assertIn('save-geotiff', lib.metadata_strip_settings('tiff', props))
         self.assertNotIn('save-geotiff', lib.metadata_strip_settings('png', props))
 
+
+# Known user-facing args per type, each field set to a non-default value -- what a model would
+# send, and what `list` must hand back in the same names and units.
+USER_ARGS_BY_TYPE = {
+    'exposure': {'exposure': 1.25, 'black_level': 0.03},
+    'brightness_contrast': {'brightness': 50, 'contrast': -20},
+    'hue_saturation': {'range': 'red', 'hue': 33, 'saturation': 20, 'lightness': -7},
+    'color_balance': {
+        'range': 'shadows', 'cyan_red': 20, 'magenta_green': -15, 'yellow_blue': 7,
+        'preserve_luminosity': False,
+    },
+    'color_temperature': {'from_kelvin': 5000, 'to_kelvin': 8000},
+    'shadows_highlights': {
+        'shadows': 40, 'highlights': -30, 'whitepoint': 1.5, 'radius': 60, 'compress': 35,
+        'shadows_ccorrect': 80, 'highlights_ccorrect': 40,
+    },
+    'saturation': {'scale': 1.4},
+    'vibrance': {'vibrance': 35, 'saturation': 1.1},
+    'sharpen': {'radius': 2.5, 'amount': 0.8, 'threshold': 0.1},
+    'noise_reduction': {'strength': 7},
+    'gaussian_blur': {'radius': 4.0},
+}
+
+
+class TestUserParams(unittest.TestCase):
+    """`list` reports a ledgered filter's params through `lib.user_params`: the inverse of each
+    builder, so a model can pass a listed value straight back on a re-edit."""
+
+    def test_every_generic_type_is_covered(self):
+        self.assertEqual(set(USER_ARGS_BY_TYPE), set(lib.ADJUST_PARAM_BUILDERS))
+        self.assertEqual(set(lib.USER_FIELDS), set(lib.ADJUST_PARAM_BUILDERS))
+
+    def test_round_trip_reports_what_the_model_sent(self):
+        for type_, user_args in USER_ARGS_BY_TYPE.items():
+            with self.subTest(type_=type_):
+                gegl = lib.ADJUST_PARAM_BUILDERS[type_](user_args, _create_defaults(type_))
+                listed = lib.user_params(type_, gegl)
+                self.assertEqual(listed, user_args)
+
+    def test_listed_values_rebuild_the_identical_gegl_params(self):
+        # The re-edit guarantee itself: feeding `list` output back in changes nothing.
+        for type_, user_args in USER_ARGS_BY_TYPE.items():
+            with self.subTest(type_=type_):
+                builder = lib.ADJUST_PARAM_BUILDERS[type_]
+                gegl = builder(user_args, _create_defaults(type_))
+                rebuilt = builder(lib.user_params(type_, gegl), gegl)
+                self.assertEqual(rebuilt, gegl)
+
+    def test_no_gegl_key_leaks_into_the_listing(self):
+        for type_, user_args in USER_ARGS_BY_TYPE.items():
+            with self.subTest(type_=type_):
+                gegl = lib.ADJUST_PARAM_BUILDERS[type_](user_args, _create_defaults(type_))
+                for key in lib.user_params(type_, gegl):
+                    self.assertNotIn('-', key)
+
+    def test_mask_is_left_out(self):
+        gegl = lib.build_exposure_params({'exposure': 1}, _create_defaults('exposure'))
+        gegl['mask'] = 'Sky'
+        self.assertNotIn('mask', lib.user_params('exposure', gegl))
+        self.assertEqual(
+            lib.user_params('curves', {'channel': 'red', 'points': [[0, 0], [255, 255]], 'mask': 'Sky'}),
+            {'channel': 'red', 'points': [[0, 0], [255, 255]]},
+        )
+
+    def test_levels_passes_through(self):
+        params = {
+            'channel': 'value', 'in_low': 10.0, 'in_high': 240.0, 'gamma': 1.2,
+            'out_low': 0.0, 'out_high': 255.0, 'mask': None,
+        }
+        listed = lib.user_params('levels', params)
+        self.assertNotIn('mask', listed)
+        self.assertEqual(listed['gamma'], 1.2)
+
+    def test_operation_types_is_the_inverse_of_adjust_operations(self):
+        for type_, operation in lib.ADJUST_OPERATIONS.items():
+            self.assertEqual(lib.OPERATION_TYPES[operation], type_)
+
+
+class TestJsonSafe(unittest.TestCase):
+    def test_plain_values_pass_through(self):
+        for v in (None, True, 3, 2.5, 'x'):
+            self.assertIs(lib.json_safe(v), v)
+
+    def test_foreign_objects_become_strings_so_the_listing_serialises(self):
+        class GeglColorLike:
+            def __str__(self):
+                return '<Gegl.Color object>'
+
+        value = {'value': GeglColorLike(), 'nested': [GeglColorLike(), 1], 'raw': b'\x00'}
+        safe = lib.json_safe(value)
+        self.assertEqual(safe['value'], '<Gegl.Color object>')
+        self.assertEqual(safe['nested'], ['<Gegl.Color object>', 1])
+        self.assertIsInstance(safe['raw'], str)
+        json.dumps(safe)  # must not raise
+
+
+class TestValidateLevels(unittest.TestCase):
+    def _params(self, **over):
+        params = {'channel': 'value', 'in_low': 0.0, 'in_high': 255.0, 'gamma': 1.0,
+                  'out_low': 0.0, 'out_high': 255.0}
+        params.update(over)
+        return params
+
+    def test_accepts_a_normal_record(self):
+        self.assertEqual(lib.validate_levels(self._params(gamma=2.2)), self._params(gamma=2.2))
+
+    def test_rejects_gamma_outside_the_tool_bound(self):
+        for gamma in (0.05, 10.5, -1):
+            with self.assertRaises(ValueError):
+                lib.validate_levels(self._params(gamma=gamma))
+
+    def test_rejects_an_empty_or_inverted_input_range(self):
+        for low, high in ((100.0, 100.0), (200.0, 50.0)):
+            with self.assertRaises(ValueError):
+                lib.validate_levels(self._params(in_low=low, in_high=high))
+
+
+class TestGaussianBlur(unittest.TestCase):
+    def test_one_radius_drives_both_axes(self):
+        params = lib.build_gaussian_blur_params({'radius': 6}, _create_defaults('gaussian_blur'))
+        self.assertEqual(params, {'std-dev-x': 6.0, 'std-dev-y': 6.0})
+
+    def test_create_default_matches_gegl(self):
+        # gegl:gaussian-blur's own std-dev-x/std-dev-y default, probed live on GIMP 3.2.6.
+        params = lib.build_gaussian_blur_params({}, _create_defaults('gaussian_blur'))
+        self.assertEqual(params, {'std-dev-x': 1.5, 'std-dev-y': 1.5})
+
+    def test_rejects_out_of_range(self):
+        for radius in (-1, 1501):
+            with self.assertRaises(ValueError):
+                lib.build_gaussian_blur_params({'radius': radius}, _create_defaults('gaussian_blur'))
+
+    def test_is_spatial_on_the_proxy(self):
+        self.assertEqual(lib.SPATIAL_SCALE_PROPS['gegl:gaussian-blur'], ('std-dev-x', 'std-dev-y'))
+        self.assertIn('gegl:gaussian-blur', lib.ALLOWED_DESCRIBE_OPERATIONS)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -21,11 +21,12 @@ import {
   pixelAt,
   writeGrayRamp,
   writeColorSwatches,
-  writeHalfMaskPgm,
   SWATCHES,
   SWATCH_SIZE,
   readySession,
   LIVE_READY_TIMEOUT_MS,
+  TEST_OPS_PY,
+  maxAbsDiff,
 } from './support.ts';
 
 // This file alone, not the project default -- see adjust.live.test.ts's identical comment.
@@ -39,18 +40,20 @@ describe.skipIf(!install)('geometry and masks', () => {
   let rampPath: string;
   let swatchesPath: string;
 
-  beforeAll(
-    async () => {
-      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-geom-'));
-      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-      await readySession(session);
-      rampPath = join(workDir, 'ramp.png');
-      swatchesPath = join(workDir, 'swatches.png');
-      writeGrayRamp(rampPath, 256, 32);
-      writeColorSwatches(swatchesPath);
-    },
-    LIVE_READY_TIMEOUT_MS
-  );
+  beforeAll(async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-geom-'));
+    // The test-only bridge (see fixtures/test_ops.py): export_mask reads a mask channel back.
+    session = new GimpSession({
+      install: install!,
+      rootDir: join(workDir, 'session-root'),
+      opsPyPath: TEST_OPS_PY,
+    });
+    await readySession(session);
+    rampPath = join(workDir, 'ramp.png');
+    swatchesPath = join(workDir, 'swatches.png');
+    writeGrayRamp(rampPath, 256, 32);
+    writeColorSwatches(swatchesPath);
+  }, LIVE_READY_TIMEOUT_MS);
 
   afterAll(async () => {
     await session.shutdown();
@@ -291,6 +294,82 @@ describe.skipIf(!install)('geometry and masks', () => {
     }
   });
 
+  // ---- the preview proxy is rebuilt after every geometry change -----------------------------
+  // Previews render from a cached, filter-free downscale of the document (ops.py's PROXIES). Any
+  // op that changes the canvas must drop it, or the next preview shows the OLD geometry. Each
+  // case below warms the proxy, makes one change, then compares the preview pixel for pixel
+  // against a full-resolution export: the swatches fixture is under max_px, so the proxy is
+  // full-size and a correct preview matches the export exactly.
+
+  /** Open the swatches with an unmasked filter on, and warm the proxy cache. */
+  async function openSwatchesWithWarmProxy() {
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    await session.call('adjust', { image: opened.image, type: 'saturation', scale: 0.5 });
+    await session.call('preview', {
+      image: opened.image,
+      max_px: 512,
+      out_path: join(workDir, `warm-${opened.image}.png`),
+    });
+    return opened.image;
+  }
+
+  /** Preview vs full-resolution export, both PNG. Returns the max per-channel difference. */
+  async function previewVsExport(image: number, tag: string): Promise<number> {
+    const previewPath = join(workDir, `${tag}-preview.png`);
+    await session.call('preview', { image, max_px: 512, out_path: previewPath });
+    const exportPath = join(workDir, `${tag}-export.png`);
+    await session.call('export', { image, path: exportPath });
+    return maxAbsDiff(readPng(previewPath), readPng(exportPath));
+  }
+
+  const PROXY_CHANGES: Array<[string, (image: number) => Promise<unknown>]> = [
+    [
+      'flip (same dimensions)',
+      (image) => session.call('flip', { image, orientation: 'horizontal' }),
+    ],
+    [
+      'rotate without expand',
+      (image) => session.call('rotate', { image, degrees: 90, expand: false }),
+    ],
+    ['resize', (image) => session.call('resize', { image, width: 48 })],
+    [
+      'create_mask + a masked filter',
+      async (image) => {
+        await session.call('create_mask', {
+          image,
+          type: 'rectangle',
+          x: 0,
+          y: 0,
+          width: 32,
+          height: 16,
+          name: 'ProxyMask',
+        });
+        await session.call('adjust', {
+          image,
+          type: 'brightness_contrast',
+          brightness: 60,
+          mask: 'ProxyMask',
+        });
+      },
+    ],
+  ];
+
+  it.each(PROXY_CHANGES)(
+    'after %s, the preview matches a full-resolution export (the proxy was rebuilt)',
+    async (label, change) => {
+      const image = await openSwatchesWithWarmProxy();
+      const tag = label.replace(/\W+/g, '-');
+      try {
+        // Positive control: before the change, preview and export already agree.
+        expect(await previewVsExport(image, `${tag}-before`)).toBeLessThanOrEqual(1);
+        await change(image);
+        expect(await previewVsExport(image, `${tag}-after`)).toBeLessThanOrEqual(1);
+      } finally {
+        await session.call('close', { image });
+      }
+    }
+  );
+
   // ---- masks ----------------------------------------------------------------------------------
 
   it('rectangle mask: a hard mask confines the filter to exactly its rectangle (0px changed outside)', async () => {
@@ -327,14 +406,22 @@ describe.skipIf(!install)('geometry and masks', () => {
       expect(after.width).toBe(before.width);
       expect(after.height).toBe(before.height);
 
-      for (const x of [0, 63, 127]) {
-        expect(pixelAt(after, x, 16)[0]).toBe(255);
+      // Every pixel, both sides of the edge: inside forced to white, outside byte-identical.
+      let changedOutside = 0;
+      let notWhiteInside = 0;
+      for (let y = 0; y < after.height; y++) {
+        for (let x = 0; x < after.width; x++) {
+          const a = pixelAt(after, x, y);
+          if (x < 128) {
+            if (a.some((c) => c !== 255)) notWhiteInside++;
+          } else {
+            const b = pixelAt(before, x, y);
+            if (a.some((c, i) => c !== b[i])) changedOutside++;
+          }
+        }
       }
-      for (const x of [128, 200, 255]) {
-        const [beforeVal] = pixelAt(before, x, 16);
-        const [afterVal] = pixelAt(after, x, 16);
-        expect(afterVal, `x=${x} outside the mask must be unchanged`).toBe(beforeVal);
-      }
+      expect(notWhiteInside, 'pixels inside the mask not forced to white').toBe(0);
+      expect(changedOutside, 'pixels outside the mask that changed').toBe(0);
     } finally {
       await session.call('close', { image: opened.image });
     }
@@ -654,40 +741,6 @@ describe.skipIf(!install)('geometry and masks', () => {
     }
   });
 
-  it('select_mask applies the same in-use-name collision check create_mask does', async () => {
-    const opened = await session.call<{ image: number }>('open', { path: rampPath });
-    try {
-      await session.call('create_mask', {
-        image: opened.image,
-        type: 'rectangle',
-        x: 0,
-        y: 0,
-        width: 64,
-        height: 32,
-        name: 'SelectMaskInUse',
-      });
-      await session.call('curves', {
-        image: opened.image,
-        points: [
-          [0, 0],
-          [255, 128],
-        ],
-        mask: 'SelectMaskInUse',
-      });
-      const maskPath = join(workDir, 'half-mask.pgm');
-      writeHalfMaskPgm(maskPath, 256, 32);
-      await expect(
-        session.call('select_mask', {
-          image: opened.image,
-          mask_path: maskPath,
-          name: 'SelectMaskInUse',
-        })
-      ).rejects.toMatchObject({ code: 'invalid_argument' });
-    } finally {
-      await session.call('close', { image: opened.image });
-    }
-  });
-
   it('filter set_visibility toggles a filter off, and describe/list reflect it', async () => {
     const opened = await session.call<{ image: number }>('open', { path: rampPath });
     try {
@@ -836,37 +889,6 @@ describe.skipIf(!install)('geometry and masks', () => {
 
   it('open requires path', async () => {
     await expect(session.call('open', {})).rejects.toMatchObject({ code: 'invalid_argument' });
-  });
-
-  it('select_mask requires mask_path', async () => {
-    const opened = await session.call<{ image: number }>('open', { path: rampPath });
-    try {
-      await expect(
-        session.call('select_mask', { image: opened.image, name: 'Mask' })
-      ).rejects.toMatchObject({ code: 'invalid_argument' });
-    } finally {
-      await session.call('close', { image: opened.image });
-    }
-  });
-
-  it('export_mask requires path', async () => {
-    const opened = await session.call<{ image: number }>('open', { path: rampPath });
-    try {
-      await session.call('create_mask', {
-        image: opened.image,
-        type: 'rectangle',
-        x: 0,
-        y: 0,
-        width: 10,
-        height: 10,
-        name: 'ExportMaskPathCheck',
-      });
-      await expect(
-        session.call('export_mask', { image: opened.image, channel: 'ExportMaskPathCheck' })
-      ).rejects.toMatchObject({ code: 'invalid_argument' });
-    } finally {
-      await session.call('close', { image: opened.image });
-    }
   });
 
   // Referenced so the swatches fixture (and its named constant) has at least one consumer here

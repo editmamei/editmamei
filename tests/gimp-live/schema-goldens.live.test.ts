@@ -31,15 +31,12 @@ describe.skipIf(!install)('GEGL/GIMP operation schema goldens', () => {
     Array<{ name: string; type: string; minimum: unknown; maximum: unknown; default: unknown }>
   >;
 
-  beforeAll(
-    async () => {
-      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-schema-'));
-      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-      await readySession(session);
-      golden = JSON.parse(readFileSync(GOLDEN_PATH, 'utf8'));
-    },
-    LIVE_READY_TIMEOUT_MS
-  );
+  beforeAll(async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-schema-'));
+    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+    await readySession(session);
+    golden = JSON.parse(readFileSync(GOLDEN_PATH, 'utf8'));
+  }, LIVE_READY_TIMEOUT_MS);
 
   afterAll(async () => {
     await session.shutdown();
@@ -59,7 +56,19 @@ describe.skipIf(!install)('GEGL/GIMP operation schema goldens', () => {
     'gegl:vibrance',
     'gegl:unsharp-mask',
     'gegl:noise-reduction',
+    'gegl:gaussian-blur',
   ];
+
+  it("covers exactly lib.py's ADJUST_OPERATIONS (a new adjust type needs its golden)", () => {
+    const libPy = readFileSync(
+      join(__dirname, '..', '..', 'src', 'backends', 'gimp', 'bridge', 'lib.py'),
+      'utf8'
+    );
+    const block = libPy.match(/ADJUST_OPERATIONS = \{([\s\S]*?)\n\}/);
+    expect(block, 'ADJUST_OPERATIONS not found in lib.py').toBeTruthy();
+    const libOps = [...block![1].matchAll(/:\s*'([a-z]+:[a-z-]+)'/g)].map((m) => m[1]);
+    expect([...operations].sort()).toEqual([...libOps].sort());
+  });
 
   it('the golden fixture covers every operation the engine uses', () => {
     for (const op of operations) {

@@ -21,6 +21,9 @@ import {
   writeGrayRamp,
   writeColorSwatches,
   writeNoisyField,
+  writeHardEdge,
+  writeCheckerboard,
+  maxAbsDiff,
   lerpCurve,
   srgbToLinear,
   linearToSrgb,
@@ -46,20 +49,17 @@ describe.skipIf(!install)('adjust: per-type pixel verifiers', () => {
   let rampPath: string;
   let swatchesPath: string;
 
-  beforeAll(
-    async () => {
-      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-adjust-'));
-      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-      // A cold GIMP launch can outlast CALL_READY_WAIT_MS -- retry through
-      // gimp_starting here, in the hook, not against the file's 30s test timeout.
-      await readySession(session);
-      rampPath = join(workDir, 'ramp.png');
-      swatchesPath = join(workDir, 'swatches.png');
-      writeGrayRamp(rampPath, RAMP_WIDTH, RAMP_HEIGHT);
-      writeColorSwatches(swatchesPath);
-    },
-    LIVE_READY_TIMEOUT_MS
-  );
+  beforeAll(async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-adjust-'));
+    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+    // A cold GIMP launch can outlast CALL_READY_WAIT_MS -- retry through
+    // gimp_starting here, in the hook, not against the file's 30s test timeout.
+    await readySession(session);
+    rampPath = join(workDir, 'ramp.png');
+    swatchesPath = join(workDir, 'swatches.png');
+    writeGrayRamp(rampPath, RAMP_WIDTH, RAMP_HEIGHT);
+    writeColorSwatches(swatchesPath);
+  }, LIVE_READY_TIMEOUT_MS);
 
   afterAll(async () => {
     await session.shutdown();
@@ -328,6 +328,11 @@ describe.skipIf(!install)('adjust: per-type pixel verifiers', () => {
     ['vibrance', { vibrance: 150 }],
     ['sharpen', { radius: -1 }],
     ['noise_reduction', { strength: 0 }],
+    ['gaussian_blur', { radius: 2000 }],
+    ['levels', { gamma: 0.05 }],
+    ['levels', { gamma: 12 }],
+    ['levels', { in_low: 200, in_high: 100 }],
+    ['levels', { in_low: 120, in_high: 120 }],
   ])('adjust %s rejects an out-of-range field as invalid_argument', async (type, badArgs) => {
     const opened = await session.call<{ image: number }>('open', { path: rampPath });
     try {
@@ -378,76 +383,77 @@ describe.skipIf(!install)('adjust: per-type pixel verifiers', () => {
   // ---- re-edit is a MERGE, for every adjust type (not just exposure) -------------------------
   // A partial re-edit (only some fields given) must keep every OTHER field exactly as it was,
   // not silently reset it to that type's create-time default -- verified per type by checking the
-  // ledger's own recorded params (`filter op=list`'s `params`) after the re-edit.
+  // ledger's own recorded params (`filter op=list`'s `params`, in the tool's own field names and
+  // units) after the re-edit.
 
   const REEDIT_MERGE_CASES: Array<{
     type: string;
     create: Record<string, unknown>;
     reedit: Record<string, unknown>;
-    unchangedGeglKey: string;
+    unchangedKey: string;
     expectedUnchanged: unknown;
   }> = [
     {
       type: 'exposure',
       create: { exposure: 2, black_level: 0.05 },
       reedit: { exposure: 3 },
-      unchangedGeglKey: 'black-level',
+      unchangedKey: 'black_level',
       expectedUnchanged: 0.05,
     },
     {
       type: 'brightness_contrast',
       create: { brightness: 40, contrast: 20 },
       reedit: { contrast: 10 },
-      unchangedGeglKey: 'brightness',
-      expectedUnchanged: 0.4,
+      unchangedKey: 'brightness',
+      expectedUnchanged: 40,
     },
     {
       type: 'hue_saturation',
       create: { range: 'red', hue: 90, saturation: 50 },
       reedit: { saturation: 20 },
-      unchangedGeglKey: 'hue',
-      expectedUnchanged: 0.5,
+      unchangedKey: 'hue',
+      expectedUnchanged: 90,
     },
     {
       type: 'color_balance',
       create: { range: 'shadows', cyan_red: 50 },
       reedit: { magenta_green: 30 },
-      unchangedGeglKey: 'cyan-red',
-      expectedUnchanged: 0.5,
+      unchangedKey: 'cyan_red',
+      expectedUnchanged: 50,
     },
     {
       type: 'color_temperature',
       create: { from_kelvin: 5000, to_kelvin: 8000 },
       reedit: { to_kelvin: 9000 },
-      unchangedGeglKey: 'original-temperature',
+      unchangedKey: 'from_kelvin',
       expectedUnchanged: 5000,
     },
     {
       type: 'shadows_highlights',
       create: { shadows: 50, highlights: -30 },
       reedit: { shadows: 10 },
-      unchangedGeglKey: 'highlights',
+      unchangedKey: 'highlights',
       expectedUnchanged: -30,
     },
     {
       type: 'vibrance',
       create: { vibrance: 50, saturation: 2 },
       reedit: { vibrance: 10 },
-      unchangedGeglKey: 'saturation',
+      unchangedKey: 'saturation',
       expectedUnchanged: 2,
     },
     {
       type: 'sharpen',
       create: { radius: 5, amount: 1.5, threshold: 0.2 },
       reedit: { amount: 0.8 },
-      unchangedGeglKey: 'threshold',
+      unchangedKey: 'threshold',
       expectedUnchanged: 0.2,
     },
   ];
 
   it.each(REEDIT_MERGE_CASES)(
     'adjust %s re-edit merges: an unspecified field keeps its create-time value',
-    async ({ type, create, reedit, unchangedGeglKey, expectedUnchanged }) => {
+    async ({ type, create, reedit, unchangedKey, expectedUnchanged }) => {
       const opened = await session.call<{ image: number }>('open', { path: rampPath });
       try {
         const created = await session.call<{ filter_id: number }>('adjust', {
@@ -465,7 +471,7 @@ describe.skipIf(!install)('adjust: per-type pixel verifiers', () => {
           filters: Array<{ filter_id: number; params: Record<string, unknown> }>;
         }>('filter', { image: opened.image, op: 'list' });
         const rec = listed.filters.find((f) => f.filter_id === created.filter_id)!;
-        expect(rec.params[unchangedGeglKey]).toBeCloseTo(expectedUnchanged as number, 5);
+        expect(rec.params[unchangedKey]).toBeCloseTo(expectedUnchanged as number, 5);
       } finally {
         await session.call('close', { image: opened.image });
       }
@@ -480,21 +486,22 @@ describe.skipIf(!install)('adjust: per-type pixel verifiers', () => {
   const SINGLE_FIELD_REEDIT_CASES: Array<{
     type: string;
     create: Record<string, unknown>;
-    geglKey: string;
+    key: string;
     expectedUnchanged: unknown;
   }> = [
-    { type: 'saturation', create: { scale: 3.5 }, geglKey: 'scale', expectedUnchanged: 3.5 },
+    { type: 'saturation', create: { scale: 3.5 }, key: 'scale', expectedUnchanged: 3.5 },
     {
       type: 'noise_reduction',
       create: { strength: 12 },
-      geglKey: 'iterations',
+      key: 'strength',
       expectedUnchanged: 12,
     },
+    { type: 'gaussian_blur', create: { radius: 5 }, key: 'radius', expectedUnchanged: 5 },
   ];
 
   it.each(SINGLE_FIELD_REEDIT_CASES)(
     'adjust %s re-edit with no new value keeps the create-time value (not the type default)',
-    async ({ type, create, geglKey, expectedUnchanged }) => {
+    async ({ type, create, key, expectedUnchanged }) => {
       const opened = await session.call<{ image: number }>('open', { path: rampPath });
       try {
         const created = await session.call<{ filter_id: number }>('adjust', {
@@ -511,7 +518,7 @@ describe.skipIf(!install)('adjust: per-type pixel verifiers', () => {
           filters: Array<{ filter_id: number; params: Record<string, unknown> }>;
         }>('filter', { image: opened.image, op: 'list' });
         const rec = listed.filters.find((f) => f.filter_id === created.filter_id)!;
-        expect(rec.params[geglKey]).toBeCloseTo(expectedUnchanged as number, 5);
+        expect(rec.params[key]).toBeCloseTo(expectedUnchanged as number, 5);
       } finally {
         await session.call('close', { image: opened.image });
       }
@@ -604,5 +611,176 @@ describe.skipIf(!install)('adjust: per-type pixel verifiers', () => {
     } finally {
       await session.call('close', { image: opened.image });
     }
+  });
+
+  // ---- gimp_filter op=list reports values a re-edit can take back unchanged --------------------
+  // One filter of every type with known, non-default args; list it; re-edit it with exactly the
+  // listed params; the render must not move by a single level. Before list reported user units,
+  // `brightness: 50` listed as 0.5 and a copied-back `cyan-red` was silently dropped.
+
+  const LIST_ROUND_TRIP_ARGS: Array<[string, Record<string, unknown>]> = [
+    [
+      'curves',
+      {
+        channel: 'red',
+        points: [
+          [0, 20],
+          [128, 150],
+          [255, 240],
+        ],
+      },
+    ],
+    [
+      'levels',
+      { channel: 'value', in_low: 12, in_high: 230, gamma: 1.3, out_low: 5, out_high: 250 },
+    ],
+    ['exposure', { exposure: 0.6, black_level: 0.02 }],
+    ['brightness_contrast', { brightness: 35, contrast: -20 }],
+    ['hue_saturation', { range: 'red', hue: 33, saturation: 25, lightness: -7 }],
+    [
+      'color_balance',
+      {
+        range: 'midtones',
+        cyan_red: 20,
+        magenta_green: -15,
+        yellow_blue: 30,
+        preserve_luminosity: false,
+      },
+    ],
+    ['color_temperature', { from_kelvin: 5000, to_kelvin: 7200 }],
+    [
+      'shadows_highlights',
+      {
+        shadows: 40,
+        highlights: -30,
+        whitepoint: 1.5,
+        radius: 12,
+        compress: 35,
+        shadows_ccorrect: 80,
+        highlights_ccorrect: 40,
+      },
+    ],
+    ['saturation', { scale: 1.6 }],
+    ['vibrance', { vibrance: 45, saturation: 1.1 }],
+    ['sharpen', { radius: 2.5, amount: 0.8, threshold: 0.1 }],
+    ['noise_reduction', { strength: 3 }],
+    ['gaussian_blur', { radius: 2.5 }],
+  ];
+
+  it.each(LIST_ROUND_TRIP_ARGS)(
+    'list round trip: re-editing a %s filter with its own listed params changes nothing',
+    async (type, args) => {
+      const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+      try {
+        const created = await session.call<{ filter_id: number }>('adjust', {
+          image: opened.image,
+          type,
+          ...args,
+        });
+        const before = join(workDir, `roundtrip-${type}-before.png`);
+        await session.call('export', { image: opened.image, path: before });
+
+        const listed = await session.call<{
+          filters: Array<{ filter_id: number; source: string; params: Record<string, unknown> }>;
+        }>('filter', { image: opened.image, op: 'list' });
+        const rec = listed.filters.find((f) => f.filter_id === created.filter_id)!;
+        expect(rec.source).toBe('editmamei');
+        // The tool's own field names and units: exactly what was sent.
+        expect(rec.params).toEqual(args);
+
+        await session.call('adjust', {
+          image: opened.image,
+          type,
+          filter_id: created.filter_id,
+          ...rec.params,
+        });
+        const after = join(workDir, `roundtrip-${type}-after.png`);
+        await session.call('export', { image: opened.image, path: after });
+        expect(maxAbsDiff(readPng(before), readPng(after))).toBe(0);
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+    }
+  );
+
+  // ---- gaussian_blur ---------------------------------------------------------------------------
+
+  it('gaussian_blur: softens a hard edge symmetrically and leaves pixels far from it untouched', async () => {
+    const edgePath = join(workDir, 'edge.png');
+    writeHardEdge(edgePath, 64, 16);
+    const opened = await session.call<{ image: number }>('open', { path: edgePath });
+    try {
+      await session.call('adjust', { image: opened.image, type: 'gaussian_blur', radius: 3 });
+      const outPath = join(workDir, 'edge-blurred.png');
+      await session.call('export', { image: opened.image, path: outPath });
+      const ppm = readPng(outPath);
+      const [left] = pixelAt(ppm, 31, 8); // last black column
+      const [right] = pixelAt(ppm, 32, 8); // first white column
+      expect(left).toBeGreaterThan(40); // pulled up toward the white side
+      expect(right).toBeLessThan(215); // pulled down toward the black side
+      // Symmetric about the edge in LINEAR light, where GEGL blurs (not in the 8-bit encoding).
+      expect(Math.abs(srgbToLinear(left) + srgbToLinear(right) - 1)).toBeLessThan(0.03);
+      expect(pixelAt(ppm, 2, 8)[0]).toBeLessThanOrEqual(1); // far from the edge: still black
+      expect(pixelAt(ppm, 61, 8)[0]).toBeGreaterThanOrEqual(254); // and still white
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('gaussian_blur proxy fidelity: the radius is scaled onto the proxy (negative control: an unscaled radius is far off)', async () => {
+    // 2048x512 checkerboard, 16px squares; max_px 512 makes the proxy scale 0.25.
+    const WIDTH = 2048;
+    const HEIGHT = 512;
+    const SCALE = 512 / WIDTH;
+    const RADIUS = 8;
+    const checkerPath = join(workDir, 'blur-checker.png');
+    writeCheckerboard(checkerPath, WIDTH, HEIGHT, 16, 60, 200);
+
+    /** Mean abs diff between the proxy preview of a blur and the full-resolution reference. */
+    async function proxyVsReference(proxyRadius: number, tag: string): Promise<number> {
+      const opened = await session.call<{ image: number }>('open', { path: checkerPath });
+      try {
+        await session.call('adjust', {
+          image: opened.image,
+          type: 'gaussian_blur',
+          radius: RADIUS,
+        });
+        const refPath = join(workDir, `${tag}-ref.png`);
+        await session.call('preview', {
+          image: opened.image,
+          max_px: 512,
+          region: { x: 0, y: 0, width: WIDTH, height: HEIGHT }, // full-res render, then downscaled
+          out_path: refPath,
+        });
+        const listed = await session.call<{ filters: Array<{ filter_id: number }> }>('filter', {
+          image: opened.image,
+          op: 'list',
+        });
+        await session.call('adjust', {
+          image: opened.image,
+          type: 'gaussian_blur',
+          filter_id: listed.filters[0]!.filter_id,
+          radius: proxyRadius,
+        });
+        const proxyPath = join(workDir, `${tag}-proxy.png`);
+        await session.call('preview', { image: opened.image, max_px: 512, out_path: proxyPath });
+        const a = readPng(refPath);
+        const b = readPng(proxyPath);
+        expect(b.width).toBe(a.width);
+        let sum = 0;
+        for (let i = 0; i < a.data.length; i++) sum += Math.abs(a.data[i]! - b.data[i]!);
+        return sum / a.data.length;
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+    }
+
+    // The real path: the proxy scales RADIUS by SCALE on its own.
+    const scaled = await proxyVsReference(RADIUS, 'blur-scaled');
+    // What an unscaled proxy would render: a filter whose radius, once scaled, lands on RADIUS
+    // proxy pixels, i.e. RADIUS / SCALE at full resolution.
+    const unscaled = await proxyVsReference(RADIUS / SCALE, 'blur-unscaled');
+    expect(scaled, `scaled mean abs diff ${scaled}`).toBeLessThan(6);
+    expect(unscaled, `unscaled mean abs diff ${unscaled}`).toBeGreaterThan(scaled * 4);
   });
 });

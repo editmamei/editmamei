@@ -339,5 +339,42 @@
       "maximum": 32,
       "default": 4
     }
+  ],
+  "gegl:gaussian-blur": [
+    {
+      "name": "std-dev-x",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1500,
+      "default": 1.5
+    },
+    {
+      "name": "std-dev-y",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1500,
+      "default": 1.5
+    },
+    {
+      "name": "filter",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "auto"
+    },
+    {
+      "name": "abyss-policy",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "clamp"
+    },
+    {
+      "name": "clip-extent",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": true
+    }
   ]
 }

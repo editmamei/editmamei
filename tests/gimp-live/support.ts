@@ -10,8 +10,17 @@
  */
 import { deflateSync, inflateSync } from 'node:zlib';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { GimpSession, READY_TIMEOUT_MS } from '@editmamei/backends/gimp/session.ts';
 import { GimpError } from '@editmamei/backends/gimp/errors.ts';
+
+/**
+ * The test-only bridge (`fixtures/test_ops.py`): the real ops.py plus ops no gimp_* tool exposes
+ * (mask PGM load/export, and fixture builders). Pass as `opsPyPath` to a live GimpSession that
+ * needs them; every other session runs the shipped ops.py.
+ */
+export const TEST_OPS_PY = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'test_ops.py');
 
 export interface Ppm {
   width: number;

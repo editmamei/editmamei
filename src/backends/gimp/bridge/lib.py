@@ -67,7 +67,11 @@ ADJUST_OPERATIONS = {
     'vibrance': 'gegl:vibrance',
     'sharpen': 'gegl:unsharp-mask',
     'noise_reduction': 'gegl:noise-reduction',
+    'gaussian_blur': 'gegl:gaussian-blur',
 }
+
+# The inverse of ADJUST_OPERATIONS, for a ledger record written without a `type` field.
+OPERATION_TYPES = {operation: type_ for type_, operation in ADJUST_OPERATIONS.items()}
 
 # Length-typed GEGL properties that must be multiplied by the preview proxy's scale factor
 # when a filter is mirrored onto it (see ops.py's `_mirror_filters`) -- an explicit allow-list
@@ -79,6 +83,7 @@ ADJUST_OPERATIONS = {
 SPATIAL_SCALE_PROPS = {
     'gegl:shadows-highlights': ('radius',),
     'gegl:unsharp-mask': ('std-dev',),
+    'gegl:gaussian-blur': ('std-dev-x', 'std-dev-y'),
 }
 
 # Integer-valued properties that are scaled by the proxy factor too, but as a ROUNDED count
@@ -383,6 +388,28 @@ def build_noise_reduction_params(args, defaults):
     }
 
 
+def build_gaussian_blur_params(args, defaults):
+    # One user-facing `radius` drives both axes: a symmetric blur, the only kind the tool exposes.
+    # std-dev-x and std-dev-y always hold the same value, so the merge base can read either.
+    std_dev = resolve_field(
+        args, 'radius', defaults, 'std-dev-x', lambda v: validate_range('radius', v, 0.0, 1500.0)
+    )
+    return {'std-dev-x': std_dev, 'std-dev-y': std_dev}
+
+
+def validate_levels(params):
+    """Cross-field checks for a resolved levels record (user units, 0-255 levels). The setter
+    range-checks each level on its own; these are the relationships it can't see: gamma within
+    the tool's 0.1..10 bound (GEGL's own pspec is wider, so an out-of-range value would otherwise
+    render), and an input range that isn't empty or inverted."""
+    validate_range('gamma', params['gamma'], 0.1, 10.0)
+    if not params['in_low'] < params['in_high']:
+        raise ValueError(
+            'in_low (%s) must be less than in_high (%s)' % (params['in_low'], params['in_high'])
+        )
+    return params
+
+
 ADJUST_PARAM_BUILDERS = {
     'exposure': build_exposure_params,
     'brightness_contrast': build_brightness_contrast_params,
@@ -394,6 +421,7 @@ ADJUST_PARAM_BUILDERS = {
     'vibrance': build_vibrance_params,
     'sharpen': build_sharpen_params,
     'noise_reduction': build_noise_reduction_params,
+    'gaussian_blur': build_gaussian_blur_params,
 }
 
 # Creation-time defaults, already in GEGL-property units -- the `defaults` a builder receives
@@ -416,7 +444,105 @@ ADJUST_CREATE_DEFAULTS = {
     'vibrance': {'vibrance': 0.0, 'saturation': 1.0},
     'sharpen': {'std-dev': 3.0, 'scale': 0.5, 'threshold': 0.0},
     'noise_reduction': {'iterations': 4},
+    'gaussian_blur': {'std-dev-x': 1.5, 'std-dev-y': 1.5},
 }
+
+
+def _scaled(factor):
+    # Rounded so a GEGL value that went through a /100 or /180 on the way in reads back as the
+    # number the caller typed (0.2 * 100 is 20.000000000000004 in binary floating point); feeding
+    # the listed value back in reproduces the stored GEGL value exactly.
+    return lambda v: round(v * factor, 6)
+
+
+def _same(v):
+    return v
+
+
+# GEGL-unit ledger params -> the tool's own field names and units, per adjust type: the inverse
+# of each build_*_params above, as (user_key, gegl_key, convert). `gimp_filter op=list` reports
+# these, so a model can pass a listed value straight back on a re-edit. curves/levels already
+# store user units.
+USER_FIELDS = {
+    'exposure': (
+        ('exposure', 'exposure', _same),
+        ('black_level', 'black-level', _same),
+    ),
+    'brightness_contrast': (
+        ('brightness', 'brightness', _scaled(100)),
+        ('contrast', 'contrast', _scaled(100)),
+    ),
+    'hue_saturation': (
+        ('range', 'range', _same),
+        ('hue', 'hue', _scaled(180)),
+        ('saturation', 'saturation', _scaled(100)),
+        ('lightness', 'lightness', _scaled(100)),
+    ),
+    'color_balance': (
+        ('range', 'range', _same),
+        ('cyan_red', 'cyan-red', _scaled(100)),
+        ('magenta_green', 'magenta-green', _scaled(100)),
+        ('yellow_blue', 'yellow-blue', _scaled(100)),
+        ('preserve_luminosity', 'preserve-luminosity', _same),
+    ),
+    'color_temperature': (
+        ('from_kelvin', 'original-temperature', _same),
+        ('to_kelvin', 'intended-temperature', _same),
+    ),
+    'shadows_highlights': (
+        ('shadows', 'shadows', _same),
+        ('highlights', 'highlights', _same),
+        ('whitepoint', 'whitepoint', _same),
+        ('radius', 'radius', _same),
+        ('compress', 'compress', _same),
+        ('shadows_ccorrect', 'shadows-ccorrect', _same),
+        ('highlights_ccorrect', 'highlights-ccorrect', _same),
+    ),
+    'saturation': (('scale', 'scale', _same),),
+    'vibrance': (
+        ('vibrance', 'vibrance', _same),
+        ('saturation', 'saturation', _same),
+    ),
+    'sharpen': (
+        ('radius', 'std-dev', _same),
+        ('amount', 'scale', _same),
+        ('threshold', 'threshold', _same),
+    ),
+    'noise_reduction': (('strength', 'iterations', _same),),
+    'gaussian_blur': (('radius', 'std-dev-x', _same),),
+}
+
+CURVES_USER_FIELDS = ('channel', 'points')
+LEVELS_USER_FIELDS = ('channel', 'in_low', 'in_high', 'gamma', 'out_low', 'out_high')
+
+
+def user_params(type_, params):
+    """A ledger record's `params` in the tool's own field names and units -- what `list` reports
+    for a filter this bridge created. `type_` may be None for a record written before `type` was
+    stored; the caller passes the type derived from the operation instead. The filter's `mask` is
+    reported separately, so it is not repeated here. Unknown types fall back to the raw params
+    (minus `mask`) rather than guessing."""
+    if type_ == 'curves':
+        return {k: params[k] for k in CURVES_USER_FIELDS if k in params}
+    if type_ == 'levels':
+        return {k: params[k] for k in LEVELS_USER_FIELDS if k in params}
+    fields = USER_FIELDS.get(type_)
+    if fields is None:
+        return {k: v for k, v in params.items() if k != 'mask'}
+    return {user: convert(params[gegl]) for user, gegl, convert in fields if gegl in params}
+
+
+def json_safe(value):
+    """A readback property value made JSON-serialisable: plain JSON scalars pass through, lists
+    and dicts are walked, and anything else (a Gegl.Color, a path object, bytes) becomes its
+    str(). One foreign filter with such a property must not fail `list` for the whole image."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    return str(value)
 
 # The only operations `describe_operation` will probe -- an allow-list, not "any GEGL/GIMP
 # operation name the caller cares to ask about": the probe instantiates a real DrawableFilter,
