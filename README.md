@@ -15,6 +15,12 @@ It serves photographers and retouchers who want to edit by conversation just as 
 
 **[editmamei.com](https://editmamei.com)** · [Docs](docs/getting-started.md) · [Report a bug](https://github.com/editmamei/editmamei/issues)
 
+<p align="center">
+  <a href="https://editmamei.com"><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/batch-flip.webp" width="540" alt="Seventy-three travel photos graded in Photoshop from one sentence: the prompt, the grading calls three photos at a time, and the finished set."></a>
+  <br>
+  <sub>A real run: 73 travel photos, one sentence, graded in Photoshop.</sub>
+</p>
+
 ## How it works
 
 Editmamei is a pure MCP **stdio** server written in Node. Your AI client launches it as a subprocess and calls its tools over stdio. Each tool builds a small Photoshop script and runs it in your local Photoshop over the platform's native automation channel:
