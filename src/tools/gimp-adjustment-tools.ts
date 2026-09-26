@@ -35,7 +35,8 @@ import { GIMP_IMAGE_PROP, GIMP_LAYER_PROP, pickSchemaDeclaredKeys } from './gimp
  * uses the hue-range enum; color_balance uses the shadows/midtones/
  * highlights enum), `saturation` (hue_saturation: -100..100 percent;
  * vibrance: 0..10 scale), and `radius` (shadows_highlights: 0.1..1500;
- * sharpen, where it maps to `std-dev`: 0..1500). A flat JSON Schema can only
+ * sharpen, where it maps to `std-dev`, and gaussian_blur, where it maps to
+ * `std-dev-x`/`std-dev-y`: 0..1500). A flat JSON Schema can only
  * declare ONE bound per property name, so each of these three is widened to
  * the UNION of its per-type bounds here — the bridge still enforces the
  * PRECISE per-type bound and reports an `invalid_argument` naming it when a
@@ -55,6 +56,7 @@ const ADJUST_TYPES = [
   'vibrance',
   'sharpen',
   'noise_reduction',
+  'gaussian_blur',
 ] as const;
 
 /** No `default` here for the re-edit-merge reason in the file doc comment above. */
@@ -72,7 +74,13 @@ const adjustSchema: JsonSchemaObject = {
   type: 'object',
   properties: {
     image: GIMP_IMAGE_PROP,
-    layer: GIMP_LAYER_PROP,
+    layer: {
+      ...GIMP_LAYER_PROP,
+      description:
+        GIMP_LAYER_PROP.description +
+        ' The filter applies to that ONE layer, not to the flattened image, so on a multi-layer ' +
+        'document name the layer you mean. A layer inside a layer group can be named directly.',
+    },
     type: {
       type: 'string',
       enum: [...ADJUST_TYPES],
@@ -85,7 +93,12 @@ const adjustSchema: JsonSchemaObject = {
       description:
         "Re-edit this existing filter IN PLACE instead of adding a new one (must match `type`'s " +
         'operation). Any per-type field you omit keeps the value it already had — this is a ' +
-        'MERGE, not a reset. The mask is fixed at creation and cannot change on a re-edit.',
+        'MERGE, not a reset. The values gimp_filter op=list reports for it are in these same ' +
+        'field names and units, so they can be passed straight back. The mask is fixed at ' +
+        'creation and cannot change on a re-edit. Only filters Editmamei created can be re-edited ' +
+        '(gimp_filter op=list shows source: "editmamei"); re-editing any other filter (for example ' +
+        'one added in the GIMP GUI) is refused, because its current values cannot be read back ' +
+        'exactly — delete it and re-create it instead.',
     },
     mask: {
       type: 'string',
@@ -94,8 +107,9 @@ const adjustSchema: JsonSchemaObject = {
         "when creating (no filter_id) — a filter's mask is fixed at creation. ORDER MATTERS: " +
         'straighten / flip / resize the canvas first (gimp_transform_canvas, gimp_resize_image), ' +
         'then crop, THEN add masked adjustments — rotate, flip, and resize all refuse outright ' +
-        'once any masked adjustment filter exists on the image (they cannot keep a mask aligned ' +
-        'through those transforms). Cropping afterward is always safe.',
+        'once any masked adjustment filter exists on the image, or any filter not created by ' +
+        'Editmamei (for example one added in the GIMP GUI), since they cannot keep a mask aligned ' +
+        'through those transforms. Cropping afterward is always safe.',
     },
     name: {
       type: 'string',
@@ -192,9 +206,10 @@ const adjustSchema: JsonSchemaObject = {
       ],
       description:
         "hue_saturation: one of all/red/yellow/green/cyan/blue/magenta (default 'all'). " +
-        "color_balance: one of shadows/midtones/highlights (default 'midtones'). Passing a value " +
-        "from the other type's set is rejected by the bridge naming the real allowed set for " +
-        'the `type` you gave.',
+        "color_balance: one of shadows/midtones/highlights (default 'midtones'). ONE range per " +
+        'filter: adjusting reds and blues, or shadows and highlights, takes one filter per range ' +
+        "(the same rule as one curves filter per channel). Passing a value from the other type's " +
+        'set is rejected by the bridge naming the real allowed set for the `type` you gave.',
     },
     hue: {
       type: 'number',
@@ -208,10 +223,10 @@ const adjustSchema: JsonSchemaObject = {
       maximum: 100,
       description:
         'hue_saturation: -100..100 percent (default 0 when creating), the field that actually ' +
-        "adjusts saturation for that type. vibrance: a SEPARATE, plain saturation multiplier " +
-        "layered on top of the vibrance field below — 1.0 = unchanged (default when creating), " +
-        "0..10 scale. It is NOT the vibrance knob; normally leave it alone and use `vibrance` " +
-        "instead. The bridge enforces the precise range for whichever `type` you gave.",
+        'adjusts saturation for that type. vibrance: a SEPARATE, plain saturation multiplier ' +
+        'layered on top of the vibrance field below — 1.0 = unchanged (default when creating), ' +
+        '0..10 scale. It is NOT the vibrance knob; normally leave it alone and use `vibrance` ' +
+        'instead. The bridge enforces the precise range for whichever `type` you gave.',
     },
     lightness: {
       type: 'number',
@@ -278,7 +293,9 @@ const adjustSchema: JsonSchemaObject = {
       type: 'number',
       minimum: -10,
       maximum: 10,
-      description: 'shadows_highlights only. Default (when creating): 0.',
+      description:
+        'shadows_highlights only. Shifts the white point: positive brightens the top end, ' +
+        'negative pulls it down. Default (when creating): 0.',
     },
     radius: {
       type: 'number',
@@ -286,26 +303,33 @@ const adjustSchema: JsonSchemaObject = {
       maximum: 1500,
       description:
         'shadows_highlights: spatial falloff radius, 0.1..1500 (default 100 when creating). ' +
-        'sharpen: unsharp-mask std-dev, 0..1500 (default 3.0 when creating). Both are SPATIAL ' +
-        '(radius-scaled on the proxy preview, see gimp_overview).',
+        'sharpen: unsharp-mask std-dev, 0..1500 (default 3.0 when creating). gaussian_blur: blur ' +
+        'radius (std-dev) in pixels at full resolution, 0..1500 (default 1.5 when creating). All ' +
+        'three are SPATIAL (radius-scaled on the proxy preview, see gimp_overview).',
     },
     compress: {
       type: 'number',
       minimum: 0,
       maximum: 100,
-      description: 'shadows_highlights only. Default (when creating): 50.',
+      description:
+        'shadows_highlights only. How far the shadows/highlights effect reaches toward the ' +
+        'midtones: higher confines it to the darkest and brightest tones. Default (when creating): 50.',
     },
     shadows_ccorrect: {
       type: 'number',
       minimum: 0,
       maximum: 100,
-      description: 'shadows_highlights only. Default (when creating): 100.',
+      description:
+        'shadows_highlights only. Colour saturation kept in the lifted shadows (0 = none, 100 = ' +
+        'full). Default (when creating): 100.',
     },
     highlights_ccorrect: {
       type: 'number',
       minimum: 0,
       maximum: 100,
-      description: 'shadows_highlights only. Default (when creating): 50.',
+      description:
+        'shadows_highlights only. Colour saturation kept in the recovered highlights (0 = none, ' +
+        '100 = full). Default (when creating): 50.',
     },
     // ---- saturation (type) ----
     scale: {
@@ -331,7 +355,9 @@ const adjustSchema: JsonSchemaObject = {
       type: 'number',
       minimum: 0,
       maximum: 300,
-      description: 'sharpen only. Default (when creating): 0.5.',
+      description:
+        "sharpen only. GEGL's unsharp-mask strength MULTIPLIER, not a percent: 0.5 is the " +
+        'default, 1.0 is strong, and values above ~3 are extreme. Default (when creating): 0.5.',
     },
     threshold: {
       type: 'number',
@@ -397,20 +423,27 @@ export function createGimpAdjustmentTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_add_adjustment',
         description:
-          'Append (or, with filter_id, re-edit in place) a NON-DESTRUCTIVE adjustment filter — ' +
-          'stays live and re-editable; nothing bakes into pixels until gimp_export. `type` picks ' +
-          'the adjustment: curves, levels, exposure, brightness_contrast, hue_saturation, ' +
-          'color_balance, color_temperature, shadows_highlights, saturation, vibrance, sharpen, ' +
-          'noise_reduction. For type vibrance, the knob is the `vibrance` field — `saturation` on ' +
-          'that type is a separate plain multiplier that normally stays untouched. ' +
-          'curves: ONE filter per channel — add separate filters for red and blue ' +
-          'rather than one filter for both; points are [input, output] 0-255 pairs including the ' +
-          "endpoints. A re-edit (filter_id) MERGES: any field you omit keeps the filter's existing " +
-          "value, so re-editing {contrast: 50} on a brightness_contrast filter doesn't reset " +
-          'brightness. `mask` (a channel name from gimp_create_mask) confines a NEW filter — fixed ' +
-          'at creation, cannot change on a re-edit. ORDER MATTERS: straighten / flip / resize the ' +
-          'canvas first, then crop, THEN add any masked adjustment — rotate, flip, and resize all ' +
-          'refuse outright once a masked adjustment filter already exists. ' +
+          'Headless GIMP: append (or, with filter_id, re-edit in place) a NON-DESTRUCTIVE ' +
+          'adjustment filter — stays live and re-editable; nothing bakes into pixels until ' +
+          'gimp_export, and gimp_filter op=delete removes it again. `type` picks the adjustment: ' +
+          'curves, levels, exposure, brightness_contrast, hue_saturation, color_balance, ' +
+          'color_temperature, shadows_highlights, saturation, vibrance, sharpen, noise_reduction, ' +
+          'gaussian_blur. A filter applies to ONE layer (`layer`, else the selected or top layer), ' +
+          'not to the flattened image — on a multi-layer document, say which layer. For type ' +
+          'vibrance, the knob is the `vibrance` field — `saturation` on that type is a separate ' +
+          'plain multiplier that normally stays untouched. curves: ONE filter per channel — add ' +
+          'separate filters for red and blue rather than one filter for both; points are [input, ' +
+          'output] 0-255 pairs including the endpoints. hue_saturation and color_balance likewise ' +
+          'carry ONE `range` per filter. gaussian_blur: radius in pixels at full resolution; ' +
+          'combine with a mask from gimp_create_mask for soft-focus or background-blur effects. A ' +
+          "re-edit (filter_id) MERGES: any field you omit keeps the filter's existing value, so " +
+          "re-editing {contrast: 50} on a brightness_contrast filter doesn't reset brightness. Only " +
+          'filters Editmamei created can be re-edited; one added in the GIMP GUI is refused (delete ' +
+          'and re-create it). `mask` (a channel name from gimp_create_mask) confines a NEW filter ' +
+          '— fixed at creation, cannot change on a re-edit. ORDER MATTERS: straighten / flip / ' +
+          'resize the canvas first, then crop, THEN add any masked adjustment — rotate, flip, and ' +
+          'resize all refuse outright once a masked adjustment filter exists, or any filter not ' +
+          'created by Editmamei (for example one added in the GIMP GUI). ' +
           "color_temperature's direction is " +
           'counter-intuitive: raising to_kelvin WARMS the image. Check the stack afterward with ' +
           'gimp_filter (op=list).',

@@ -277,7 +277,7 @@ describe('gimp_add_adjustment schema bounds match bridge/lib.py exactly (or its 
     expect(LIB_PY).toMatch(/MAX_RESIZE_SIDE_PX = 30_000/);
   });
 
-  it('"gamma" has NO bridge-side validator at all — op_levels reads it via a bare float() — the schema bound is a client-side-only safety net, not something to drift-check against a bridge bound that does not exist', () => {
+  it('"gamma" is validated bridge-side by lib.validate_levels with the same 0.1..10 bound as the schema, and op_levels runs every levels record through it', () => {
     const opsPy = readFileSync(
       join(REPO_ROOT, 'src', 'backends', 'gimp', 'bridge', 'ops.py'),
       'utf8'
@@ -287,11 +287,23 @@ describe('gimp_add_adjustment schema bounds match bridge/lib.py exactly (or its 
     // Unix-style pair here would never match at all.
     const opLevelsMatch = opsPy.match(/def op_levels\(args\):[\s\S]*?\ndef /);
     expect(opLevelsMatch, 'op_levels not found in ops.py').toBeTruthy();
-    expect(opLevelsMatch![0]).not.toMatch(/validate_range\(\s*'gamma'/);
-    expect(opLevelsMatch![0]).toMatch(/float\(args\.get\('gamma'/);
+    expect(opLevelsMatch![0]).toMatch(/lib\.validate_levels\(/);
+    const validateLevels = LIB_PY.match(/def validate_levels\(params\):[\s\S]*?\ndef /);
+    expect(validateLevels, 'validate_levels not found in lib.py').toBeTruthy();
+    expect(validateLevels![0]).toMatch(/validate_range\('gamma', params\['gamma'\], 0\.1, 10\.0\)/);
+    expect(validateLevels![0]).toMatch(/params\['in_low'\] < params\['in_high'\]/);
     const prop = ADJUST_SCHEMA_FOR_TESTS.properties?.gamma;
     expect(prop?.minimum).toBe(0.1);
     expect(prop?.maximum).toBe(10);
+  });
+
+  it("the type enum matches lib.py's ADJUST_OPERATIONS keys exactly (both directions)", () => {
+    const block = LIB_PY.match(/ADJUST_OPERATIONS = \{([\s\S]*?)\n\}/);
+    expect(block, 'ADJUST_OPERATIONS not found in lib.py').toBeTruthy();
+    const libTypes = [...block![1].matchAll(/'([a-z_]+)':\s*'[a-z]+:[a-z-]+'/g)].map((m) => m[1]);
+    const schemaTypes = ADJUST_SCHEMA_FOR_TESTS.properties?.type?.enum as string[];
+    expect([...schemaTypes].sort()).toEqual([...libTypes].sort());
+    expect(schemaTypes).toContain('gaussian_blur');
   });
 
   it('"preserve_luminosity" is a boolean schema field with no numeric bound — color_balance\'s builder converts it with a bare bool(), not validate_range', () => {
@@ -320,7 +332,7 @@ describe('gimp_add_adjustment schema bounds match bridge/lib.py exactly (or its 
     'in_high',
     'gamma',
     'out_low',
-    'out_high', // levels — asserted against ops.py's 0..255 gate above (gamma has no bound at all)
+    'out_high', // levels — asserted against ops.py's 0..255 gate above (gamma against validate_levels)
     'range', // enum, asserted separately above
     'preserve_luminosity', // boolean, asserted separately above
   ]);

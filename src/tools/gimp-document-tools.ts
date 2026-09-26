@@ -220,6 +220,14 @@ async function gimpExport(
           'gimp_save_xcf to save the live, re-editable document.'
       );
     }
+    if (!EXPORT_FORMAT_EXTENSIONS.includes(ext as (typeof EXPORT_FORMAT_EXTENSIONS)[number])) {
+      // Refused here, before dispatch: the bridge would render a full-resolution flattened
+      // duplicate of the document before reaching its own extension check.
+      throw new GimpError(
+        'invalid_argument',
+        `"file_path" must end in ${EXPORT_FORMAT_EXTENSIONS.join(', ')}, got "${ext || '(none)'}".`
+      );
+    }
     refuseExistingGimpFile(filePath, args.overwrite as boolean | undefined, existsSync);
 
     // Only the option(s) relevant to the resolved format are forwarded — the
@@ -239,18 +247,10 @@ async function gimpExport(
     } else if (ext === '.tif' || ext === '.tiff') {
       bridgeArgs.compression = args.tiff_compression;
       bridgeArgs.bit_depth = args.bit_depth;
-    } else {
-      // An extension outside the allow-list — the bridge refuses it with
-      // its own message naming the allow-list (bridge/lib.py's
-      // EXPORT_FORMATS); no need to duplicate that list's enforcement here.
     }
 
     const result = await gimp.call<{ path: string; bytes: number }>('export', bridgeArgs);
-    const format = EXPORT_FORMAT_EXTENSIONS.includes(
-      ext as (typeof EXPORT_FORMAT_EXTENSIONS)[number]
-    )
-      ? ext.replace('.', '')
-      : null;
+    const format = ext.replace('.', '');
     return {
       content: [
         {
@@ -273,7 +273,7 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_open_document',
         description:
-          'Open an image file — any format this GIMP install can load (JPEG, PNG, TIFF, WebP, ' +
+          'Headless GIMP: open an image file — any format this GIMP install can load (JPEG, PNG, TIFF, WebP, ' +
           'HEIC/HEIF, XCF, and more) — in the headless GIMP session and return its image id — the ' +
           'id every other gimp_* tool keys on (there is no "active document" concept: explicit ids ' +
           'beat hidden state). Opening a .xcf restores its live, re-editable filters (the ' +
@@ -307,7 +307,7 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_close_document',
         description:
-          'Close an image WITHOUT saving. Save first with gimp_save_xcf (keeps filters live) or ' +
+          'Headless GIMP: close an image WITHOUT saving. Save first with gimp_save_xcf (keeps filters live) or ' +
           'gimp_export (flattened deliverable) if the work should be kept.',
         inputSchema: closeSchema,
         outputSchema: { type: 'object', properties: { closed: { type: 'number' } } },
@@ -333,13 +333,15 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_save_xcf',
         description:
-          'Save the live GIMP document to a .xcf file — filters stay in place and re-editable ' +
-          'afterward (the ".xcf ≈ .psd" framing: it is the working file, not the deliverable). ' +
-          "Unlike gimp_export, this does NOT strip metadata — the source file's EXIF/XMP/IPTC " +
-          '(including GPS) carries into the .xcf exactly as it was on open, since this saves the ' +
-          'working document itself rather than exporting a flattened copy. Refuses to overwrite an ' +
-          'existing file unless overwrite: true. For a flattened, shippable copy with metadata ' +
-          'stripped, use gimp_export instead.',
+          'Headless GIMP: save the live GIMP document to a .xcf file — filters stay in place and ' +
+          're-editable afterward (the ".xcf ≈ .psd" framing: it is the working file, not the ' +
+          "deliverable). Unlike gimp_export, this does NOT strip metadata — the source file's " +
+          'EXIF/XMP/IPTC (including GPS) carries into the .xcf exactly as it was on open, since ' +
+          'this saves the working document itself rather than exporting a flattened copy. Refuses ' +
+          'to overwrite an existing file unless overwrite: true. Save early: on a very large ' +
+          'document a save can take tens of seconds, and if any call times out the GIMP session ' +
+          'restarts and every unsaved open image and filter is lost — save before long operations, ' +
+          'not after. For a flattened, shippable copy with metadata stripped, use gimp_export instead.',
         inputSchema: saveXcfSchema,
         outputSchema: {
           type: 'object',
@@ -359,11 +361,12 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_export',
         description:
-          'Write a FLATTENED deliverable to disk — every live filter is baked in, and ALL metadata ' +
-          '(EXIF/XMP/IPTC/GPS, thumbnail) is stripped unconditionally, never carried over from the ' +
-          'source. Format is picked from the file_path extension (jpg/jpeg, png, webp, tif/tiff); ' +
-          '.xcf is refused outright — use gimp_save_xcf for the live, re-editable document instead. ' +
-          'Refuses to overwrite an existing file unless overwrite: true.',
+          'Headless GIMP: write a FLATTENED deliverable to disk — every live filter is baked in, ' +
+          'and ALL metadata (EXIF/XMP/IPTC/GPS, thumbnail) is stripped unconditionally, never ' +
+          'carried over from the source. Format is picked from the file_path extension (jpg/jpeg, ' +
+          'png, webp, tif/tiff); any other extension is refused, and .xcf is refused outright — ' +
+          'use gimp_save_xcf for the live, re-editable document instead. Refuses to overwrite an ' +
+          'existing file unless overwrite: true (with it, the existing file is replaced).',
         inputSchema: exportSchema,
         outputSchema: {
           type: 'object',
@@ -376,7 +379,7 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
         annotations: {
           title: 'Export GIMP Document',
           readOnlyHint: false,
-          destructiveHint: false,
+          destructiveHint: true, // overwrite: true replaces an existing file
           idempotentHint: false,
           openWorldHint: true,
         },

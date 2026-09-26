@@ -86,14 +86,16 @@ export function createGimpMaskTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_create_mask',
         description:
-          'Build a geometric mask (rectangle / ellipse / linear or radial gradient) into a NAMED ' +
-          'channel. The active selection is CLEARED when this call returns — it does NOT leave the ' +
-          'mask selected the way a Photoshop selection would. Pass the returned `channel` name to ' +
-          "gimp_add_adjustment's `mask` field WHEN CREATING a new filter — that is the ONLY way to " +
-          "apply it — a filter's mask is fixed at creation and cannot be changed on a re-edit. " +
-          'Order matters: straighten / flip / resize the canvas FIRST (see gimp_transform_canvas, ' +
-          'gimp_resize_image), then crop, then create masks and masked adjustments — rotate, flip, ' +
-          'and resize all refuse outright once ANY masked adjustment filter exists on the image.',
+          'Headless GIMP: build a geometric mask (rectangle / ellipse / linear or radial gradient) ' +
+          'into a NAMED channel. The active selection is CLEARED when this call returns — it does ' +
+          'NOT leave the mask selected the way a Photoshop selection would. Pass the returned ' +
+          "`channel` name to gimp_add_adjustment's `mask` field WHEN CREATING a new filter — that " +
+          "is the ONLY way to apply it — a filter's mask is fixed at creation and cannot be " +
+          'changed on a re-edit. Order matters: straighten / flip / resize the canvas FIRST (see ' +
+          'gimp_transform_canvas, gimp_resize_image), then crop, then create masks and masked ' +
+          'adjustments — rotate, flip, and resize all refuse outright once ANY masked adjustment ' +
+          'filter exists on the image, or any filter not created by Editmamei (for example one ' +
+          'added in the GIMP GUI).',
         inputSchema: createMaskSchema,
         outputSchema: {
           type: 'object',

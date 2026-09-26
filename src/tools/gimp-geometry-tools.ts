@@ -11,7 +11,8 @@ import { GIMP_IMAGE_PROP, runGimpTool, pickSchemaDeclaredKeys } from './gimp-sha
  * straighten / flip / resize FIRST, then crop, then add any MASKED
  * adjustment. Rotate, flip, and resize all REFUSE outright
  * (`invalid_argument`, naming the filters) when the image already has a
- * masked filter — GIMP has no way to keep a filter's own baked-in mask
+ * masked filter, or a filter with no ledger record (one whose mask can't be
+ * checked, e.g. added in the GIMP GUI) — GIMP has no way to keep a filter's own baked-in mask
  * confinement aligned with those transforms (verified live: the filter's
  * confinement stays pinned to the PRE-transform pixel positions, silently
  * misaligned, or for resize appears to have no effect at all —
@@ -128,10 +129,11 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_crop_document',
         description:
-          'Crop the canvas to an explicit rectangle (left, top, width, height in document pixels) ' +
-          '— not a scale (that is gimp_resize_image). Every live filter, mask channel, and the ' +
-          'filter ledger survive a crop — verified live; it is the one geometry op that never ' +
-          'refuses for masked-filter safety.',
+          'Headless GIMP: crop the canvas to an explicit rectangle (left, top, width, height in ' +
+          'document pixels) — not a scale (that is gimp_resize_image). IRREVERSIBLE in this ' +
+          'session: there is no undo, so gimp_save_xcf first when in doubt. Every live filter, ' +
+          'mask channel, and the filter ledger survive a crop — verified live; it is the one ' +
+          'geometry op that never refuses for masked-filter safety.',
         inputSchema: cropSchema,
         outputSchema: {
           type: 'object',
@@ -162,10 +164,12 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_resize_image',
         description:
-          'Scale the whole image up or down — not a crop (that is gimp_crop_document). Give ' +
-          'width+height to stretch to an exact box, one alone to keep aspect, or long_edge to ' +
-          'scale by the longer side. REFUSES outright when the image has a masked adjustment ' +
-          'filter — resize before adding any masked adjustment, not after. A large target (the ' +
+          'Headless GIMP: scale the whole image up or down — not a crop (that is ' +
+          'gimp_crop_document). Give width+height to stretch to an exact box, one alone to keep ' +
+          'aspect, or long_edge to scale by the longer side. IRREVERSIBLE in this session: there ' +
+          'is no undo, so gimp_save_xcf first when in doubt. REFUSES outright when the image has a ' +
+          'masked adjustment filter, or any filter not created by Editmamei (for example one added ' +
+          'in the GIMP GUI) — resize before adding any masked adjustment, not after. A large target (the ' +
           'bridge allows up to 250 megapixels / 30000px per side) can take tens of seconds; if it ' +
           'times out, the GIMP session restarts and any unsaved work — filters, masks, and any ' +
           'other open image — is lost, so save (gimp_save_xcf) before an aggressive resize.',
@@ -199,10 +203,12 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_transform_canvas',
         description:
-          "op: 'rotate' (arbitrary `degrees` — straighten — plus `expand`) | 'flip' (`orientation` " +
-          'horizontal/vertical). REFUSES outright when the image has a masked adjustment filter — ' +
-          'straighten/flip before adding any masked adjustment, not after (crop is the one geometry ' +
-          'op that is always safe afterward). Rotating a very large image can take tens of seconds; ' +
+          "Headless GIMP: op 'rotate' (arbitrary `degrees` — straighten — plus `expand`) | 'flip' " +
+          '(`orientation` horizontal/vertical). IRREVERSIBLE in this session: there is no undo, so ' +
+          'gimp_save_xcf first when in doubt. REFUSES outright when the image has a masked ' +
+          'adjustment filter, or any filter not created by Editmamei (for example one added in the ' +
+          'GIMP GUI) — straighten/flip before adding any masked adjustment, not after (crop is the ' +
+          'one geometry op that is always safe afterward). Rotating a very large image can take tens of seconds; ' +
           'if it times out, the GIMP session restarts and any unsaved work — filters, masks, and ' +
           'any other open image — is lost, so save (gimp_save_xcf) before rotating a large canvas.',
         inputSchema: transformCanvasSchema,

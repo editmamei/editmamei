@@ -765,10 +765,9 @@ describe('CE tool surface leak guard', () => {
   // populated registry produces, not a degraded variant.
   const sequenceCandidates = createSequenceTools(sceneInvokeTool, () => true);
   // gimp_* — all `gimpFactories` (src/modules/gimp/index.ts), scanned the same
-  // way as ceFactories. Every gimp_* tool is 'dev' tier today, so the edition
-  // filter below drops them all — this scan does nothing observable YET, but
-  // future-proofs the guard: the moment any gimp_* tool is promoted to
-  // 'community', its description is scanned for free, with no test to update.
+  // way as ceFactories. The edition filter below keeps only the gimp_* tools
+  // whose tier the edition allows (tiers are set per the standing promote
+  // gate), so a tool promoted to 'community' is scanned with no test to update.
   const gimpCandidates = gimpFactories.flatMap((f) => f(makeGimpBackend().asBackend()));
 
   it('scans every factory ce/index.ts itself registers (secondary regression guard; see the name-set completeness check below for the primary one)', () => {

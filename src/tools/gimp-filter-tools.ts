@@ -1,7 +1,7 @@
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
-import { toolGimpErrorResult } from '../utils/tool-helpers.js';
+import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers.js';
 import { GIMP_IMAGE_PROP, pickSchemaDeclaredKeys } from './gimp-shared.js';
 
 /**
@@ -23,11 +23,15 @@ const filterSchema: JsonSchemaObject = {
       type: 'string',
       enum: ['list', 'set_visibility', 'delete'],
       description:
-        "'list' returns every filter on the image, top of stack first, with id/name/operation/" +
-        "visible/mask/source (editmamei = exact ledger record; readback = GIMP's own config, " +
-        "lossy for per-channel curves after a reload) and params. 'set_visibility' toggles one " +
-        "filter without deleting it. 'delete' removes one. There is no 'reorder' — GIMP has no API " +
-        'for it; delete and re-create the filters in the desired order instead.',
+        "'list' returns every filter on the image (including filters on layers inside groups), " +
+        'top of stack first, with id/name/operation/visible/mask/source and params. source ' +
+        '"editmamei" = exact ledger record, with params in gimp_add_adjustment\'s own field names ' +
+        'and units, so they can be passed straight back on a re-edit. source "readback" = a filter ' +
+        "Editmamei did not create; its params are GIMP's raw GEGL property names and units (not " +
+        'gimp_add_adjustment fields), lossy for per-channel curves after a reload, and such a ' +
+        "filter cannot be re-edited. 'set_visibility' toggles one filter without deleting it. " +
+        "'delete' removes one. There is no 'reorder' — GIMP has no API for it; delete and " +
+        're-create the filters in the desired order instead.',
     },
     filter_id: {
       type: 'integer',
@@ -48,6 +52,12 @@ async function gimpFilter(
   try {
     const args = validateArgs(filterSchema, rawArgs);
     const op = args.op as string;
+    // Unreachable while the schema's own enum stands (validateArgs already
+    // refused anything outside it) — kept as defense-in-depth, the same
+    // posture every other consolidated dispatcher takes.
+    if (op !== 'list' && op !== 'set_visibility' && op !== 'delete') {
+      return unknownDiscriminator('op', op, ['list', 'set_visibility', 'delete']);
+    }
     const result = await gimp.call<Record<string, unknown>>(
       'filter',
       pickSchemaDeclaredKeys(filterSchema, args)
@@ -76,7 +86,8 @@ export function createGimpFilterTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_filter',
         description:
-          'Manage the live filter stack: op list | set_visibility | delete. No `apply` op — ' +
+          'Headless GIMP: manage the live filter stack: op list | set_visibility | delete. ' +
+          '`delete` permanently removes that filter (there is no undo). No `apply` op — ' +
           "creating or re-editing a filter is gimp_add_adjustment's job; this tool only inspects " +
           'or manages what already exists. No `reorder` (GIMP has no API for it) — delete and ' +
           're-create in the desired order instead. `list` is the way to check what a stack of ' +
@@ -95,7 +106,7 @@ export function createGimpFilterTools(gimp: GimpBackend): ToolDefinition[] {
         annotations: {
           title: 'Manage GIMP Filter Stack',
           readOnlyHint: false,
-          destructiveHint: false,
+          destructiveHint: true, // op=delete removes a filter with no undo
           idempotentHint: false,
           openWorldHint: true,
         },

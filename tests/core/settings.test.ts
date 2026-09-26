@@ -75,19 +75,37 @@ describe('loadSettings — existing / malformed', () => {
   });
 
   it('preserves an explicit editor pin + gimp_path from disk', async () => {
+    // Absolute on whichever OS runs the suite (the load-time check uses host path rules).
+    const gimpPath = join(dir, 'tools', 'gimp-console-3.2.exe');
     await writeFile(
       settingsPath({ dir }),
       JSON.stringify({
         editor: 'gimp',
-        gimp_path: 'C:/tools/gimp-console-3.2.exe',
+        gimp_path: gimpPath,
         telemetry: { install_id: 'keep0000000000' },
       }),
       'utf8'
     );
     const { settings } = loadSettings({ dir });
     expect(settings.editor).toBe('gimp');
-    expect(settings.gimp_path).toBe('C:/tools/gimp-console-3.2.exe');
+    expect(settings.gimp_path).toBe(gimpPath);
   });
+
+  it.each([
+    ['a relative path', 'tools/gimp-console-3.2.exe'],
+    ['a UNC share', '\\\\server\\share\\gimp-console-3.2.exe'],
+  ])(
+    'drops a hand-edited gimp_path that is %s back to auto-detect instead of spawning it',
+    async (_label, gimpPath) => {
+      await writeFile(
+        settingsPath({ dir }),
+        JSON.stringify({ gimp_path: gimpPath, telemetry: { install_id: 'keep0000000000' } }),
+        'utf8'
+      );
+      const { settings } = loadSettings({ dir });
+      expect(settings.gimp_path).toBeNull();
+    }
+  );
 
   it('falls back editor to the default on an unrecognized value rather than throwing', async () => {
     await writeFile(

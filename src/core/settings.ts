@@ -18,6 +18,7 @@ import { join, dirname } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { Logger } from '../utils/logger.js';
+import { requireAbsoluteGimpPath } from '../utils/gimp-path.js';
 
 const logger = new Logger('Settings');
 
@@ -134,8 +135,23 @@ function coerce(raw: unknown, installId: string): Settings {
       typeof r.editor === 'string' && (EDITOR_PINS as readonly string[]).includes(r.editor)
         ? (r.editor as EditorPin)
         : base.editor,
-    gimp_path: typeof r.gimp_path === 'string' ? r.gimp_path : null,
+    gimp_path: coerceGimpPath(r.gimp_path),
   };
+}
+
+/**
+ * A hand-edited `gimp_path` gets the same rule `editmamei config set gimp_path` enforces: a
+ * relative path would resolve against the server's own working directory at spawn, so anything
+ * that isn't a plain absolute path falls back to auto-detection (logged) instead.
+ */
+function coerceGimpPath(raw: unknown): string | null {
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  try {
+    return requireAbsoluteGimpPath('gimp_path', raw);
+  } catch (err) {
+    logger.warn(`ignoring settings.json gimp_path (falling back to auto-detect): ${errMsg(err)}`);
+    return null;
+  }
 }
 
 /**

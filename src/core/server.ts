@@ -457,9 +457,8 @@ export class EditmameiServer {
         // reached readiness — mirrors the ps_version wiring above, but reads
         // straight off the backend rather than needing its own probe: any
         // successful gimp_* call already proves the session started.
-        // setGimpVersion no-ops when the value hasn't changed, so this is
-        // cheap to call on every gimp_* success rather than tracking our own
-        // "already logged" flag.
+        // `lastLoggedGimpVersion` keeps this to one setGimpVersion call per
+        // distinct version rather than one per gimp_* success.
         if (entry.success && entry.tool.startsWith('gimp_') && this.gimpBackend?.gimpVersion) {
           const version = this.gimpBackend.gimpVersion;
           if (version !== this.lastLoggedGimpVersion) {

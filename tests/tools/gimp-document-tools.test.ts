@@ -156,6 +156,20 @@ describe('createGimpDocumentTools', () => {
       expect(result.structuredContent).toEqual({ path: absPath('out.xcf'), bytes: 1234 });
     });
 
+    it('accepts an uppercase .XCF extension', async () => {
+      const gimp = makeGimpBackend({ result: { path: absPath('OUT.XCF'), bytes: 10 } });
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_save_xcf', {
+        image: 1,
+        file_path: absPath('OUT.XCF'),
+      });
+      expect(result.isError).toBeFalsy();
+      expect(gimp.lastCall()).toEqual({
+        op: 'export',
+        args: { image: 1, path: absPath('OUT.XCF') },
+      });
+    });
+
     it('refuses to overwrite an existing file unless overwrite: true', async () => {
       const existingPath = join(scratchDir, 'existing.xcf');
       writeFileSync(existingPath, 'x');
@@ -201,6 +215,42 @@ describe('createGimpDocumentTools', () => {
       expect(result.isError).toBe(true);
       expect((result.content?.[0] as { text: string }).text).toMatch(/gimp_save_xcf/);
       expect(gimp.calls).toHaveLength(0);
+    });
+
+    it('refuses an extension outside the export formats before dispatching (the bridge would composite first)', async () => {
+      const gimp = makeGimpBackend();
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      for (const name of ['out.bmp', 'out.gif', 'out']) {
+        const result = await callTool(tools, 'gimp_export', { image: 1, file_path: absPath(name) });
+        expect(result.isError, name).toBe(true);
+        expect((result.content?.[0] as { text: string }).text).toMatch(
+          /invalid_argument.*must end in .jpg/
+        );
+      }
+      expect(gimp.calls).toHaveLength(0);
+    });
+
+    it('refuses an uppercase .XCF too', async () => {
+      const gimp = makeGimpBackend();
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('OUT.XCF'),
+      });
+      expect(result.isError).toBe(true);
+      expect((result.content?.[0] as { text: string }).text).toMatch(/gimp_save_xcf/);
+      expect(gimp.calls).toHaveLength(0);
+    });
+
+    it('accepts an uppercase extension it supports (.JPG)', async () => {
+      const gimp = makeGimpBackend({ result: { path: absPath('OUT.JPG'), bytes: 5 } });
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('OUT.JPG'),
+      });
+      expect(result.isError).toBeFalsy();
+      expect(gimp.lastCall().op).toBe('export');
     });
 
     it('forwards only jpeg-relevant options for a .jpg path', async () => {

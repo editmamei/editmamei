@@ -10,9 +10,24 @@ import { GimpError } from '../backends/gimp/errors.js';
  * takes (`server.ts`'s buildLicenseAdvisoryNote comment): it is the discovery
  * primitive, and a failed connection is content the caller needs, not an
  * exception to unwind. It answers with whatever the bridge's own `ping` op
- * gives it (`ops.py`'s `op_ping`), which reports open image IDS but not
- * names — `gimp_inspect(what='documents')` is the place to get names.
+ * gives it (`ops.py`'s `op_ping`), which reports open image IDS only — the
+ * bridge has no per-image describe op, so an image's name and size come from
+ * `gimp_open_document`'s own result at open time.
  */
+
+/**
+ * `message` with every occurrence of the install's full path (and launch
+ * command) cut down to its basename: a start failure names the binary, and
+ * the full path carries the username.
+ */
+function redactInstallPaths(message: string, gimp: GimpBackend): string {
+  const full = [gimp.install?.path, gimp.install?.launch.command].filter(
+    (p): p is string => typeof p === 'string' && p.length > 0 && basename(p) !== p
+  );
+  let out = message;
+  for (const p of full) out = out.split(p).join(basename(p));
+  return out;
+}
 
 const pingSchema = { type: 'object' as const, properties: {} };
 
@@ -28,24 +43,22 @@ async function gimpPing(gimp: GimpBackend): Promise<ToolResult> {
   const installBasename = gimp.install ? basename(gimp.install.path) : null;
   try {
     const result = await gimp.call<PingBridgeResult>('ping', {});
-    // The bridge's own state was 'idle' (never started), 'dead' (crashed /
-    // timed-out-killed), or 'starting' (a background start already under
-    // way, joined by this very call) the instant BEFORE this call —
-    // #dispatch's lazy #startFresh/#joinOrStart is what just took it to
-    // 'ready'. 'idle' -> cold start; 'dead' -> a crash/timeout the caller
-    // should know happened; 'starting' -> defer to the ORIGIN of that
-    // attempt (`gimp.startOrigin`, set when the attempt began — could be a
-    // fresh 'cold' launch or a 'restarted' recovery), since "starting" alone
-    // doesn't say which; anything else ('ready', a session already warm
-    // before this call) -> warm.
+    // The bridge's own state was 'idle' (never started), 'dead' (crashed,
+    // timed-out-killed, or a first launch that failed), or 'starting' (a
+    // background start already under way, joined by this very call) the
+    // instant BEFORE this call — #dispatch's lazy #startFresh/#joinOrStart is
+    // what just took it to 'ready'. 'idle' -> cold start; 'dead'/'starting'
+    // -> defer to the ORIGIN of the attempt that just connected
+    // (`gimp.startOrigin`: 'restarted' only if the session had been ready
+    // before, so a first launch that failed and was retried still reads
+    // 'cold'); anything else ('ready', a session already warm before this
+    // call) -> warm.
     const sessionState: 'cold' | 'warm' | 'restarted' =
       priorState === 'idle'
         ? 'cold'
-        : priorState === 'dead'
-          ? 'restarted'
-          : priorState === 'starting'
-            ? (gimp.startOrigin ?? 'restarted')
-            : 'warm';
+        : priorState === 'dead' || priorState === 'starting'
+          ? (gimp.startOrigin ?? 'restarted')
+          : 'warm';
     const version = `${result.major}.${result.minor}.${result.micro}`;
     const openImages = (result.images ?? []).map((image) => ({ image }));
     return {
@@ -66,7 +79,10 @@ async function gimpPing(gimp: GimpBackend): Promise<ToolResult> {
       },
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = redactInstallPaths(
+      error instanceof Error ? error.message : String(error),
+      gimp
+    );
     // `gimp_starting` is not a failed connection — it's still starting, and
     // the caller should just ask again shortly. Reported distinctly (but
     // still never isError, and still connected: false — nothing is ready to
@@ -102,7 +118,9 @@ export const GIMP_OVERVIEW_MARKDOWN = `# Editmamei — driving headless GIMP wit
 
 This is the second-editor beta surface: a headless \`gimp_*\` tool set
 alongside (or instead of) the Photoshop \`ps_*\` surface, depending on
-what this build's boot detected. Discovery chain: \`gimp_ping\`
+what this build's boot detected. When both \`ps_*\` and \`gimp_*\` tools
+are registered, use \`gimp_*\` only when the user asked for GIMP or
+Photoshop is unavailable. Discovery chain: \`gimp_ping\`
 (liveness + session state) -> this overview (workflow) ->
 \`ps_list_capabilities\` (a live map of every tool, grouped) ->
 \`tools/list\` (full schemas). If a tool named here isn't in your
@@ -151,12 +169,17 @@ of the first. Check the live stack any time with
 
 Every filter this server creates is tracked in a persistent ledger
 saved inside the \`.xcf\`. \`gimp_filter\` (op=list) reports
-\`source: "editmamei"\` for those — exact, trustworthy parameters. A
-filter the GIMP GUI (or a different tool) created independently reports
-\`source: "readback"\` — GIMP's own config readback is LOSSY for
-per-channel curves/levels after a reload (it silently reports only the
-\`value\` channel), so treat a readback curve/levels record as
-approximate, not ground truth.
+\`source: "editmamei"\` for those — exact, trustworthy parameters, in
+\`gimp_add_adjustment\`'s own field names and units, so a listed value
+can be passed straight back on a re-edit. A filter the GIMP GUI (or a
+different tool) created independently reports \`source: "readback"\` —
+raw GEGL property names and units, not tool fields. GIMP's own config
+readback is LOSSY for per-channel curves/levels after a reload (it
+silently reports only the \`value\` channel), so treat a readback
+record as approximate, not ground truth. Because its current values
+can't be read back exactly, a readback filter can't be re-edited by
+\`filter_id\` — that is refused; delete it and re-create it, or edit it
+in the GIMP GUI.
 
 ## .xcf vs export
 
@@ -187,30 +210,40 @@ instead.
 
 Straighten / flip / resize the canvas FIRST, then crop, then add any
 MASKED adjustment. Rotate, flip, and resize all REFUSE outright when
-the image already has a masked filter — GIMP has no way to keep a
-filter's own baked-in mask confinement aligned with those transforms
-(a masked filter drawn at the old geometry would silently render in
-the wrong place). Crop is the one exception: cropping preserves every
-filter, mask, and channel correctly, so it's safe at any point in the
-sequence. Unmasked filters survive every geometry op.
+the image already has a masked filter, or any filter not created by
+Editmamei (for example one added in the GIMP GUI — whether it is masked
+can't be checked) — GIMP has no way to keep a filter's own baked-in mask
+confinement aligned with those transforms (a masked filter drawn at the
+old geometry would silently render in the wrong place). Crop is the one
+exception: cropping preserves every filter, mask, and channel correctly,
+so it's safe at any point in the sequence. Unmasked filters survive
+every geometry op.
+
+## No undo: geometry is permanent, adjustments are not
+
+Crop, resize, rotate, and flip are IRREVERSIBLE in this session — there
+is no undo. \`gimp_save_xcf\` first when in doubt, and reopen that file
+to go back. Adjustments are reversible: \`gimp_filter\` (op=delete)
+removes one, and a re-edit by \`filter_id\` changes it in place.
 
 ## Previews are proxy renders
 
 \`gimp_get_preview\` and the default (non-\`exact\`) \`gimp_get_histogram\`
 render a downscaled proxy with live filters re-applied. Per-pixel
 filters (curves, levels, color balance) are EXACT on the proxy;
-spatial filters (sharpen, shadows/highlights, noise reduction) are
-approximate — their radius/std-dev is scaled to the proxy size, not
+spatial filters (sharpen, gaussian blur, shadows/highlights, noise
+reduction) are approximate — their radius/std-dev is scaled to the proxy size, not
 rendered at native resolution. \`gimp_get_histogram\`'s \`exact: true\`
 (full-resolution) is the trustworthy final check before export,
 especially for a spatial filter or a masked crop.
 
-## No raw support
+## Raw files need a raw-develop plug-in
 
-GIMP core has no raw-camera loader. \`gimp_open_document\` refuses a
-DNG/CR2/CR3/NEF/ARW/... file with a named error pointing at an external
-raw developer (darktable, RawTherapee, or ART) — develop it there first
-and open the resulting JPEG/TIFF/PNG here.
+GIMP core has no raw-camera loader. \`gimp_open_document\` always tries
+the load: an install with a raw-develop plug-in (darktable, RawTherapee,
+or ART) opens DNG/CR2/CR3/NEF/ARW/... directly. Without one, the load
+fails with a named error pointing at those developers — develop the
+file there first and open the resulting JPEG/TIFF/PNG here.
 
 ## Re-orienting mid-session
 
@@ -240,7 +273,7 @@ export function createGimpCoreTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_ping',
         description:
-          'Test connection to the headless GIMP session and report session-start discovery ' +
+          'Headless GIMP: test connection to the GIMP session and report session-start discovery ' +
           'signals. Starts the session on the FIRST call if it is not already running — this cold ' +
           'start is usually just a few seconds (about 10 seconds on macOS), so expect the first ' +
           'gimp_ping (or any first gimp_* call) in a session to be a bit slow; every call after ' +
@@ -287,10 +320,11 @@ export function createGimpCoreTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_overview',
         description:
-          'Orientation brief for the gimp_* tool surface — the headless workflow contract, curve ' +
-          "laws (one filter per channel; re-edit by filter_id, don't stack), ledger-truth vs. " +
-          'readback, .xcf-vs-export, precision guidance, mask/geometry ordering, proxy-preview ' +
-          "caveats, and the no-raw-support limitation. READ THIS FIRST when you're given an " +
+          'Headless GIMP: orientation brief for the gimp_* tool surface — the headless workflow ' +
+          "contract, curve laws (one filter per channel; re-edit by filter_id, don't stack), " +
+          'ledger-truth vs. readback, .xcf-vs-export, precision guidance, mask/geometry ordering, ' +
+          'no undo for geometry, proxy-preview caveats, raw-file handling, and when to prefer ' +
+          "gimp_* over ps_*. READ THIS FIRST when you're given an " +
           'open-ended GIMP editing task. Read-only, idempotent, no document required, no GIMP ' +
           'round trip (returns a static markdown brief). Skip it for a trivial single-tool request ' +
           'where you already know which tool fits.',

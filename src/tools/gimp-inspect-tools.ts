@@ -74,7 +74,7 @@ export function createGimpInspectTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_inspect',
         description:
-          "Read-only state reader. Today's only target: what='documents' lists every image " +
+          "Headless GIMP: read-only state reader. Today's only target: what='documents' lists every image " +
           'currently open in this headless GIMP session by id (no name/size — track those from ' +
           "gimp_open_document's own return value). Fewer targets than ps_inspect: the GIMP bridge " +
           'has no describe-by-id op for an already-open image yet.',

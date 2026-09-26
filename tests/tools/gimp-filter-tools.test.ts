@@ -72,3 +72,28 @@ describe('createGimpFilterTools', () => {
     expect((result.content?.[0] as { text: string }).text).toContain('invalid_argument');
   });
 });
+
+describe('gimp_filter op dispatch', () => {
+  it('refuses an op outside list/set_visibility/delete without dispatching, even if the schema enum were loosened', async () => {
+    // The schema enum rejects this first today; the handler's own fallback is the second line.
+    // Loosen the enum for this test only, so the handler itself is exercised.
+    const gimp = makeGimpBackend({ result: { filter_id: 1, name: 'x', deleted: true } });
+    const tools = createGimpFilterTools(gimp.asBackend());
+    const opProp = (tools[0]!.tool.inputSchema as { properties: { op: { enum: string[] } } })
+      .properties.op;
+    const saved = opProp.enum;
+    opProp.enum = [...saved, 'reorder'];
+    try {
+      const result = await callTool(tools, 'gimp_filter', {
+        image: 1,
+        op: 'reorder',
+        filter_id: 1,
+      });
+      expect(result.isError).toBe(true);
+      expect((result.content?.[0] as { text: string }).text).toMatch(/reorder/);
+      expect(gimp.calls).toHaveLength(0);
+    } finally {
+      opProp.enum = saved;
+    }
+  });
+});

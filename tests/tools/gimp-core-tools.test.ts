@@ -46,6 +46,36 @@ describe('createGimpCoreTools', () => {
       expect(result.structuredContent?.session_state).toBe('restarted');
     });
 
+    it('reports session_state cold, not restarted, when a first launch that failed was retried (dead, but never ready)', async () => {
+      const gimp = makeGimpBackend({
+        result: { major: 3, minor: 2, micro: 6, images: [] },
+        state: 'dead',
+        startOrigin: 'cold',
+      });
+      const tools = createGimpCoreTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_ping');
+      expect(result.structuredContent?.session_state).toBe('cold');
+    });
+
+    it('shows the install only by file name in a failure message (a full path carries the username)', async () => {
+      const dir = 'C:/Users/someone/AppData/Local/Programs/GIMP 3/bin';
+      const full = `${dir}/gimp-console-3.2.exe`;
+      const gimp = makeGimpBackend({
+        install: { source: 'conventional', path: full, launch: { command: full, args: [] } },
+        throwFor: () =>
+          new GimpError(
+            'gimp_start_failed',
+            `could not start GIMP at "${full}": spawn ${full} EACCES`
+          ),
+      });
+      const tools = createGimpCoreTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_ping');
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).not.toContain(dir);
+      expect(text).toContain('could not start GIMP at "gimp-console-3.2.exe"');
+      expect(result.structuredContent?.install_path_basename).toBe('gimp-console-3.2.exe');
+    });
+
     it('never returns isError — a failed connection reports connected: false instead', async () => {
       const gimp = makeGimpBackend({
         throwFor: () => new Error('gimp_not_installed: no GIMP install was found'),
@@ -79,7 +109,10 @@ describe('createGimpCoreTools', () => {
       });
       const tools = createGimpCoreTools(gimp.asBackend());
       const result = await callTool(tools, 'gimp_ping');
-      expect(result.structuredContent).toMatchObject({ connected: true, session_state: 'restarted' });
+      expect(result.structuredContent).toMatchObject({
+        connected: true,
+        session_state: 'restarted',
+      });
     });
 
     it('reports session_state cold when the prior state was "starting" and its origin was the first-ever launch', async () => {
