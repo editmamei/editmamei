@@ -40,9 +40,11 @@ const openSchema: JsonSchemaObject = {
     file_path: {
       type: 'string',
       description:
-        'Absolute path to a JPEG/PNG/TIFF/WebP/XCF file. Raw camera files (DNG, CR2, CR3, NEF, ' +
-        'ARW, ...) are refused with a hint to develop them externally (darktable, RawTherapee, or ' +
-        'ART) first, then open the resulting JPEG/TIFF here — GIMP core has no raw loader.',
+        'Absolute path to an image file. Opens any format this GIMP install can load — JPEG, PNG, ' +
+        'TIFF, WebP, HEIC/HEIF, XCF, and more, depending on what GIMP + its plug-ins support. Raw ' +
+        'camera files (DNG, CR2, CR3, NEF, ARW, ...) need a RAW loader plug-in (darktable, ' +
+        'RawTherapee, or ART) installed in GIMP; without one they are refused with a hint to ' +
+        'develop them externally first, then open the resulting JPEG/TIFF here.',
     },
     precision: {
       type: 'string',
@@ -271,12 +273,14 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_open_document',
         description:
-          'Open a JPEG/PNG/TIFF/WebP/XCF file in the headless GIMP session and return its image ' +
-          'id — the id every other gimp_* tool keys on (there is no "active document" concept: ' +
-          'explicit ids beat hidden state). Opening a .xcf restores its live, re-editable filters ' +
-          '(the editmamei-filters ledger). Raw camera files are refused; develop them externally ' +
-          'first. `precision` promotes bit depth before grading — use it ahead of an aggressive ' +
-          'tone move on an 8-bit source.',
+          'Open an image file — any format this GIMP install can load (JPEG, PNG, TIFF, WebP, ' +
+          'HEIC/HEIF, XCF, and more) — in the headless GIMP session and return its image id — the ' +
+          'id every other gimp_* tool keys on (there is no "active document" concept: explicit ids ' +
+          'beat hidden state). Opening a .xcf restores its live, re-editable filters (the ' +
+          'editmamei-filters ledger). Raw camera files need a raw-develop plug-in (darktable, ' +
+          'RawTherapee, or ART) installed in GIMP; without one they are refused with a hint to ' +
+          'develop them externally first. `precision` promotes bit depth before grading — use it ' +
+          'ahead of an aggressive tone move on an 8-bit source.',
         inputSchema: openSchema,
         outputSchema: {
           type: 'object',
