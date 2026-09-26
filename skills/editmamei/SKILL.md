@@ -44,6 +44,14 @@ After `ps_ping` succeeds, call `ps_overview` once to read the workflow brief and
 
 Never speculate that a tool exists. If you reference an operation that isn't in your `tools/list`, work around it or surface the gap to the user. The overview describes the workflow tier-agnostically; the inventory in your `tools/list` is what's actually available.
 
+# GIMP (second editor, beta)
+
+If your `tools/list` also includes `gimp_*` tools, that's a headless GIMP session running alongside (or instead of) Photoshop. Use `gimp_*` only when the user asked for GIMP, or when Photoshop isn't available: not as a default alternative to `ps_*`.
+
+Follow the same discovery discipline as above: call `gimp_ping` first (liveness + session state), then `gimp_overview` once before editing. It's a different workflow contract from Photoshop's (curve-per-channel rules, live filters vs. readback, mask/geometry ordering), and assuming Photoshop's rules apply will produce wrong results.
+
+Headless means there's no window to watch: follow progress through `gimp_get_preview`'s returned image rather than expecting a visible GIMP to update. Save early with `gimp_save_xcf` before a large or slow operation, since a timed-out call restarts the session and every open image and unsaved filter is lost. Crop, resize, rotate, and flip have no undo in this session; adjustments do, and are reversible or re-editable by `filter_id`.
+
 # The core loop
 
 Apply to every photo-editing request, no exceptions. The loop is the discipline that makes terse prompts produce the same quality as detailed ones.

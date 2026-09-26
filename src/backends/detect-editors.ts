@@ -140,8 +140,8 @@ export interface EditorRegistrationDecision {
  * `gimpToolsAllowed` (computed from `TOOL_TIERS` + the running `EDITION` —
  * `anyGimpToolAllowedInEdition` above, or an injected value in tests) guards
  * the 'gimp' pin against a build that would register the surface but ship
- * NONE of its tools (the ordinary case for a shipped community/pro build
- * while the `gimp_*` tools sit at tier 'dev'). Without this, pinning
+ * NONE of its tools (a build where every `gimp_*` tool sits at tier
+ * 'dev'). Without this, pinning
  * 'gimp' on such a build leaves almost no tools registered at all —
  * Photoshop off (the pin says so) and GIMP filtered down to zero by the
  * edition gate. Falling back to `ps_*` with a logged warning is a real,

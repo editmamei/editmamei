@@ -6,6 +6,8 @@ Both editions follow the same rule: AI orchestration, not generation. Photoshop 
 
 This page describes the line between Community and Pro as it stands today. The split may evolve; see [editmamei.com/pricing](https://editmamei.com/pricing) for the current state.
 
+Everything on this page is Photoshop-only. Editmamei's GIMP support (see [docs/gimp.md](gimp.md)) is Community, beta, and has no Pro tier.
+
 ---
 
 ## Activating Pro

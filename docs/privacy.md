@@ -59,9 +59,11 @@ run. These are the keys:
 | `telemetry.usage` | boolean | `true` (on) | Content-free usage and reliability data. The opt-out tier. |
 | `telemetry.diagnostics` | boolean | `false` (off) | Extra sanitized error detail for bug-hunting. The opt-in tier. |
 | `telemetry.install_id` | string | random | A random ID, minted once, so installs can be counted without knowing who you are. It is not derived from anything about you, but it is stable, so it is still personal data and you have rights over it — see [Your rights, and the legal basis](#your-rights-and-the-legal-basis). **Read-only**: you can see it, but it isn't something you set. |
-| `privacy.send_previews_to_llm` | boolean | `true` | Reserved for an upcoming per-feature control over sending visual previews to your AI assistant. **Not yet enforced**: setting it has no effect in the current build. |
+| `privacy.send_previews_to_llm` | boolean | `true` | A per-feature control over sending visual previews to your AI assistant. **Enforced on the GIMP side**: `gimp_get_preview` and `gimp_compare` (see [docs/gimp.md](gimp.md)) withhold image bytes when this is `false`, returning only dimensions and a file name. **Not yet enforced on the Photoshop side**: setting it currently has no effect on `ps_get_preview` or the other Photoshop preview tools. |
 | `ps_path` | string \| null | `null` | Pin a specific Photoshop binary. `null` = auto-detect (the `PHOTOSHOP_PATH` env var still wins if set). |
 | `update_check` | boolean | `true` (on) | Check the public npm registry at startup for a newer version (see "Update check" below). The opt-out tier. |
+| `editor` | string | `"auto"` | Pin which editor(s) register at boot: `auto`, `photoshop`, or `gimp`. The `EDITMAMEI_EDITOR` env var still wins if set. See [docs/gimp.md](gimp.md#pinning-the-editor). |
+| `gimp_path` | string \| null | `null` | Pin a specific GIMP binary (an absolute path; `EDITMAMEI_GIMP_PATH=flatpak` is the way to use Flatpak). `null` = auto-detect (the `EDITMAMEI_GIMP_PATH` env var still wins if set). See [docs/gimp.md](gimp.md#pointing-at-a-custom-install). |
 
 `install_id` is a random value; it is **not** derived from your username, machine name, email,
 or any other identifier.
@@ -85,7 +87,9 @@ Three equivalent ways, all writing the same `~/.editmamei/settings.json`:
     "send_previews_to_llm": true
   },
   "update_check": true,
-  "ps_path": null
+  "ps_path": null,
+  "editor": "auto",
+  "gimp_path": null
 }
 ```
 
