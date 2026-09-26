@@ -105,10 +105,11 @@ describe.each([
     expect(existsSync(join(bridgeDir, 'lib.py')), 'lib.py').toBe(true);
     expect(existsSync(join(bridgeDir, 'test_lib.py')), 'test_lib.py must not ship').toBe(false);
     // And only those: a stray test helper or fixture must not ride along either.
-    expect(readdirSync(bridgeDir).filter((f) => f.endsWith('.py')).sort()).toEqual([
-      'lib.py',
-      'ops.py',
-    ]);
+    expect(
+      readdirSync(bridgeDir)
+        .filter((f) => f.endsWith('.py'))
+        .sort()
+    ).toEqual(['lib.py', 'ops.py']);
   });
 });
 

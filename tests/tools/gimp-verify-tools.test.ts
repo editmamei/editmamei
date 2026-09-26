@@ -171,7 +171,7 @@ describe('createGimpVerifyTools', () => {
         .channels.luminance.bins;
       expect(returned).toHaveLength(HISTOGRAM_BIN_COUNT);
       const channelSchema = (
-        tool.tool.outputSchema as {
+        tool.tool.outputSchema as unknown as {
           properties: {
             channels: {
               additionalProperties: {

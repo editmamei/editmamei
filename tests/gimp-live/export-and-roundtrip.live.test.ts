@@ -344,7 +344,12 @@ describe.skipIf(!install)('export options, metadata stripping, and .xcf round tr
 
   it('.xcf round trip: after reopen, a filter can be re-edited by its listed id, hidden, and deleted, and each changes the render', async () => {
     const opened = await session.call<{ image: number }>('open', { path: rampPath });
-    await session.call('adjust', { image: opened.image, type: 'exposure', exposure: 0.5, name: 'Lift' });
+    await session.call('adjust', {
+      image: opened.image,
+      type: 'exposure',
+      exposure: 0.5,
+      name: 'Lift',
+    });
     await session.call('adjust', {
       image: opened.image,
       type: 'brightness_contrast',

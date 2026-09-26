@@ -79,8 +79,9 @@ describe('gimp_filter op dispatch', () => {
     // Loosen the enum for this test only, so the handler itself is exercised.
     const gimp = makeGimpBackend({ result: { filter_id: 1, name: 'x', deleted: true } });
     const tools = createGimpFilterTools(gimp.asBackend());
-    const opProp = (tools[0]!.tool.inputSchema as { properties: { op: { enum: string[] } } })
-      .properties.op;
+    const opProp = (
+      tools[0]!.tool.inputSchema as unknown as { properties: { op: { enum: string[] } } }
+    ).properties.op;
     const saved = opProp.enum;
     opProp.enum = [...saved, 'reorder'];
     try {

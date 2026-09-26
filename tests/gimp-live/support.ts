@@ -564,7 +564,9 @@ export function pngHasXmpItxt(chunks: Map<string, Buffer[]>): boolean {
  * commonly write EXIF as a `zTXt` "Raw profile type exif" (hex text), so checking `eXIf` and the
  * XMP `iTXt` keyword alone would miss it.
  */
-export function pngTextPayloads(chunks: Map<string, Buffer[]>): Array<{ keyword: string; text: Buffer }> {
+export function pngTextPayloads(
+  chunks: Map<string, Buffer[]>
+): Array<{ keyword: string; text: Buffer }> {
   const out: Array<{ keyword: string; text: Buffer }> = [];
   for (const data of chunks.get('tEXt') ?? []) {
     const nul = data.indexOf(0);
@@ -716,7 +718,12 @@ function withGpsCoordinates(jpeg: Buffer): Buffer {
       const newPayload = Buffer.concat([EXIF_SIG, gpsExifTiff()]);
       const header = Buffer.from([0xff, 0xe1, 0, 0]);
       header.writeUInt16BE(newPayload.length + 2, 2);
-      return Buffer.concat([jpeg.subarray(0, pos), header, newPayload, jpeg.subarray(pos + 2 + length)]);
+      return Buffer.concat([
+        jpeg.subarray(0, pos),
+        header,
+        newPayload,
+        jpeg.subarray(pos + 2 + length),
+      ]);
     }
     if (marker === 0xda) break;
     pos += 2 + length;

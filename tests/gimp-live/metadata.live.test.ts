@@ -118,7 +118,9 @@ describe.skipIf(!install)('metadata stripping (byte-level)', () => {
     };
     const exifProfile = Buffer.concat([
       Buffer.from('Raw profile type exif\0\0', 'latin1'),
-      deflateSync(Buffer.from(`\nexif\n  ${exif[0]!.length}\n${exif[0]!.toString('hex')}\n`, 'latin1')),
+      deflateSync(
+        Buffer.from(`\nexif\n  ${exif[0]!.length}\n${exif[0]!.toString('hex')}\n`, 'latin1')
+      ),
     ]);
     const xmpPacket = Buffer.concat([
       Buffer.from('XML:com.adobe.xmp\0\x01\x00\0\0', 'latin1'),
