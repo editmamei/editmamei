@@ -3,6 +3,9 @@ import {
   toolErrorResult,
   runSnippetTool,
   applyToActiveLayerProp,
+  requireAbsoluteGimpPath,
+  toolGimpErrorResult,
+  refuseExistingGimpFile,
 } from '@editmamei/utils/tool-helpers.ts';
 import type { JsonSchemaObject } from '@editmamei/utils/validate.ts';
 import type { SnippetClient } from '@editmamei/api/snippet-client.ts';
@@ -246,5 +249,93 @@ describe('applyToActiveLayerProp — the auto-duplicate contract, once', () => {
     expect(prop.description).toContain('If false (default), the filter is applied to a duplicate');
     expect(prop.description).toContain('"<OpName> (<Original Name>)"');
     expect(prop.description).toContain('If true, the filter bakes directly into the active layer');
+  });
+});
+
+describe('toolGimpErrorResult — the gimp_* catch tail', () => {
+  it('extracts Error messages and preserves the site prefix, with no Photoshop-shaped hint', () => {
+    const r = toolGimpErrorResult(
+      'Error opening GIMP document',
+      new Error('gimp_not_installed: no GIMP install was found')
+    );
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe(
+      'Error opening GIMP document: gimp_not_installed: no GIMP install was found'
+    );
+    expect(textOf(r)).not.toContain('Commit or cancel it in Photoshop');
+  });
+
+  it('stringifies non-Error throwables', () => {
+    const r = toolGimpErrorResult('Error exporting GIMP document', 'raw string failure');
+    expect(textOf(r)).toBe('Error exporting GIMP document: raw string failure');
+  });
+});
+
+describe('requireAbsoluteGimpPath', () => {
+  it('accepts an ordinary drive-rooted Windows path, both slash directions', () => {
+    expect(requireAbsoluteGimpPath('file_path', 'C:\\photos\\dog.jpg')).toBe('C:\\photos\\dog.jpg');
+    expect(requireAbsoluteGimpPath('file_path', 'C:/photos/dog.jpg')).toBe('C:/photos/dog.jpg');
+  });
+
+  it('rejects a missing / non-string / empty value', () => {
+    expect(() => requireAbsoluteGimpPath('file_path', undefined)).toThrow(/required/);
+    expect(() => requireAbsoluteGimpPath('file_path', 42)).toThrow(/required/);
+    expect(() => requireAbsoluteGimpPath('file_path', '')).toThrow(/required/);
+  });
+
+  it('rejects a plain relative path', () => {
+    expect(() => requireAbsoluteGimpPath('file_path', 'photo.jpg')).toThrow(/absolute path/);
+    expect(() => requireAbsoluteGimpPath('file_path', '..\\photo.jpg')).toThrow(/absolute path/);
+  });
+
+  it.each([
+    ['a UNC share', '\\\\server\\share\\photo.jpg'],
+    ['a UNC share with forward slashes', '//server/share/photo.jpg'],
+    ['a \\\\?\\ device path', '\\\\?\\C:\\photo.jpg'],
+    ['a \\\\.\\ device path', '\\\\.\\PhysicalDrive0'],
+  ])('rejects %s', (_label, value) => {
+    expect(() => requireAbsoluteGimpPath('file_path', value)).toThrow(/UNC|device path/);
+  });
+
+  it('on win32, rejects a path rooted at "\\" with no drive letter', () => {
+    const value = String.fromCharCode(92) + 'x.jpg'; // "\x.jpg" — a single leading backslash
+    expect(() => requireAbsoluteGimpPath('file_path', value, 'win32')).toThrow(/drive letter/);
+  });
+
+  it('on a non-win32 platform, the drive-letter check is skipped, but the resolve/root sanity check still refuses an ambiguous root', () => {
+    const value = String.fromCharCode(92) + 'x.jpg';
+    // Not rejected FOR missing a drive letter (that check never runs)...
+    try {
+      requireAbsoluteGimpPath('file_path', value, 'darwin');
+      throw new Error('expected requireAbsoluteGimpPath to throw');
+    } catch (err) {
+      expect((err as Error).message).not.toMatch(/drive letter/);
+      // ...but the generic root-stability check (which runs on every
+      // platform) still catches the same ambiguity from a different angle.
+      expect((err as Error).message).toMatch(/stable absolute path/);
+    }
+  });
+
+  it('an ordinary absolute path is unaffected by the platform parameter', () => {
+    expect(requireAbsoluteGimpPath('file_path', 'C:/photos/dog.jpg', 'darwin')).toBe(
+      'C:/photos/dog.jpg'
+    );
+  });
+});
+
+describe('refuseExistingGimpFile', () => {
+  it('refuses when the path exists and overwrite is not true', () => {
+    expect(() => refuseExistingGimpFile('/out.jpg', undefined, () => true)).toThrow(
+      /overwrite: true/
+    );
+    expect(() => refuseExistingGimpFile('/out.jpg', false, () => true)).toThrow(/overwrite: true/);
+  });
+
+  it('allows when the path does not exist, regardless of overwrite', () => {
+    expect(() => refuseExistingGimpFile('/out.jpg', undefined, () => false)).not.toThrow();
+  });
+
+  it('allows an existing path when overwrite is true', () => {
+    expect(() => refuseExistingGimpFile('/out.jpg', true, () => true)).not.toThrow();
   });
 });

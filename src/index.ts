@@ -7,6 +7,8 @@ import { routeCli } from './cli/router.js';
 import { maybeActivateFromEnv } from './license/env-activation.js';
 import { refreshIfStale } from './license/entitlement.js';
 import { Logger } from './utils/logger.js';
+import { resolveBootEditors } from './backends/detect-editors.js';
+import { loadSettings } from './core/settings.js';
 
 const logger = new Logger('Main');
 
@@ -117,7 +119,15 @@ async function main() {
     // for every install channel (npm/CLI and .mcpb both pass through here).
     await refreshIfStale();
 
-    const server = new EditmameiServer();
+    // Editor detection: filesystem-only, time-boxed, run BEFORE the server is
+    // constructed (and so before connect() — the boot-ordering invariant
+    // `loadModules()` also keeps: nothing that talks to an editor runs ahead
+    // of the MCP handshake). GimpBackend itself starts no process; it only
+    // constructs a session lazily on the first gimp_* call.
+    const { settings } = loadSettings();
+    const editors = await resolveBootEditors({ settings });
+
+    const server = new EditmameiServer({ editors });
     await server.start();
 
     // Graceful shutdown: flush telemetry (final batch + session summary) before exit.

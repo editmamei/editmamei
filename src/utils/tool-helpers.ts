@@ -18,11 +18,13 @@
  *   the one contract text.
  */
 
+import { isAbsolute, parse as parsePath, resolve as resolvePath } from 'node:path';
 import type { ToolResult } from '../core/tool-registry.js';
 import type { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
 import { runScript } from './run-script.js';
 import { validateArgs, type JsonSchemaObject, type JsonSchemaProperty } from './validate.js';
+import { GimpError } from '../backends/gimp/errors.js';
 
 /**
  * Appended to the error text when the message looks like Photoshop is stuck
@@ -84,6 +86,125 @@ export function toolErrorResult(prefix: string, error: unknown): ToolResult {
     ],
     isError: true,
   };
+}
+
+/**
+ * The GIMP-backend sibling of `toolErrorResult`. Same shape (one text
+ * content block, `isError: true`), but without the Photoshop pending/modal
+ * hint — a `GimpError` (session.ts / bridge/lib.py's `classify`) already
+ * carries an actionable sentence appropriate to ITS state (e.g.
+ * `gimp_session_restarted`'s "open images and unapplied work are gone —
+ * reopen the file"), so stapling on a Photoshop-shaped hint would be
+ * misleading rather than helpful. One catch-tail for every `gimp_*` handler,
+ * the same discipline `toolErrorResult` established for `ps_*`.
+ */
+export function toolGimpErrorResult(prefix: string, error: unknown): ToolResult {
+  const msg = error instanceof Error ? error.message : String(error);
+  return {
+    content: [{ type: 'text' as const, text: `${prefix}: ${msg}` }],
+    isError: true,
+  };
+}
+
+// Two leading slashes/backslashes in any combination — covers a UNC share
+// (`\\server\share\...`), and the `\\?\` / `\\.\` device-path prefixes
+// (`\\?\C:\...`, `\\?\UNC\...`, `\\.\PhysicalDrive0`). None of these name an
+// ordinary local file the way the bridge's plain `open()`/`os.path.exists()`
+// calls expect, and several (`\\.\...`) can address a device rather than a
+// file at all.
+const UNC_OR_DEVICE_PATH_RE = /^[\\/]{2}/;
+// A Windows path rooted at a specific drive letter: `C:\...` or `C:/...`.
+const WIN32_DRIVE_ROOTED_RE = /^[A-Za-z]:[\\/]/;
+
+/**
+ * Every `file_path` / region-export / mask path a `gimp_*` tool accepts is
+ * validated HERE, in the tool layer — the bridge (`bridge/ops.py`) trusts
+ * whatever path it's given, so nothing but a plain, unambiguous local path
+ * must ever reach it. Throws `GimpError('invalid_argument', …)` naming the
+ * field; every gimp_* handler's catch tail (`toolGimpErrorResult`) turns
+ * that into the same error shape a bridge-side `invalid_argument` would
+ * produce, so the caller can't tell "rejected before dispatch" from
+ * "rejected by GIMP" from the text alone.
+ *
+ * Refuses, in order:
+ *  1. Anything not a non-empty string.
+ *  2. UNC shares and `\\?\` / `\\.\` device-path prefixes — Node's own
+ *     `path.isAbsolute` happily accepts these as "absolute", but the bridge
+ *     has no reason to ever reach a network share or a raw device.
+ *  3. A genuinely relative path (`isAbsolute` says no).
+ *  4. On win32 only: an absolute path with NO drive letter (e.g. `\x.jpg`)
+ *     — Node's `isAbsolute` treats a bare leading slash as absolute (root of
+ *     "the current drive"), which is exactly the ambiguity this tool layer
+ *     can't afford: "current drive" according to WHICH process, at WHICH
+ *     moment, is not a question a headless GIMP session's caller should
+ *     ever have to reason about.
+ *  5. A path whose `path.resolve()`-normalized form lands under a DIFFERENT
+ *     root than the one it was written with — the final sanity check that
+ *     "what the caller wrote" and "where it actually resolves" agree.
+ */
+export function requireAbsoluteGimpPath(
+  field: string,
+  value: unknown,
+  platform: string = process.platform
+): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new GimpError(
+      'invalid_argument',
+      `"${field}" is required and must be a non-empty string`
+    );
+  }
+  if (UNC_OR_DEVICE_PATH_RE.test(value)) {
+    throw new GimpError(
+      'invalid_argument',
+      `"${field}" must be a plain local path — UNC shares and \\\\?\\ / \\\\.\\ device paths are ` +
+        `refused, got "${value}". Pass a path on a local drive, e.g. C:/Users/you/photo.jpg.`
+    );
+  }
+  if (!isAbsolute(value)) {
+    throw new GimpError(
+      'invalid_argument',
+      `"${field}" must be an absolute path, got "${value}" — pass a full filesystem path, not one relative to a working directory the GIMP session doesn't share.`
+    );
+  }
+  if (platform === 'win32' && !WIN32_DRIVE_ROOTED_RE.test(value)) {
+    throw new GimpError(
+      'invalid_argument',
+      `"${field}" must include a drive letter, got "${value}" — a path rooted at "\\" alone is ` +
+        `ambiguous about which drive it resolves on. Pass e.g. C:/Users/you/photo.jpg.`
+    );
+  }
+  // Slash direction alone must never trip this — `path.resolve` always
+  // normalizes to the host's native separator, so an input written with
+  // forward slashes (`C:/photos/dog.jpg`, encouraged elsewhere in these
+  // tools' own schema examples) legitimately resolves to a backslash root
+  // (`C:\`) without anything actually being ambiguous.
+  const normalizeRoot = (root: string) => root.replace(/\//g, '\\').toLowerCase();
+  const resolved = resolvePath(value);
+  if (normalizeRoot(parsePath(resolved).root) !== normalizeRoot(parsePath(value).root)) {
+    throw new GimpError(
+      'invalid_argument',
+      `"${field}" does not resolve to a stable absolute path ("${value}" -> "${resolved}") — pass a plain, fully-qualified path.`
+    );
+  }
+  return value;
+}
+
+/**
+ * Refuses to overwrite an existing file unless `overwrite` is true — the same
+ * refusal contract every gimp_* write path (`gimp_export`/`gimp_save_xcf`)
+ * requires. `exists` is injectable so tests never touch the real filesystem.
+ */
+export function refuseExistingGimpFile(
+  path: string,
+  overwrite: boolean | undefined,
+  exists: (p: string) => boolean
+): void {
+  if (!overwrite && exists(path)) {
+    throw new GimpError(
+      'invalid_argument',
+      `"${path}" already exists — pass overwrite: true to replace it.`
+    );
+  }
 }
 
 /**

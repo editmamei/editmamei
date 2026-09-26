@@ -66,6 +66,14 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'ps_template_save',
   'ps_template_delete',
   'ps_template_create_evidence',
+
+  // gimp_* read-only twins — mirrors the ps_* rows above one for one.
+  'gimp_ping',
+  'gimp_overview',
+  'gimp_inspect',
+  'gimp_get_preview',
+  'gimp_get_histogram',
+  'gimp_compare',
 ]);
 
 /**
@@ -73,7 +81,15 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
  * decide `kept_work` (a successful call in this set). Mirrored on the server; keep in sync
  * the same way as READ_ONLY_TOOLS above.
  */
-export const KEPT_WORK_TOOLS: ReadonlySet<string> = new Set(['ps_export', 'ps_save_psd']);
+export const KEPT_WORK_TOOLS: ReadonlySet<string> = new Set([
+  'ps_export',
+  'ps_save_psd',
+  // gimp_* twins — gimp_export flattens+writes a deliverable; gimp_save_xcf
+  // saves the live document with its filters still re-editable, same as
+  // ps_save_psd.
+  'gimp_export',
+  'gimp_save_xcf',
+]);
 
 /**
  * Every other registered tool — a successful call to one of these is an edit (`edits_ok`).
@@ -185,6 +201,20 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
 
   // text
   'ps_text',
+
+  // gimp_* — every gimp_* tool not in READ_ONLY_TOOLS or KEPT_WORK_TOOLS
+  // above changes the open image's pixels/layers/filters/canvas.
+  // gimp_filter is classed mutating by the same name-shaped bias precedent
+  // as ps_filter above (its own `op=list` is read-only, but classification
+  // is per tool NAME).
+  'gimp_open_document',
+  'gimp_close_document',
+  'gimp_add_adjustment',
+  'gimp_filter',
+  'gimp_crop_document',
+  'gimp_resize_image',
+  'gimp_transform_canvas',
+  'gimp_create_mask',
 ]);
 
 /*

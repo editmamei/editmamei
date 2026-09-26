@@ -14,6 +14,7 @@ import type { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
 import type { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { Logger } from '../utils/logger.js';
+import type { GimpBackend } from '../backends/gimp/backend.js';
 
 /**
  * Kernel ABI version. Bumped only when the HostApi gains a new capability type.
@@ -121,6 +122,15 @@ export interface HostApi {
    * `useHostRuntime(host.detection, …)` in `src/detection/runtime.ts`.
    */
   readonly detection: HostDetection;
+
+  /**
+   * The GIMP backend, when a GIMP install was detected (or the `editor` pin
+   * forced it) at boot — `gimpModule.register` is the only module that reads
+   * this. Additive-optional: follows the `hasTool?` precedent (does not raise
+   * `KERNEL_ABI`) so an older module that never checks for it is unaffected.
+   * Absent whenever this boot didn't decide to register the GIMP surface.
+   */
+  readonly gimp?: GimpBackend;
 }
 
 /** A module's self-description. */

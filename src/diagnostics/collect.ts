@@ -78,6 +78,8 @@ export interface DiagnosticBundle {
   node_version: string;
   install_id: string;
   ps_version: string | null;
+  /** GIMP version string ("3.2.6"), once a GIMP session in a recent session log has reached readiness. */
+  gimp_version: string | null;
   mcp_client: string | null;
   settings: {
     telemetry_usage: boolean;
@@ -141,6 +143,7 @@ export async function collectDiagnostics(opts: CollectOptions = {}): Promise<Dia
   const recentIds = await listRecentSessionIds(MAX_RECENT_SESSIONS, { dir: sessionsDir });
   const recent_sessions: DiagnosticSession[] = [];
   let psVersion = opts.psVersion ?? null;
+  let gimpVersion: string | null = null;
   let mcpClient: string | null = null;
 
   for (const id of recentIds) {
@@ -160,6 +163,7 @@ export async function collectDiagnostics(opts: CollectOptions = {}): Promise<Dia
     }));
     if (meta) {
       if (!psVersion && meta.ps_version) psVersion = meta.ps_version;
+      if (!gimpVersion && meta.gimp_version) gimpVersion = meta.gimp_version;
       if (!mcpClient) mcpClient = mcpClientLabel(meta);
     }
     recent_sessions.push({
@@ -188,6 +192,7 @@ export async function collectDiagnostics(opts: CollectOptions = {}): Promise<Dia
     node_version: process.version,
     install_id: settings.telemetry.install_id,
     ps_version: psVersion,
+    gimp_version: gimpVersion,
     mcp_client: mcpClient,
     settings: {
       telemetry_usage: settings.telemetry.usage,

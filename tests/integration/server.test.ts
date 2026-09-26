@@ -11,6 +11,8 @@ import {
 import { getPendingRawDevelop, __clearRawDevelopState } from '@editmamei/core/raw-develop-state.ts';
 import { NO_ERROR_TEXT_CLASS } from '@editmamei/utils/session-log.ts';
 import * as templateStorage from '@editmamei/utils/template-storage.ts';
+import { resolveEditorRegistration } from '@editmamei/backends/detect-editors.ts';
+import type { GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
@@ -76,6 +78,144 @@ describe('EditmameiServer construction', () => {
     // (ps_apply_camera_raw is Pro; ps_select_subject is community now, present at boot.)
     expect(names).toContain('ps_apply_camera_raw');
     expect(names).toContain('ps_template_apply');
+  });
+
+  // ===========================================================================
+  // The gimp_* registration matrix — GIMP detected / not detected / pinned,
+  // each asserting the EXACT set of tool names present or absent rather than
+  // just a count (a count can't distinguish "the right 16 tools" from "16
+  // arbitrary ones"). Constructing with no `editors` option at all is
+  // covered by the two tests just above — this block only exercises the
+  // option explicitly, through the SAME `resolveEditorRegistration` pipeline
+  // `index.ts` uses, so a drift between the two would be caught here.
+  //
+  // Photoshop tools register in every scenario below except the 'gimp' pin —
+  // there is no "Photoshop was/wasn't detected" input any more (see
+  // `resolveEditorRegistration`'s own doc comment for why: a detection false
+  // negative must never remove the Photoshop surface).
+  // ===========================================================================
+  describe('editor registration matrix', () => {
+    const SAMPLE_GIMP_INSTALL: GimpInstall = {
+      source: 'conventional',
+      path: 'C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe',
+      launch: { command: 'C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe', args: [] },
+    };
+    const GIMP_TOOL_NAMES = [
+      'gimp_ping',
+      'gimp_overview',
+      'gimp_open_document',
+      'gimp_close_document',
+      'gimp_save_xcf',
+      'gimp_export',
+      'gimp_inspect',
+      'gimp_add_adjustment',
+      'gimp_filter',
+      'gimp_crop_document',
+      'gimp_resize_image',
+      'gimp_transform_canvas',
+      'gimp_create_mask',
+      'gimp_get_preview',
+      'gimp_get_histogram',
+      'gimp_compare',
+    ];
+    // A handful of ps_* names spread across several factories/ambient
+    // registrations — a representative sample stands in for "the whole ps_*
+    // surface", since asserting against all 80+ names would be brittle to
+    // unrelated CE changes.
+    const PS_SAMPLE_NAMES = ['ps_select', 'ps_add_adjustment_layer', 'ps_export', 'ps_filter'];
+
+    function namesOf(server: EditmameiServer): string[] {
+      return (
+        server as unknown as { toolRegistry: { list(): Array<{ name: string }> } }
+      ).toolRegistry
+        .list()
+        .map((t) => t.name);
+    }
+
+    it('GIMP detected, unpinned -> ps_* and gimp_* all present, including both ping twins', () => {
+      const editors = resolveEditorRegistration(
+        { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
+        'auto'
+      );
+      const names = namesOf(new EditmameiServer({ editors }));
+      expect(names).toContain('ps_ping');
+      expect(names).toContain('gimp_ping');
+      for (const n of [...PS_SAMPLE_NAMES, ...GIMP_TOOL_NAMES]) expect(names).toContain(n);
+    });
+
+    it("GIMP not detected, unpinned -> every gimp_* name absent, ps_* present (today's behaviour)", () => {
+      const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'auto');
+      const names = namesOf(new EditmameiServer({ editors }));
+      expect(names).toContain('ps_ping');
+      for (const n of PS_SAMPLE_NAMES) expect(names).toContain(n);
+      for (const n of GIMP_TOOL_NAMES) expect(names).not.toContain(n);
+    });
+
+    it('GIMP detection timed out, unpinned -> treated the same as not detected (ps_* only)', () => {
+      const editors = resolveEditorRegistration({ gimp: null, timedOut: true }, 'auto');
+      const names = namesOf(new EditmameiServer({ editors }));
+      expect(names).toContain('ps_ping');
+      for (const n of GIMP_TOOL_NAMES) expect(names).not.toContain(n);
+    });
+
+    it("pin 'gimp' registers gimp_* only, and Photoshop tools (ps_ping, the CE surface, and — implicitly — the Pro module) do NOT register, even when GIMP was also detected", () => {
+      const editors = resolveEditorRegistration(
+        { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
+        'gimp'
+      );
+      const server = new EditmameiServer({ editors }) as unknown as {
+        toolRegistry: { list(): Array<{ name: string }> };
+        loadModules(): Promise<void>;
+      };
+      const names = server.toolRegistry.list().map((t) => t.name);
+      for (const n of GIMP_TOOL_NAMES) expect(names).toContain(n);
+      expect(names).not.toContain('ps_ping');
+      for (const n of PS_SAMPLE_NAMES) expect(names).not.toContain(n);
+      expect(names).toContain('ps_list_capabilities');
+      expect(names).toContain('ps_report_problem');
+    });
+
+    it("pin 'gimp' with NO install found still registers gimp_* (every call fails cleanly with gimp_not_installed instead of the surface silently vanishing)", () => {
+      const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'gimp');
+      expect(editors.gimpInstall).toBeNull();
+      const names = namesOf(new EditmameiServer({ editors }));
+      for (const n of GIMP_TOOL_NAMES) expect(names).toContain(n);
+    });
+
+    it("pin 'photoshop' registers ps_* only even when GIMP was also detected", () => {
+      const editors = resolveEditorRegistration(
+        { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
+        'photoshop'
+      );
+      const names = namesOf(new EditmameiServer({ editors }));
+      expect(names).toContain('ps_ping');
+      for (const n of GIMP_TOOL_NAMES) expect(names).not.toContain(n);
+    });
+
+    proIt("pin 'gimp' skips loading the Pro module — loadModules() is a no-op", async () => {
+      const editors = resolveEditorRegistration(
+        { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
+        'gimp'
+      );
+      const server = new EditmameiServer({ editors }) as unknown as {
+        toolRegistry: { list(): Array<{ name: string }> };
+        loadModules(): Promise<void>;
+      };
+      await server.loadModules();
+      const names = server.toolRegistry.list().map((t) => t.name);
+      expect(names).not.toContain('ps_apply_camera_raw'); // a Pro-only tool never appears
+    });
+
+    it('every gimp_* tool is grouped and tiered (boot assertion passes — construction itself is the proof)', () => {
+      const editors = resolveEditorRegistration(
+        { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
+        'auto'
+      );
+      // assertToolsClassified() runs inside the constructor; a missing
+      // tool-tiers.ts / tool-groups.ts entry for any gimp_* tool would throw
+      // here rather than needing its own dedicated assertion.
+      expect(() => new EditmameiServer({ editors })).not.toThrow();
+    });
   });
 
   // ===========================================================================
@@ -1858,6 +1998,42 @@ describe('EditmameiServer.start() boot ordering', () => {
       `expected exactly one awaited call ahead of connect(), found: ${JSON.stringify(awaitsBeforeConnect)}`
     ).toBe(1);
     expect(beforeConnect).toContain('await this.loadModules()');
+  });
+});
+
+// ===========================================================================
+// GIMP session shutdown wiring — stop() and the transport's onclose must
+// both shut down a registered GimpBackend. `stop()` is directly testable
+// (no real stdio transport needed); `onclose`'s assignment only happens
+// inside start(), which — per the boot-ordering block above — this suite
+// deliberately never invokes (booting the real stdio transport in a unit
+// test is undesirable), so that half is pinned at the source level instead,
+// the same technique the boot-ordering pin above uses.
+// ===========================================================================
+describe('GIMP session shutdown wiring', () => {
+  it('stop() shuts down a registered GimpBackend — a later gimp_* call rejects with session closed', async () => {
+    const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'gimp');
+    const server = new EditmameiServer({ editors }) as unknown as {
+      gimpBackend: { call(op: string, args: Record<string, unknown>): Promise<unknown> };
+      stop(): Promise<void>;
+    };
+    await server.stop();
+    await expect(server.gimpBackend.call('ping', {})).rejects.toMatchObject({
+      code: 'gimp_session_restarted',
+    });
+  });
+
+  it('stop() is a no-op when no editors option registered GIMP at all (the pre-GIMP construction path)', async () => {
+    const server = new EditmameiServer() as unknown as { stop(): Promise<void> };
+    await expect(server.stop()).resolves.toBeUndefined();
+  });
+
+  it("onclose shuts down a registered GimpBackend too (source-level pin — see this block's own doc comment for why)", () => {
+    const serverSrc = readFileSync(join(REPO_ROOT, 'src', 'core', 'server.ts'), 'utf8');
+    const oncloseMatch = serverSrc.match(/this\.server\.onclose = \(\) => \{[\s\S]*?\n    \};/);
+    expect(oncloseMatch, 'onclose assignment not found in server.ts').toBeTruthy();
+    expect(oncloseMatch![0]).toMatch(/this\.gimpBackend/);
+    expect(oncloseMatch![0]).toMatch(/\.shutdown\(\)/);
   });
 });
 

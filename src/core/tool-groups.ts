@@ -290,6 +290,26 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_play_action: 'automation',
   ps_execute_script: 'automation',
   ps_batch: 'automation',
+
+  // gimp_* — reuses the SAME capability groups as their ps_* counterparts,
+  // so ps_list_capabilities presents the second-editor surface inside the
+  // same mental model rather than a parallel taxonomy.
+  gimp_ping: 'core',
+  gimp_overview: 'core',
+  gimp_inspect: 'inspect',
+  gimp_get_preview: 'verify',
+  gimp_get_histogram: 'verify',
+  gimp_compare: 'verify',
+  gimp_open_document: 'document',
+  gimp_close_document: 'document',
+  gimp_save_xcf: 'document',
+  gimp_export: 'document',
+  gimp_crop_document: 'document',
+  gimp_resize_image: 'document',
+  gimp_transform_canvas: 'document',
+  gimp_add_adjustment: 'adjust',
+  gimp_filter: 'filter',
+  gimp_create_mask: 'masks',
 };
 
 /**

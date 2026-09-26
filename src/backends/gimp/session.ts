@@ -289,6 +289,21 @@ export class GimpSession {
     return join(this.rootDir, 'latest-preview.jpg');
   }
 
+  /**
+   * Absolute path for an internal temp output inside this session's root dir
+   * — used by tool handlers that need a filesystem path to hand the bridge
+   * (e.g. `gimp_compare`'s optional before/after preview exports) without
+   * ever accepting a caller-supplied path for it: internal temp outputs are
+   * always paths the tool layer generates inside the session dir. Routed
+   * through the same checked/locked-down root-dir creation every session
+   * dir goes through, so it's safe to call before any session has ever
+   * started.
+   */
+  tempPath(name: string): string {
+    this.#ensureRootDir();
+    return join(this.rootDir, name);
+  }
+
   /** Copy a rendered preview to the well-known path a person can keep open, atomically (write-then-rename). */
   copyToLatestPreview(src: string): void {
     // Routed through the same checked/locked-down root-dir creation every

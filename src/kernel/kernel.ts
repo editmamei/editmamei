@@ -22,6 +22,7 @@ import {
   type EditmameiModule,
   type ModuleManifest,
 } from './host-api.js';
+import type { GimpBackend } from '../backends/gimp/backend.js';
 
 /**
  * Resolves a module's OWN go-core snippet client — the binary that emits the
@@ -51,6 +52,8 @@ export interface KernelDeps {
   resolveModuleSnippet?: ModuleSnippetResolver;
   /** The host's local-vision runtime (ONNX), handed to modules as `HostApi.detection`. */
   detection: HostDetection;
+  /** Handed to modules as `HostApi.gimp` — absent when this boot isn't registering the GIMP surface. */
+  gimp?: GimpBackend;
   sessionId: string;
   logger: Logger;
 }
@@ -61,6 +64,7 @@ export class Kernel {
   private readonly snippet: SnippetClient;
   private readonly resolveModuleSnippet?: ModuleSnippetResolver;
   private readonly detection: HostDetection;
+  private readonly gimp?: GimpBackend;
   private readonly sessionId: string;
   private readonly logger: Logger;
 
@@ -81,6 +85,7 @@ export class Kernel {
     this.snippet = deps.snippet;
     this.resolveModuleSnippet = deps.resolveModuleSnippet;
     this.detection = deps.detection;
+    this.gimp = deps.gimp;
     this.sessionId = deps.sessionId;
     this.logger = deps.logger;
   }
@@ -113,6 +118,7 @@ export class Kernel {
       executeScript: (innerBody, timeoutMs) => runScript(this.connection, innerBody, timeoutMs),
       snippet: this.snippetFor(manifest),
       detection: this.detection,
+      gimp: this.gimp,
       session: { id: this.sessionId },
       logger: new Logger(`module:${manifest.id}`),
     };

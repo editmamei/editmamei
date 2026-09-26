@@ -82,6 +82,23 @@ describe('config set', () => {
     expect(loadSettings({ dir }).settings.ps_path).toBeNull();
   });
 
+  it('sets gimp_path and clears it with "null" or empty string', () => {
+    runConfig(['set', 'gimp_path', 'C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe'], io());
+    expect(loadSettings({ dir }).settings.gimp_path).toBe(
+      'C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe'
+    );
+    runConfig(['set', 'gimp_path', 'null'], io());
+    expect(loadSettings({ dir }).settings.gimp_path).toBeNull();
+  });
+
+  it('sets the editor pin to a recognized value and rejects an unrecognized one', () => {
+    runConfig(['set', 'editor', 'gimp'], io());
+    expect(loadSettings({ dir }).settings.editor).toBe('gimp');
+    runConfig(['set', 'editor', 'PHOTOSHOP'], io()); // case-insensitive
+    expect(loadSettings({ dir }).settings.editor).toBe('photoshop');
+    expect(() => runConfig(['set', 'editor', 'nonsense'], io())).toThrow();
+  });
+
   it('rejects a non-boolean value for a boolean key', () => {
     expect(() => runConfig(['set', 'telemetry.usage', 'maybe'], io())).toThrow();
     expect(err.join('')).toContain('Invalid value');

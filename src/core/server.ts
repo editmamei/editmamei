@@ -46,6 +46,11 @@ import { ceModule } from '../modules/ce/index.js';
 import { hostDetectionRuntime } from '../detection/runtime.js';
 import { ModuleLifecycle, classifyModuleOutcome } from '../kernel/module-lifecycle.js';
 import { unsupportedHostReason } from '../platform/host-platform.js';
+import { gimpModule } from '../modules/gimp/index.js';
+import { GimpBackend } from '../backends/gimp/backend.js';
+import type { EditorRegistrationDecision } from '../backends/detect-editors.js';
+import { createDiagnosticsTools } from '../tools/diagnostics-tools.js';
+import type { EditmameiModule } from '../kernel/host-api.js';
 
 // Re-exported for tests + call sites that import the taxonomy from server.ts
 // (its historical home) rather than reaching into kernel/module-lifecycle.ts.
@@ -152,6 +157,19 @@ export interface EditmameiServerOptions {
    * Defaults to the real directory, which is what the host wants.
    */
   licenseStore?: LicenseStoreOptions;
+  /**
+   * Which editor tool sets to register, resolved by `index.ts`'s boot-time
+   * `detectEditors()` + `resolveEditorRegistration()` BEFORE this constructor
+   * runs — never resolved here, so constructing the server stays
+   * filesystem/crypto-only, the same boot-ordering invariant `loadModules()`
+   * keeps (nothing that talks to an editor runs before `server.connect()`;
+   * `GimpBackend` itself starts its session lazily, on first `gimp_*` call,
+   * so even registering it here touches no process). Omitted — the default
+   * for every existing direct construction, including the whole pre-GIMP
+   * test corpus — reproduces today's behaviour exactly: `ps_*` registers,
+   * `gimp_*` does not.
+   */
+  editors?: EditorRegistrationDecision;
 }
 
 export class EditmameiServer {
@@ -161,6 +179,12 @@ export class EditmameiServer {
   private session: Session;
   private sessionLog: SessionLog;
   private telemetry: TelemetryClient;
+  /** Resolved once in the constructor; see `EditmameiServerOptions.editors`. */
+  private readonly editorOpts: EditorRegistrationDecision;
+  /** Set only when `editorOpts.registerGimp` — the GIMP surface's session-owning backend. */
+  private gimpBackend: GimpBackend | undefined;
+  /** Last GIMP version this session has logged to the session-log meta line — avoids a redundant re-emit per gimp_* call. */
+  private lastLoggedGimpVersion: string | undefined;
   /** The kernel — owns the registry, module loader, and invokeTool broker. Set in registerTools(). */
   private kernel!: Kernel;
   /**
@@ -335,6 +359,15 @@ export class EditmameiServer {
 
   constructor(opts: EditmameiServerOptions = {}) {
     this.licenseStoreOptions = opts.licenseStore ?? {};
+    // Reproduces today's behaviour exactly when omitted — see the option's own doc comment.
+    this.editorOpts = opts.editors ?? {
+      registerPhotoshop: true,
+      registerGimp: false,
+      gimpInstall: null,
+    };
+    if (this.editorOpts.registerGimp) {
+      this.gimpBackend = new GimpBackend(this.editorOpts.gimpInstall);
+    }
     this.logger = new Logger('EditmameiServer');
     this.session = new Session();
 
@@ -415,6 +448,20 @@ export class EditmameiServer {
         if (entry.success && entry.tool !== 'ps_ping' && this.psVersion === null) {
           if (this.session.getConnection().hasReachedPhotoshop()) {
             this.resolveLiveVersionInBackground();
+          }
+        }
+        // Session-log meta line gains gimp_version once a GIMP session has
+        // reached readiness — mirrors the ps_version wiring above, but reads
+        // straight off the backend rather than needing its own probe: any
+        // successful gimp_* call already proves the session started.
+        // setGimpVersion no-ops when the value hasn't changed, so this is
+        // cheap to call on every gimp_* success rather than tracking our own
+        // "already logged" flag.
+        if (entry.success && entry.tool.startsWith('gimp_') && this.gimpBackend?.gimpVersion) {
+          const version = this.gimpBackend.gimpVersion;
+          if (version !== this.lastLoggedGimpVersion) {
+            this.lastLoggedGimpVersion = version;
+            void this.sessionLog.setGimpVersion(version);
           }
         }
         // Computed once per call and threaded through to both consumers below. Both would
@@ -628,57 +675,62 @@ export class EditmameiServer {
   }
 
   private registerTools() {
-    // Register basic tools
-    this.toolRegistry.register('ps_ping', {
-      tool: {
-        name: 'ps_ping',
-        description:
-          'Test connection to Photoshop and report session-start discovery signals. Read-only and idempotent. Call this once at the start of a session to confirm liveness before invoking any other tool. **If the user has given you an open-ended editing task, ALSO call `ps_overview` after this** — it returns the workflow contract + capabilities map + verification primitives so you can plan well. Returns `version` (folds the removed get-version tool), `custom_action_sets` (count of Action Sets loaded in the Photoshop Actions palette — non-zero means recorded workflows exist; if action tools are available in this build they will appear in `tools/list`), `user_templates` (count of saved Editmamei templates), and `open_documents` (names of documents already open in Photoshop, so the LLM does not have to ask which doc to edit).',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-        },
-        outputSchema: {
-          type: 'object',
-          properties: {
-            connected: { type: 'boolean' },
-            version: { type: 'string' },
-            custom_action_sets: { type: 'number' },
-            user_templates: { type: 'number' },
-            open_documents: { type: 'array', items: { type: 'string' } },
-            degraded: {
-              type: 'array',
-              items: { type: 'string' },
-              description:
-                'List of optional discovery signals that could not be gathered (e.g. "pingState" if the go-core snippet builder itself failed to produce the in-PS state script — a broken/missing local install, unrelated to whether Photoshop is reachable; liveness falls back to a cheap ping probe in that case — "templates" if ~/.editmamei/templates was unreadable). Empty when all signals were collected cleanly. Returned defaults for any degraded field cannot be trusted as ground truth.',
-            },
-            update_available: {
-              type: ['object', 'null'],
-              description:
-                'Set when a newer Editmamei version is published, else null: { current, latest, channel (npm/mcpb/dev), how_to_update, fixed_tools (tools whose recorded failures the newer version fixes) }. The relay instruction rides the ping TEXT on the first ping — see notify_user. Anonymous npm-registry check at boot; opt out with `editmamei config set update_check false`.',
-              properties: {
-                current: { type: 'string' },
-                latest: { type: 'string' },
-                channel: { type: 'string' },
-                how_to_update: { type: 'string' },
-                fixed_tools: { type: 'array', items: { type: 'string' } },
+    // ps_ping only registers when the ps_* set does (GIMP-only sessions get
+    // gimp_ping, a real twin, instead — see gimp-core-tools.ts). The shared
+    // meta tools below (ps_list_capabilities, and ps_report_problem further
+    // down) register in EVERY matrix outcome — see the decision recorded in
+    // detect-editors.ts's resolveEditorRegistration doc comment.
+    if (this.editorOpts.registerPhotoshop)
+      this.toolRegistry.register('ps_ping', {
+        tool: {
+          name: 'ps_ping',
+          description:
+            'Test connection to Photoshop and report session-start discovery signals. Read-only and idempotent. Call this once at the start of a session to confirm liveness before invoking any other tool. **If the user has given you an open-ended editing task, ALSO call `ps_overview` after this** — it returns the workflow contract + capabilities map + verification primitives so you can plan well. Returns `version` (folds the removed get-version tool), `custom_action_sets` (count of Action Sets loaded in the Photoshop Actions palette — non-zero means recorded workflows exist; if action tools are available in this build they will appear in `tools/list`), `user_templates` (count of saved Editmamei templates), and `open_documents` (names of documents already open in Photoshop, so the LLM does not have to ask which doc to edit).',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+          outputSchema: {
+            type: 'object',
+            properties: {
+              connected: { type: 'boolean' },
+              version: { type: 'string' },
+              custom_action_sets: { type: 'number' },
+              user_templates: { type: 'number' },
+              open_documents: { type: 'array', items: { type: 'string' } },
+              degraded: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'List of optional discovery signals that could not be gathered (e.g. "pingState" if the go-core snippet builder itself failed to produce the in-PS state script — a broken/missing local install, unrelated to whether Photoshop is reachable; liveness falls back to a cheap ping probe in that case — "templates" if ~/.editmamei/templates was unreadable). Empty when all signals were collected cleanly. Returned defaults for any degraded field cannot be trusted as ground truth.',
+              },
+              update_available: {
+                type: ['object', 'null'],
+                description:
+                  'Set when a newer Editmamei version is published, else null: { current, latest, channel (npm/mcpb/dev), how_to_update, fixed_tools (tools whose recorded failures the newer version fixes) }. The relay instruction rides the ping TEXT on the first ping — see notify_user. Anonymous npm-registry check at boot; opt out with `editmamei config set update_check false`.',
+                properties: {
+                  current: { type: 'string' },
+                  latest: { type: 'string' },
+                  channel: { type: 'string' },
+                  how_to_update: { type: 'string' },
+                  fixed_tools: { type: 'array', items: { type: 'string' } },
+                },
+              },
+              notify_user: {
+                type: 'boolean',
+                description:
+                  'True on the one ping whose text carries the update notice — relay that notice to the user before continuing. False on later pings and when no update is available.',
               },
             },
-            notify_user: {
-              type: 'boolean',
-              description:
-                'True on the one ping whose text carries the update notice — relay that notice to the user before continuing. False on later pings and when no update is available.',
-            },
+          },
+          annotations: {
+            title: 'Ping Photoshop',
+            readOnlyHint: true,
+            idempotentHint: true,
           },
         },
-        annotations: {
-          title: 'Ping Photoshop',
-          readOnlyHint: true,
-          idempotentHint: true,
-        },
-      },
-      handler: async () => await this.pingPhotoshop(),
-    });
+        handler: async () => await this.pingPhotoshop(),
+      });
 
     // ps_list_capabilities — a read-only, LIVE map of the whole tool
     // surface organized by capability group (each group's purpose + the tools
@@ -756,6 +808,10 @@ export class EditmameiServer {
       // onnxruntime-web + CE weights instead of resolving from their relocated
       // bundle.
       detection: hostDetectionRuntime(),
+      // Handed to modules as `HostApi.gimp` — undefined unless this boot's
+      // matrix decided to register the GIMP surface (`gimpModule` is the
+      // only module that reads it).
+      gimp: this.gimpBackend,
       // A module that declares its own go-core snippets (the Pro module) is
       // built by its OWN binary; the kernel composes that with the host binary
       // for the community snippets its handlers also build. The Pro binary
@@ -771,8 +827,31 @@ export class EditmameiServer {
       logger: this.logger,
     });
     this.moduleLifecycle.setKernel(this.kernel);
-    this.kernel.loadBuiltins([ceModule]);
+    // The registration matrix (see resolveEditorRegistration): ceModule loads
+    // when ps_* should register, gimpModule when gimp_* should — either,
+    // both, or (the "neither detected" fallback) ceModule alone. Never
+    // neither: a totally empty built-in surface would be strictly worse than
+    // ps_*'s own clear "Photoshop not running" failure mode.
+    const builtins: EditmameiModule[] = [];
+    if (this.editorOpts.registerPhotoshop) builtins.push(ceModule);
+    if (this.editorOpts.registerGimp) builtins.push(gimpModule);
+    this.kernel.loadBuiltins(builtins);
     this.assertToolsClassified();
+
+    // ps_report_problem normally rides in via ceModule (createDiagnosticsTools,
+    // part of ceFactories) — when Photoshop isn't registering (a GIMP-only
+    // session), re-add it directly so problem reporting stays available.
+    // It's editor-agnostic (does not touch Photoshop) and this factory is a
+    // pure closure over (connection, snippetClient) — safe to call outside
+    // the kernel/module path. If ceModule DID load, this is skipped, since
+    // createDiagnosticsTools already registered it once.
+    if (!this.editorOpts.registerPhotoshop) {
+      const diagnosticsDefs = createDiagnosticsTools(
+        this.session.getConnection(),
+        this.snippetClient
+      ).filter((def) => def.tool.name === 'ps_report_problem');
+      this.toolRegistry.registerAll(diagnosticsDefs);
+    }
 
     this.logger.info(`Registered ${this.toolRegistry.count()} tools (edition: ${EDITION})`);
   }
@@ -788,8 +867,13 @@ export class EditmameiServer {
    * booting the stdio transport. Delegates to `ModuleLifecycle.loadModules` — see
    * there for the ABI gate / rollback nets and the filesystem-only boot-ordering
    * contract this must keep (awaited in start() BEFORE the transport connects).
+   *
+   * No-op when `editorOpts.registerPhotoshop` is false — the Pro module only
+   * ever contributes `ps_*` tools, and `registerPhotoshop` is false in exactly
+   * one case (pinned to 'gimp'), where there is nothing for it to add.
    */
   async loadModules(): Promise<void> {
+    if (!this.editorOpts.registerPhotoshop) return;
     return this.moduleLifecycle.loadModules();
   }
 
@@ -1520,6 +1604,11 @@ export class EditmameiServer {
     void this.telemetry.flushOutboxOnStartup();
     this.server.onclose = () => {
       void this.telemetry.shutdown();
+      // GIMP session shutdown is memoized (GimpSession.shutdown()'s own
+      // shutdownPromise latch), so calling it from both exit paths (here AND
+      // stop(), which SIGTERM/SIGINT in index.ts awaits) is safe — whichever
+      // runs first does the real work, the other just awaits the same promise.
+      if (this.gimpBackend) void this.gimpBackend.shutdown();
     };
 
     this.logger.info('Editmamei is listening on stdio');
@@ -1527,6 +1616,7 @@ export class EditmameiServer {
 
   async stop() {
     await this.telemetry.shutdown();
+    if (this.gimpBackend) await this.gimpBackend.shutdown();
     await this.session.disconnect();
     // Release the session log's held append handle (opened lazily on first
     // write; harmless if never opened). After close, late fire-and-forget

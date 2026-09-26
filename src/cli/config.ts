@@ -6,6 +6,8 @@
  *   editmamei config list
  *   editmamei config get telemetry.usage
  *   editmamei config set telemetry.usage false
+ *   editmamei config set editor gimp
+ *   editmamei config set gimp_path C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe
  */
 
 import {
@@ -39,6 +41,12 @@ function coerceBool(raw: string): boolean {
 function coercePath(raw: string): string | null {
   const v = raw.trim();
   return v === '' || v.toLowerCase() === 'null' ? null : v;
+}
+
+function coerceEditorPin(raw: string): 'auto' | 'photoshop' | 'gimp' {
+  const v = raw.trim().toLowerCase();
+  if (v === 'auto' || v === 'photoshop' || v === 'gimp') return v;
+  throw new Error(`expected one of auto|photoshop|gimp, got "${raw}"`);
 }
 
 /** The settable / readable surface. Dotted keys map to the nested settings shape. */
@@ -81,6 +89,20 @@ const KEYS: Record<string, KeySpec> = {
       s.update_check = v as boolean;
     },
     coerce: coerceBool,
+  },
+  editor: {
+    get: (s) => s.editor,
+    set: (s, v) => {
+      s.editor = v as Settings['editor'];
+    },
+    coerce: coerceEditorPin,
+  },
+  gimp_path: {
+    get: (s) => s.gimp_path,
+    set: (s, v) => {
+      s.gimp_path = v as string | null;
+    },
+    coerce: coercePath,
   },
 };
 

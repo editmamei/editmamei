@@ -1366,6 +1366,42 @@ describe('GimpSession', () => {
     });
   });
 
+  describe('tempPath', () => {
+    it('returns a path inside the root dir, ensuring (and locking down) that dir first, even before any session has ever started', () => {
+      const rootParent = mkdtempSync(join(tmpdir(), 'em-gimp-temppath-root-'));
+      registerCleanup(rootParent);
+      const rootDir = join(rootParent, 'gimp-root'); // deliberately does not exist yet
+
+      const chmodRootDir = vi.fn();
+      const { session } = buildSession({
+        rootDir,
+        spawn: () => makeStubChild().child,
+        platform: 'darwin',
+        getuid: () => 1000,
+        statRootDir: () => ({ uid: 1000, mode: 0o700 }),
+        chmodRootDir,
+      });
+
+      const path = session.tempPath('compare-before-abc123.jpg');
+
+      expect(path).toBe(join(rootDir, 'compare-before-abc123.jpg'));
+      expect(existsSync(rootDir)).toBe(true); // #ensureRootDir ran
+      expect(chmodRootDir).toHaveBeenCalledWith(rootDir, 0o700);
+    });
+
+    it('two different names resolve under the same root, without starting a session', () => {
+      const rootParent = mkdtempSync(join(tmpdir(), 'em-gimp-temppath-root2-'));
+      registerCleanup(rootParent);
+      const rootDir = join(rootParent, 'gimp-root');
+      const spawn = vi.fn(() => makeStubChild().child);
+      const { session } = buildSession({ rootDir, spawn });
+
+      expect(session.tempPath('a.jpg')).toBe(join(rootDir, 'a.jpg'));
+      expect(session.tempPath('b.pgm')).toBe(join(rootDir, 'b.pgm'));
+      expect(spawn).not.toHaveBeenCalled(); // building a temp path never starts GIMP
+    });
+  });
+
   describe('Flatpak parent-death-check omission', () => {
     const FLATPAK_INSTALL: GimpInstall = {
       source: 'flatpak',
