@@ -5,6 +5,7 @@ import { Logger } from '../utils/logger.js';
 import { ToolRegistry, type ToolResult } from './tool-registry.js';
 import { tierOf } from './tool-tiers.js';
 import { groupOf, GROUPS, type ToolGroup } from './tool-groups.js';
+import { RAW_DEVELOP_TOOL } from './tool-activity.js';
 import { EDITION } from '../edition.js';
 import { VERSION } from '../version.js';
 import { Session } from './session.js';
@@ -951,7 +952,7 @@ export class EditmameiServer {
         // pending flag now refers to a document that is no longer active.
         clearPendingRawDevelop();
       }
-    } else if (name === 'ps_develop_raw') {
+    } else if (name === RAW_DEVELOP_TOOL) {
       // ps_develop_raw develops the FILE before opening it, so a raw the model
       // opened earlier is now developed and the advisory would otherwise send
       // it into a redundant Camera Raw pass on exactly the workflow this tool

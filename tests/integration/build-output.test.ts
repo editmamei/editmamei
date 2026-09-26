@@ -20,6 +20,7 @@ import { join, resolve } from 'node:path';
 import { readdir } from 'node:fs/promises';
 import { toolsInTier } from '@editmamei/core/tool-tiers.ts';
 import { packageFilesList } from '../../scripts/lib/build-common.ts';
+import { isProNameAllowed } from '../helpers/pro-name-allowlist.ts';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const CE_PKG_DIR = join(REPO_ROOT, 'packages', 'ce');
@@ -134,75 +135,14 @@ describe.skipIf(!bundlesBuilt)('CE bundle composition', () => {
   it('no Pro tool name appears as a string literal anywhere in CE dist .js (tree-wide)', async () => {
     const files = await walk(CE_DIST);
     const jsFiles = files.filter((f) => f.endsWith('.js'));
-    // Two exemptions for files that legitimately carry Pro tool name strings
-    // as metadata (not as registered-tool implementation). Both are scoped as
-    // tightly as the file allows: the classification/metadata surfaces below
-    // name every Pro tool by construction, so they are exempt wholesale, and
-    // everything else is exempt for the NAMED tools it references and nothing
-    // more — an unrelated Pro name turning up in one of them is still a leak
-    // and still fails.
-    //
-    //  - `core/tool-tiers.js` — the TOOL_TIERS classification dictionary
-    //    has every name (community + pro + dev + none) as a key. That's
-    //    how tier classification works at runtime.
-    //
-    //  - `spec/**/*.js` — the AmEventSpec library cross-references each
-    //    Pro tool by name in the `emittedBy: [...]` metadata field so the
-    //    descriptor-vs-snippet tests can map specs back to their consumers.
-    //    Specs are static data shipped to both editions (they're audit /
-    //    documentation infrastructure), and dropping them from CE would
-    //    weaken the runtime spec lookup. The reference is harmless — it
-    //    doesn't register a tool or carry an implementation.
-    //  - `tools/scene-tools.js` — the CE Scene tools (ps_read_scene /
-    //    select_by_reference) reference the Pro tool names
-    //    `ps_select_subject_instance` and `ps_select_face_feature`
-    //    as host.invokeTool DELEGATION targets: when the host is Pro-entitled the
-    //    CE Scene flow routes through those Pro tools, else it uses a CE fallback
-    //    (the CE-loads-Pro-module broker pattern, scene-model-v2). Those are name
-    //    strings for runtime delegation, NOT Pro implementation — the Pro source
-    //    stays in the pruned `*-pro.js` files. Harmless, like the metadata refs above.
-    //  - `core/server.js` — the raw-develop advisory tracker names
-    //    `ps_apply_camera_raw` twice: a `this.toolRegistry.get(...)` existence
-    //    check (is a camera-raw develop tool registered in this session?) and a
-    //    `name === ...` check on the tool that just ran. Both read the live
-    //    registry to decide whether to set or clear the pending flag — runtime
-    //    delegation / entitlement checks, not Pro implementation. Same
-    //    reference-not-implementation rationale as scene-tools above.
-    //  - `perception/grounding-locate.js` + `tools/{brush,image,layer-transform,
-    //    selection,shape}-tools.js` — these CE-shipped files carry
-    //    `'ps_resolve_placement'` in their `placement`-param DESCRIPTIONS: a
-    //    delegation/vocabulary REFERENCE, not an implementation. The locator
-    //    (2026-07-07): the locator TOOL is Pro (its factory lives in the pruned
-    //    grounding-tools-pro.js), but the grounding ENGINE stays CE-host-shipped so
-    //    the community tools keep their placement params. Same delegation-not-impl
-    //    rationale as scene-tools above.
-    // Whole-file: these enumerate the tool inventory by construction, so a
-    // per-name list here would only restate tool-tiers.ts and go stale with
-    // every Pro tool added.
-    const ENUMERATES_EVERY_PRO_NAME = new Set(['core/tool-tiers.js', 'core/tool-groups.js']);
-    // Per-name: file → the exact Pro names it may reference, and no others.
-    const ALLOWED_PRO_NAMES: Record<string, string[]> = {
-      'tools/scene-tools.js': ['ps_select_subject_instance', 'ps_select_face_feature'],
-      // ps_apply_camera_raw registry/dispatch check, not implementation (see above).
-      'core/server.js': ['ps_apply_camera_raw'],
-      // ps_resolve_placement reference-not-implementation (see above).
-      'perception/grounding-locate.js': ['ps_resolve_placement'],
-      'tools/brush-tools.js': ['ps_resolve_placement'],
-      'tools/image-tools.js': ['ps_resolve_placement'],
-      'tools/layer-transform-tools.js': ['ps_resolve_placement'],
-      'tools/selection-tools.js': ['ps_resolve_placement'],
-      'tools/shape-tools.js': ['ps_resolve_placement'],
-    };
-    const isAllowed = (rel: string, tool: string): boolean => {
-      const norm = rel.replace(/\\/g, '/');
-      if (ENUMERATES_EVERY_PRO_NAME.has(norm) || norm.startsWith('spec/')) return true;
-      return ALLOWED_PRO_NAMES[norm]?.includes(tool) ?? false;
-    };
+    // Exemptions for files that legitimately carry Pro tool names (inventories, delegation
+    // targets, description vocabulary) live in tests/helpers/pro-name-allowlist.ts, shared
+    // with the source-level twin of this scan (pro-name-source-scan.test.ts).
     const leaks: Array<{ file: string; tool: string }> = [];
     for (const rel of jsFiles) {
       const contents = readFileSync(join(CE_DIST, rel), 'utf8');
       for (const name of PRO_TOOL_NAMES) {
-        if (isAllowed(rel, name)) continue;
+        if (isProNameAllowed(rel, name)) continue;
         if (contents.includes(`'${name}'`) || contents.includes(`"${name}"`)) {
           leaks.push({ file: rel, tool: name });
         }
