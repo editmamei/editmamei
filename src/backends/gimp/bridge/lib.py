@@ -41,6 +41,446 @@ def validate_max_px(value):
     return value
 
 
+# A region histogram is computed on the (cheap) preview proxy when the region maps to at
+# least this many proxy pixels on a side; otherwise it falls back to a full-resolution crop.
+# Below this, the proxy has too few samples for the requested rectangle to mean anything.
+MIN_PROXY_REGION_PX = 64
+
+
+# ---- adjustment `type` -> GEGL operation, and pure (gi-free) parameter validation ----------
+#
+# Every adjust `type` maps to exactly one GEGL/GIMP operation, and its numeric ranges are
+# validated here (pure Python, unit-tested without GIMP) before ops.py ever touches a
+# DrawableFilter config. Keys in the dicts these `build_*_params` functions return are the
+# GEGL property names verbatim (hyphenated), so ops.py's setters can set them directly.
+
+ADJUST_OPERATIONS = {
+    'curves': 'gimp:curves',
+    'levels': 'gimp:levels',
+    'exposure': 'gegl:exposure',
+    'brightness_contrast': 'gimp:brightness-contrast',
+    'hue_saturation': 'gimp:hue-saturation',
+    'color_balance': 'gimp:color-balance',
+    'color_temperature': 'gegl:color-temperature',
+    'shadows_highlights': 'gegl:shadows-highlights',
+    'saturation': 'gegl:saturation',
+    'vibrance': 'gegl:vibrance',
+    'sharpen': 'gegl:unsharp-mask',
+    'noise_reduction': 'gegl:noise-reduction',
+}
+
+# Length-typed GEGL properties that must be multiplied by the preview proxy's scale factor
+# when a filter is mirrored onto it (see ops.py's `_mirror_filters`) -- an explicit allow-list
+# per operation, not a heuristic (e.g. "any property named radius"), since a wrong guess here
+# would silently mis-scale a filter that isn't actually spatial. Each entry's scaled value is
+# also clamped to the operation's own pspec minimum (`ops.py` reads that back from the live
+# config) so a small enough source scale never leaves GObject silently keeping the pre-scale
+# value instead of the (invalid, too-small) one we asked for.
+SPATIAL_SCALE_PROPS = {
+    'gegl:shadows-highlights': ('radius',),
+    'gegl:unsharp-mask': ('std-dev',),
+}
+
+# Integer-valued properties that are scaled by the proxy factor too, but as a ROUNDED count
+# rather than a continuous length -- `noise-reduction`'s `iterations` is a neighbourhood size,
+# not a geometric radius, so scaling it is only an approximation of the full-res effect (unlike
+# the exact scale-equivariance a Gaussian-blur-based radius gets); never below 1 (0 iterations
+# is a no-op filter, which would silently discard the effect entirely on a small enough proxy).
+INT_SPATIAL_SCALE_PROPS = {
+    'gegl:noise-reduction': ('iterations',),
+}
+
+HUE_RANGES = ('all', 'red', 'yellow', 'green', 'cyan', 'blue', 'magenta')
+TRANSFER_MODES = ('shadows', 'midtones', 'highlights')
+
+# GIMP 3.2.6's file-tiff-export `compression` property is a plain string, not an introspectable
+# enum -- these are the values that measured as accepted (an invalid string is silently ignored
+# by GObject with a stderr warning and the export keeps its prior value, so a bad value here
+# would export successfully with the WRONG compression rather than failing loudly). TIFF tag 259
+# (Compression) values measured for each, on an 8-bit RGB export: none=1, lzw=5, packbits=32773,
+# jpeg=7, adobe_deflate=8.
+#
+# `ccittfax3`/`ccittfax4` (CCITT Group 3/4) are deliberately NOT in this list: they are
+# bilevel-only schemes, and applied to this engine's RGB content they measured as producing a
+# degenerate ~8-byte file with no readable IFD at all -- a silent success reporting a byte count,
+# not an error, for a genuinely broken output file. GIMP's own property still accepts the
+# strings; this engine refuses them anyway rather than exposing an option two of whose seven
+# values always produce a corrupt export.
+TIFF_COMPRESSIONS = ('none', 'lzw', 'packbits', 'jpeg', 'adobe_deflate')
+
+MASK_TYPES = ('rectangle', 'ellipse', 'gradient_linear', 'gradient_radial')
+
+# Formats `_export_stripped` (ops.py) will write; every export/preview/compare raster save goes
+# through it, and it refuses any other extension outright rather than falling back to a bare,
+# metadata-unaware save.
+EXPORT_FORMATS = {'.jpg': 'jpeg', '.jpeg': 'jpeg', '.png': 'png', '.webp': 'webp',
+                  '.tif': 'tiff', '.tiff': 'tiff'}
+
+BIT_DEPTHS = (8, 16)
+
+# A DoS floor for `resize`: bounds a single call's memory/time cost regardless of how large the
+# SOURCE document already is (crop/rotate/flip only ever shrink-or-preserve the existing canvas,
+# so they don't need this; resize is the one op that can grow it arbitrarily from a tiny source).
+MAX_RESIZE_SIDE_PX = 30_000
+MAX_RESIZE_MEGAPIXELS = 250
+
+MAX_FEATHER_PX = 1000
+
+
+def require(args, name):
+    """Fetch a required field from an op's `args`, raising ValueError naming it -- the
+    classifier maps that to `invalid_argument`. A bare `args[name]` raises KeyError instead,
+    which classifies as the much less actionable `gimp_op_failed`."""
+    if name not in args or args[name] is None:
+        raise ValueError('%s is required' % name)
+    return args[name]
+
+
+def require_bool(args, name):
+    """Like `require`, but also rejects anything that isn't a real JSON boolean -- `bool("false")`
+    is `True` in Python (any non-empty string is truthy), so a caller that sends the STRING
+    "false" for e.g. `visible` would otherwise silently set it True instead of raising."""
+    value = require(args, name)
+    if not isinstance(value, bool):
+        raise ValueError('%s must be a boolean, got %r' % (name, value))
+    return value
+
+
+def validate_range(name, value, lo, hi):
+    """Validate a float field is within [lo, hi]. Raises ValueError naming
+    `name` (which the bridge's error classifier maps to `invalid_argument`)."""
+    value = float(value)
+    if not lo <= value <= hi:
+        raise ValueError('%s must be within %s..%s' % (name, lo, hi))
+    return value
+
+
+def validate_int_range(name, value, lo, hi):
+    value = int(value)
+    if not lo <= value <= hi:
+        raise ValueError('%s must be within %s..%s' % (name, lo, hi))
+    return value
+
+
+def validate_choice(name, value, choices):
+    if value not in choices:
+        raise ValueError('%s must be one of %s' % (name, sorted(choices)))
+    return value
+
+
+def validate_region(region, img_width, img_height):
+    """A `region` dict must be a rectangle with positive size, entirely within the image --
+    partly outside (a negative origin, or one edge past the image bounds) or fully outside both
+    raise ValueError naming the field, rather than silently clamping to whatever sliver of it
+    happens to overlap (a 1px-wide crop is a confusing result to debug, not a helpful default).
+    Returns (x, y, width, height) as ints."""
+    x = require(region, 'x')
+    y = require(region, 'y')
+    width = require(region, 'width')
+    height = require(region, 'height')
+    x, y, width, height = int(x), int(y), int(width), int(height)
+    if width <= 0 or height <= 0:
+        raise ValueError('region width and height must be positive')
+    if x < 0 or y < 0 or x + width > img_width or y + height > img_height:
+        raise ValueError(
+            'region [%d,%d,%d,%d] must lie entirely within the %dx%d image'
+            % (x, y, width, height, img_width, img_height)
+        )
+    return x, y, width, height
+
+
+def validate_resize_dims(width, height):
+    """A DoS floor on `resize`'s target dimensions: each side capped, and the product capped
+    separately (a very wide, very short target could pass a per-side check yet still allocate an
+    enormous buffer)."""
+    if width <= 0 or height <= 0:
+        raise ValueError('width and height must be positive')
+    if width > MAX_RESIZE_SIDE_PX or height > MAX_RESIZE_SIDE_PX:
+        raise ValueError('width and height must each be at most %d px' % MAX_RESIZE_SIDE_PX)
+    megapixels = (width * height) / 1_000_000.0
+    if megapixels > MAX_RESIZE_MEGAPIXELS:
+        raise ValueError('resize target must be at most %d MP' % MAX_RESIZE_MEGAPIXELS)
+    return width, height
+
+
+def validate_feather_px(value):
+    return validate_range('feather_px', value, 0.0, MAX_FEATHER_PX)
+
+
+def pct_to_unit(name, value, lo=-100.0, hi=100.0):
+    """User-facing -100..100 (or a narrower lo..hi) percent-like value -> the -1..1 unit
+    GEGL/GIMP properties in this family use."""
+    return validate_range(name, value, lo, hi) / 100.0
+
+
+def degrees_to_unit(name, value, lo=-180.0, hi=180.0):
+    """User-facing -180..180 degrees -> the -1..1 unit `gimp:hue-saturation`'s `hue` uses."""
+    return validate_range(name, value, lo, hi) / 180.0
+
+
+def resolve_field(args, user_key, defaults, gegl_key, convert):
+    """One GEGL-unit field for an `adjust` type: the caller's OWN value (converted from
+    user-facing units via `convert`) when `user_key` is present in `args`; otherwise whatever is
+    already in `defaults` under `gegl_key` -- the type's hardcoded creation defaults when a
+    filter is being CREATED, or the existing live filter's own ledger params when it's being
+    RE-EDITED by `filter_id`.
+
+    This is what makes a re-edit a MERGE rather than a reset: re-editing `{contrast: 50}` on a
+    brightness_contrast filter must not silently snap `brightness` back to 0 just because this
+    particular call didn't mention it."""
+    if user_key in args:
+        return convert(args[user_key])
+    return defaults[gegl_key]
+
+
+def build_exposure_params(args, defaults):
+    # GEGL's own `exposure` pspec is unbounded (+/- DBL_MAX); +/-10 stops is a bound a real
+    # photograph never needs and keeps the field meaningful as a user-facing range.
+    return {
+        'exposure': resolve_field(
+            args, 'exposure', defaults, 'exposure',
+            lambda v: validate_range('exposure', v, -10.0, 10.0),
+        ),
+        'black-level': resolve_field(
+            args, 'black_level', defaults, 'black-level',
+            lambda v: validate_range('black_level', v, -0.1, 0.1),
+        ),
+    }
+
+
+def build_brightness_contrast_params(args, defaults):
+    return {
+        'brightness': resolve_field(
+            args, 'brightness', defaults, 'brightness', lambda v: pct_to_unit('brightness', v)
+        ),
+        'contrast': resolve_field(
+            args, 'contrast', defaults, 'contrast', lambda v: pct_to_unit('contrast', v)
+        ),
+    }
+
+
+def build_hue_saturation_params(args, defaults):
+    return {
+        'range': resolve_field(
+            args, 'range', defaults, 'range', lambda v: validate_choice('range', v, HUE_RANGES)
+        ),
+        'hue': resolve_field(args, 'hue', defaults, 'hue', lambda v: degrees_to_unit('hue', v)),
+        'saturation': resolve_field(
+            args, 'saturation', defaults, 'saturation', lambda v: pct_to_unit('saturation', v)
+        ),
+        'lightness': resolve_field(
+            args, 'lightness', defaults, 'lightness', lambda v: pct_to_unit('lightness', v)
+        ),
+    }
+
+
+def build_color_balance_params(args, defaults):
+    # One filter targets one range (shadows/midtones/highlights), the same one-filter-per-facet
+    # idiom as curves' one-filter-per-channel -- a full three-range grade is three filters.
+    return {
+        'range': resolve_field(
+            args, 'range', defaults, 'range', lambda v: validate_choice('range', v, TRANSFER_MODES)
+        ),
+        'cyan-red': resolve_field(
+            args, 'cyan_red', defaults, 'cyan-red', lambda v: pct_to_unit('cyan_red', v)
+        ),
+        'magenta-green': resolve_field(
+            args, 'magenta_green', defaults, 'magenta-green', lambda v: pct_to_unit('magenta_green', v)
+        ),
+        'yellow-blue': resolve_field(
+            args, 'yellow_blue', defaults, 'yellow-blue', lambda v: pct_to_unit('yellow_blue', v)
+        ),
+        'preserve-luminosity': resolve_field(
+            args, 'preserve_luminosity', defaults, 'preserve-luminosity', bool
+        ),
+    }
+
+
+def build_color_temperature_params(args, defaults):
+    # `from_kelvin` (what the photo currently looks shot at) -> `original-temperature`;
+    # `to_kelvin` (the corrected target) -> `intended-temperature`.
+    return {
+        'original-temperature': resolve_field(
+            args, 'from_kelvin', defaults, 'original-temperature',
+            lambda v: validate_range('from_kelvin', v, 1000.0, 12000.0),
+        ),
+        'intended-temperature': resolve_field(
+            args, 'to_kelvin', defaults, 'intended-temperature',
+            lambda v: validate_range('to_kelvin', v, 1000.0, 12000.0),
+        ),
+    }
+
+
+def build_shadows_highlights_params(args, defaults):
+    return {
+        'shadows': resolve_field(
+            args, 'shadows', defaults, 'shadows', lambda v: validate_range('shadows', v, -100.0, 100.0)
+        ),
+        'highlights': resolve_field(
+            args, 'highlights', defaults, 'highlights',
+            lambda v: validate_range('highlights', v, -100.0, 100.0),
+        ),
+        'whitepoint': resolve_field(
+            args, 'whitepoint', defaults, 'whitepoint',
+            lambda v: validate_range('whitepoint', v, -10.0, 10.0),
+        ),
+        'radius': resolve_field(
+            args, 'radius', defaults, 'radius', lambda v: validate_range('radius', v, 0.1, 1500.0)
+        ),
+        'compress': resolve_field(
+            args, 'compress', defaults, 'compress', lambda v: validate_range('compress', v, 0.0, 100.0)
+        ),
+        'shadows-ccorrect': resolve_field(
+            args, 'shadows_ccorrect', defaults, 'shadows-ccorrect',
+            lambda v: validate_range('shadows_ccorrect', v, 0.0, 100.0),
+        ),
+        'highlights-ccorrect': resolve_field(
+            args, 'highlights_ccorrect', defaults, 'highlights-ccorrect',
+            lambda v: validate_range('highlights_ccorrect', v, 0.0, 100.0),
+        ),
+    }
+
+
+def build_saturation_params(args, defaults):
+    return {
+        'scale': resolve_field(
+            args, 'scale', defaults, 'scale', lambda v: validate_range('scale', v, 0.0, 10.0)
+        )
+    }
+
+
+def build_vibrance_params(args, defaults):
+    return {
+        'vibrance': resolve_field(
+            args, 'vibrance', defaults, 'vibrance', lambda v: validate_range('vibrance', v, -100.0, 100.0)
+        ),
+        'saturation': resolve_field(
+            args, 'saturation', defaults, 'saturation', lambda v: validate_range('saturation', v, 0.0, 10.0)
+        ),
+    }
+
+
+def build_sharpen_params(args, defaults):
+    return {
+        'std-dev': resolve_field(
+            args, 'radius', defaults, 'std-dev', lambda v: validate_range('radius', v, 0.0, 1500.0)
+        ),
+        'scale': resolve_field(
+            args, 'amount', defaults, 'scale', lambda v: validate_range('amount', v, 0.0, 300.0)
+        ),
+        'threshold': resolve_field(
+            args, 'threshold', defaults, 'threshold', lambda v: validate_range('threshold', v, 0.0, 1.0)
+        ),
+    }
+
+
+def build_noise_reduction_params(args, defaults):
+    return {
+        'iterations': resolve_field(
+            args, 'strength', defaults, 'iterations',
+            lambda v: validate_int_range('strength', v, 1, 32),
+        )
+    }
+
+
+ADJUST_PARAM_BUILDERS = {
+    'exposure': build_exposure_params,
+    'brightness_contrast': build_brightness_contrast_params,
+    'hue_saturation': build_hue_saturation_params,
+    'color_balance': build_color_balance_params,
+    'color_temperature': build_color_temperature_params,
+    'shadows_highlights': build_shadows_highlights_params,
+    'saturation': build_saturation_params,
+    'vibrance': build_vibrance_params,
+    'sharpen': build_sharpen_params,
+    'noise_reduction': build_noise_reduction_params,
+}
+
+# Creation-time defaults, already in GEGL-property units -- the `defaults` a builder receives
+# when there is no existing filter to re-edit (a fresh `resolve_field` call for every field
+# then falls through to these, since the caller gave none of them).
+ADJUST_CREATE_DEFAULTS = {
+    'exposure': {'exposure': 0.0, 'black-level': 0.0},
+    'brightness_contrast': {'brightness': 0.0, 'contrast': 0.0},
+    'hue_saturation': {'range': 'all', 'hue': 0.0, 'saturation': 0.0, 'lightness': 0.0},
+    'color_balance': {
+        'range': 'midtones', 'cyan-red': 0.0, 'magenta-green': 0.0, 'yellow-blue': 0.0,
+        'preserve-luminosity': True,
+    },
+    'color_temperature': {'original-temperature': 6500.0, 'intended-temperature': 6500.0},
+    'shadows_highlights': {
+        'shadows': 0.0, 'highlights': 0.0, 'whitepoint': 0.0, 'radius': 100.0, 'compress': 50.0,
+        'shadows-ccorrect': 100.0, 'highlights-ccorrect': 50.0,
+    },
+    'saturation': {'scale': 1.0},
+    'vibrance': {'vibrance': 0.0, 'saturation': 1.0},
+    'sharpen': {'std-dev': 3.0, 'scale': 0.5, 'threshold': 0.0},
+    'noise_reduction': {'iterations': 4},
+}
+
+# The only operations `describe_operation` will probe -- an allow-list, not "any GEGL/GIMP
+# operation name the caller cares to ask about": the probe instantiates a real DrawableFilter,
+# and an unbounded operation name is an unnecessary surface (arbitrary-op instantiation, error
+# text from GIMP's own PDB) for a probe whose only real job is confirming the schema of the
+# operations this engine actually uses.
+ALLOWED_DESCRIBE_OPERATIONS = frozenset(ADJUST_OPERATIONS.values())
+
+
+# ---- geometry-op masked-filter detection (pure logic; ops.py supplies the live GIMP state) -----
+
+
+def stale_ledger_names(filters, live_names):
+    """Names present in the ledger's `filters` dict that no longer match any LIVE filter name.
+    These must be pruned before a geometry op's masked-filter check runs, or a filter someone
+    deleted outside `filter op=delete` (the GUI, a foreign tool, a document edited elsewhere)
+    would go on blocking rotate/flip/resize forever for a filter that isn't even there."""
+    return set(filters) - set(live_names)
+
+
+def classify_geometry_filters(filters, live_filters):
+    """Decide, for every LIVE filter currently on the image, whether it's masked, unmasked, or
+    impossible to verify -- the basis for `rotate`/`flip`/`resize`'s refusal check, which iterates
+    LIVE filters rather than trusting the ledger alone (a live filter the ledger doesn't know
+    about might still be masked; the ledger alone can't say either way).
+
+    `filters` is the ledger's own {name: {"operation":..., "params": {...}}} map (already pruned
+    of stale entries -- see `stale_ledger_names`). `live_filters` is an iterable of
+    (name, operation) pairs for every filter actually attached to a layer right now.
+
+    A live filter counts as OURS only when the ledger has a record under the SAME name AND that
+    record's operation matches the live filter's own operation (the same double-check
+    `_existing_filter` uses elsewhere, so a name collision with a different operation is never
+    mistaken for a match) -- for an ours filter, `masked` is decided by that record's own `mask`
+    param. Anything else (no record at all, or a name/operation the ledger doesn't recognise) is
+    reported `unverifiable`: it might be masked, and there is no way to tell, so the caller must
+    treat it as if it were.
+
+    Returns (masked_names, unverifiable_names), both lists, in the order `live_filters` was
+    given."""
+    masked = []
+    unverifiable = []
+    for name, operation in live_filters:
+        rec = filters.get(name)
+        if rec and rec.get('operation') == operation:
+            if rec.get('params', {}).get('mask'):
+                masked.append(name)
+        else:
+            unverifiable.append(name)
+    return masked, unverifiable
+
+
+def region_to_proxy_px(region, scale):
+    """Map a document-pixel `region` dict into proxy-pixel integer bounds at the proxy's
+    `scale` factor (0 < scale <= 1). Returns (x, y, width, height); width/height are at least
+    1px so a tiny region never rounds down to an empty crop. Assumes `region` was already
+    validated (`validate_region`) against the FULL-RES image -- this only rescales it."""
+    x = round(float(region['x']) * scale)
+    y = round(float(region['y']) * scale)
+    w = max(1, round(float(region['width']) * scale))
+    h = max(1, round(float(region['height']) * scale))
+    return x, y, w, h
+
+
 def read_pgm(raw):
     """Decode minimal binary PGM (P5, maxval 255) bytes. Returns (width, height, data).
 
@@ -275,7 +715,7 @@ def serialize_ledger(filters_by_name, unknown_top_level=None):
     return json.dumps(doc)
 
 
-def merged_ledger_for_write(raw, filters, unknown):
+def merged_ledger_for_write(raw, filters, unknown, removed=None):
     """Compute the bytes to persist as the editmamei-filters parasite, or
     None if the write should be SKIPPED entirely -- the caller's filter still
     applied to the live image either way; only the persisted record is
@@ -284,7 +724,14 @@ def merged_ledger_for_write(raw, filters, unknown):
     `raw` is the CURRENT parasite bytes, read fresh right before writing.
     `filters`/`unknown` are the caller's own updated view (e.g. `filters`
     with one new or edited record merged in) of what was read from this same
-    `raw` a moment earlier, via `parse_ledger`.
+    `raw` a moment earlier, via `parse_ledger`. `removed`, if given, is an
+    iterable of filter NAMES to drop even though `raw` (re-read fresh, and so
+    possibly written by someone else since `filters` was derived) still has
+    them -- a plain `dict.update` only ever ADDS or OVERWRITES keys present
+    in `filters`; it can never express "this name is gone now," which is
+    exactly what deleting a filter needs (the deleted name is simply absent
+    from `filters`, and used to come back to life because `raw_filters`
+    still had a copy of it and nothing ever told the merge to drop it).
 
     Returns None (skip the write) when:
     - `raw` is a newer version than this bridge understands
@@ -295,18 +742,20 @@ def merged_ledger_for_write(raw, filters, unknown):
       parsed in the first place.
 
     Otherwise, re-parses `raw` for its own `raw_filters_by_name` (which
-    preserves a malformed or foreign record verbatim -- see `parse_ledger`)
-    and returns the serialized ledger as UTF-8 bytes: those raw filters
-    merged with `filters` (`filters` wins on a shared key, since it's the
-    caller's own newer view), keeping `unknown` as the top-level passthrough
-    fields. This is the ONE place that decides whether and how a rewrite
-    happens -- callers (`ops.py`'s `_ledger_put`) just hand it bytes in and
-    get bytes-or-None back, with no merge or skip logic of their own to keep
-    in sync with this module's."""
+    preserves a malformed or foreign record verbatim -- see `parse_ledger`),
+    drops every name in `removed` from that, and returns the serialized
+    ledger as UTF-8 bytes: those raw filters merged with `filters` (`filters`
+    wins on a shared key, since it's the caller's own newer view), keeping
+    `unknown` as the top-level passthrough fields. This is the ONE place
+    that decides whether and how a rewrite happens -- callers (`ops.py`'s
+    `_ledger_put`) just hand it bytes in and get bytes-or-None back, with no
+    merge or skip logic of their own to keep in sync with this module's."""
     if ledger_is_newer_version(raw) or ledger_is_undecodable(raw):
         return None
     _valid, _existing_unknown, raw_filters = parse_ledger(raw)
     merged = dict(raw_filters)
+    for name in (removed or ()):
+        merged.pop(name, None)
     merged.update(filters)
     return serialize_ledger(merged, unknown).encode('utf-8')
 
@@ -622,3 +1071,29 @@ def _is_process_alive_windows(pid):
         return result == WAIT_TIMEOUT  # not yet signaled -> still running
     finally:
         kernel32.CloseHandle(handle)
+
+
+# Metadata stripping. `include-exif` / `include-xmp` MUST exist on every format the bridge writes:
+# stripping explicitly instead of trusting a format's default is pointless if the option can stop
+# existing (an export-procedure rename, say) with nothing noticing, so a missing one fails loudly.
+# The rest are set only when present (file-webp-export has no `include-comment`; GIMP 3.2's
+# file-tiff-export has no `save-geotiff`).
+METADATA_REQUIRED_OPTIONS = ('include-exif', 'include-xmp')
+METADATA_OPTIONAL_OPTIONS = ('include-iptc', 'include-thumbnail', 'include-comment')
+
+
+def metadata_strip_settings(fmt, prop_names):
+    """The export-config options to set False for format `fmt`, given the config's property names.
+    Raises OpError('gimp_op_failed') when a required option is missing."""
+    names = set(prop_names)
+    for required in METADATA_REQUIRED_OPTIONS:
+        if required not in names:
+            raise OpError(
+                'gimp_op_failed',
+                '%s export config has no %r option to strip metadata with' % (fmt, required),
+            )
+    settings = list(METADATA_REQUIRED_OPTIONS)
+    settings += [o for o in METADATA_OPTIONAL_OPTIONS if o in names]
+    if fmt == 'tiff' and 'save-geotiff' in names:
+        settings.append('save-geotiff')
+    return settings

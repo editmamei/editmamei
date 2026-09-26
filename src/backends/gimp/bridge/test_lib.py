@@ -584,5 +584,444 @@ class TestProcessRequest(unittest.TestCase):
             self.assertFalse(os.path.exists(path))
 
 
+class TestRangeValidation(unittest.TestCase):
+    def test_validate_range_accepts_bounds_inclusive(self):
+        self.assertEqual(lib.validate_range('x', 0, 0, 100), 0.0)
+        self.assertEqual(lib.validate_range('x', 100, 0, 100), 100.0)
+
+    def test_validate_range_rejects_out_of_bounds_and_names_the_field(self):
+        with self.assertRaisesRegex(ValueError, 'brightness'):
+            lib.validate_range('brightness', 101, -100, 100)
+
+    def test_validate_int_range_rejects_non_integral_bounds_violation(self):
+        with self.assertRaises(ValueError):
+            lib.validate_int_range('strength', 33, 1, 32)
+
+    def test_validate_choice_rejects_unknown_value_and_lists_choices(self):
+        with self.assertRaisesRegex(ValueError, 'range'):
+            lib.validate_choice('range', 'nope', lib.TRANSFER_MODES)
+
+    def test_pct_to_unit_maps_100_to_1(self):
+        self.assertEqual(lib.pct_to_unit('x', 100), 1.0)
+        self.assertEqual(lib.pct_to_unit('x', -100), -1.0)
+
+    def test_degrees_to_unit_maps_180_to_1(self):
+        self.assertEqual(lib.degrees_to_unit('hue', 180), 1.0)
+        self.assertEqual(lib.degrees_to_unit('hue', -180), -1.0)
+
+
+def _create_defaults(type_):
+    return lib.ADJUST_CREATE_DEFAULTS[type_]
+
+
+class TestAdjustParamBuilders(unittest.TestCase):
+    """Every builder takes (args, defaults) -- the re-edit-merge contract `resolve_field`
+    implements. These tests exercise the CREATE path (`defaults` = the type's own hardcoded
+    creation defaults); `TestResolveFieldMerge` below covers the RE-EDIT (merge) path
+    specifically."""
+
+    def test_every_type_has_a_matching_operation(self):
+        for type_ in lib.ADJUST_PARAM_BUILDERS:
+            self.assertIn(type_, lib.ADJUST_OPERATIONS)
+
+    def test_build_exposure_params_defaults(self):
+        params = lib.build_exposure_params({}, _create_defaults('exposure'))
+        self.assertEqual(params, {'exposure': 0.0, 'black-level': 0.0})
+
+    def test_build_exposure_params_rejects_out_of_range(self):
+        with self.assertRaises(ValueError):
+            lib.build_exposure_params({'exposure': 11}, _create_defaults('exposure'))
+
+    def test_build_brightness_contrast_params_converts_percent_to_unit(self):
+        params = lib.build_brightness_contrast_params(
+            {'brightness': 50, 'contrast': -25}, _create_defaults('brightness_contrast')
+        )
+        self.assertEqual(params, {'brightness': 0.5, 'contrast': -0.25})
+
+    def test_build_hue_saturation_params_defaults_and_conversion(self):
+        params = lib.build_hue_saturation_params(
+            {'hue': 90, 'saturation': 50}, _create_defaults('hue_saturation')
+        )
+        self.assertEqual(params['range'], 'all')
+        self.assertEqual(params['hue'], 0.5)
+        self.assertEqual(params['saturation'], 0.5)
+        self.assertEqual(params['lightness'], 0.0)
+
+    def test_build_hue_saturation_params_rejects_bad_range(self):
+        with self.assertRaises(ValueError):
+            lib.build_hue_saturation_params({'range': 'purple'}, _create_defaults('hue_saturation'))
+
+    def test_build_color_balance_params_defaults_to_midtones_preserving_luminosity(self):
+        params = lib.build_color_balance_params({}, _create_defaults('color_balance'))
+        self.assertEqual(params['range'], 'midtones')
+        self.assertTrue(params['preserve-luminosity'])
+
+    def test_build_color_temperature_params_field_mapping(self):
+        params = lib.build_color_temperature_params(
+            {'from_kelvin': 5000, 'to_kelvin': 7000}, _create_defaults('color_temperature')
+        )
+        self.assertEqual(params['original-temperature'], 5000.0)
+        self.assertEqual(params['intended-temperature'], 7000.0)
+
+    def test_build_shadows_highlights_params_has_every_property(self):
+        params = lib.build_shadows_highlights_params(
+            {'radius': 200}, _create_defaults('shadows_highlights')
+        )
+        self.assertEqual(
+            set(params),
+            {'shadows', 'highlights', 'whitepoint', 'radius', 'compress',
+             'shadows-ccorrect', 'highlights-ccorrect'},
+        )
+        self.assertEqual(params['radius'], 200.0)
+
+    def test_build_shadows_highlights_params_rejects_radius_out_of_range(self):
+        with self.assertRaises(ValueError):
+            lib.build_shadows_highlights_params(
+                {'radius': 1501}, _create_defaults('shadows_highlights')
+            )
+
+    def test_build_saturation_params_default_is_no_op_scale(self):
+        self.assertEqual(
+            lib.build_saturation_params({}, _create_defaults('saturation')), {'scale': 1.0}
+        )
+
+    def test_build_vibrance_params_defaults(self):
+        self.assertEqual(
+            lib.build_vibrance_params({}, _create_defaults('vibrance')),
+            {'vibrance': 0.0, 'saturation': 1.0},
+        )
+
+    def test_build_sharpen_params_field_mapping(self):
+        params = lib.build_sharpen_params(
+            {'radius': 5, 'amount': 1.0, 'threshold': 0.1}, _create_defaults('sharpen')
+        )
+        self.assertEqual(params, {'std-dev': 5.0, 'scale': 1.0, 'threshold': 0.1})
+
+    def test_build_noise_reduction_params_rejects_zero(self):
+        # GEGL's own iterations pspec allows 0; the user-facing "strength" floor is 1 --
+        # 0 iterations is a no-op filter, which is never what a caller means to create.
+        with self.assertRaises(ValueError):
+            lib.build_noise_reduction_params({'strength': 0}, _create_defaults('noise_reduction'))
+
+    def test_build_noise_reduction_params_default(self):
+        self.assertEqual(
+            lib.build_noise_reduction_params({}, _create_defaults('noise_reduction')),
+            {'iterations': 4},
+        )
+
+
+class TestRegionToProxyPx(unittest.TestCase):
+    def test_scales_and_rounds(self):
+        region = {'x': 10, 'y': 20, 'width': 100, 'height': 50}
+        self.assertEqual(lib.region_to_proxy_px(region, 0.5), (5, 10, 50, 25))
+
+    def test_never_rounds_a_dimension_to_zero(self):
+        region = {'x': 0, 'y': 0, 'width': 1, 'height': 1}
+        x, y, w, h = lib.region_to_proxy_px(region, 0.1)
+        self.assertGreaterEqual(w, 1)
+        self.assertGreaterEqual(h, 1)
+
+
+class TestRequire(unittest.TestCase):
+    def test_present_and_not_none_is_returned(self):
+        self.assertEqual(lib.require({'x': 5}, 'x'), 5)
+        self.assertEqual(lib.require({'x': False}, 'x'), False)  # a legitimate falsy value
+
+    def test_missing_key_raises_naming_the_field(self):
+        with self.assertRaisesRegex(ValueError, 'left'):
+            lib.require({}, 'left')
+
+    def test_none_value_raises_naming_the_field(self):
+        with self.assertRaisesRegex(ValueError, 'degrees'):
+            lib.require({'degrees': None}, 'degrees')
+
+
+class TestRequireBool(unittest.TestCase):
+    def test_accepts_true_and_false(self):
+        self.assertIs(lib.require_bool({'visible': True}, 'visible'), True)
+        self.assertIs(lib.require_bool({'visible': False}, 'visible'), False)
+
+    def test_rejects_the_string_false(self):
+        # The regression this whole function exists to guard: `bool("false")` is `True` in
+        # Python (any non-empty string is truthy), so a caller sending the STRING "false" must be
+        # rejected, not silently coerced to True.
+        with self.assertRaisesRegex(ValueError, 'visible'):
+            lib.require_bool({'visible': 'false'}, 'visible')
+
+    def test_rejects_the_integer_one(self):
+        # 1/0 are common "boolean-ish" JSON values from other ecosystems, but Python's `bool` is
+        # its own type distinct from `int` here -- `isinstance(1, bool)` is False, so this must
+        # reject rather than silently accept 1 as True.
+        with self.assertRaisesRegex(ValueError, 'visible'):
+            lib.require_bool({'visible': 1}, 'visible')
+
+    def test_rejects_none(self):
+        # None is caught by `require` itself (missing/None both raise "is required"), before
+        # the boolean-type check ever runs.
+        with self.assertRaisesRegex(ValueError, 'visible'):
+            lib.require_bool({'visible': None}, 'visible')
+
+    def test_missing_key_raises_naming_the_field(self):
+        with self.assertRaisesRegex(ValueError, 'visible'):
+            lib.require_bool({}, 'visible')
+
+
+class TestValidateRegion(unittest.TestCase):
+    def test_accepts_a_region_entirely_within_bounds(self):
+        region = {'x': 10, 'y': 10, 'width': 50, 'height': 50}
+        self.assertEqual(lib.validate_region(region, 100, 100), (10, 10, 50, 50))
+
+    def test_accepts_a_region_touching_the_far_edge_exactly(self):
+        region = {'x': 50, 'y': 50, 'width': 50, 'height': 50}
+        self.assertEqual(lib.validate_region(region, 100, 100), (50, 50, 50, 50))
+
+    def test_rejects_negative_origin(self):
+        with self.assertRaises(ValueError):
+            lib.validate_region({'x': -1, 'y': 0, 'width': 10, 'height': 10}, 100, 100)
+
+    def test_rejects_partly_outside_the_right_edge(self):
+        with self.assertRaises(ValueError):
+            lib.validate_region({'x': 90, 'y': 0, 'width': 20, 'height': 10}, 100, 100)
+
+    def test_rejects_fully_outside(self):
+        with self.assertRaises(ValueError):
+            lib.validate_region({'x': 200, 'y': 200, 'width': 10, 'height': 10}, 100, 100)
+
+    def test_rejects_non_positive_size(self):
+        with self.assertRaises(ValueError):
+            lib.validate_region({'x': 0, 'y': 0, 'width': 0, 'height': 10}, 100, 100)
+
+    def test_missing_field_raises_naming_it(self):
+        with self.assertRaisesRegex(ValueError, 'width'):
+            lib.validate_region({'x': 0, 'y': 0, 'height': 10}, 100, 100)
+
+    def test_op_crop_reuses_this_for_its_own_left_top_width_height_bounds_check(self):
+        # `op_crop` in ops.py calls this exact function, mapping its own `left`/`top` onto
+        # `x`/`y` -- `Image.crop` itself has no bounds check at all (it happily pads a rectangle
+        # that's partly or fully outside the source image with blank space), so this is the ONLY
+        # thing standing between a crop request and that silent, confusing result. A crop rect
+        # that hangs off the right edge is exactly the shape of request `op_crop` must reject.
+        with self.assertRaises(ValueError):
+            lib.validate_region({'x': 90, 'y': 0, 'width': 50, 'height': 10}, 100, 100)
+
+
+class TestValidateResizeDims(unittest.TestCase):
+    def test_accepts_reasonable_dims(self):
+        self.assertEqual(lib.validate_resize_dims(1920, 1080), (1920, 1080))
+
+    def test_rejects_a_side_over_the_cap(self):
+        with self.assertRaises(ValueError):
+            lib.validate_resize_dims(lib.MAX_RESIZE_SIDE_PX + 1, 100)
+
+    def test_accepts_a_side_exactly_at_the_cap_if_area_allows(self):
+        # A single side at the cap with a tiny other side stays under the megapixel cap too.
+        lib.validate_resize_dims(lib.MAX_RESIZE_SIDE_PX, 1)
+
+    def test_rejects_area_over_the_megapixel_cap_even_with_both_sides_under_the_per_side_cap(self):
+        side = int((lib.MAX_RESIZE_MEGAPIXELS * 1_000_000) ** 0.5) + 100
+        with self.assertRaises(ValueError):
+            lib.validate_resize_dims(side, side)
+
+    def test_rejects_non_positive(self):
+        with self.assertRaises(ValueError):
+            lib.validate_resize_dims(0, 100)
+
+
+class TestValidateFeatherPx(unittest.TestCase):
+    def test_accepts_zero_and_the_cap(self):
+        self.assertEqual(lib.validate_feather_px(0), 0.0)
+        self.assertEqual(lib.validate_feather_px(lib.MAX_FEATHER_PX), float(lib.MAX_FEATHER_PX))
+
+    def test_rejects_over_the_cap(self):
+        with self.assertRaises(ValueError):
+            lib.validate_feather_px(lib.MAX_FEATHER_PX + 1)
+
+    def test_rejects_negative(self):
+        with self.assertRaises(ValueError):
+            lib.validate_feather_px(-1)
+
+
+class TestMergedLedgerForWriteRemoval(unittest.TestCase):
+    def test_removed_name_stays_gone_even_though_raw_still_has_it(self):
+        # The exact resurrection bug: `raw` (freshly re-read) still has "Curves" because nothing
+        # has rewritten the parasite since it was created; `filters` (the caller's in-memory view)
+        # has already dropped it. Without `removed`, a plain dict.update would let `raw`'s stale
+        # copy survive the merge.
+        raw = lib.serialize_ledger(
+            {'Curves': {'operation': 'gimp:curves', 'params': {'points': [[0, 0], [255, 255]]}}}
+        ).encode('utf-8')
+        merged = lib.merged_ledger_for_write(raw, {}, {}, removed={'Curves'})
+        filters, _unknown, _raw = lib.parse_ledger(merged)
+        self.assertNotIn('Curves', filters)
+
+    def test_removed_name_not_in_filters_or_raw_is_a_no_op(self):
+        raw = lib.serialize_ledger({}).encode('utf-8')
+        merged = lib.merged_ledger_for_write(raw, {}, {}, removed={'NeverExisted'})
+        filters, _unknown, _raw = lib.parse_ledger(merged)
+        self.assertEqual(filters, {})
+
+    def test_removed_defaults_to_none_and_behaves_like_before(self):
+        raw = lib.serialize_ledger(
+            {'Curves': {'operation': 'gimp:curves', 'params': {}}}
+        ).encode('utf-8')
+        merged = lib.merged_ledger_for_write(raw, {}, {})
+        filters, _unknown, _raw = lib.parse_ledger(merged)
+        self.assertIn('Curves', filters)
+
+
+class TestResolveFieldMerge(unittest.TestCase):
+    """The re-edit-is-a-merge contract every generic adjust builder shares."""
+
+    def test_uses_the_callers_value_when_present(self):
+        result = lib.resolve_field({'brightness': 50}, 'brightness', {'brightness': 0.0}, 'brightness', float)
+        self.assertEqual(result, 50.0)
+
+    def test_falls_back_to_defaults_when_absent(self):
+        result = lib.resolve_field({}, 'brightness', {'brightness': 0.7}, 'brightness', float)
+        self.assertEqual(result, 0.7)
+
+    def test_a_partial_re_edit_keeps_every_other_field(self):
+        # The regression this whole class guards: re-editing ONLY contrast must not silently
+        # reset brightness to the type's create-time default.
+        existing = {'brightness': 0.4, 'contrast': 0.1}
+        params = lib.build_brightness_contrast_params({'contrast': 50}, existing)
+        self.assertEqual(params['brightness'], 0.4)
+        self.assertEqual(params['contrast'], 0.5)
+
+    def test_every_adjust_type_merges_every_field_it_has(self):
+        for type_, builder in lib.ADJUST_PARAM_BUILDERS.items():
+            defaults = lib.ADJUST_CREATE_DEFAULTS[type_]
+            # Called with no args at all (a no-op re-edit): every field must come back exactly
+            # as it was in `defaults`, proving the builder never substitutes its own hardcoded
+            # default when a value it should be merging from is available.
+            result = builder({}, defaults)
+            self.assertEqual(result, defaults, 'type=%s' % type_)
+
+    def test_every_adjust_type_merges_from_existing_params_that_differ_from_create_defaults(self):
+        # Guards a gap `test_every_adjust_type_merges_every_field_it_has` can't catch: that test
+        # calls each builder with `defaults` set to the type's OWN `ADJUST_CREATE_DEFAULTS`, so a
+        # builder that silently ignored `defaults` and returned its own hardcoded default instead
+        # would still pass -- the two happen to be equal in that case. Here `existing` is built to
+        # differ from every type's create defaults in every field, the way a real re-edit's
+        # existing ledger params would after the filter was actually adjusted away from its
+        # creation-time values, so a builder that drops back to hardcoded defaults is caught.
+        for type_, builder in lib.ADJUST_PARAM_BUILDERS.items():
+            existing = {}
+            for key, value in lib.ADJUST_CREATE_DEFAULTS[type_].items():
+                if isinstance(value, bool):
+                    existing[key] = not value
+                elif isinstance(value, (int, float)):
+                    existing[key] = value + 7
+                else:
+                    existing[key] = str(value) + '_DIFFERENT'
+            result = builder({}, existing)
+            self.assertEqual(result, existing, 'type=%s' % type_)
+
+    def test_create_defaults_cover_every_field_every_builder_produces(self):
+        for type_, builder in lib.ADJUST_PARAM_BUILDERS.items():
+            defaults = lib.ADJUST_CREATE_DEFAULTS[type_]
+            produced = builder({}, defaults)
+            self.assertEqual(set(produced), set(defaults), 'type=%s' % type_)
+
+
+class TestAllowedDescribeOperations(unittest.TestCase):
+    def test_covers_every_adjust_operation(self):
+        self.assertEqual(lib.ALLOWED_DESCRIBE_OPERATIONS, frozenset(lib.ADJUST_OPERATIONS.values()))
+
+
+class TestStaleLedgerNames(unittest.TestCase):
+    def test_a_record_with_no_matching_live_name_is_stale(self):
+        filters = {'A': {}, 'B': {}}
+        self.assertEqual(lib.stale_ledger_names(filters, ['B']), {'A'})
+
+    def test_nothing_stale_when_every_record_has_a_live_match(self):
+        filters = {'A': {}, 'B': {}}
+        self.assertEqual(lib.stale_ledger_names(filters, ['A', 'B']), set())
+
+    def test_empty_ledger_has_nothing_stale(self):
+        self.assertEqual(lib.stale_ledger_names({}, ['A']), set())
+
+
+class TestClassifyGeometryFilters(unittest.TestCase):
+    """Pure logic behind rotate/flip/resize's masked-filter refusal: iterates LIVE filters (not
+    the ledger alone), classifying each as masked / unmasked / unverifiable."""
+
+    def test_a_live_filter_with_a_matching_masked_record_is_masked(self):
+        filters = {'Curves': {'operation': 'gimp:curves', 'params': {'mask': 'M'}}}
+        masked, unverifiable = lib.classify_geometry_filters(filters, [('Curves', 'gimp:curves')])
+        self.assertEqual(masked, ['Curves'])
+        self.assertEqual(unverifiable, [])
+
+    def test_a_live_filter_with_a_matching_unmasked_record_is_neither(self):
+        filters = {'Curves': {'operation': 'gimp:curves', 'params': {'mask': None}}}
+        masked, unverifiable = lib.classify_geometry_filters(filters, [('Curves', 'gimp:curves')])
+        self.assertEqual(masked, [])
+        self.assertEqual(unverifiable, [])
+
+    def test_a_live_filter_with_no_ledger_record_at_all_is_unverifiable(self):
+        # The exact "ledger write was skipped" scenario (lib.merged_ledger_for_write returned
+        # None): the filter genuinely exists and may or may not be masked, but nothing recorded
+        # which, so it must be treated as possibly masked rather than assumed safe.
+        masked, unverifiable = lib.classify_geometry_filters({}, [('Foreign', 'gimp:levels')])
+        self.assertEqual(masked, [])
+        self.assertEqual(unverifiable, ['Foreign'])
+
+    def test_a_live_filter_whose_record_operation_does_not_match_is_unverifiable(self):
+        # Same name, different operation -- e.g. a foreign filter re-using a name this bridge
+        # once used for something else. The stale/mismatched record must not be trusted for a
+        # DIFFERENT live filter that merely happens to share its name.
+        filters = {'Reused': {'operation': 'gimp:levels', 'params': {'mask': None}}}
+        masked, unverifiable = lib.classify_geometry_filters(filters, [('Reused', 'gimp:curves')])
+        self.assertEqual(masked, [])
+        self.assertEqual(unverifiable, ['Reused'])
+
+    def test_a_stale_record_with_no_live_filter_at_all_is_simply_absent_from_the_result(self):
+        # classify_geometry_filters only ever iterates LIVE filters -- a ledger record with no
+        # live counterpart (the "stale" case `stale_ledger_names`/pruning handles) never appears
+        # in either list, masked or unverifiable, and so can never block anything by itself.
+        filters = {'Gone': {'operation': 'gimp:curves', 'params': {'mask': 'M'}}}
+        masked, unverifiable = lib.classify_geometry_filters(filters, [])
+        self.assertEqual(masked, [])
+        self.assertEqual(unverifiable, [])
+
+    def test_multiple_live_filters_are_each_classified_independently(self):
+        filters = {
+            'Masked': {'operation': 'gimp:curves', 'params': {'mask': 'M'}},
+            'Unmasked': {'operation': 'gimp:levels', 'params': {'mask': None}},
+        }
+        live = [('Masked', 'gimp:curves'), ('Unmasked', 'gimp:levels'), ('Unknown', 'gegl:exposure')]
+        masked, unverifiable = lib.classify_geometry_filters(filters, live)
+        self.assertEqual(masked, ['Masked'])
+        self.assertEqual(unverifiable, ['Unknown'])
+
+
+
+class TestMetadataStripSettings(unittest.TestCase):
+    def test_required_and_present_optional_options_are_switched_off(self):
+        props = {'include-exif', 'include-xmp', 'include-iptc', 'include-thumbnail', 'quality'}
+        self.assertEqual(
+            lib.metadata_strip_settings('jpeg', props),
+            ['include-exif', 'include-xmp', 'include-iptc', 'include-thumbnail'],
+        )
+
+    def test_absent_optional_options_are_skipped(self):
+        self.assertEqual(
+            lib.metadata_strip_settings('webp', {'include-exif', 'include-xmp'}),
+            ['include-exif', 'include-xmp'],
+        )
+
+    def test_missing_required_option_fails_loudly(self):
+        for missing in lib.METADATA_REQUIRED_OPTIONS:
+            props = set(lib.METADATA_REQUIRED_OPTIONS) - {missing}
+            with self.assertRaises(lib.OpError) as ctx:
+                lib.metadata_strip_settings('png', props)
+            self.assertEqual(ctx.exception.code, 'gimp_op_failed')
+            self.assertIn(missing, str(ctx.exception))
+
+    def test_geotiff_is_switched_off_for_tiff_only(self):
+        props = {'include-exif', 'include-xmp', 'save-geotiff'}
+        self.assertIn('save-geotiff', lib.metadata_strip_settings('tiff', props))
+        self.assertNotIn('save-geotiff', lib.metadata_strip_settings('png', props))
+
 if __name__ == '__main__':
     unittest.main()

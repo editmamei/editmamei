@@ -1,0 +1,147 @@
+# Live coverage for the GIMP backend: builds Editmamei with a real headless GIMP install present
+# and runs `tests/gimp-live` against it (per-op pixel verifiers, GEGL schema goldens, geometry/mask
+# survival, export options, and the `.xcf` round trip). This is deliberately a SEPARATE workflow
+# from `ci.yml` rather than a job in it: it needs an unattended GIMP install and a real live
+# GIMP process per test file, which is a different (and slower) shape of job than the rest of the
+# suite, and only runs when GIMP backend files change.
+
+name: GIMP live suite
+
+on:
+  pull_request:
+    paths:
+      - 'src/backends/gimp/**'
+      - 'tests/gimp-live/**'
+      - '.github/workflows/gimp.yml'
+  workflow_dispatch:
+  # The installer is pinned (URL + checksum below), so this does not catch GIMP itself drifting --
+  # it re-runs the suite (including the GEGL schema goldens) against that exact pinned build on a
+  # schedule independent of any PR, as a baseline health check for the suite itself.
+  schedule:
+    - cron: '17 6 * * *'
+
+concurrency:
+  group: gimp-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GIMP_VERSION: 3.2.6
+  GIMP_WINDOWS_INSTALLER_URL: https://download.gimp.org/gimp/v3.2/windows/gimp-3.2.6-setup.exe
+  # Verified against download.gimp.org's own published SHA256SUMS for this release (fetched and
+  # read directly, not re-typed by hand) -- if GIMP ships a point update, this pin makes the
+  # download step fail loudly instead of silently installing something else.
+  GIMP_WINDOWS_INSTALLER_SHA256: 9337cccbc01d4098ee7a3dab215b3afbe6ece99c5287c92441d6f12cf541ebca
+
+jobs:
+  gimp-windows:
+    # The supported platform for the GIMP backend -- see this workflow's `gimp-linux` job for the
+    # advisory cross-platform attempt. This job is path-filtered (see `on.pull_request.paths`
+    # above), so a PR that never touches those paths never runs it at all -- that makes it
+    # unsuitable as a REQUIRED status check (a required check that never runs on a given PR blocks
+    # that PR forever), so any branch protection rule listing required checks must not name it.
+    name: gimp-live (windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore cached GIMP installer
+        id: cache-gimp-installer
+        uses: actions/cache@v4
+        with:
+          path: gimp-installer.exe
+          # The checksum is part of the key, not just verified after: bumping the pinned version
+          # OR the pinned checksum both invalidate the cache and force a fresh download, so a
+          # stale cached installer can never silently sit alongside a changed checksum.
+          key: gimp-windows-installer-${{ env.GIMP_VERSION }}-${{ env.GIMP_WINDOWS_INSTALLER_SHA256 }}
+
+      - name: Download the GIMP installer
+        if: steps.cache-gimp-installer.outputs.cache-hit != 'true'
+        run: curl.exe -fL -o gimp-installer.exe "$env:GIMP_WINDOWS_INSTALLER_URL"
+
+      - name: Verify the installer's SHA-256 against the pinned checksum
+        run: |
+          $hash = (Get-FileHash gimp-installer.exe -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:GIMP_WINDOWS_INSTALLER_SHA256) {
+            Write-Error "GIMP installer checksum mismatch: got $hash, expected $env:GIMP_WINDOWS_INSTALLER_SHA256"
+            exit 1
+          }
+
+      - name: Install GIMP unattended (Inno Setup, current-user, no restart)
+        run: |
+          $proc = Start-Process -FilePath .\gimp-installer.exe `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER' `
+            -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "GIMP installer exited with code $($proc.ExitCode)"
+            exit 1
+          }
+
+      # Go must be present before `npm ci`: the package's `prepare` script runs the build, which
+      # compiles the editmamei-core Go binary (same reasoning as ci.yml's windows job).
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go-core/go.mod
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: build
+        run: npm run build
+
+      - name: gimp-live suite (fails loudly, not silently, if GIMP wasn't actually found)
+        env:
+          EDITMAMEI_REQUIRE_GIMP: '1'
+        run: npx vitest run tests/gimp-live
+
+  gimp-linux:
+    # Advisory, NOT a required check -- a genuinely separate, non-required job, never
+    # `continue-on-error` inside a required one (a `continue-on-error` job reports a FAILED run
+    # as a green check, which hides a real failure behind a passing PR). Promote this job to
+    # required once it is green across a run of builds and Linux is an actually-supported
+    # platform.
+    #
+    # Whether a real GIMP install runs headless inside a Flatpak sandbox on a CI runner -- and
+    # whether that sandbox can read/write the session directory and load ops.py from the host
+    # filesystem -- is the open question this job answers empirically: if it fails, the failure
+    # itself is the data point.
+    name: gimp-live (linux, advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Flatpak + Flathub remote
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Install GIMP from Flathub
+        run: flatpak install --user -y flathub org.gimp.GIMP
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go-core/go.mod
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: build
+        run: npm run build
+
+      - name: gimp-live suite
+        env:
+          EDITMAMEI_REQUIRE_GIMP: '1'
+        run: npx vitest run tests/gimp-live
