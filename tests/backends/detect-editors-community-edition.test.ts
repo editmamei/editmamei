@@ -10,6 +10,7 @@ vi.mock('@editmamei/edition.ts', () => ({ EDITION: 'community' }));
 import { resolveBootEditors } from '@editmamei/backends/detect-editors.ts';
 import type { GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import type { Settings } from '@editmamei/core/settings.ts';
+import { toolsInTier } from '@editmamei/core/tool-tiers.ts';
 
 const SAMPLE_INSTALL: GimpInstall = {
   source: 'conventional',
@@ -29,21 +30,42 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
   };
 }
 
+// Derived from the live tier table rather than assumed — this must keep
+// passing whichever way today's gimp_* tiers happen to be set (e.g. a
+// release-candidate branch that has flipped them from 'dev' to 'community'),
+// not just the "nothing ships yet" state this repo is usually in.
+const someGimpToolShipsInCommunity = toolsInTier('community').some((name) =>
+  name.startsWith('gimp_')
+);
+
 describe("resolveBootEditors on a community-edition build, pinned to 'gimp'", () => {
-  it('falls back to registering ps_* only — every gimp_* tool ships at tier "dev", so none of them survive the community edition filter regardless of what boot detected', async () => {
-    // GIMP genuinely found — proves the fallback is driven by the edition
-    // filter, not by detection coming up empty.
+  it('registers ps_* or gimp_* according to whatever the live tier table actually ships at community tier', async () => {
+    // GIMP genuinely found — proves the outcome is driven by the edition
+    // filter (via the tier table), not by detection coming up empty.
     const detectEditorsFn = vi.fn(async () => ({ gimp: SAMPLE_INSTALL, timedOut: false }));
     const result = await resolveBootEditors({
       settings: makeSettings({ editor: 'gimp' }),
       env: {},
       detectEditorsFn,
     });
-    expect(result).toEqual({
-      registerPhotoshop: true,
-      registerGimp: false,
-      gimpInstall: null,
-      gimpDetectionTimedOut: false,
-    });
+    if (someGimpToolShipsInCommunity) {
+      // At least one gimp_* tool survives the community filter — the 'gimp'
+      // pin registers the GIMP surface for real, using what boot detected.
+      expect(result).toEqual({
+        registerPhotoshop: false,
+        registerGimp: true,
+        gimpInstall: SAMPLE_INSTALL,
+        gimpDetectionTimedOut: false,
+      });
+    } else {
+      // No gimp_* tool ships at community tier — pinning 'gimp' would leave
+      // almost no tools registered, so it falls back to ps_* instead.
+      expect(result).toEqual({
+        registerPhotoshop: true,
+        registerGimp: false,
+        gimpInstall: null,
+        gimpDetectionTimedOut: false,
+      });
+    }
   });
 });
