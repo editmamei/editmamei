@@ -24,6 +24,8 @@ import {
   writeHalfMaskPgm,
   SWATCHES,
   SWATCH_SIZE,
+  readySession,
+  LIVE_READY_TIMEOUT_MS,
 } from './support.ts';
 
 // This file alone, not the project default -- see adjust.live.test.ts's identical comment.
@@ -37,14 +39,18 @@ describe.skipIf(!install)('geometry and masks', () => {
   let rampPath: string;
   let swatchesPath: string;
 
-  beforeAll(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-geom-'));
-    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-    rampPath = join(workDir, 'ramp.png');
-    swatchesPath = join(workDir, 'swatches.png');
-    writeGrayRamp(rampPath, 256, 32);
-    writeColorSwatches(swatchesPath);
-  });
+  beforeAll(
+    async () => {
+      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-geom-'));
+      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+      await readySession(session);
+      rampPath = join(workDir, 'ramp.png');
+      swatchesPath = join(workDir, 'swatches.png');
+      writeGrayRamp(rampPath, 256, 32);
+      writeColorSwatches(swatchesPath);
+    },
+    LIVE_READY_TIMEOUT_MS
+  );
 
   afterAll(async () => {
     await session.shutdown();

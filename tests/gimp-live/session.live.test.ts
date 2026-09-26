@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { GimpSession } from '@editmamei/backends/gimp/session.ts';
+import { readySession, LIVE_READY_TIMEOUT_MS } from './support.ts';
 
 const REQUIRE_GIMP = process.env.EDITMAMEI_REQUIRE_GIMP === '1';
 
@@ -115,10 +116,17 @@ describe.skipIf(!install)('GimpSession against real headless GIMP', () => {
   let workDir: string;
   let session: GimpSession;
 
-  beforeAll(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-live-'));
-    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-  });
+  beforeAll(
+    async () => {
+      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-live-'));
+      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+      // A cold GIMP launch on a fresh machine can outlast CALL_READY_WAIT_MS
+      // (session.ts) -- retry through gimp_starting here, in the hook, so the
+      // test below keeps its own tighter timeout for the actual operations.
+      await readySession(session);
+    },
+    LIVE_READY_TIMEOUT_MS
+  );
 
   afterAll(async () => {
     await session.shutdown();

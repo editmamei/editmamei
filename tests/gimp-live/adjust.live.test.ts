@@ -26,6 +26,8 @@ import {
   linearToSrgb,
   SWATCHES,
   SWATCH_SIZE,
+  readySession,
+  LIVE_READY_TIMEOUT_MS,
 } from './support.ts';
 
 // This file alone, not the project default: it spawns a real headless GIMP process, and vitest
@@ -44,14 +46,20 @@ describe.skipIf(!install)('adjust: per-type pixel verifiers', () => {
   let rampPath: string;
   let swatchesPath: string;
 
-  beforeAll(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-adjust-'));
-    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-    rampPath = join(workDir, 'ramp.png');
-    swatchesPath = join(workDir, 'swatches.png');
-    writeGrayRamp(rampPath, RAMP_WIDTH, RAMP_HEIGHT);
-    writeColorSwatches(swatchesPath);
-  });
+  beforeAll(
+    async () => {
+      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-adjust-'));
+      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+      // A cold GIMP launch can outlast CALL_READY_WAIT_MS -- retry through
+      // gimp_starting here, in the hook, not against the file's 30s test timeout.
+      await readySession(session);
+      rampPath = join(workDir, 'ramp.png');
+      swatchesPath = join(workDir, 'swatches.png');
+      writeGrayRamp(rampPath, RAMP_WIDTH, RAMP_HEIGHT);
+      writeColorSwatches(swatchesPath);
+    },
+    LIVE_READY_TIMEOUT_MS
+  );
 
   afterAll(async () => {
     await session.shutdown();

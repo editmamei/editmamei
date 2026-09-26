@@ -29,6 +29,7 @@ import {
   TOOL_TIMEOUT_BUDGETS_MS,
   DEFAULT_SCRIPT_TIMEOUT_MS,
 } from '@editmamei/utils/operation-timeouts.ts';
+import { readySession, LIVE_READY_TIMEOUT_MS } from './support.ts';
 
 const REQUIRE_GIMP = process.env.EDITMAMEI_REQUIRE_GIMP === '1';
 
@@ -118,10 +119,14 @@ describe.skipIf(!install || !PERF)(
     let workDir: string;
     let session: GimpSession;
 
-    beforeAll(() => {
-      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-large-timing-'));
-      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-    });
+    beforeAll(
+      async () => {
+        workDir = mkdtempSync(join(tmpdir(), 'em-gimp-large-timing-'));
+        session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+        await readySession(session);
+      },
+      LIVE_READY_TIMEOUT_MS
+    );
 
     afterAll(async () => {
       await session.shutdown();

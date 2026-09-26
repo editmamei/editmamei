@@ -8,7 +8,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { GimpSession } from '@editmamei/backends/gimp/session.ts';
-import { readPng, readPngBitDepth, readTiffTag, maxAbsDiff, writeGrayRamp } from './support.ts';
+import {
+  readPng,
+  readPngBitDepth,
+  readTiffTag,
+  maxAbsDiff,
+  writeGrayRamp,
+  readySession,
+  LIVE_READY_TIMEOUT_MS,
+} from './support.ts';
 
 // This file alone, not the project default -- see adjust.live.test.ts's identical comment.
 vi.setConfig({ testTimeout: 30_000 });
@@ -20,12 +28,16 @@ describe.skipIf(!install)('export options, metadata stripping, and .xcf round tr
   let session: GimpSession;
   let rampPath: string;
 
-  beforeAll(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-export-'));
-    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-    rampPath = join(workDir, 'ramp.png');
-    writeGrayRamp(rampPath, 256, 32);
-  });
+  beforeAll(
+    async () => {
+      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-export-'));
+      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+      await readySession(session);
+      rampPath = join(workDir, 'ramp.png');
+      writeGrayRamp(rampPath, 256, 32);
+    },
+    LIVE_READY_TIMEOUT_MS
+  );
 
   afterAll(async () => {
     await session.shutdown();

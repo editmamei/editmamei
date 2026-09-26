@@ -10,6 +10,8 @@
  */
 import { deflateSync, inflateSync } from 'node:zlib';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { GimpSession, READY_TIMEOUT_MS } from '@editmamei/backends/gimp/session.ts';
+import { GimpError } from '@editmamei/backends/gimp/errors.ts';
 
 export interface Ppm {
   width: number;
@@ -583,4 +585,71 @@ export const GPS_XMP_JPEG_BASE64 =
 /** Writes `GPS_XMP_JPEG_BASE64` to `path`. */
 export function writeGpsXmpJpeg(path: string): void {
   writeFileSync(path, Buffer.from(GPS_XMP_JPEG_BASE64, 'base64'));
+}
+
+// ---- session readiness (a slow first GIMP launch) --------------------------
+//
+// A real GIMP's very first launch on a machine (font cache, plug-in scan,
+// macOS Gatekeeper) can outlast `session.ts`'s per-call `CALL_READY_WAIT_MS`
+// cap, in which case `GimpSession.call()` rejects with `gimp_starting`
+// instead of hanging or failing outright — the caller is expected to retry.
+// Every `gimp-live` file below constructs its own session and makes its
+// first real call inside an `it()`, so without retrying here a cold runner
+// (a fresh GitHub Actions VM has none of GIMP's own caches either) would
+// fail that first test on `gimp_starting` alone, not on anything actually
+// broken.
+
+/**
+ * `READY_TIMEOUT_MS` (the session's own overall start-attempt deadline) plus
+ * a margin, for whatever in this suite needs to bound a `readySession`/
+ * `readyGimpRegistry` wait — a `beforeAll` hook timeout, or the one test that
+ * measures the cold start itself. Margin, not the bare deadline: comfortably
+ * past the point `GimpSession` would already have classified a genuine start
+ * failure on its own, so this never races that classification.
+ */
+export const LIVE_READY_TIMEOUT_MS = READY_TIMEOUT_MS + 20_000;
+
+/**
+ * Calls `ping` on a `GimpSession`, retrying while it reports `gimp_starting`
+ * until the session connects or `LIVE_READY_TIMEOUT_MS` elapses (any other
+ * rejection propagates immediately — this is not a generic retry-everything
+ * helper). Every `gimp-live` file's `beforeAll` should `await` this right
+ * after constructing its session, passing `LIVE_READY_TIMEOUT_MS` as that
+ * hook's own timeout.
+ */
+export async function readySession(session: GimpSession): Promise<void> {
+  const deadline = Date.now() + LIVE_READY_TIMEOUT_MS;
+  for (;;) {
+    try {
+      await session.call('ping', {});
+      return;
+    } catch (err) {
+      const code = err instanceof GimpError ? err.code : undefined;
+      if (code !== 'gimp_starting' || Date.now() > deadline) throw err;
+    }
+  }
+}
+
+/**
+ * The `registry.execute('gimp_ping', ...)` analogue of `readySession`, for
+ * `registry-e2e.test.ts`: it drives GIMP through the tool layer
+ * (`GimpBackend`), not a raw `GimpSession`, so `gimp_ping` never THROWS on a
+ * slow first launch — it reports `structuredContent.starting: true` instead
+ * (see `gimp-core-tools.ts`). Retries the same call until that flag is gone
+ * or `LIVE_READY_TIMEOUT_MS` elapses.
+ */
+export async function readyGimpRegistry(
+  execute: (name: string, args: Record<string, unknown>) => Promise<{ structuredContent?: unknown }>
+): Promise<void> {
+  const deadline = Date.now() + LIVE_READY_TIMEOUT_MS;
+  for (;;) {
+    const result = await execute('gimp_ping', {});
+    const starting = (result.structuredContent as { starting?: boolean } | undefined)?.starting;
+    if (!starting) return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `gimp-live: gimp_ping still reports starting: true after LIVE_READY_TIMEOUT_MS (${LIVE_READY_TIMEOUT_MS}ms)`
+      );
+    }
+  }
 }

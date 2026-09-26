@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { GimpSession } from '@editmamei/backends/gimp/session.ts';
+import { readySession, LIVE_READY_TIMEOUT_MS } from './support.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const GOLDEN_PATH = join(__dirname, 'fixtures', 'gegl-ops.golden.json');
@@ -30,11 +31,15 @@ describe.skipIf(!install)('GEGL/GIMP operation schema goldens', () => {
     Array<{ name: string; type: string; minimum: unknown; maximum: unknown; default: unknown }>
   >;
 
-  beforeAll(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-schema-'));
-    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-    golden = JSON.parse(readFileSync(GOLDEN_PATH, 'utf8'));
-  });
+  beforeAll(
+    async () => {
+      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-schema-'));
+      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+      await readySession(session);
+      golden = JSON.parse(readFileSync(GOLDEN_PATH, 'utf8'));
+    },
+    LIVE_READY_TIMEOUT_MS
+  );
 
   afterAll(async () => {
     await session.shutdown();

@@ -35,6 +35,7 @@ vi.mock('node:os', async (importOriginal) => {
 import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { EditmameiServer } from '@editmamei/core/server.ts';
 import type { ToolResult } from '@editmamei/core/tool-registry.ts';
+import { readyGimpRegistry, LIVE_READY_TIMEOUT_MS } from './support.ts';
 
 const REQUIRE_GIMP = process.env.EDITMAMEI_REQUIRE_GIMP === '1';
 
@@ -114,18 +115,25 @@ describe.skipIf(!install)('gimp_* tools through the real server registry', () =>
     list(): Array<{ name: string }>;
   };
 
-  beforeAll(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-registry-e2e-'));
-    server = new EditmameiServer({
-      editors: {
-        registerPhotoshop: false,
-        registerGimp: true,
-        gimpInstall: install,
-        gimpDetectionTimedOut: false,
-      },
-    });
-    registry = (server as unknown as { toolRegistry: typeof registry }).toolRegistry;
-  });
+  beforeAll(
+    async () => {
+      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-registry-e2e-'));
+      server = new EditmameiServer({
+        editors: {
+          registerPhotoshop: false,
+          registerGimp: true,
+          gimpInstall: install,
+          gimpDetectionTimedOut: false,
+        },
+      });
+      registry = (server as unknown as { toolRegistry: typeof registry }).toolRegistry;
+      // A cold GIMP launch can outlast CALL_READY_WAIT_MS -- this file drives
+      // GIMP through the tool layer, so a slow first launch surfaces as
+      // gimp_ping's `starting: true`, not a rejection; retry through that here.
+      await readyGimpRegistry((name, args) => registry.execute(name, args));
+    },
+    LIVE_READY_TIMEOUT_MS
+  );
 
   afterAll(async () => {
     await server.stop();
