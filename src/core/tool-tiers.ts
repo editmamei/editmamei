@@ -305,22 +305,22 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // gimp_* — the second-editor beta surface, registered only when a GIMP
   // install is detected (or the editor pin forces it) at boot — see
   // src/backends/detect-editors.ts / src/modules/gimp/index.ts.
-  gimp_ping: 'dev',
-  gimp_overview: 'dev',
-  gimp_open_document: 'dev',
-  gimp_close_document: 'dev',
-  gimp_save_xcf: 'dev',
-  gimp_export: 'dev',
-  gimp_inspect: 'dev',
-  gimp_add_adjustment: 'dev',
-  gimp_filter: 'dev',
-  gimp_crop_document: 'dev',
-  gimp_resize_image: 'dev',
-  gimp_transform_canvas: 'dev',
-  gimp_create_mask: 'dev',
-  gimp_get_preview: 'dev',
-  gimp_get_histogram: 'dev',
-  gimp_compare: 'dev',
+  gimp_ping: 'community',
+  gimp_overview: 'community',
+  gimp_open_document: 'community',
+  gimp_close_document: 'community',
+  gimp_save_xcf: 'community',
+  gimp_export: 'community',
+  gimp_inspect: 'community',
+  gimp_add_adjustment: 'community',
+  gimp_filter: 'community',
+  gimp_crop_document: 'community',
+  gimp_resize_image: 'community',
+  gimp_transform_canvas: 'community',
+  gimp_create_mask: 'community',
+  gimp_get_preview: 'community',
+  gimp_get_histogram: 'community',
+  gimp_compare: 'community',
 };
 
 /**

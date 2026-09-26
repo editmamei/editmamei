@@ -1,7 +1,8 @@
 /**
  * A COMMUNITY-edition boot, GIMP detected and unpinned: the full `ps_*`
- * surface must still register even though every `gimp_*` tool is 'dev'
- * tier and so drops out of a community build entirely. Mirrors the
+ * surface registers alongside every community-tier `gimp_*` tool, whatever
+ * tier the gimp_* tools carry (the edition filter decides which of them
+ * ship; it never removes the Photoshop tools). Mirrors the
  * `EDITION` mock pattern used by `ce-loads-pro-module.test.ts` /
  * `server-module-load.test.ts` — a dedicated file, not a case inside
  * `server.test.ts`, because `vi.mock('@editmamei/edition.ts', ...)` applies
@@ -13,6 +14,7 @@ vi.mock('@editmamei/edition.ts', () => ({ EDITION: 'community' }));
 
 import { EditmameiServer } from '@editmamei/core/server.ts';
 import { resolveEditorRegistration } from '@editmamei/backends/detect-editors.ts';
+import { toolsInTier } from '@editmamei/core/tool-tiers.ts';
 import type { GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
 
@@ -25,7 +27,7 @@ const SAMPLE_GIMP_INSTALL: GimpInstall = {
 };
 
 describe('community edition, GIMP detected, unpinned', () => {
-  it('registers the full ps_* surface (gimp_* tiers at dev do not remove it)', () => {
+  it('registers the full ps_* surface plus the gimp_* tools the edition allows', () => {
     const editors = resolveEditorRegistration(
       { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
       'auto'
@@ -46,9 +48,12 @@ describe('community edition, GIMP detected, unpinned', () => {
     // truncated one.
     expect(server.toolRegistry.count()).toBeGreaterThan(50);
 
-    // Every gimp_* tool is 'dev' tier — a community build carries none of
-    // them, by the SAME edition filter (isToolAllowedInEdition) that already
-    // keeps every other dev-tier tool out of a shipped build.
-    expect(names.some((n) => n.startsWith('gimp_'))).toBe(false);
+    // The gimp_* tools a community build carries are exactly the ones the
+    // tier table allows there — the SAME edition filter
+    // (isToolAllowedInEdition) that governs every other tool.
+    const expectedGimp = toolsInTier('community')
+      .filter((n) => n.startsWith('gimp_'))
+      .sort();
+    expect(names.filter((n) => n.startsWith('gimp_')).sort()).toEqual(expectedGimp);
   });
 });
