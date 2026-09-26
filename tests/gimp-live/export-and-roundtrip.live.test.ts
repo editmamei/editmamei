@@ -28,16 +28,13 @@ describe.skipIf(!install)('export options, metadata stripping, and .xcf round tr
   let session: GimpSession;
   let rampPath: string;
 
-  beforeAll(
-    async () => {
-      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-export-'));
-      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-      await readySession(session);
-      rampPath = join(workDir, 'ramp.png');
-      writeGrayRamp(rampPath, 256, 32);
-    },
-    LIVE_READY_TIMEOUT_MS
-  );
+  beforeAll(async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-export-'));
+    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+    await readySession(session);
+    rampPath = join(workDir, 'ramp.png');
+    writeGrayRamp(rampPath, 256, 32);
+  }, LIVE_READY_TIMEOUT_MS);
 
   afterAll(async () => {
     await session.shutdown();

@@ -37,16 +37,13 @@ describe.skipIf(!install)('metadata stripping (byte-level)', () => {
   let session: GimpSession;
   let sourcePath: string;
 
-  beforeAll(
-    async () => {
-      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-metadata-'));
-      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-      await readySession(session);
-      sourcePath = join(workDir, 'gps-xmp-source.jpg');
-      writeGpsXmpJpeg(sourcePath);
-    },
-    LIVE_READY_TIMEOUT_MS
-  );
+  beforeAll(async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-metadata-'));
+    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+    await readySession(session);
+    sourcePath = join(workDir, 'gps-xmp-source.jpg');
+    writeGpsXmpJpeg(sourcePath);
+  }, LIVE_READY_TIMEOUT_MS);
 
   afterAll(async () => {
     await session.shutdown();

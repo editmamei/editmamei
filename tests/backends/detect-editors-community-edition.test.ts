@@ -22,8 +22,7 @@ vi.mock('@editmamei/core/tool-tiers.ts', () => ({
   // `Object.keys(TOOL_TIERS)` for a `gimp_` prefix and asks
   // `isToolAllowedInEdition` about each one it finds.
   TOOL_TIERS: { gimp_ping: 'dev' },
-  isToolAllowedInEdition: (name: string) =>
-    name === 'gimp_ping' ? fx.gimpCommunityTier : true,
+  isToolAllowedInEdition: (name: string) => (name === 'gimp_ping' ? fx.gimpCommunityTier : true),
 }));
 
 import { resolveBootEditors } from '@editmamei/backends/detect-editors.ts';

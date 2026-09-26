@@ -285,7 +285,7 @@ describe('GimpBackend', () => {
       expect(backend.state).toBe('ready');
     });
 
-    it('startOrigin delegates to the underlying session\'s lastStartOrigin', async () => {
+    it("startOrigin delegates to the underlying session's lastStartOrigin", async () => {
       const fake = makeFakeSession({ state: 'starting', lastStartOrigin: 'restarted' });
       const { backend } = backendWithFakeSession(SAMPLE_INSTALL, fake);
       await backend.call('ping', {});

@@ -119,14 +119,11 @@ describe.skipIf(!install || !PERF)(
     let workDir: string;
     let session: GimpSession;
 
-    beforeAll(
-      async () => {
-        workDir = mkdtempSync(join(tmpdir(), 'em-gimp-large-timing-'));
-        session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
-        await readySession(session);
-      },
-      LIVE_READY_TIMEOUT_MS
-    );
+    beforeAll(async () => {
+      workDir = mkdtempSync(join(tmpdir(), 'em-gimp-large-timing-'));
+      session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+      await readySession(session);
+    }, LIVE_READY_TIMEOUT_MS);
 
     afterAll(async () => {
       await session.shutdown();
