@@ -103,16 +103,21 @@ function makeStubChild(pid = 999_999_999): {
     stderr: typeof stderr;
     pid: number;
     exitCode: number | null;
+    signalCode: string | null;
     kill: (signal?: string) => boolean;
   };
   proc.stdout = stdout;
   proc.stderr = stderr;
   proc.pid = pid;
+  // Both null until exit, like a real ChildProcess: a normal exit sets
+  // exitCode, a signal death sets signalCode and leaves exitCode null.
   proc.exitCode = null;
+  proc.signalCode = null;
   const killSpy = vi.fn(() => true);
   proc.kill = killSpy;
   const emitExitEvent = (code: number | null, signal: string | null): void => {
     proc.exitCode = code;
+    proc.signalCode = signal;
     proc.emit('exit', code, signal);
   };
   const emitCloseEvent = (code: number | null): void => {
@@ -191,7 +196,10 @@ class FakeGimpServer {
         try {
           resp = { id: req.id, ok: true, result: this.responder(req.op, req.args) };
         } catch (err) {
-          resp = { id: req.id, ok: false, code: 'gimp_op_failed', error: String(err) };
+          // A responder can throw an error carrying its own bridge `code`
+          // (e.g. invalid_argument), the way the real bridge classifies it.
+          const code = (err as { code?: string }).code ?? 'gimp_op_failed';
+          resp = { id: req.id, ok: false, code, error: String(err) };
         }
         // Derived independently from the id, same as the real bridge —
         // never trusts a `resp` field inside the request.
@@ -431,6 +439,135 @@ describe('GimpSession', () => {
     expect(order).toEqual(['ping', 'a', 'b', 'c']);
     // The fake server never saw more than one req-*.json file at a time.
     expect(h.servers[0]!.maxConcurrentRequests).toBeLessThanOrEqual(1);
+  });
+
+  it.each([
+    ['linux', true],
+    ['darwin', true],
+    ['win32', false],
+  ])(
+    'spawns GIMP detached on %s: %s (the POSIX group kill needs its own process group)',
+    async (platform, detached) => {
+      const rootDir = mkdtempSync(join(tmpdir(), 'em-gimp-session-'));
+      const servers: FakeGimpServer[] = [];
+      registerCleanup(rootDir, servers);
+      const spawnOptions: Array<{ detached?: boolean }> = [];
+      const spawn: SpawnFn = (_c, _a, options) => {
+        spawnOptions.push(options);
+        const stub = makeStubChild();
+        const rpcDir = join((options.env as Record<string, string>).EM_GIMP_SESSION, 'rpc');
+        writeReady(rpcDir);
+        servers.push(new FakeGimpServer(rpcDir, pingOk, new Set(), () => stub.emitExit(0, null)));
+        return stub.child;
+      };
+      const { session } = buildSession({
+        rootDir,
+        spawn,
+        platform,
+        // The POSIX ownership check needs these off Windows: the root is ours and 0700.
+        getuid: () => 1000,
+        statRootDir: () => ({ uid: 1000, mode: 0o40700 }),
+      });
+      await session.call('ping', {});
+      expect(spawnOptions).toHaveLength(1);
+      expect(spawnOptions[0]!.detached).toBe(detached);
+      await session.shutdown();
+    }
+  );
+
+  it('a gimp_timeout says the session was stopped and how to recover, since the kill loses the open images', async () => {
+    const h = harness({ hangOps: new Set(['slow']) });
+    await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({
+      code: 'gimp_timeout',
+      message: expect.stringMatching(
+        /slow did not respond within 30ms, so the GIMP session was stopped: every open image and unsaved filter is gone — reopen the file with gimp_open_document/
+      ),
+    });
+  });
+
+  describe('the first "no open image" after a restart', () => {
+    const noOpenImage = (): never => {
+      throw Object.assign(new Error('ValueError: no open image with id 1'), {
+        code: 'invalid_argument',
+      });
+    };
+    const responder = (op: string): unknown => {
+      if (op === 'ping') return { major: 3, minor: 2, micro: 6 };
+      if (op === 'histogram') return noOpenImage();
+      return { op };
+    };
+
+    it('is reported as gimp_session_restarted with the reopen instruction, once', async () => {
+      const h = harness({ hangOps: new Set(['slow']), responder });
+      await h.session.call('open', {});
+      await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({
+        code: 'gimp_timeout',
+      });
+      // The next call restarts GIMP; the image id the caller holds died with the old process.
+      await expect(h.session.call('histogram', { image: 1 })).rejects.toMatchObject({
+        code: 'gimp_session_restarted',
+        message: expect.stringMatching(
+          /GIMP session restarted since it was opened; every open image and unsaved filter is gone — reopen the file with gimp_open_document/
+        ),
+      });
+      expect(h.spawnCalls).toHaveLength(2);
+      // Told once: repeating the stale id is now the caller's own mistake.
+      await expect(h.session.call('histogram', { image: 1 })).rejects.toMatchObject({
+        code: 'invalid_argument',
+      });
+    });
+
+    it('is left alone after a cold start (nothing restarted)', async () => {
+      const h = harness({ responder });
+      await expect(h.session.call('histogram', { image: 1 })).rejects.toMatchObject({
+        code: 'invalid_argument',
+      });
+    });
+
+    it('is left alone once the caller has opened an image again', async () => {
+      const h = harness({ hangOps: new Set(['slow']), responder });
+      await h.session.call('open', {});
+      await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({
+        code: 'gimp_timeout',
+      });
+      await h.session.call('open', {}); // restarts GIMP, and the caller holds a fresh id
+      await expect(h.session.call('histogram', { image: 1 })).rejects.toMatchObject({
+        code: 'invalid_argument',
+      });
+    });
+  });
+
+  describe('a GIMP process killed by a signal (exitCode stays null, signalCode is set)', () => {
+    it('is noticed by an in-flight call without waiting out its timeout', async () => {
+      const h = harness({ hangOps: new Set(['export']) });
+      await h.session.call('open', {});
+      const proc = (h.session as unknown as { proc: ChildProcess }).proc;
+      const started = Date.now();
+      const pending = h.session.call('export', {}, { timeoutMs: 60_000 });
+      // Node's shape for a signal death: signalCode set, exitCode left null. No 'exit' event yet.
+      (proc as unknown as { signalCode: string | null }).signalCode = 'SIGSEGV';
+      await expect(pending).rejects.toMatchObject({ code: 'gimp_session_restarted' });
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(h.session.state).toBe('dead');
+    });
+
+    it('is noticed via the exit event even before the process fields read as exited', async () => {
+      const h = harness({ hangOps: new Set(['export']) });
+      await h.session.call('open', {});
+      const internals = h.session as unknown as { proc: ChildProcess; rpcDir: string };
+      const proc = internals.proc;
+      const started = Date.now();
+      const pending = h.session.call('export', {}, { timeoutMs: 60_000 });
+      // Wait until the request file exists, so #send is the code polling when the exit lands
+      // (issued earlier, #dispatch's generation check would catch it instead).
+      while (!readdirSync(internals.rpcDir).some((n) => /^req-\d+\.json$/.test(n))) {
+        await sleep(1);
+      }
+      // The exit listener marks the session dead; #send must bail on that state alone.
+      proc.emit('exit', null, 'SIGSEGV');
+      await expect(pending).rejects.toMatchObject({ code: 'gimp_session_restarted' });
+      expect(Date.now() - started).toBeLessThan(5_000);
+    });
   });
 
   it('on timeout: tree-kills, rejects with gimp_timeout, and the NEXT call starts a fresh session dir', async () => {
@@ -1035,6 +1172,27 @@ describe('GimpSession', () => {
     expect(session.state).toBe('dead');
   });
 
+  it('a spawn failure names the GIMP binary by file name only, never its full path', async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'em-gimp-session-'));
+    registerCleanup(rootDir);
+    const dir = join(rootDir, 'Users', 'someone', 'GIMP 3', 'bin');
+    const command = join(dir, 'gimp-console-3.2.exe');
+    for (const code of ['ENOENT', 'EACCES']) {
+      const spawn: SpawnFn = () => {
+        throw Object.assign(new Error(`spawn ${command} ${code}`), { code });
+      };
+      const { session } = buildSession({
+        rootDir,
+        spawn,
+        install: { source: 'conventional', path: command, launch: { command, args: [] } },
+      });
+      const err = await session.call('ping', {}).catch((e: unknown) => e as GimpError);
+      expect(err).toMatchObject({ code: 'gimp_start_failed' });
+      expect((err as GimpError).message).toContain('"gimp-console-3.2.exe"');
+      expect((err as GimpError).message).not.toContain(dir);
+    }
+  });
+
   it('an async ENOENT reported via the error event gives gimp_start_failed "not found", not a generic exit classification', async () => {
     const rootDir = mkdtempSync(join(tmpdir(), 'em-gimp-session-'));
     registerCleanup(rootDir);
@@ -1253,18 +1411,21 @@ describe('GimpSession', () => {
       servers.push(new FakeGimpServer(rpcDir, pingOk, new Set(['a'])));
       return stub.child;
     };
-    // Only the FIRST kill call schedules the (delayed) real exit -- a
-    // second tree-kill against an already-dying process is a realistic
-    // no-op, and without this guard the test would race two independent
-    // timers against the same stub.
-    let exitScheduled = false;
+    // The first kill (the timeout's) does not exit the stub; the test releases
+    // that exit by hand once the second kill (#startFresh's own cleanup) shows
+    // #startFresh is inside its confirm-wait. A latch, not a timer race.
+    let releaseExit: (() => void) | undefined;
+    let signalSecondKill: () => void = () => {};
+    const secondKill = new Promise<void>((resolve) => (signalSecondKill = resolve));
     const killTreeSpy = vi.fn((proc: ChildProcess) => {
-      if (exitScheduled) return;
-      exitScheduled = true;
-      setTimeout(() => {
-        (proc as unknown as { exitCode: number | null }).exitCode = 1;
-        proc.emit('exit', 1, null);
-      }, 20);
+      if (!releaseExit) {
+        releaseExit = () => {
+          (proc as unknown as { exitCode: number | null }).exitCode = 1;
+          proc.emit('exit', 1, null);
+        };
+        return;
+      }
+      signalSecondKill();
     });
     const { session } = buildSession({ rootDir, spawn, killTree: killTreeSpy });
     registerCleanup(rootDir, servers);
@@ -1277,8 +1438,9 @@ describe('GimpSession', () => {
     expect(stubs).toHaveLength(1);
 
     const resultPromise = session.call<{ op: string }>('open', {});
-    await sleep(10); // less than the scheduled 20ms exit -- still mid-confirm-wait
+    await secondKill; // #startFresh has issued its own kill and is waiting for the exit
     expect(existsSync(staleSessionDir)).toBe(true); // NOT removed yet -- exit hasn't confirmed
+    releaseExit!();
     const result = await resultPromise;
     expect(result).toEqual({ op: 'open' });
     expect(existsSync(staleSessionDir)).toBe(false); // removed only once confirmed
@@ -1516,15 +1678,16 @@ describe('GimpSession', () => {
       servers.push(new FakeGimpServer(rpcDir, pingOk, new Set(['slow'])));
       return stub.child;
     };
-    // Only the FIRST kill call (the timeout's own) schedules the delayed
-    // real exit -- shutdown()'s own redundant kill against the same
-    // already-dying process is a no-op here, matching the same guard used
-    // for #startFresh's stale-process cleanup test above.
-    let exitScheduled = false;
+    // Neither kill exits the stub on its own: the second one (shutdown()'s)
+    // signals that shutdown is inside its confirm-wait, and the test then
+    // releases the exit by hand -- a latch, same as the #startFresh cleanup
+    // test above, not a timer race.
+    let killCount = 0;
+    let signalSecondKill: () => void = () => {};
+    const secondKill = new Promise<void>((resolve) => (signalSecondKill = resolve));
     const killTreeSpy = vi.fn(() => {
-      if (exitScheduled) return;
-      exitScheduled = true;
-      setTimeout(() => stub!.emitExit(0, null), 40);
+      killCount++;
+      if (killCount === 2) signalSecondKill();
     });
     const logger = new Logger('test');
     const warnSpy = vi.spyOn(logger, 'warn');
@@ -1539,8 +1702,9 @@ describe('GimpSession', () => {
 
     const sessionDir = (session as unknown as { sessionDir: string }).sessionDir;
     const shutdownPromise = session.shutdown();
-    await sleep(20); // less than the scheduled 40ms exit -- the confirm-wait hasn't resolved yet
+    await secondKill; // shutdown() has issued its kill and is waiting for the exit
     expect(existsSync(sessionDir)).toBe(true); // NOT removed yet -- exit hasn't confirmed
+    stub!.emitExit(0, null);
     await shutdownPromise;
 
     expect(existsSync(sessionDir)).toBe(false); // removed only once confirmed

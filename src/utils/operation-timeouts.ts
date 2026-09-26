@@ -267,7 +267,9 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   gimp_overview: 5_000, // pure static markdown, no bridge round trip — same as ps_overview
   gimp_open_document: 30_000,
   gimp_close_document: 15_000,
-  gimp_save_xcf: 30_000,
+  // Matched to gimp_export: saving a large document with live filters is no cheaper than
+  // exporting it, and a timeout here would destroy the very work the save was protecting.
+  gimp_save_xcf: 90_000,
   gimp_export: 90_000,
   gimp_inspect: 15_000,
   gimp_add_adjustment: 20_000,
@@ -277,7 +279,9 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   gimp_transform_canvas: 60_000,
   gimp_create_mask: 20_000,
   gimp_get_preview: 30_000,
-  gimp_get_histogram: 30_000,
+  // exact: true renders the full-resolution composite, the same work gimp_export does, and it
+  // is the recommended final check before export.
+  gimp_get_histogram: 90_000,
   gimp_compare: 45_000,
 };
 

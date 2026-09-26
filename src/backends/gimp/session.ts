@@ -33,7 +33,7 @@ import {
   writeFileSync,
   copyFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Logger } from '../../utils/logger.js';
 import { userOwnedTempRoot } from '../../utils/temp.js';
@@ -94,6 +94,12 @@ export interface GimpSessionOptions {
   chmodRootDir?: (path: string, mode: number) => void;
   /** Defaults to a real `fs.readFileSync(path, 'utf8')`. Injected so the response-read retry/error paths are testable without faking OS-level file locks. */
   readRespFile?: (path: string) => string;
+  /**
+   * The bridge script GIMP runs (`EM_GIMP_OPS`). Defaults to `resolveOpsPyPath()`, the copy next
+   * to this module. Tests point it at the built `dist/` copy, or at a wrapper that loads the real
+   * bridge and adds test-only ops.
+   */
+  opsPyPath?: string;
 }
 
 interface PingResult {
@@ -159,7 +165,18 @@ const RESP_READ_RETRY_DELAY_MS = 20;
 
 const KNOWN_ERROR_CODES = new Set<GimpErrorCode>(GIMP_ERROR_CODES);
 
-const RESTARTED_MESSAGE = 'GIMP stopped; open images and unapplied work are gone — reopen the file';
+const LOST_WORK =
+  'every open image and unsaved filter is gone — reopen the file with gimp_open_document';
+const RESTARTED_MESSAGE = `GIMP stopped; ${LOST_WORK}`;
+
+/**
+ * True once `proc` has exited for any reason. Node leaves `exitCode` null when the child was
+ * killed by a signal (a crash handler, an OOM kill) and sets `signalCode` instead, so checking
+ * `exitCode` alone misses exactly the crashes a POSIX host sees.
+ */
+export function hasExited(proc: ChildProcess): boolean {
+  return proc.exitCode !== null || proc.signalCode !== null;
+}
 
 /**
  * The ONE string ever passed to `-b`. It carries no path, no username, no
@@ -236,7 +253,7 @@ const PYTHON_INTERPRETER_MISSING_RE =
  * to killing just the one process if group-kill isn't available.
  */
 export function defaultTreeKill(proc: ChildProcess): void {
-  if (proc.exitCode !== null || proc.pid === undefined) return; // already exited
+  if (hasExited(proc) || proc.pid === undefined) return; // already exited
   if (process.platform === 'win32') {
     spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true });
     return;
@@ -267,6 +284,7 @@ export class GimpSession {
   private readonly statRootDir: (path: string) => { uid: number; mode: number };
   private readonly chmodRootDir: (path: string, mode: number) => void;
   private readonly readRespFile: (path: string) => string;
+  private readonly opsPyPath: string;
 
   private sessionState: GimpSessionState = 'idle';
   private version: string | undefined;
@@ -334,6 +352,13 @@ export class GimpSession {
    * `unobservedStartFailure` instead.
    */
   private activeWaiters = 0;
+  /**
+   * Set when a session that was once ready comes back up after dying (a crash or a timeout
+   * kill), until the caller has been told or has opened an image again. Image ids belong to the
+   * GIMP process, so every id the caller holds died with it; without this, the first call after
+   * the restart fails with a bare "no open image with id N" that says nothing about why.
+   */
+  private restartNoticePending = false;
   private shutdownPromise: Promise<void> | undefined;
   private shuttingDown = false;
   /**
@@ -375,6 +400,7 @@ export class GimpSession {
       });
     this.chmodRootDir = opts.chmodRootDir ?? chmodSync;
     this.readRespFile = opts.readRespFile ?? ((path) => readFileSync(path, 'utf8'));
+    this.opsPyPath = opts.opsPyPath ?? resolveOpsPyPath();
   }
 
   get state(): GimpSessionState {
@@ -630,7 +656,7 @@ export class GimpSession {
     // have it open would be the exact race #shutdownOnce also guards against.
     const staleProc = this.proc;
     const staleDir = this.sessionDir;
-    if (staleProc && staleProc.exitCode === null) {
+    if (staleProc && !hasExited(staleProc)) {
       await this.#killAndConfirmExit(staleProc);
       // This wait can take up to KILL_CONFIRM_MS (2s) — long enough for a
       // shutdown() to start AND finish while it was running. Nothing of
@@ -684,7 +710,7 @@ export class GimpSession {
 
     const env: Record<string, string | undefined> = {
       ...process.env,
-      EM_GIMP_OPS: resolveOpsPyPath(),
+      EM_GIMP_OPS: this.opsPyPath,
       EM_GIMP_SESSION: sessionDir,
     };
     // GIMP under Flatpak runs in its own pid namespace, so the host's
@@ -713,7 +739,8 @@ export class GimpSession {
       proc = this.spawnFn(command, fullArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
-        detached: process.platform !== 'win32',
+        // POSIX: a process group of its own, so defaultTreeKill's group kill reaches GIMP's children.
+        detached: this.platform !== 'win32',
         env,
       });
     } catch (err) {
@@ -840,6 +867,7 @@ export class GimpSession {
 
     this.#assertOpen(proc);
     this.sessionState = 'ready';
+    if (this.startOrigin === 'restarted') this.restartNoticePending = true;
     this.everReady = true;
   }
 
@@ -873,17 +901,21 @@ export class GimpSession {
   }
 
   #classifySpawnFailure(err: unknown): GimpError {
+    // These messages reach the model, and a full install path carries the username, so they
+    // name the binary only. The full path is in the debug log.
     const command = this.install.launch.command;
+    const binary = basename(command);
+    this.logger.debug('GIMP spawn failed', { command, err });
     if (isEnoentError(err)) {
       const gimpErr = new GimpError(
         'gimp_start_failed',
-        `GIMP not found at "${command}" (ENOENT) — check the install path`
+        `GIMP not found at "${binary}" (ENOENT) — check the install path`
       );
       this.stickyError = gimpErr; // the configured binary does not exist; relaunching won't help
       return gimpErr;
     }
-    const message = err instanceof Error ? err.message : String(err);
-    return new GimpError('gimp_start_failed', `could not start GIMP at "${command}": ${message}`);
+    const message = (err instanceof Error ? err.message : String(err)).split(command).join(binary);
+    return new GimpError('gimp_start_failed', `could not start GIMP at "${binary}": ${message}`);
   }
 
   async #waitForReady(
@@ -958,7 +990,10 @@ export class GimpSession {
 
     const deadline = this.monotonicClock() + timeoutMs;
     while (!existsSync(respPath)) {
-      if (proc.exitCode !== null) {
+      // `sessionState === 'dead'` too, not just the process's own exit status: the 'exit'
+      // listener marks the session dead the moment it fires, which can be before (or instead
+      // of) the fields below reading as exited.
+      if (hasExited(proc) || this.sessionState === 'dead') {
         // A graceful shutdown() kills this same process, so this branch is
         // also how an in-flight call notices one landing underneath it.
         // #markDead is skipped in that case — shutdown() alone owns the
@@ -970,7 +1005,10 @@ export class GimpSession {
       if (this.monotonicClock() > deadline) {
         if (!this.shuttingDown) this.#markDead();
         this.killTreeFn(proc);
-        throw new GimpError('gimp_timeout', `${op} did not respond within ${timeoutMs}ms`);
+        throw new GimpError(
+          'gimp_timeout',
+          `${op} did not respond within ${timeoutMs}ms, so the GIMP session was stopped: ${LOST_WORK}`
+        );
       }
       await sleep(POLL_INTERVAL_MS);
     }
@@ -988,8 +1026,23 @@ export class GimpSession {
           ? (raw.code as GimpErrorCode)
           : 'gimp_op_failed';
       this.logger.debug('GIMP op failed', op, raw.error, raw.trace);
+      if (
+        this.restartNoticePending &&
+        code === 'invalid_argument' &&
+        /no open image with id/.test(raw.error ?? '')
+      ) {
+        this.restartNoticePending = false;
+        throw new GimpError(
+          'gimp_session_restarted',
+          `that image id is no longer open because the GIMP session restarted since it was ` +
+            `opened; ${LOST_WORK}`
+        );
+      }
       throw new GimpError(code, raw.error ?? `${op} failed`);
     }
+    // A fresh open means the caller holds a valid id again; a later "no open image" is its own
+    // mistake, not the restart's.
+    if (op === 'open') this.restartNoticePending = false;
     return raw.result as T;
   }
 
@@ -1069,7 +1122,7 @@ export class GimpSession {
       if (this.sessionDir) this.#removeSessionDir(this.sessionDir);
       return;
     }
-    if (proc.exitCode !== null) {
+    if (hasExited(proc)) {
       // Already gone — nothing to kill or wait for.
       this.sessionState = 'closed';
       if (this.sessionDir) this.#removeSessionDir(this.sessionDir);
