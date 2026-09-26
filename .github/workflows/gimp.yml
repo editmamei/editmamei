@@ -4,6 +4,12 @@
 # from `ci.yml` rather than a job in it: it needs an unattended GIMP install and a real live
 # GIMP process per test file, which is a different (and slower) shape of job than the rest of the
 # suite, and only runs when GIMP backend files change.
+#
+# Three jobs: `gimp-windows` (the supported platform, required-check-eligible once green),
+# `gimp-macos` (advisory — a GitHub-hosted macOS runner is a FRESH machine every run, with none of
+# GIMP's own caches, so it exercises a genuinely cold first launch every time: the exact case
+# CALL_READY_WAIT_MS / gimp_starting / the 180s READY_TIMEOUT_MS exist for), and `gimp-linux`
+# (advisory, GIMP via Flatpak).
 
 name: GIMP live suite
 
@@ -34,6 +40,11 @@ env:
   # read directly, not re-typed by hand) -- if GIMP ships a point update, this pin makes the
   # download step fail loudly instead of silently installing something else.
   GIMP_WINDOWS_INSTALLER_SHA256: 9337cccbc01d4098ee7a3dab215b3afbe6ece99c5287c92441d6f12cf541ebca
+  # arm64 (Apple Silicon): the only architecture GitHub-hosted `macos-latest` runners are today.
+  # Same verification story as the Windows installer above -- fetched directly from
+  # download.gimp.org's own SHA256SUMS for v3.2/macos/, not re-typed by hand.
+  GIMP_MACOS_DMG_URL: https://download.gimp.org/gimp/v3.2/macos/gimp-3.2.6-arm64.dmg
+  GIMP_MACOS_DMG_SHA256: 854573aec2be6a185aa021109c3c0ca94f210379204b704231bdd191b4060294
 
 jobs:
   gimp-windows:
@@ -95,6 +106,93 @@ jobs:
 
       - name: build
         run: npm run build
+
+      - name: gimp-live suite (fails loudly, not silently, if GIMP wasn't actually found)
+        env:
+          EDITMAMEI_REQUIRE_GIMP: '1'
+          # The large-image timing test runs only on the scheduled build.
+          EDITMAMEI_GIMP_PERF: ${{ github.event_name == 'schedule' && '1' || '0' }}
+        run: npx vitest run tests/gimp-live
+
+  gimp-macos:
+    # Advisory, NOT a required check yet -- same posture as `gimp-linux` below: promote once green
+    # across a run of builds. Its real value isn't platform coverage for its own sake -- it's that
+    # a GitHub-hosted `macos-latest` runner is a FRESH VM every run, with none of GIMP's own caches
+    # (font cache, plug-in scan, Gatekeeper's own first-run checks) primed. That means this job
+    # exercises a genuinely cold GIMP launch on EVERY run, unlike a long-lived dev machine or a
+    # cached self-hosted runner where the first launch only ever happens once. The `cold start`
+    # step below runs alone, first, specifically to measure that -- see its own comment.
+    name: gimp-live (macos, advisory)
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore cached GIMP DMG
+        id: cache-gimp-dmg
+        uses: actions/cache@v4
+        with:
+          path: gimp.dmg
+          # Same reasoning as the Windows job's cache key: the checksum is part of the key, not
+          # just verified after, so a pinned-version-or-checksum bump always forces a fresh
+          # download rather than risking a stale cached DMG sitting next to a changed checksum.
+          key: gimp-macos-dmg-${{ env.GIMP_VERSION }}-${{ env.GIMP_MACOS_DMG_SHA256 }}
+
+      - name: Download the GIMP DMG
+        if: steps.cache-gimp-dmg.outputs.cache-hit != 'true'
+        run: curl -fL -o gimp.dmg "$GIMP_MACOS_DMG_URL"
+
+      - name: Verify the DMG's SHA-256 against the pinned checksum
+        run: |
+          set -euo pipefail
+          actual="$(shasum -a 256 gimp.dmg | awk '{print $1}')"
+          if [ "$actual" != "$GIMP_MACOS_DMG_SHA256" ]; then
+            echo "::error::GIMP DMG checksum mismatch: got $actual, expected $GIMP_MACOS_DMG_SHA256"
+            exit 1
+          fi
+
+      - name: Mount the DMG and install GIMP.app to /Applications
+        run: |
+          set -euo pipefail
+          # `yes` auto-accepts a software-license-agreement prompt IF the DMG has one (it's a
+          # no-op read against stdin if it doesn't) -- hdiutil would otherwise hang waiting for an
+          # interactive answer nothing on a runner can give.
+          yes | hdiutil attach -nobrowse -readonly -mountpoint /Volumes/GIMP gimp.dmg
+          cp -R /Volumes/GIMP/GIMP.app /Applications/
+          hdiutil detach /Volumes/GIMP
+
+      - name: Verify the expected GIMP console binary exists after install
+        run: |
+          set -euo pipefail
+          ls -la /Applications/GIMP.app/Contents/MacOS
+          # gimp-console-3.2 is the first (most specific) name detect.ts's detectMac() looks for --
+          # see src/backends/gimp/detect.ts. A DMG layout change that renamed or dropped it would
+          # otherwise fail silently, much later, as a plain "no GIMP install was found".
+          if [ ! -x /Applications/GIMP.app/Contents/MacOS/gimp-console-3.2 ]; then
+            echo "::error::gimp-console-3.2 not found (or not executable) in /Applications/GIMP.app/Contents/MacOS -- detect.ts would not find this install"
+            exit 1
+          fi
+
+      # Go must be present before `npm ci`: the package's `prepare` script runs the build, which
+      # compiles the editmamei-core Go binary (same reasoning as ci.yml's windows job).
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go-core/go.mod
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: build
+        run: npm run build
+
+      - name: cold start (must run first -- the only genuinely FIRST GIMP launch this runner will ever do)
+        env:
+          EDITMAMEI_REQUIRE_GIMP: '1'
+        run: npx vitest run tests/gimp-live/cold-start.live.test.ts
 
       - name: gimp-live suite (fails loudly, not silently, if GIMP wasn't actually found)
         env:
