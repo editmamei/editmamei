@@ -138,10 +138,16 @@ async function gimpGetHistogram(
       width: number;
       height: number;
       pixels: number;
-      channels: Record<string, { mean: number; median: number }>;
+      channels: Record<
+        string,
+        { mean: number; median: number; p1: number; p5: number; p95: number; p99: number }
+      >;
     }>('histogram', pickSchemaDeclaredKeys(histogramSchema, args));
     const summary = Object.entries(result.channels)
-      .map(([ch, s]) => `${ch}: mean=${s.mean.toFixed(1)} median=${s.median}`)
+      .map(
+        ([ch, s]) =>
+          `${ch}: mean=${s.mean.toFixed(1)} median=${s.median} p1=${s.p1} p5=${s.p5} p95=${s.p95} p99=${s.p99}`
+      )
       .join(', ');
     return {
       content: [

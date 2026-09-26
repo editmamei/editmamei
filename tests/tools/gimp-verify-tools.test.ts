@@ -86,14 +86,14 @@ describe('createGimpVerifyTools', () => {
       expect(gimp.calls).toHaveLength(0);
     });
 
-    it('dispatches histogram with channels + exact', async () => {
+    it('dispatches histogram with channels + exact, and the text includes percentiles', async () => {
       const gimp = makeGimpBackend({
         result: {
           exact: true,
           width: 100,
           height: 100,
           pixels: 10000,
-          channels: { luminance: { mean: 128, median: 130 } },
+          channels: { luminance: { mean: 128, median: 130, p1: 5, p5: 20, p95: 240, p99: 253 } },
         },
       });
       const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: allow });
@@ -107,6 +107,8 @@ describe('createGimpVerifyTools', () => {
         args: { image: 1, channels: ['luminance'], exact: true },
       });
       expect(result.structuredContent).toMatchObject({ exact: true, pixels: 10000 });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toContain('p1=5 p5=20 p95=240 p99=253');
     });
   });
 
