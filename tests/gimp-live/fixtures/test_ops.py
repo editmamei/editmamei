@@ -81,6 +81,7 @@ def op_test_wrap_in_group(args):
     nested = Gimp.Layer.new_from_drawable(base, img)
     nested.set_name('Nested')
     img.insert_layer(nested, group, 0)
+    _drop_proxies(img.get_id())  # cached proxies predate these layers
     return {'layers': [l.get_name() for l in _all_layers(img)]}
 
 
@@ -116,7 +117,17 @@ def op_test_metadata_tag(args):
     return {'value': None}
 
 
+def op_test_proxy_filter_count(args):
+    """How many filters sit on the cached preview proxy's own layers (group children included).
+    The proxy must be filter-free -- the document's filters are mirrored onto a copy of it per
+    render -- so anything above 0 is a filter the proxy builder missed."""
+    img = _image(args)
+    proxy = _proxy(img, lib.validate_max_px(int(args.get('max_px', 1024))))
+    return {'filters': sum(len(layer.get_filters()) for layer in _all_layers(proxy))}
+
+
 OPS.update({
+    'test_proxy_filter_count': op_test_proxy_filter_count,
     'test_metadata_tag': op_test_metadata_tag,
     'select_mask': op_test_select_mask,
     'export_mask': op_test_export_mask,

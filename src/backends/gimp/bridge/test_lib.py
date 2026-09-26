@@ -1118,6 +1118,21 @@ class TestJsonSafe(unittest.TestCase):
         self.assertIsInstance(safe['raw'], str)
         json.dumps(safe)  # must not raise
 
+    def test_non_finite_floats_become_strings(self):
+        # json.dumps would write NaN/Infinity, which Node's JSON.parse rejects outright.
+        safe = lib.json_safe({'a': float('nan'), 'b': float('inf'), 'c': [float('-inf')]})
+        self.assertEqual(safe, {'a': 'nan', 'b': 'inf', 'c': ['-inf']})
+        json.loads(json.dumps(safe, allow_nan=False))
+
+    def test_values_with_more_than_six_decimals_round_trip_within_a_rounding_step(self):
+        gegl = lib.build_brightness_contrast_params(
+            {'brightness': 12.3456789}, _create_defaults('brightness_contrast')
+        )
+        listed = lib.user_params('brightness_contrast', gegl)
+        self.assertEqual(listed['brightness'], 12.345679)
+        rebuilt = lib.build_brightness_contrast_params(listed, gegl)
+        self.assertAlmostEqual(rebuilt['brightness'], gegl['brightness'], places=7)
+
 
 class TestValidateLevels(unittest.TestCase):
     def _params(self, **over):

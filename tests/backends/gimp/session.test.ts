@@ -507,7 +507,7 @@ describe('GimpSession', () => {
       await expect(h.session.call('histogram', { image: 1 })).rejects.toMatchObject({
         code: 'gimp_session_restarted',
         message: expect.stringMatching(
-          /GIMP session restarted since it was opened; every open image and unsaved filter is gone — reopen the file with gimp_open_document/
+          /that image id is not open. The GIMP session restarted, so every open image and unsaved filter is gone — reopen the file with gimp_open_document/
         ),
       });
       expect(h.spawnCalls).toHaveLength(2);
@@ -1830,6 +1830,7 @@ describe('GimpSession', () => {
       statRootDir?: (path: string) => { uid: number; mode: number };
     }): {
       session: GimpSession;
+      rootDir: string;
       chmodRootDir: ReturnType<typeof vi.fn>;
       getSpawnCalls: () => number;
     } {
@@ -1854,7 +1855,7 @@ describe('GimpSession', () => {
         statRootDir: opts.statRootDir ?? (() => ({ uid: 1000, mode: 0o755 })),
         chmodRootDir,
       });
-      return { session, chmodRootDir, getSpawnCalls: () => spawnCalls };
+      return { session, rootDir, chmodRootDir, getSpawnCalls: () => spawnCalls };
     }
 
     it('refuses a root owned by a different uid', async () => {
@@ -1907,12 +1908,22 @@ describe('GimpSession', () => {
           return makeStubChild().child;
         },
       });
-      await expect(session.call('ping', {})).rejects.toMatchObject({
+      const err = await session.call('ping', {}).catch((e: unknown) => e as GimpError);
+      expect(err).toMatchObject({
         code: 'gimp_start_failed',
         message: expect.stringContaining('could not prepare the GIMP session directory'),
       });
+      // The root sits under the user's home folder; its path must not reach the model.
+      expect((err as GimpError).message).not.toContain(parent);
       expect(session.state).toBe('dead');
       expect(spawnCount).toBe(0);
+    });
+
+    it("a refused root's error names the folder generically, never by its full path", async () => {
+      const h = posixHarness({ statRootDir: () => ({ uid: 1000, mode: 0o777 }) });
+      const err = await h.session.call('ping', {}).catch((e: unknown) => e as GimpError);
+      expect((err as GimpError).message).toContain('refusing to use the GIMP session folder');
+      expect((err as GimpError).message).not.toContain(h.rootDir);
     });
 
     it('refuses a group-writable root (mode 0o770)', async () => {
@@ -2058,8 +2069,28 @@ describe('GimpSession', () => {
 
       expect(existsSync(session.latestPreviewPath())).toBe(true);
       expect(readFileSync(session.latestPreviewPath(), 'utf8')).toBe('fake-jpeg-bytes');
-      expect(existsSync(`${session.latestPreviewPath()}.tmp`)).toBe(false); // renamed away, not left behind
+      // Renamed away, not left behind.
+      expect(readdirSync(rootDir).filter((n) => n.endsWith('.tmp'))).toEqual([]);
       expect(chmodRootDir).toHaveBeenCalledWith(rootDir, 0o700); // went through the checked #ensureRootDir path
+    });
+
+    it("writes through its own temp file, so another session's in-progress publish is left alone", () => {
+      // Sessions for one user share this folder. A fixed temp name would let one session's
+      // write land in (and then rename away) the other's half-written file.
+      const scratch = mkdtempSync(join(tmpdir(), 'em-gimp-preview-src-'));
+      registerCleanup(scratch);
+      const rootDir = mkdtempSync(join(tmpdir(), 'em-gimp-preview-root-'));
+      registerCleanup(rootDir);
+      const { session } = buildSession({ rootDir, spawn: () => makeStubChild().child });
+      const otherSessionTmp = `${session.latestPreviewPath()}.tmp`;
+      writeFileSync(otherSessionTmp, 'another session, mid-write');
+      const srcFile = join(scratch, 'preview-src.jpg');
+      writeFileSync(srcFile, 'this session');
+
+      session.copyToLatestPreview(srcFile);
+
+      expect(readFileSync(session.latestPreviewPath(), 'utf8')).toBe('this session');
+      expect(readFileSync(otherSessionTmp, 'utf8')).toBe('another session, mid-write');
     });
   });
 

@@ -6,6 +6,7 @@ import type { GimpBackend } from '../backends/gimp/backend.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers.js';
 import { loadSettings } from '../core/settings.js';
+import { Logger } from '../utils/logger.js';
 import {
   GIMP_IMAGE_PROP,
   GIMP_REGION_PROP,
@@ -30,6 +31,8 @@ import {
  * model. Paths go back to the model as basenames only (a full path carries
  * the username).
  */
+
+const logger = new Logger('GimpVerifyTools');
 
 const CHANNELS = ['luminance', 'red', 'green', 'blue'] as const;
 
@@ -81,8 +84,20 @@ async function gimpGetPreview(
         out_path: renderPath,
       });
       const bytes = await readFile(renderPath);
-      gimp.copyToLatestPreview(renderPath);
+      // Publishing the human-follows-along copy is best effort: the render itself succeeded, and
+      // a failed rename (a viewer holding the file open on Windows, another session publishing at
+      // the same moment) must not turn that into an error.
       const latestName = basename(gimp.latestPreviewPath());
+      let published = true;
+      try {
+        gimp.copyToLatestPreview(renderPath);
+      } catch (err) {
+        published = false;
+        logger.debug('could not refresh latest-preview.jpg', err);
+      }
+      const fileNote = published
+        ? `written to ${latestName} in the session folder`
+        : `${latestName} in the session folder could not be refreshed this time`;
       const allowed = previewsAllowedFn();
       const proxyNote = result.proxy
         ? ' (downscaled proxy render — per-pixel filters exact, spatial filters approximate)'
@@ -100,10 +115,10 @@ async function gimpGetPreview(
         text:
           `Preview ${result.width}x${result.height}${proxyNote}. ` +
           (allowed
-            ? `Also written to ${latestName} in the session folder.`
-            : `privacy.send_previews_to_llm is false — image not returned to the model; written to ${latestName} in the session folder.`),
+            ? `Also ${fileNote}.`
+            : `privacy.send_previews_to_llm is false — image not returned to the model; ${fileNote}.`),
       });
-      return { content, structuredContent: { ...result, path: latestName } };
+      return { content, structuredContent: { ...result, path: published ? latestName : null } };
     } finally {
       await rm(renderPath, { force: true }).catch(() => undefined);
     }
@@ -351,7 +366,7 @@ export function createGimpVerifyTools(
             width: { type: 'number' },
             height: { type: 'number' },
             proxy: { type: 'boolean' },
-            path: { type: 'string' },
+            path: { type: ['string', 'null'] },
           },
         },
         annotations: {

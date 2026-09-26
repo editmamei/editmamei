@@ -15,6 +15,7 @@ import {
   maxAbsDiff,
   writeColorSwatches,
   writeGrayRamp,
+  writeCheckerboard,
   readySession,
   LIVE_READY_TIMEOUT_MS,
   TEST_OPS_PY,
@@ -106,6 +107,13 @@ describe.skipIf(!install)('foreign and nested document state', () => {
       const exported = await exportPng(image, 'nested-filtered');
       expect(maxAbsDiff(readPng(previewPath), exported)).toBeLessThanOrEqual(1);
       expect(maxAbsDiff(exported, unfiltered)).toBeGreaterThan(20);
+      // The proxy base itself must be filter-free (the nested filter is mirrored onto each
+      // render, not left baked into the cached base).
+      const proxy = await session.call<{ filters: number }>('test_proxy_filter_count', {
+        image,
+        max_px: 512,
+      });
+      expect(proxy.filters).toBe(0);
 
       await expect(
         session.call('rotate', { image, degrees: 5, expand: true })
@@ -120,8 +128,69 @@ describe.skipIf(!install)('foreign and nested document state', () => {
       await session.call('close', { image });
       image = (await session.call<{ image: number }>('open', { path: xcfPath })).image;
       const relisted = await session.call<Listed>('filter', { image, op: 'list' });
-      const again = relisted.filters.find((f) => f.name === 'NestedLift');
+      const again = relisted.filters.find((f) => f.name === 'NestedLift')!;
       expect(again).toMatchObject({ layer: 'Nested', source: 'editmamei', mask: 'NestedMask' });
+
+      // Every by-id and by-name path reaches the nested filter too.
+      await session.call('adjust', {
+        image,
+        type: 'brightness_contrast',
+        filter_id: again.filter_id,
+        brightness: 20,
+      });
+      const reedited = await session.call<Listed>('filter', { image, op: 'list' });
+      expect(reedited.filters.find((f) => f.filter_id === again.filter_id)!.params).toMatchObject({
+        brightness: 20,
+      });
+      const second = await session.call<{ name: string }>('adjust', {
+        image,
+        type: 'exposure',
+        exposure: 0.2,
+        layer: 'Nested',
+        name: 'NestedLift',
+      });
+      expect(second.name).toBe('NestedLift 2'); // the nested 'NestedLift' is seen, not duplicated
+      await session.call('filter', {
+        image,
+        op: 'set_visibility',
+        filter_id: again.filter_id,
+        visible: false,
+      });
+      await session.call('filter', { image, op: 'delete', filter_id: again.filter_id });
+      const after = await session.call<Listed>('filter', { image, op: 'list' });
+      expect(after.filters.map((f) => f.name)).toEqual(['NestedLift 2']);
+    } finally {
+      await session.call('close', { image });
+    }
+  });
+
+  it("preview mirrors a nested layer's filter onto a proxy that is actually downscaled", async () => {
+    // Bigger than max_px, so the proxy is a real downscale: a filter the mirror misses would
+    // simply be absent from the preview.
+    const bigPath = join(workDir, 'big-checker.png');
+    writeCheckerboard(bigPath, 1024, 256, 32, 60, 200);
+    const { image } = await session.call<{ image: number }>('open', { path: bigPath });
+    try {
+      await session.call('test_wrap_in_group', { image });
+      const created = await session.call<{ filter_id: number }>('adjust', {
+        image,
+        type: 'brightness_contrast',
+        brightness: 70,
+        layer: 'Nested',
+      });
+      const shownPath = join(workDir, 'big-nested-shown.png');
+      await session.call('preview', { image, max_px: 512, out_path: shownPath });
+      await session.call('filter', {
+        image,
+        op: 'set_visibility',
+        filter_id: created.filter_id,
+        visible: false,
+      });
+      const hiddenPath = join(workDir, 'big-nested-hidden.png');
+      await session.call('preview', { image, max_px: 512, out_path: hiddenPath });
+      const shown = readPng(shownPath);
+      expect(shown.width).toBe(512);
+      expect(maxAbsDiff(shown, readPng(hiddenPath))).toBeGreaterThan(20);
     } finally {
       await session.call('close', { image });
     }
@@ -184,6 +253,43 @@ describe.skipIf(!install)('foreign and nested document state', () => {
       await session.call('close', { image: opened.image });
     }
   });
+
+  const OTHER_GEOMETRY: Array<[string, (image: number) => Promise<unknown>]> = [
+    ['crop', (image) => session.call('crop', { image, left: 8, top: 2, width: 60, height: 12 })],
+    ['resize', (image) => session.call('resize', { image, width: 48 })],
+    ['flip', (image) => session.call('flip', { image, orientation: 'horizontal' })],
+  ];
+
+  it.each(OTHER_GEOMETRY)(
+    '%s clears a selection active in the session, and renders exactly as without one',
+    async (label, op) => {
+      const plain = await session.call<{ image: number }>('open', { path: swatchesPath });
+      await op(plain.image);
+      const reference = await exportPng(plain.image, `${label}-reference`);
+      await session.call('close', { image: plain.image });
+
+      const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+      try {
+        await session.call('test_select_rect', {
+          image: opened.image,
+          x: 0,
+          y: 0,
+          width: 20,
+          height: 8,
+        });
+        await op(opened.image);
+        const after = await session.call<{ selection_empty: boolean }>('test_selection_empty', {
+          image: opened.image,
+        });
+        expect(after.selection_empty).toBe(true);
+        expect(
+          maxAbsDiff(await exportPng(opened.image, `${label}-with-selection`), reference)
+        ).toBe(0);
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+    }
+  );
 
   // ---- a filter Editmamei did not create ----------------------------------------------------
 

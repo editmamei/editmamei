@@ -77,7 +77,7 @@ describe('a timeout, then the next call, as the model sees them', () => {
     expect(histogramResult.isError).toBe(true);
     const histogramText = (histogramResult.content?.[0] as { text: string }).text;
     expect(histogramText).toMatch(
-      /gimp_session_restarted: .*GIMP session restarted since it was opened/
+      /gimp_session_restarted: that image id is not open. The GIMP session restarted/
     );
     expect(histogramText).toContain(RECOVERY);
     expect(fake.children).toHaveLength(2); // the timeout killed GIMP; the histogram call restarted it

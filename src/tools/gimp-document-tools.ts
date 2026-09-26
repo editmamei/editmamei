@@ -277,7 +277,9 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
           'HEIC/HEIF, XCF, and more) — in the headless GIMP session and return its image id — the ' +
           'id every other gimp_* tool keys on (there is no "active document" concept: explicit ids ' +
           'beat hidden state). Opening a .xcf restores its live, re-editable filters (the ' +
-          'editmamei-filters ledger). Raw camera files need a raw-develop plug-in (darktable, ' +
+          'editmamei-filters ledger). Any selection saved in the file is cleared on open (every ' +
+          'gimp_* op works on the whole canvas), so a later gimp_save_xcf does not keep it. Raw ' +
+          'camera files need a raw-develop plug-in (darktable, ' +
           'RawTherapee, or ART) installed in GIMP; without one they are refused with a hint to ' +
           'develop them externally first. `precision` promotes bit depth before grading — use it ' +
           'ahead of an aggressive tone move on an 8-bit source.',

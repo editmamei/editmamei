@@ -14,6 +14,7 @@
 
 import collections
 import json
+import math
 import os
 import re
 import sys
@@ -450,8 +451,9 @@ ADJUST_CREATE_DEFAULTS = {
 
 def _scaled(factor):
     # Rounded so a GEGL value that went through a /100 or /180 on the way in reads back as the
-    # number the caller typed (0.2 * 100 is 20.000000000000004 in binary floating point); feeding
-    # the listed value back in reproduces the stored GEGL value exactly.
+    # number the caller typed (0.2 * 100 is 20.000000000000004 in binary floating point). A value
+    # given with at most 6 decimals round-trips exactly; one with more comes back rounded to 6,
+    # a difference of about 1e-8 in GEGL units, far below one 8-bit level.
     return lambda v: round(v * factor, 6)
 
 
@@ -536,6 +538,8 @@ def json_safe(value):
     """A readback property value made JSON-serialisable: plain JSON scalars pass through, lists
     and dicts are walked, and anything else (a Gegl.Color, a path object, bytes) becomes its
     str(). One foreign filter with such a property must not fail `list` for the whole image."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)  # JSON has no NaN/Infinity; Node's JSON.parse rejects them
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, (list, tuple)):

@@ -83,6 +83,23 @@ describe('createGimpVerifyTools', () => {
       expect(existsSync(renderPaths[0]!)).toBe(false); // the per-call file is cleaned up
     });
 
+    it('still returns the render when refreshing latest-preview.jpg fails (the publish is best effort)', async () => {
+      const gimp = makeGimpBackendWithRealPaths({
+        result: { width: 16, height: 16, proxy: true },
+      });
+      gimp.copyToLatestPreview = () => {
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+      };
+      const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_preview', { image: 1 });
+      expect(result.isError).toBeFalsy();
+      expect(result.content?.some((c) => c.type === 'image')).toBe(true);
+      expect((result.content?.at(-1) as { text: string }).text).toContain(
+        'could not be refreshed this time'
+      );
+      expect((result.structuredContent as { path: string | null }).path).toBeNull();
+    });
+
     it('reports the preview file by name only, never a full path (it carries the username)', async () => {
       const gimp = makeGimpBackendWithRealPaths({
         result: { width: 1024, height: 683, proxy: true },

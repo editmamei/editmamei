@@ -556,6 +556,13 @@ def _existing_ledger_params(img, args, operation):
     rec = filters.get(f.get_name())
     if rec and rec.get('operation') == operation:
         return rec['params']
+    parasite = img.get_parasite(META)
+    if parasite and lib.ledger_is_newer_version(bytes(parasite.get_data())):
+        raise ValueError(
+            'filter %s cannot be re-edited: this document was saved by a newer Editmamei, whose '
+            'filter records this version cannot read. Re-edit it with that version, or delete and '
+            're-create the filter.' % f.get_id()
+        )
     raise ValueError(
         'filter %s was not created by Editmamei; its current values cannot be read back exactly. '
         'Delete it and re-create it, or edit it in the GIMP GUI.' % f.get_id()
@@ -793,7 +800,6 @@ def _refuse_if_masked_filters(img, op_name):
 
 def op_crop(args):
     img = _image(args)
-    Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     left, top = int(lib.require(args, 'left')), int(lib.require(args, 'top'))
     width, height = int(lib.require(args, 'width')), int(lib.require(args, 'height'))
     # `Image.crop(width, height, left, top)` is a raw resize-the-canvas primitive underneath --
@@ -808,6 +814,7 @@ def op_crop(args):
     # size, but this keeps the two geometry ops' size ceiling identical rather than assuming that.
     lib.validate_region({'x': left, 'y': top, 'width': width, 'height': height}, img.get_width(), img.get_height())
     width, height = lib.validate_resize_dims(width, height)
+    Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     img.crop(width, height, left, top)
     _drop_proxies(img.get_id())
     return {'width': img.get_width(), 'height': img.get_height()}
@@ -819,7 +826,6 @@ def op_resize(args):
     given alone, the other side is derived to keep aspect; `long_edge` scales so the longer side
     lands there."""
     img = _image(args)
-    Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     _refuse_if_masked_filters(img, 'resize')
     width, height, long_edge = args.get('width'), args.get('height'), args.get('long_edge')
     w0, h0 = img.get_width(), img.get_height()
@@ -840,6 +846,7 @@ def op_resize(args):
     else:
         raise ValueError('resize needs one of width, height, or long_edge')
     width, height = lib.validate_resize_dims(width, height)
+    Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     img.scale(width, height)
     _drop_proxies(img.get_id())
     return {'width': img.get_width(), 'height': img.get_height()}
@@ -861,11 +868,11 @@ def op_rotate(args):
     against. Refuses outright when a masked filter is present -- see this section's own comment
     for why rotating the channel isn't enough to keep such a filter's rendering aligned."""
     img = _image(args)
+    _refuse_if_masked_filters(img, 'rotate')
+    degrees = float(lib.require(args, 'degrees'))
     # With a selection active, transform_rotate moves only the selected pixels and leaves a
     # floating selection behind (see op_open).
     Gimp.Selection.none(img)
-    _refuse_if_masked_filters(img, 'rotate')
-    degrees = float(lib.require(args, 'degrees'))
     expand = bool(args.get('expand', False))
     cx, cy = img.get_width() / 2.0, img.get_height() / 2.0
     angle = math.radians(degrees)
@@ -892,8 +899,8 @@ def op_flip(args):
     if orientation not in _FLIP_ORIENTATIONS:
         raise ValueError('orientation must be one of %s' % sorted(_FLIP_ORIENTATIONS))
     img = _image(args)
-    Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     _refuse_if_masked_filters(img, 'flip')
+    Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     img.flip(_FLIP_ORIENTATIONS[orientation])
     _drop_proxies(img.get_id())
     return {'width': img.get_width(), 'height': img.get_height()}

@@ -189,6 +189,11 @@ flattens a duplicate first — the deliverable, with every filter baked
 and ALL metadata (EXIF/XMP/IPTC/GPS) stripped unconditionally, never
 carried over.
 
+Opening a file clears any selection saved in it: every \`gimp_*\` op
+works on the whole canvas (a selection would confine a rotate to the
+selected pixels). A later \`gimp_save_xcf\` therefore does not keep that
+selection.
+
 ## Precision for aggressive tone moves
 
 \`gimp_open_document\`'s \`precision\` option (\`'16'\` or \`'32'\`)

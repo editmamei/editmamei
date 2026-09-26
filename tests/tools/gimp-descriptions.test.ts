@@ -179,3 +179,22 @@ describe('annotations', () => {
     expect(byName.get(name)!.annotations?.destructiveHint).toBe(true);
   });
 });
+
+describe('levels input rules match lib.validate_levels', () => {
+  it('in_low/in_high say the input range must not be empty or inverted, and gamma states its bound', () => {
+    expect(field('gimp_add_adjustment', 'in_low')).toMatch(/must stay below in_high/);
+    expect(field('gimp_add_adjustment', 'in_high')).toMatch(/must stay above in_low/);
+    expect(field('gimp_add_adjustment', 'gamma')).toMatch(/0\.1\.\.10/);
+  });
+});
+
+describe('open clears a selection saved in the file (op_open)', () => {
+  it('is stated on gimp_open_document and in the overview', () => {
+    expect(description('gimp_open_document').replace(/\s+/g, ' ')).toMatch(
+      /Any selection saved in the file is cleared on open/
+    );
+    expect(overviewSection('.xcf vs export').replace(/\s+/g, ' ')).toMatch(
+      /Opening a file clears any selection saved in it/
+    );
+  });
+});

@@ -136,20 +136,24 @@ const adjustSchema: JsonSchemaObject = {
       type: 'number',
       minimum: 0,
       maximum: 255,
-      description: 'levels only. Input black point. Default (when creating): 0.',
+      description:
+        'levels only. Input black point; must stay below in_high (an empty or inverted input ' +
+        'range is refused). Default (when creating): 0.',
     },
     in_high: {
       type: 'number',
       minimum: 0,
       maximum: 255,
-      description: 'levels only. Input white point. Default (when creating): 255.',
+      description:
+        'levels only. Input white point; must stay above in_low. Default (when creating): 255.',
     },
     gamma: {
       type: 'number',
       minimum: 0.1,
       maximum: 10,
       description:
-        'levels only. Midtone gamma — >1 brightens midtones, <1 darkens. Default (when creating): 1.0.',
+        'levels only. Midtone gamma, 0.1..10 — >1 brightens midtones, <1 darkens. Default (when ' +
+        'creating): 1.0.',
     },
     out_low: {
       type: 'number',

@@ -33,6 +33,7 @@ import {
   writeFileSync,
   copyFileSync,
 } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Logger } from '../../utils/logger.js';
@@ -447,7 +448,9 @@ export class GimpSession {
     // on `#startFresh` having already called it.
     this.#ensureRootDir();
     const dest = this.latestPreviewPath();
-    const tmp = `${dest}.tmp`;
+    // A per-call temp name: two sessions for one user share this folder, and a fixed name would
+    // let one's rename race the other's write.
+    const tmp = `${dest}.${process.pid}-${randomUUID()}.tmp`;
     copyFileSync(src, tmp);
     renameSync(tmp, dest);
   }
@@ -705,7 +708,7 @@ export class GimpSession {
           ? err
           : new GimpError(
               'gimp_start_failed',
-              `could not prepare the GIMP session directory: ${err instanceof Error ? err.message : String(err)}`
+              `could not prepare the GIMP session directory: ${this.#redact(err instanceof Error ? err.message : String(err))}`
             );
       this.#markDead(gimpErr);
       throw gimpErr;
@@ -889,13 +892,13 @@ export class GimpSession {
     if (uid !== undefined && st.uid !== uid) {
       throw new GimpError(
         'gimp_start_failed',
-        `refusing to use GIMP temp root ${this.rootDir}: owned by a different user (uid ${st.uid})`
+        `refusing to use the GIMP session folder: owned by a different user (uid ${st.uid})`
       );
     }
     if ((st.mode & 0o022) !== 0) {
       throw new GimpError(
         'gimp_start_failed',
-        `refusing to use GIMP temp root ${this.rootDir}: group- or other-writable (mode ${(st.mode & 0o777).toString(8)})`
+        `refusing to use the GIMP session folder: group- or other-writable (mode ${(st.mode & 0o777).toString(8)})`
       );
     }
     // Correct any drift from a prior run (e.g. an umask that widened it) now
@@ -993,9 +996,9 @@ export class GimpSession {
 
     const deadline = this.monotonicClock() + timeoutMs;
     while (!existsSync(respPath)) {
-      // `sessionState === 'dead'` too, not just the process's own exit status: the 'exit'
-      // listener marks the session dead the moment it fires, which can be before (or instead
-      // of) the fields below reading as exited.
+      // `sessionState === 'dead'` too, not just the process's own exit status: the 'error'
+      // listener marks the session dead on a process error that may never produce an exit
+      // (and a stub or future path may mark it dead before exitCode/signalCode are set).
       if (hasExited(proc) || this.sessionState === 'dead') {
         // A graceful shutdown() kills this same process, so this branch is
         // also how an in-flight call notices one landing underneath it.
@@ -1037,8 +1040,7 @@ export class GimpSession {
         this.restartNoticePending = false;
         throw new GimpError(
           'gimp_session_restarted',
-          `that image id is no longer open because the GIMP session restarted since it was ` +
-            `opened; ${LOST_WORK}`
+          `that image id is not open. The GIMP session restarted, so ${LOST_WORK}`
         );
       }
       throw new GimpError(code, raw.error ?? `${op} failed`);
@@ -1075,7 +1077,7 @@ export class GimpSession {
           // otherwise have to special-case this one spot.
           throw new GimpError(
             'gimp_op_failed',
-            `${op}: could not read the response file (${(err as Error).message})`
+            `${op}: could not read the response file (${this.#redact((err as Error).message)})`
           );
         }
         await sleep(RESP_READ_RETRY_DELAY_MS);
@@ -1085,7 +1087,7 @@ export class GimpSession {
       const message = lastErr instanceof Error ? lastErr.message : String(lastErr);
       throw new GimpError(
         'gimp_op_failed',
-        `${op}: could not read the response file after ${RESP_READ_RETRY_ATTEMPTS} attempts (${message})`
+        `${op}: could not read the response file after ${RESP_READ_RETRY_ATTEMPTS} attempts (${this.#redact(message)})`
       );
     }
 
@@ -1215,6 +1217,14 @@ export class GimpSession {
     this.sessionState = 'dead';
     this.deadGeneration++;
     this.lastFailure = err ?? new GimpError('gimp_session_restarted', RESTARTED_MESSAGE);
+  }
+
+  /**
+   * `text` with the session root folder cut out: error messages reach the model, and the root
+   * lives under the user's home folder, so its full path carries the username.
+   */
+  #redact(text: string): string {
+    return text.split(this.rootDir).join('<GIMP session folder>');
   }
 
   #removeSessionDir(dir: string): void {
