@@ -156,8 +156,16 @@ jobs:
           set -euo pipefail
           # `yes` auto-accepts a software-license-agreement prompt IF the DMG has one (it's a
           # no-op read against stdin if it doesn't) -- hdiutil would otherwise hang waiting for an
-          # interactive answer nothing on a runner can give.
+          # interactive answer nothing on a runner can give. pipefail is off for this one line:
+          # `yes` always dies of SIGPIPE (status 141) once hdiutil exits, which would fail the step
+          # even on a clean mount. Whether the mount worked is checked explicitly right after.
+          set +o pipefail
           yes | hdiutil attach -nobrowse -readonly -mountpoint /Volumes/GIMP gimp.dmg
+          set -o pipefail
+          if [ ! -d /Volumes/GIMP/GIMP.app ]; then
+            echo "::error::DMG did not mount with GIMP.app at /Volumes/GIMP"
+            exit 1
+          fi
           cp -R /Volumes/GIMP/GIMP.app /Applications/
           hdiutil detach /Volumes/GIMP
 
