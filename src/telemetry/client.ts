@@ -175,7 +175,7 @@ export class TelemetryClient {
   private retryCount = 0;
   /** The most recently recorded call's success — null until a call has been recorded. */
   private lastCallSuccess: boolean | null = null;
-  /** Successful calls outside READ_ONLY_TOOLS / inside KEPT_WORK_TOOLS (activity.ts). */
+  /** Successful calls outside READ_ONLY_TOOLS / inside KEPT_WORK_TOOLS (core/tool-activity.ts). */
   private editsOk = 0;
   private keptWork = 0;
   /**

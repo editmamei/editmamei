@@ -5,6 +5,7 @@ import { runScript } from '../utils/run-script.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolErrorResult, runSnippetTool, applyToActiveLayerProp } from '../utils/tool-helpers.js';
 import { getPendingRawDevelop } from '../core/raw-develop-state.js';
+import { CAMERA_RAW_TOOL } from '../core/tool-activity.js';
 
 // On 2026-05-31 the four destructive bake adjustments — `auto_levels`,
 // `auto_contrast`, `desaturate`, `invert` — were removed. Each was a strict
@@ -1005,7 +1006,7 @@ async function addAdjustmentLayer(
       const source = pendingRaw.documentName || pendingRaw.filePath || 'a raw source';
       const note =
         `This document was opened from raw source ${source} with no Camera Raw develop pass yet — ` +
-        'consider ps_apply_camera_raw first for global tone/color. Nothing failed; ignore if the ' +
+        `consider ${CAMERA_RAW_TOOL} first for global tone/color. Nothing failed; ignore if the ` +
         'user prescribed this exact layer or the file was already developed elsewhere.';
       if (typeof result === 'object' && result !== null) {
         structured.raw_develop_pending = note;

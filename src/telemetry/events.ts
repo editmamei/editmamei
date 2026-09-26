@@ -96,9 +96,9 @@ export interface SessionSummaryEvent {
   retry_count?: number;
   /** True when the LAST recorded call of the session failed. */
   ended_after_failure?: boolean;
-  /** Successful calls to a tool outside READ_ONLY_TOOLS (activity.ts). */
+  /** Successful calls to a tool outside READ_ONLY_TOOLS (core/tool-activity.ts). */
   edits_ok?: number;
-  /** Successful calls to a tool in KEPT_WORK_TOOLS (activity.ts) — ps_export / ps_save_psd. */
+  /** Successful calls to a tool in KEPT_WORK_TOOLS (core/tool-activity.ts) — ps_export / ps_save_psd. */
   kept_work?: number;
   /** Whether the boot-time update check found a strictly newer published version. */
   behind_latest?: boolean;
