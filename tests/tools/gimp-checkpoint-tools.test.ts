@@ -1,35 +1,70 @@
-import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, existsSync, utimesSync, rmSync } from 'node:fs';
+import { describe, it, expect, vi, afterAll } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, existsSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { rm } from 'node:fs/promises';
 import {
   createGimpCheckpointTools,
-  cleanupRegisteredCheckpointFiles,
-  sweepStaleCheckpointFiles,
+  cleanupCheckpointDirs,
+  sweepStaleCheckpointDirs,
+  maybeSweepSiblingDirs,
   MAX_CHECKPOINTS_PER_IMAGE,
-  type CheckpointRecord,
+  type CheckpointStore,
 } from '@editmamei/tools/gimp-checkpoint-tools.ts';
 import { GimpError } from '@editmamei/backends/gimp/errors.ts';
-import { makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
+import { FakeGimpBackend, makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
 import { callTool, assertToolShape } from '../fixtures/tool-helpers.ts';
 
-// Only `rm` (op=delete's own removal call) needs to be interceptable per-test (HIGH #6's
-// path-free-error test); every other test relies on the REAL `rm` harmlessly no-op'ing against
-// the fake backend's made-up paths (they never exist, and `force: true` treats that as success).
+// Only `rm` (op=delete's own removal call) needs to be interceptable per-test (the path-free
+// error message test) — every other test relies on the REAL `rm`/`mkdirSync` working against a
+// real scratch directory (see `makeCheckpointBackend` below).
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, rm: vi.fn(actual.rm) };
 });
 
-/** `op='export'` (create) always answers with this; `op='open'`/`op='ping'` are per-test via `resultFor`. */
-function backendResultFor(overrides: (op: string, args: Record<string, unknown>) => unknown) {
-  return makeGimpBackend({
+const scratchDir = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-tools-test-'));
+afterAll(() => rmSync(scratchDir, { recursive: true, force: true }));
+
+let scratchCounter = 0;
+
+/**
+ * A fake backend whose `tempPath()` points under a REAL, isolated directory — this tool's own
+ * `mkdirSync`-based store-directory creation needs somewhere real to land, unlike the plain fake's
+ * default `/fake/gimp/...` (which nothing here ever actually writes to). Each call gets its own
+ * subdirectory so successive fakes across tests never collide. `op='export'` always answers with
+ * a plausible result unless the caller's own `throwFor` intercepts it first (matches
+ * `FakeGimpBackend`'s own throwFor-before-resultFor ordering).
+ */
+function makeCheckpointBackend(
+  opts: {
+    resultFor?: (op: string, args: Record<string, unknown>) => unknown;
+    throwFor?: (op: string, args: Record<string, unknown>) => unknown;
+    state?: string;
+    generation?: number;
+  } = {}
+): FakeGimpBackend {
+  const gimp = makeGimpBackend({
     resultFor: (op, args) => {
       if (op === 'export') return { path: args.path, bytes: 4096 };
-      return overrides(op, args);
+      return opts.resultFor?.(op, args);
     },
+    throwFor: opts.throwFor,
+    state: opts.state,
+    generation: opts.generation,
   });
+  const base = join(scratchDir, `fake-${scratchCounter++}`);
+  gimp.tempPath = (name: string) => join(base, name);
+  return gimp;
+}
+
+/** A pid that is definitely not alive: a real child process that has already exited by the time
+ * this returns (`spawnSync` blocks until it does). */
+function deadPid(): number {
+  const result = spawnSync(process.execPath, ['-e', '1']);
+  return result.pid!;
 }
 
 describe('createGimpCheckpointTools', () => {
@@ -65,13 +100,17 @@ describe('createGimpCheckpointTools', () => {
       expect(gimp.calls).toHaveLength(0);
     });
 
-    it('exports to an internal path and returns a checkpoint_id, never the path itself', async () => {
-      const gimp = backendResultFor(() => ({}));
+    it("exports into this factory's own checkpoints-<pid>-<uuid> directory, and returns a checkpoint_id, never the path itself", async () => {
+      const gimp = makeCheckpointBackend();
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const result = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
       expect(result.isError).toBeFalsy();
       expect(gimp.lastCall().op).toBe('export');
       expect(gimp.lastCall().args.image).toBe(5);
+      const path = gimp.lastCall().args.path as string;
+      expect(basename(path)).toMatch(/^[0-9a-f-]{36}\.xcf$/i);
+      expect(basename(dirname(path))).toMatch(/^checkpoints-\d+-[0-9a-f-]{36}$/i);
+      expect(existsSync(dirname(path))).toBe(true);
       const structured = result.structuredContent as {
         checkpoint_id: string;
         image: number;
@@ -82,32 +121,30 @@ describe('createGimpCheckpointTools', () => {
       expect(structured.checkpoint_id.length).toBeGreaterThan(0);
       expect(structured.image).toBe(5);
       expect(structured.bytes).toBe(4096);
-      expect(typeof structured.created_at).toBe('string');
-      // ISO-8601 (LOW #10), not a locale-formatted string.
       expect(structured.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
       // The internal file path never reaches the model.
       const text = (result.content?.[0] as { text: string }).text;
       const allText = JSON.stringify(result);
-      expect(allText).not.toContain((gimp.lastCall().args.path as string) ?? '__unreachable__');
+      expect(allText).not.toContain(path);
       expect(text).toContain(structured.checkpoint_id);
     });
 
-    it('a create whose export throws registers nothing (no file to check in a fake backend, but the registry stays empty)', async () => {
-      const gimp = makeGimpBackend({
-        throwFor: (op) => {
-          if (op === 'export') return new GimpError('gimp_op_failed', 'disk full');
-          return undefined;
-        },
+    it('a create whose export throws registers nothing and leaves no file on disk', async () => {
+      const gimp = makeCheckpointBackend({
+        throwFor: (op) =>
+          op === 'export' ? new GimpError('gimp_op_failed', 'disk full') : undefined,
       });
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const result = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
       expect(result.isError).toBe(true);
+      const path = gimp.lastCall().args.path as string;
+      expect(existsSync(path)).toBe(false);
       const listed = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
       expect((listed.structuredContent as { checkpoints: unknown[] }).checkpoints).toEqual([]);
     });
 
     it('refuses a 6th checkpoint for the same image without dispatching, and says how to free a slot', async () => {
-      const gimp = backendResultFor(() => ({}));
+      const gimp = makeCheckpointBackend();
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const ids: string[] = [];
       for (let i = 0; i < MAX_CHECKPOINTS_PER_IMAGE; i++) {
@@ -119,20 +156,18 @@ describe('createGimpCheckpointTools', () => {
 
       const refused = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
       expect(refused.isError).toBe(true);
-      // No new bridge call for the refused attempt.
       expect(gimp.allOps().filter((o) => o === 'export')).toHaveLength(MAX_CHECKPOINTS_PER_IMAGE);
       const refusedText = (refused.content?.[0] as { text: string }).text;
       expect(refusedText).toMatch(/already has 5 checkpoints/);
       expect(refusedText).toMatch(/op=delete/);
       for (const id of ids) expect(refusedText).toContain(id);
 
-      // A DIFFERENT image is unaffected by image 1's cap.
       const otherImage = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 2 });
       expect(otherImage.isError).toBeFalsy();
     });
 
     it('concurrent creates for the same image never exceed the cap (the check-then-reserve is synchronous)', async () => {
-      const gimp = backendResultFor(() => ({}));
+      const gimp = makeCheckpointBackend();
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const attempts = MAX_CHECKPOINTS_PER_IMAGE + 3;
       const results = await Promise.all(
@@ -146,14 +181,10 @@ describe('createGimpCheckpointTools', () => {
       expect(refused).toHaveLength(attempts - MAX_CHECKPOINTS_PER_IMAGE);
     });
 
-    it('a stale (closed-elsewhere) record is excluded from its images cap and scoped list, but still appears (open: false) in the unscoped list', async () => {
+    it("a stale (closed-elsewhere) record is excluded from its image's cap and scoped list, but still appears (open: false) in the unscoped list", async () => {
       let pingImages: number[] = [1];
-      const gimp = makeGimpBackend({
-        resultFor: (op, args) => {
-          if (op === 'export') return { path: args.path, bytes: 10 };
-          if (op === 'ping') return { images: pingImages };
-          return undefined;
-        },
+      const gimp = makeCheckpointBackend({
+        resultFor: (op) => (op === 'ping' ? { images: pingImages } : undefined),
       });
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const ids: string[] = [];
@@ -163,8 +194,7 @@ describe('createGimpCheckpointTools', () => {
         ids.push((r.structuredContent as { checkpoint_id: string }).checkpoint_id);
       }
 
-      // image 1 is closed elsewhere (e.g. gimp_close_document) — ping stops listing it.
-      pingImages = [];
+      pingImages = []; // image 1 is closed elsewhere (e.g. gimp_close_document)
       const scopedBefore = await callTool(tools, 'gimp_checkpoint', { op: 'list', image: 1 });
       expect((scopedBefore.structuredContent as { checkpoints: unknown[] }).checkpoints).toEqual(
         []
@@ -175,9 +205,7 @@ describe('createGimpCheckpointTools', () => {
       expect(all).toHaveLength(MAX_CHECKPOINTS_PER_IMAGE);
       expect(all.every((c) => c.open === false)).toBe(true);
 
-      // A DIFFERENT image later reuses the same number 1 (ping now reports it open again) — the
-      // 5 stale records stay gone (never revived) and no longer count toward the cap.
-      pingImages = [1];
+      pingImages = [1]; // a DIFFERENT image later reuses the same number
       const sixth = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
       expect(sixth.isError).toBeFalsy();
       const sixthId = (sixth.structuredContent as { checkpoint_id: string }).checkpoint_id;
@@ -189,11 +217,53 @@ describe('createGimpCheckpointTools', () => {
       expect(scopedList).toHaveLength(1);
       expect(scopedList[0]!.checkpoint_id).toBe(sixthId);
     });
+
+    it('a failing ping during a later create does not fail the create itself', async () => {
+      const gimp = makeCheckpointBackend({
+        throwFor: (op) =>
+          op === 'ping' ? new GimpError('gimp_timeout', 'ping timed out') : undefined,
+      });
+      const tools = createGimpCheckpointTools(gimp.asBackend());
+      const first = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
+      expect(first.isError).toBeFalsy();
+      // registry.size > 0 now, so THIS create's refreshOpenness attempts (and gets) the failing ping.
+      const second = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 2 });
+      expect(second.isError).toBeFalsy();
+    });
+
+    it('a failing ping re-checks generation with the fresh value afterward, since the failure itself may have bumped it', async () => {
+      let gimp!: FakeGimpBackend;
+      gimp = makeCheckpointBackend({
+        generation: 1,
+        throwFor: (op) => {
+          if (op !== 'ping') return undefined;
+          gimp.generation = 2; // the failing ping call itself discovers the restart
+          return new GimpError('gimp_timeout', 'ping timed out');
+        },
+      });
+      const tools = createGimpCheckpointTools(gimp.asBackend());
+      const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+      expect(created.isError).toBeFalsy();
+      const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+      // At list time, the FIRST (generation) check inside refreshOpenness runs with
+      // gimp.generation still 1 — equal to the record's own stamped generation, so it does
+      // nothing yet. Only the ping call itself (which fails, bumping generation as a side
+      // effect) reveals the restart.
+      const listed = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
+      expect(listed.isError).toBeFalsy();
+      const record = (
+        listed.structuredContent as {
+          checkpoints: Array<{ checkpoint_id: string; open: boolean }>;
+        }
+      ).checkpoints.find((c) => c.checkpoint_id === id)!;
+      expect(record.open).toBe(false);
+    });
   });
 
   describe('op=list', () => {
     it('reports every checkpoint when no image is given, scoped when one is', async () => {
-      const gimp = backendResultFor(() => ({}));
+      const gimp = makeCheckpointBackend();
       const tools = createGimpCheckpointTools(gimp.asBackend());
       await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
       await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 2 });
@@ -215,6 +285,16 @@ describe('createGimpCheckpointTools', () => {
       expect(result.isError).toBeFalsy();
       expect((result.structuredContent as { checkpoints: unknown[] }).checkpoints).toEqual([]);
     });
+
+    it('never pings when no GIMP session is already running — a read must never cold-start GIMP', async () => {
+      const gimp = makeCheckpointBackend({ state: 'idle' });
+      const tools = createGimpCheckpointTools(gimp.asBackend());
+      const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+      expect(created.isError).toBeFalsy();
+      const opsBefore = gimp.calls.length;
+      await callTool(tools, 'gimp_checkpoint', { op: 'list' });
+      expect(gimp.allOps().slice(opsBefore)).not.toContain('ping');
+    });
   });
 
   describe('op=restore', () => {
@@ -227,7 +307,7 @@ describe('createGimpCheckpointTools', () => {
     });
 
     it('refuses an unknown checkpoint_id, listing every known id', async () => {
-      const gimp = backendResultFor(() => ({}));
+      const gimp = makeCheckpointBackend();
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
       const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
@@ -252,16 +332,12 @@ describe('createGimpCheckpointTools', () => {
       expect((result.content?.[0] as { text: string }).text).toMatch(/No checkpoints exist yet/);
     });
 
-    it('restore where open() itself throws never dispatches close, and the record is unchanged', async () => {
-      const gimp = makeGimpBackend({
-        resultFor: (op, args) => {
-          if (op === 'export') return { path: args.path, bytes: 10 };
-          return undefined;
-        },
-        throwFor: (op) => {
-          if (op === 'open') return new GimpError('file_not_found', 'no file at that path');
-          return undefined;
-        },
+    it('restore where open() itself throws (for a reason other than a missing file) never dispatches close, and the record is unchanged', async () => {
+      const gimp = makeCheckpointBackend({
+        throwFor: (op) =>
+          op === 'open'
+            ? new GimpError('gimp_op_failed', 'GIMP could not read that file')
+            : undefined,
       });
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
@@ -275,15 +351,42 @@ describe('createGimpCheckpointTools', () => {
 
       const listed = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
       const record = (
-        listed.structuredContent as { checkpoints: Array<{ checkpoint_id: string; image: number }> }
+        listed.structuredContent as {
+          checkpoints: Array<{ checkpoint_id: string; image: number }>;
+        }
       ).checkpoints.find((c) => c.checkpoint_id === id)!;
       expect(record.image).toBe(5);
     });
 
+    it('restore hitting a missing checkpoint file drops the record and says so, without forwarding the raw path-bearing bridge message', async () => {
+      const gimp = makeCheckpointBackend({
+        throwFor: (op) =>
+          op === 'open' ? new GimpError('file_not_found', 'no file at <redacted-path>') : undefined,
+      });
+      const tools = createGimpCheckpointTools(gimp.asBackend());
+      const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+      const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+      const restored = await callTool(tools, 'gimp_checkpoint', {
+        op: 'restore',
+        checkpoint_id: id,
+      });
+      expect(restored.isError).toBe(true);
+      const text = (restored.content?.[0] as { text: string }).text;
+      expect(text).toMatch(/no longer be restored/);
+      expect(text).not.toContain('<redacted-path>');
+
+      const again = await callTool(tools, 'gimp_checkpoint', {
+        op: 'restore',
+        checkpoint_id: id,
+      });
+      expect(again.isError).toBe(true);
+      expect((again.content?.[0] as { text: string }).text).toMatch(/unknown checkpoint_id/);
+    });
+
     it('never closes when the freshly reopened image reuses the exact id restore remembers as old (the one case detectable without a GIMP process generation signal)', async () => {
-      const gimp = backendResultFor((op) => {
-        if (op === 'open') return { image: 5, width: 1, height: 1 }; // SAME id as the source image
-        return {};
+      const gimp = makeCheckpointBackend({
+        resultFor: (op) => (op === 'open' ? { image: 5, width: 1, height: 1 } : undefined),
       });
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
@@ -303,9 +406,9 @@ describe('createGimpCheckpointTools', () => {
 
     it('opens the checkpoint file, closes the OLD image, and returns the NEW one — the old id is then gone from later restores of the same checkpoint', async () => {
       let nextImage = 100;
-      const gimp = backendResultFor((op) => {
-        if (op === 'open') return { image: ++nextImage, width: 64, height: 48 };
-        return {};
+      const gimp = makeCheckpointBackend({
+        resultFor: (op) =>
+          op === 'open' ? { image: ++nextImage, width: 64, height: 48 } : undefined,
       });
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
@@ -331,14 +434,10 @@ describe('createGimpCheckpointTools', () => {
       expect(text).toMatch(/image 5 closed/);
       expect(text).toMatch(/restored as image 101/);
       expect(text).toMatch(/use 101 from now on/);
-      // The bridge saw open, then close on the OLD (pre-restore) image.
       const ops = gimp.calls.slice(-2);
       expect(ops[0]).toMatchObject({ op: 'open' });
       expect(ops[1]).toMatchObject({ op: 'close', args: { image: 5 } });
 
-      // A SECOND restore of the SAME checkpoint closes the image the FIRST
-      // restore opened (101), not the original (5) — replace-semantics
-      // lineage tracking.
       const restoredAgain = await callTool(tools, 'gimp_checkpoint', {
         op: 'restore',
         checkpoint_id: id,
@@ -350,9 +449,9 @@ describe('createGimpCheckpointTools', () => {
 
     it('sibling re-pointing: restoring one of two checkpoints from the same image moves BOTH records to the new image', async () => {
       let nextImage = 100;
-      const gimp = backendResultFor((op) => {
-        if (op === 'open') return { image: ++nextImage, width: 10, height: 10 };
-        return {};
+      const gimp = makeCheckpointBackend({
+        resultFor: (op) =>
+          op === 'open' ? { image: ++nextImage, width: 10, height: 10 } : undefined,
       });
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const c1 = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
@@ -366,8 +465,6 @@ describe('createGimpCheckpointTools', () => {
       });
       expect((restored1.structuredContent as { image: number }).image).toBe(101);
 
-      // c2 (not directly restored) has also moved to 101 — it now describes the same
-      // transformed lineage image 5 became.
       const listed = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
       const checkpoints = (
         listed.structuredContent as {
@@ -378,7 +475,6 @@ describe('createGimpCheckpointTools', () => {
       expect(c2Record.image).toBe(101);
       expect(c2Record.open).toBe(true);
 
-      // Restoring c2 next closes 101 (not the stale original 5) and re-points BOTH again.
       const restored2 = await callTool(tools, 'gimp_checkpoint', {
         op: 'restore',
         checkpoint_id: id2,
@@ -403,21 +499,15 @@ describe('createGimpCheckpointTools', () => {
     });
 
     it('a close that reports the session actually restarted uses restart wording (matched by error CODE)', async () => {
-      const gimp = makeGimpBackend({
-        resultFor: (op, args) => {
-          if (op === 'export') return { path: args.path, bytes: 10 };
-          if (op === 'open') return { image: 200, width: 10, height: 10 };
-          return undefined;
-        },
-        throwFor: (op) => {
-          if (op === 'close') {
-            return new GimpError(
-              'gimp_session_restarted',
-              'that image id is not open. The GIMP session restarted, so every open image and unsaved filter is gone.'
-            );
-          }
-          return undefined;
-        },
+      const gimp = makeCheckpointBackend({
+        resultFor: (op) => (op === 'open' ? { image: 200, width: 10, height: 10 } : undefined),
+        throwFor: (op) =>
+          op === 'close'
+            ? new GimpError(
+                'gimp_session_restarted',
+                'that image id is not open. The GIMP session restarted, so every open image and unsaved filter is gone.'
+              )
+            : undefined,
       });
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
@@ -434,17 +524,11 @@ describe('createGimpCheckpointTools', () => {
       expect(text).toMatch(/restored as image 200/);
     });
 
-    it('a close that reports a plain "no open image" (no restart involved) says merely "already closed", not "session had restarted" (HIGH #8 wording fix)', async () => {
-      const gimp = makeGimpBackend({
-        resultFor: (op, args) => {
-          if (op === 'export') return { path: args.path, bytes: 10 };
-          if (op === 'open') return { image: 200, width: 10, height: 10 };
-          return undefined;
-        },
-        throwFor: (op) => {
-          if (op === 'close') return new GimpError('invalid_argument', 'no open image with id 5');
-          return undefined;
-        },
+    it('a close that reports a plain "no open image" (no restart involved) says merely "already closed", not "session had restarted"', async () => {
+      const gimp = makeCheckpointBackend({
+        resultFor: (op) => (op === 'open' ? { image: 200, width: 10, height: 10 } : undefined),
+        throwFor: (op) =>
+          op === 'close' ? new GimpError('invalid_argument', 'no open image with id 5') : undefined,
       });
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
@@ -461,17 +545,11 @@ describe('createGimpCheckpointTools', () => {
       expect(text).toMatch(/restored as image 200/);
     });
 
-    it('a close failure that is NOT the already-gone pattern still reports the new image id — assert state, not just isError (HIGH #5)', async () => {
-      const gimp = makeGimpBackend({
-        resultFor: (op, args) => {
-          if (op === 'export') return { path: args.path, bytes: 10 };
-          if (op === 'open') return { image: 9, width: 1, height: 1 };
-          return undefined;
-        },
-        throwFor: (op) => {
-          if (op === 'close') return new GimpError('gimp_op_failed', 'disk went away');
-          return undefined;
-        },
+    it('a close failure that is NOT the already-gone pattern still reports the new image id — assert state, not just isError', async () => {
+      const gimp = makeCheckpointBackend({
+        resultFor: (op) => (op === 'open' ? { image: 9, width: 1, height: 1 } : undefined),
+        throwFor: (op) =>
+          op === 'close' ? new GimpError('gimp_op_failed', 'disk went away') : undefined,
       });
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
@@ -494,64 +572,21 @@ describe('createGimpCheckpointTools', () => {
       expect(text).toMatch(/restored as image 9/);
     });
 
-    describe('generation-aware close decision', () => {
-      it('generation known and equal (no restart) closes as usual', async () => {
-        const gimp = backendResultFor((op) => {
-          if (op === 'open') return { image: 101, width: 1, height: 1 };
-          return {};
+    describe('a close failure accompanied by a generation bump always refuses, regardless of the close error code', () => {
+      it.each([
+        ['gimp_session_restarted', 'restarted'] as const,
+        ['gimp_timeout', 'close timed out'] as const,
+      ])('close throws %s', async (code, message) => {
+        let gimp!: FakeGimpBackend;
+        gimp = makeCheckpointBackend({
+          generation: 1,
+          resultFor: (op) => (op === 'open' ? { image: 101, width: 1, height: 1 } : undefined),
+          throwFor: (op) => {
+            if (op !== 'close') return undefined;
+            gimp.generation = 2; // the process died between the open and this close attempt
+            return new GimpError(code, message);
+          },
         });
-        gimp.generation = 7;
-        const tools = createGimpCheckpointTools(gimp.asBackend());
-        const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
-        const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
-
-        // generation unchanged (still 7) — a normal, same-process restore.
-        const restored = await callTool(tools, 'gimp_checkpoint', {
-          op: 'restore',
-          checkpoint_id: id,
-        });
-        expect(restored.isError).toBeFalsy();
-        const closeCall = gimp.calls.find((c) => c.op === 'close');
-        expect(closeCall?.args.image).toBe(5);
-      });
-
-      it('generation changed: an unrelated image reusing the old id is left untouched — no close dispatched', async () => {
-        const gimp = backendResultFor((op) => {
-          if (op === 'open') return { image: 2, width: 1, height: 1 };
-          return {};
-        });
-        gimp.generation = 1;
-        const tools = createGimpCheckpointTools(gimp.asBackend());
-        const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
-        const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
-
-        // Simulate a restart: a NEW process is now running (generation bumped), and the model
-        // has separately opened some OTHER, unrelated image that also happens to land on id 1 in
-        // the new process — exactly the scenario the opened==old guard alone cannot catch, since
-        // restore's own reopened file gets a DIFFERENT id (2) here.
-        gimp.generation = 2;
-
-        const restored = await callTool(tools, 'gimp_checkpoint', {
-          op: 'restore',
-          checkpoint_id: id,
-        });
-        expect(restored.isError).toBeFalsy();
-        expect(gimp.allOps()).not.toContain('close');
-        const structured = restored.structuredContent as { old_image: number; image: number };
-        expect(structured.old_image).toBe(1);
-        expect(structured.image).toBe(2);
-        const text = (restored.content?.[0] as { text: string }).text;
-        expect(text).toMatch(/has since restarted/);
-        expect(text).toMatch(/left untouched/);
-      });
-
-      it('generation undefined on either side falls back to the pre-generation baseline (attempts the close)', async () => {
-        let nextImage = 100;
-        const gimp = backendResultFor((op) => {
-          if (op === 'open') return { image: ++nextImage, width: 1, height: 1 };
-          return {};
-        });
-        // gimp.generation stays undefined throughout — the degraded-shim path.
         const tools = createGimpCheckpointTools(gimp.asBackend());
         const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
         const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
@@ -560,31 +595,168 @@ describe('createGimpCheckpointTools', () => {
           op: 'restore',
           checkpoint_id: id,
         });
-        expect(restored.isError).toBeFalsy();
-        const closeCall = gimp.calls.find((c) => c.op === 'close');
-        expect(closeCall?.args.image).toBe(5);
-      });
+        expect(restored.isError).toBe(true);
+        expect((restored.content?.[0] as { text: string }).text).toMatch(
+          /retry gimp_checkpoint op=restore/
+        );
 
-      it('refreshOpenness marks a record from an older generation gone, exactly, even with no ping-based signal', async () => {
-        const gimp = backendResultFor(() => ({})); // 'ping' -> {} (no images array): generation
-        // is the only usable signal in this test.
-        gimp.generation = 1;
-        const tools = createGimpCheckpointTools(gimp.asBackend());
-        const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
-        const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
-
-        gimp.generation = 2; // a restart happened
         const listed = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
         const record = (
           listed.structuredContent as {
-            checkpoints: Array<{ checkpoint_id: string; open: boolean }>;
+            checkpoints: Array<{ checkpoint_id: string; image: number }>;
           }
         ).checkpoints.find((c) => c.checkpoint_id === id)!;
-        expect(record.open).toBe(false);
+        expect(record.image).toBe(5); // unchanged — NOT stamped with the (possibly stale) 101
+      });
+    });
 
-        // A NEW image reusing the SAME number 1 in the new generation still gets its own cap.
-        const afterRestart = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
-        expect(afterRestart.isError).toBeFalsy();
+    describe('markSiblingsGone fires for every tolerated close outcome', () => {
+      it('a tolerated "session restarted" close marks a same-generation sibling gone (not re-pointed)', async () => {
+        const gimp = makeCheckpointBackend({
+          generation: 1,
+          resultFor: (op) => (op === 'open' ? { image: 200, width: 1, height: 1 } : undefined),
+          throwFor: (op) =>
+            op === 'close' ? new GimpError('gimp_session_restarted', 'restarted') : undefined,
+        });
+        const tools = createGimpCheckpointTools(gimp.asBackend());
+        const c1 = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+        const c2 = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+        const id2 = (c2.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+        await callTool(tools, 'gimp_checkpoint', {
+          op: 'restore',
+          checkpoint_id: (c1.structuredContent as { checkpoint_id: string }).checkpoint_id,
+        });
+        const listed = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
+        const c2Record = (
+          listed.structuredContent as {
+            checkpoints: Array<{ checkpoint_id: string; open: boolean; image: number }>;
+          }
+        ).checkpoints.find((c) => c.checkpoint_id === id2)!;
+        expect(c2Record.open).toBe(false);
+        expect(c2Record.image).toBe(5);
+      });
+
+      it('a tolerated "already closed" close marks a same-generation sibling gone (not re-pointed)', async () => {
+        const gimp = makeCheckpointBackend({
+          generation: 1,
+          resultFor: (op) => (op === 'open' ? { image: 200, width: 1, height: 1 } : undefined),
+          throwFor: (op) =>
+            op === 'close'
+              ? new GimpError('invalid_argument', 'no open image with id 5')
+              : undefined,
+        });
+        const tools = createGimpCheckpointTools(gimp.asBackend());
+        const c1 = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+        const c2 = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+        const id2 = (c2.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+        await callTool(tools, 'gimp_checkpoint', {
+          op: 'restore',
+          checkpoint_id: (c1.structuredContent as { checkpoint_id: string }).checkpoint_id,
+        });
+        const listed = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
+        const c2Record = (
+          listed.structuredContent as {
+            checkpoints: Array<{ checkpoint_id: string; open: boolean; image: number }>;
+          }
+        ).checkpoints.find((c) => c.checkpoint_id === id2)!;
+        expect(c2Record.open).toBe(false);
+        expect(c2Record.image).toBe(5);
+      });
+
+      it('a confirmed generationChanged (no close attempted) marks a same-generation sibling gone (not re-pointed)', async () => {
+        const gimp = makeCheckpointBackend({
+          generation: 1,
+          resultFor: (op) => (op === 'open' ? { image: 300, width: 1, height: 1 } : undefined),
+        });
+        const tools = createGimpCheckpointTools(gimp.asBackend());
+        const c1 = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+        const c2 = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+        const id2 = (c2.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+        gimp.generation = 2; // a restart happened before restore runs
+        const restored = await callTool(tools, 'gimp_checkpoint', {
+          op: 'restore',
+          checkpoint_id: (c1.structuredContent as { checkpoint_id: string }).checkpoint_id,
+        });
+        expect(restored.isError).toBeFalsy();
+        expect(gimp.allOps()).not.toContain('close');
+
+        const listed = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
+        const c2Record = (
+          listed.structuredContent as {
+            checkpoints: Array<{ checkpoint_id: string; open: boolean; image: number }>;
+          }
+        ).checkpoints.find((c) => c.checkpoint_id === id2)!;
+        expect(c2Record.open).toBe(false);
+        expect(c2Record.image).toBe(5);
+      });
+    });
+
+    it('a different-generation record sharing the same stale image number is neither re-pointed nor marked gone', async () => {
+      const gimp = makeCheckpointBackend({
+        generation: 1,
+        resultFor: (op) => (op === 'open' ? { image: 101, width: 1, height: 1 } : undefined),
+      });
+      const tools = createGimpCheckpointTools(gimp.asBackend());
+      const c1 = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+      const id1 = (c1.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+      gimp.generation = 2; // a restart happens between the two creates
+      const c2 = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+      const id2 = (c2.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+      const restored = await callTool(tools, 'gimp_checkpoint', {
+        op: 'restore',
+        checkpoint_id: id1,
+      });
+      expect(restored.isError).toBeFalsy();
+
+      const listed = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
+      const c2Record = (
+        listed.structuredContent as {
+          checkpoints: Array<{ checkpoint_id: string; open: boolean; image: number }>;
+        }
+      ).checkpoints.find((c) => c.checkpoint_id === id2)!;
+      expect(c2Record.open).toBe(true);
+      expect(c2Record.image).toBe(5);
+    });
+
+    describe('generation known on only one side falls back to the pre-generation baseline (attempts the close)', () => {
+      it('record.generation defined, gimp.generation undefined at restore time', async () => {
+        const gimp = makeCheckpointBackend({
+          generation: 1,
+          resultFor: (op) => (op === 'open' ? { image: 101, width: 1, height: 1 } : undefined),
+        });
+        const tools = createGimpCheckpointTools(gimp.asBackend());
+        const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+        const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
+        gimp.generation = undefined;
+        const restored = await callTool(tools, 'gimp_checkpoint', {
+          op: 'restore',
+          checkpoint_id: id,
+        });
+        expect(restored.isError).toBeFalsy();
+        const closeCall = gimp.calls.find((c) => c.op === 'close');
+        expect(closeCall?.args.image).toBe(5);
+      });
+
+      it('record.generation undefined, gimp.generation defined at restore time', async () => {
+        const gimp = makeCheckpointBackend({
+          resultFor: (op) => (op === 'open' ? { image: 101, width: 1, height: 1 } : undefined),
+        });
+        const tools = createGimpCheckpointTools(gimp.asBackend());
+        const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+        const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
+        gimp.generation = 9;
+        const restored = await callTool(tools, 'gimp_checkpoint', {
+          op: 'restore',
+          checkpoint_id: id,
+        });
+        expect(restored.isError).toBeFalsy();
+        const closeCall = gimp.calls.find((c) => c.op === 'close');
+        expect(closeCall?.args.image).toBe(5);
       });
     });
   });
@@ -609,7 +781,7 @@ describe('createGimpCheckpointTools', () => {
     });
 
     it('removes the entry so list no longer reports it and a later restore/delete refuses it', async () => {
-      const gimp = backendResultFor(() => ({}));
+      const gimp = makeCheckpointBackend();
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
       const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
@@ -635,7 +807,7 @@ describe('createGimpCheckpointTools', () => {
     });
 
     it('frees a slot so a 6th create succeeds after a delete', async () => {
-      const gimp = backendResultFor(() => ({}));
+      const gimp = makeCheckpointBackend();
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const ids: string[] = [];
       for (let i = 0; i < MAX_CHECKPOINTS_PER_IMAGE; i++) {
@@ -647,8 +819,8 @@ describe('createGimpCheckpointTools', () => {
       expect(afterFree.isError).toBeFalsy();
     });
 
-    it('a delete rm failure (EPERM/EBUSY) is reported without leaking the absolute path (HIGH #6)', async () => {
-      const gimp = backendResultFor(() => ({}));
+    it('a delete rm failure (EPERM/EBUSY) is reported without leaking the absolute path', async () => {
+      const gimp = makeCheckpointBackend();
       const tools = createGimpCheckpointTools(gimp.asBackend());
       const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
       const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
@@ -664,60 +836,173 @@ describe('createGimpCheckpointTools', () => {
       expect(text).toMatch(/could not delete checkpoint/);
     });
   });
-});
 
-describe('cleanupRegisteredCheckpointFiles (the exit-hook cleanup, called directly)', () => {
-  it('removes every file the registry still references', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-cleanup-'));
-    try {
-      const pathA = join(dir, 'checkpoint-a.xcf');
-      const pathB = join(dir, 'checkpoint-b.xcf');
-      writeFileSync(pathA, 'x');
-      writeFileSync(pathB, 'x');
-      const registry = new Map<string, CheckpointRecord>([
-        [
-          'a',
-          { id: 'a', image: 1, path: pathA, bytes: 1, createdAt: '', open: true, generation: 0 },
-        ],
-        [
-          'b',
-          { id: 'b', image: 2, path: pathB, bytes: 1, createdAt: '', open: true, generation: 0 },
-        ],
-      ]);
-      cleanupRegisteredCheckpointFiles(registry);
-      expect(existsSync(pathA)).toBe(false);
-      expect(existsSync(pathB)).toBe(false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  describe('a pending checkpoint (export still in flight)', () => {
+    it('is not restorable/deletable, and list reports it as pending', async () => {
+      let resolveExport!: (value: { bytes: number }) => void;
+      const exportPromise = new Promise<{ bytes: number }>((resolve) => {
+        resolveExport = resolve;
+      });
+      const gimp = makeGimpBackend({
+        resultFor: (op) => (op === 'export' ? exportPromise : {}),
+      });
+      const base = join(scratchDir, `fake-${scratchCounter++}`);
+      gimp.tempPath = (name: string) => join(base, name);
+      const tools = createGimpCheckpointTools(gimp.asBackend());
+
+      const createPromise = callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+      // Yield until every microtask that CAN run without the export resolving has run — the
+      // create call is now suspended purely on `exportPromise`, with its reservation already
+      // visible in the registry.
+      await new Promise((r) => setTimeout(r, 0));
+
+      const midFlight = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
+      const pendingEntries = (
+        midFlight.structuredContent as {
+          checkpoints: Array<{ checkpoint_id: string; pending: boolean }>;
+        }
+      ).checkpoints;
+      expect(pendingEntries).toHaveLength(1);
+      expect(pendingEntries[0]!.pending).toBe(true);
+      const id = pendingEntries[0]!.checkpoint_id;
+
+      const restoreAttempt = await callTool(tools, 'gimp_checkpoint', {
+        op: 'restore',
+        checkpoint_id: id,
+      });
+      expect(restoreAttempt.isError).toBe(true);
+      expect((restoreAttempt.content?.[0] as { text: string }).text).toMatch(/still being created/);
+
+      const deleteAttempt = await callTool(tools, 'gimp_checkpoint', {
+        op: 'delete',
+        checkpoint_id: id,
+      });
+      expect(deleteAttempt.isError).toBe(true);
+      expect((deleteAttempt.content?.[0] as { text: string }).text).toMatch(/still being created/);
+
+      resolveExport({ bytes: 123 });
+      const created = await createPromise;
+      expect(created.isError).toBeFalsy();
+
+      const after = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
+      const afterEntry = (after.structuredContent as { checkpoints: Array<{ pending: boolean }> })
+        .checkpoints[0]!;
+      expect(afterEntry.pending).toBe(false);
+    });
   });
 });
 
-describe('sweepStaleCheckpointFiles (the 24h crash-leftover sweep, called directly)', () => {
-  it('removes checkpoint files older than 24h but leaves young ones and non-matching names alone', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-sweep-'));
+describe('sweepStaleCheckpointDirs', () => {
+  it('removes a dead-pid directory, keeps a live-pid directory and its own directory, and ignores non-matching names', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-sweep-'));
     try {
-      const old = join(dir, 'checkpoint-old.xcf');
-      const young = join(dir, 'checkpoint-young.xcf');
-      const other = join(dir, 'not-a-checkpoint.xcf');
-      writeFileSync(old, 'x');
-      writeFileSync(young, 'x');
-      writeFileSync(other, 'x');
-      const now = Date.now();
-      const oldTimeSec = (now - 25 * 60 * 60 * 1000) / 1000;
-      utimesSync(old, oldTimeSec, oldTimeSec);
-      sweepStaleCheckpointFiles(dir, () => now);
-      expect(existsSync(old)).toBe(false);
-      expect(existsSync(young)).toBe(true);
-      expect(existsSync(other)).toBe(true);
+      const ownDir = join(parent, `checkpoints-${process.pid}-${randomUUID()}`);
+      mkdirSync(ownDir);
+      const otherLiveDir = join(parent, `checkpoints-${process.pid}-${randomUUID()}`);
+      mkdirSync(otherLiveDir);
+      const dead = deadPid();
+      const deadDir = join(parent, `checkpoints-${dead}-${randomUUID()}`);
+      mkdirSync(deadDir);
+      const nonMatching = join(parent, 'not-a-checkpoint-dir');
+      mkdirSync(nonMatching);
+
+      sweepStaleCheckpointDirs(parent, ownDir);
+
+      expect(existsSync(ownDir)).toBe(true);
+      expect(existsSync(otherLiveDir)).toBe(true);
+      expect(existsSync(nonMatching)).toBe(true);
+      expect(existsSync(deadDir)).toBe(false);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(parent, { recursive: true, force: true });
     }
   });
 
-  it('does nothing (does not throw) when the directory does not exist', () => {
+  it('does not follow a symlink even if its name matches the pattern', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-sweep-symlink-'));
+    try {
+      const target = join(parent, 'real-target');
+      mkdirSync(target);
+      const dead = deadPid();
+      const linkPath = join(parent, `checkpoints-${dead}-${randomUUID()}`);
+      try {
+        symlinkSync(target, linkPath, 'junction');
+      } catch {
+        return; // cannot create a symlink/junction in this environment — nothing to assert
+      }
+      sweepStaleCheckpointDirs(parent, join(parent, 'own-nonexistent'));
+      expect(existsSync(linkPath)).toBe(true);
+      expect(existsSync(target)).toBe(true);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates a failure to read the parent directory itself (the caller's job to catch and retry)", () => {
     expect(() =>
-      sweepStaleCheckpointFiles(join(tmpdir(), 'gimp-checkpoint-sweep-does-not-exist'))
-    ).not.toThrow();
+      sweepStaleCheckpointDirs(
+        join(tmpdir(), `gimp-checkpoint-sweep-does-not-exist-${randomUUID()}`),
+        'unused'
+      )
+    ).toThrow();
+  });
+});
+
+describe('maybeSweepSiblingDirs', () => {
+  it('swallows a sweep failure and does not mark it done, so the next call retries it; a later successful sweep marks it done', () => {
+    const store: CheckpointStore = { registry: new Map(), dir: undefined, sweepDone: false };
+    const badDir = join(
+      tmpdir(),
+      `gimp-checkpoint-does-not-exist-${randomUUID()}`,
+      'nested-checkpoints-dir'
+    );
+    expect(() => maybeSweepSiblingDirs(store, badDir)).not.toThrow();
+    expect(store.sweepDone).toBe(false);
+
+    const realParent = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-sweep-retry-'));
+    try {
+      const realDir = join(realParent, `checkpoints-${process.pid}-${randomUUID()}`);
+      mkdirSync(realDir);
+      maybeSweepSiblingDirs(store, realDir);
+      expect(store.sweepDone).toBe(true);
+    } finally {
+      rmSync(realParent, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('cleanupCheckpointDirs', () => {
+  it('removes every directory given to it', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-cleanup-'));
+    try {
+      const a = join(parent, 'a');
+      const b = join(parent, 'b');
+      mkdirSync(a);
+      mkdirSync(b);
+      cleanupCheckpointDirs([a, b]);
+      expect(existsSync(a)).toBe(false);
+      expect(existsSync(b)).toBe(false);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('exit-hook registration (module-scoped, once per process)', () => {
+  it('creating many factory instances and creating a checkpoint in each never adds more than one net-new "exit" listener for the whole process', async () => {
+    // The module-level "registered" flag this relies on may already have been set by an earlier
+    // test in this same file/process (most of them call `create` too), so this can't assert an
+    // exact before/after delta — only the invariant that actually matters: 3 factory instances
+    // never add 3 listeners (one per instance), which is what would eventually trip Node's own
+    // MaxListenersExceededWarning for a long-lived host that builds this factory many times over.
+    const before = process.listenerCount('exit');
+    for (let i = 0; i < 3; i++) {
+      const gimp = makeCheckpointBackend();
+      const tools = createGimpCheckpointTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
+      expect(result.isError).toBeFalsy();
+    }
+    const after = process.listenerCount('exit');
+    expect(after - before).toBeLessThanOrEqual(1);
+    expect(after).toBeGreaterThanOrEqual(1);
   });
 });

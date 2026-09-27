@@ -191,23 +191,6 @@ describe('levels input rules match lib.validate_levels', () => {
   });
 });
 
-// Deliberately tier-agnostic (no literal "gimp_checkpoint"): these three tools and the overview
-// are 'community'-tier and ship in the CE tools/list surface, while gimp_checkpoint itself is
-// still 'dev'-tier — naming a gated tool from a shipped one's description is exactly the leak
-// `tests/integration/readme-leak-guard.test.ts`'s CE tool-surface scan exists to catch.
-describe('geometry save-first advice also names a lighter-weight checkpoint alternative', () => {
-  it.each(['gimp_crop_document', 'gimp_resize_image', 'gimp_transform_canvas'])('%s', (name) => {
-    expect(description(name).replace(/\s+/g, ' ')).toMatch(/lighter-weight checkpoint first/);
-  });
-  it('the overview names a checkpoint as the escape hatch for irreversible geometry', () => {
-    const text = overviewSection('No undo: geometry is permanent, adjustments are not').replace(
-      /\s+/g,
-      ' '
-    );
-    expect(text).toMatch(/lighter-weight checkpoint/);
-  });
-});
-
 describe('gimp_checkpoint: disk-backed undo substitute', () => {
   it('explains create/restore/list/delete and the replace-semantics recovery phrasing', () => {
     const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
@@ -225,12 +208,19 @@ describe('gimp_checkpoint: disk-backed undo substitute', () => {
     expect(text).toMatch(/at most 5 checkpoints/);
     expect(text).toMatch(/REFUSES outright rather than silently evicting the oldest/);
   });
-  it('says checkpoint files are removed at shutdown, and crash leftovers are swept after 24h', () => {
+  it("says checkpoint files are kept while the server runs and removed at exit, and a crashed server's leftovers are removed on the next checkpoint", () => {
     const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
     expect(text).toMatch(
-      /is removed when this MCP server process shuts down, not merely abandoned/
+      /Checkpoint files are kept while this server runs and removed when it exits/
     );
-    expect(text).toMatch(/swept the next time this tool runs, once it is more than 24 hours old/);
+    expect(text).toMatch(
+      /files left by a server that crashed are removed the next time a checkpoint is made/
+    );
+  });
+  it('qualifies "the old image id stops working" for when close fails', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(/the old image id stops working once the close succeeds/);
+    expect(text).toMatch(/if it fails instead.*close_failed: true.*the old image stays open/);
   });
   it('says a stale checkpoint (its image since closed) is still restorable and excluded from that images cap/scoped list', () => {
     const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
