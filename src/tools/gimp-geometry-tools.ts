@@ -131,10 +131,9 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
         description:
           'Headless GIMP: crop the canvas to an explicit rectangle (left, top, width, height in ' +
           'document pixels) — not a scale (that is gimp_resize_image). IRREVERSIBLE in this ' +
-          'session: there is no undo, so gimp_save_xcf first when in doubt (or a lighter-weight ' +
-          "checkpoint first, if this build's tool list offers one, restorable afterward). Every " +
-          'live filter, mask channel, and the filter ledger survive a crop — verified live; it is ' +
-          'the one geometry op that never refuses for masked-filter safety.',
+          'session: there is no undo, so gimp_save_xcf first when in doubt. Every live filter, ' +
+          'mask channel, and the filter ledger survive a crop — verified live; it is the one ' +
+          'geometry op that never refuses for masked-filter safety.',
         inputSchema: cropSchema,
         outputSchema: {
           type: 'object',
@@ -168,8 +167,7 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
           'Headless GIMP: scale the whole image up or down — not a crop (that is ' +
           'gimp_crop_document). Give width+height to stretch to an exact box, one alone to keep ' +
           'aspect, or long_edge to scale by the longer side. IRREVERSIBLE in this session: there ' +
-          'is no undo, so gimp_save_xcf first when in doubt (or a lighter-weight checkpoint first, ' +
-          "if this build's tool list offers one, restorable afterward). REFUSES outright when the image has a " +
+          'is no undo, so gimp_save_xcf first when in doubt. REFUSES outright when the image has a ' +
           'masked adjustment filter, or any filter not created by Editmamei (for example one added ' +
           'in the GIMP GUI) — resize before adding any masked adjustment, not after. A large target (the ' +
           'bridge allows up to 250 megapixels / 30000px per side) can take tens of seconds; if it ' +
@@ -207,8 +205,7 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
         description:
           "Headless GIMP: op 'rotate' (arbitrary `degrees` — straighten — plus `expand`) | 'flip' " +
           '(`orientation` horizontal/vertical). IRREVERSIBLE in this session: there is no undo, so ' +
-          "gimp_save_xcf first when in doubt (or a lighter-weight checkpoint first, if this build's " +
-          'tool list offers one, restorable afterward). REFUSES outright when the image has a masked ' +
+          'gimp_save_xcf first when in doubt. REFUSES outright when the image has a masked ' +
           'adjustment filter, or any filter not created by Editmamei (for example one added in the ' +
           'GIMP GUI) — straighten/flip before adding any masked adjustment, not after (crop is the ' +
           'one geometry op that is always safe afterward). Rotating a very large image can take tens of seconds; ' +
