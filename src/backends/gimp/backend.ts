@@ -97,6 +97,18 @@ export class GimpBackend {
     return this.session?.lastStartOrigin;
   }
 
+  /**
+   * See `GimpSession.generation`'s own doc comment — `undefined` before any session has ever been
+   * constructed (the same before-first-call posture `gimpVersion` takes), not a distinct "no
+   * signal" state a caller needs to special-case beyond the ordinary "is this value present"
+   * check every other optional field here already gets. Deliberately typed so a caller (or a
+   * backend that doesn't report generation at all) treats a missing/undefined generation as
+   * "can't tell" rather than as a crash.
+   */
+  get generation(): number | undefined {
+    return this.session?.generation;
+  }
+
   private ensureSession(): GimpSession {
     if (this.closed) {
       // Same code + wording GimpSession itself uses when a call reaches it

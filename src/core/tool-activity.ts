@@ -215,6 +215,13 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'gimp_resize_image',
   'gimp_transform_canvas',
   'gimp_create_mask',
+  // gimp_checkpoint: op=list is read-only and op=create/delete only touch a
+  // snapshot file, never the open document's own pixels — but op=restore
+  // closes the old image and opens a new one in its place (the same
+  // document-lifecycle change gimp_open_document/gimp_close_document count
+  // as mutating above), and classification is per tool NAME, so the same
+  // known bias as gimp_filter's read-only op=list applies here.
+  'gimp_checkpoint',
 ]);
 
 /*
