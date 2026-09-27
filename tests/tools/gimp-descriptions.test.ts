@@ -191,6 +191,52 @@ describe('levels input rules match lib.validate_levels', () => {
   });
 });
 
+// Deliberately tier-agnostic (no literal "gimp_checkpoint"): these three tools and the overview
+// are 'community'-tier and ship in the CE tools/list surface, while gimp_checkpoint itself is
+// still 'dev'-tier — naming a gated tool from a shipped one's description is exactly the leak
+// `tests/integration/readme-leak-guard.test.ts`'s CE tool-surface scan exists to catch.
+describe('geometry save-first advice also names a lighter-weight checkpoint alternative', () => {
+  it.each(['gimp_crop_document', 'gimp_resize_image', 'gimp_transform_canvas'])('%s', (name) => {
+    expect(description(name).replace(/\s+/g, ' ')).toMatch(/lighter-weight checkpoint first/);
+  });
+  it('the overview names a checkpoint as the escape hatch for irreversible geometry', () => {
+    const text = overviewSection('No undo: geometry is permanent, adjustments are not').replace(
+      /\s+/g,
+      ' '
+    );
+    expect(text).toMatch(/lighter-weight checkpoint/);
+  });
+});
+
+describe('gimp_checkpoint: disk-backed undo substitute', () => {
+  it('explains create/restore/list/delete and the replace-semantics recovery phrasing', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(/op=create exports the image's CURRENT state/);
+    expect(text).toMatch(/replace semantics, not a copy/);
+    expect(text).toMatch(/closed; restored as image M — use M from now on/);
+  });
+  it('says a checkpoint still works after a gimp_session_restarted error', () => {
+    expect(description('gimp_checkpoint').replace(/\s+/g, ' ')).toMatch(
+      /still works right after a gimp_session_restarted error/
+    );
+  });
+  it('states the 5-per-image cap and that it refuses rather than evicts', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(/at most 5 checkpoints/);
+    expect(text).toMatch(/REFUSES outright rather than silently evicting the oldest/);
+  });
+  it('says checkpoint files live until the server process shuts down', () => {
+    expect(description('gimp_checkpoint').replace(/\s+/g, ' ')).toMatch(
+      /lives until this MCP server process shuts down/
+    );
+  });
+  it('says list never reports a file path, and why', () => {
+    expect(description('gimp_checkpoint').replace(/\s+/g, ' ')).toMatch(
+      /never a file path \(a full path carries the username\)/
+    );
+  });
+});
+
 describe('open clears a selection saved in the file (op_open)', () => {
   it('is stated on gimp_open_document and in the overview', () => {
     expect(description('gimp_open_document').replace(/\s+/g, ' ')).toMatch(

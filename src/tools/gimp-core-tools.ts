@@ -227,9 +227,14 @@ every geometry op.
 ## No undo: geometry is permanent, adjustments are not
 
 Crop, resize, rotate, and flip are IRREVERSIBLE in this session — there
-is no undo. \`gimp_save_xcf\` first when in doubt, and reopen that file
-to go back. Adjustments are reversible: \`gimp_filter\` (op=delete)
-removes one, and a re-edit by \`filter_id\` changes it in place.
+is no undo. Before one, either \`gimp_save_xcf\` (then reopen that file
+to go back) or a lighter-weight checkpoint, if this build's tool list
+offers one — a disk-backed snapshot you restore afterward instead of
+saving and reopening a whole file, and one that survives even a GIMP
+session restart, since restoring it just reopens its own file rather
+than depending on the process that crashed. Adjustments are reversible:
+\`gimp_filter\` (op=delete) removes one, and a re-edit by \`filter_id\`
+changes it in place.
 
 ## Previews are proxy renders
 
