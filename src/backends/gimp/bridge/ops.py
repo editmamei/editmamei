@@ -662,9 +662,9 @@ def _filter_record(filters, layer, f):
             elif hasattr(v, 'value_nick'):
                 v = v.value_nick
             params[p.name] = lib.json_safe(v)
-    return {'layer': layer.get_name(), 'filter_id': f.get_id(), 'name': f.get_name(),
-            'operation': f.get_operation_name(), 'type': type_, 'visible': f.get_visible(),
-            'source': source, 'mask': mask, 'params': params}
+    return {'layer': layer.get_name(), 'layer_id': layer.get_id(), 'filter_id': f.get_id(),
+            'name': f.get_name(), 'operation': f.get_operation_name(), 'type': type_,
+            'visible': f.get_visible(), 'source': source, 'mask': mask, 'params': params}
 
 
 def op_list_filters(args):
@@ -726,49 +726,113 @@ def op_filter(args):
 
 DESCRIBE_TARGETS = ('document', 'layers', 'channels', 'filter')
 
+# A hard cap on how many layer-tree nodes `describe`'s `document`/`layers` targets will build,
+# counting every node in the WHOLE tree (top-level and every descendant), not just top-level --
+# an output-size bound, and it is what makes `_build_layer_tree`'s walk itself safe: it stops
+# outright once this many nodes have been visited, so neither a very wide document (many layers)
+# nor a very deep one (many nested groups) can produce unbounded output. `truncated: true` in the
+# result says the cap was hit; a group visited right at the cut-off may be missing some of its own
+# children, since the walk simply stops rather than finishing that group first.
+MAX_DESCRIBE_LAYER_NODES = 2000
 
-def _layer_node(layer):
-    """One layer's entry in a describe-by-id layer tree: id is canonical (unlike `_layer`'s
+
+def _layer_node_shallow(layer):
+    """One layer's own fields for a describe-by-id layer tree node, with `children` left as an
+    empty list -- `_build_layer_tree` fills it in as it walks. Id is canonical (unlike `_layer`'s
     name-based lookup, which can't tell two same-named layers apart -- GIMP allows duplicate
-    names). `children` walks `get_children()` for a group, in the same top-of-stack-first order
-    `_all_layers` already relies on; empty for a non-group layer."""
-    _ok, off_x, off_y = layer.get_offsets()
+    names). `get_offsets()` returns (ok, x, y); `ok` is False only in a genuinely invalid-item
+    case that shouldn't arise for a layer this walk just visited via `get_layers()`/
+    `get_children()`, but is still checked rather than trusted blindly -- offsets fall back to
+    null rather than reporting a wrong position."""
+    ok, off_x, off_y = layer.get_offsets()
     return {
         'layer_id': layer.get_id(),
         'name': layer.get_name(),
         'opacity': layer.get_opacity(),
         'mode': layer.get_mode().value_nick,
         'visible': layer.get_visible(),
-        'offsets': {'x': off_x, 'y': off_y},
+        'offsets': {'x': off_x, 'y': off_y} if ok else {'x': None, 'y': None},
         'has_alpha': layer.has_alpha(),
         'is_group': layer.is_group(),
         'is_text_layer': layer.is_text_layer(),
-        'children': [_layer_node(c) for c in layer.get_children()] if layer.is_group() else [],
+        'children': [],
     }
+
+
+def _build_layer_tree(top_layers, max_nodes=MAX_DESCRIBE_LAYER_NODES):
+    """The nested layer tree for `top_layers` (an image's own `get_layers()`, top of stack first),
+    walked with an EXPLICIT stack rather than one recursive call per nesting level -- a
+    pathological chain of nested single-child groups would otherwise risk Python's OWN recursion
+    limit, not just some output-size limit of this op's choosing. Capped at `max_nodes` total
+    nodes across the whole tree. Returns (nodes, truncated).
+
+    Each stack entry is (layer, parent_id); a group's children are pushed in REVERSE order so
+    popping (LIFO) still visits them top-of-stack-first, the same order `_all_layers` already
+    relies on elsewhere. A layer's own node dict is built and recorded (`by_id`) the moment it is
+    popped, and immediately appended into its parent's `children` list (or the top-level list) --
+    safe because a layer is always popped strictly after its own parent (the parent's children
+    are only ever pushed once the parent itself has already been popped and recorded), so the
+    parent's node dict is guaranteed to already exist. This one pass is enough; no separate
+    bottom-up assembly pass is needed."""
+    truncated = False
+    top = []
+    by_id = {}
+    stack = [(layer, None) for layer in reversed(top_layers)]
+    seen = 0
+    while stack:
+        if seen >= max_nodes:
+            truncated = True
+            break
+        layer, parent_id = stack.pop()
+        seen += 1
+        node = _layer_node_shallow(layer)
+        by_id[layer.get_id()] = node
+        if parent_id is None:
+            top.append(node)
+        else:
+            by_id[parent_id]['children'].append(node)
+        if layer.is_group():
+            for child in reversed(layer.get_children()):
+                stack.append((child, layer.get_id()))
+    return top, truncated
+
+
+def _channels_summary(img):
+    """Every named channel on img, by id and name only -- `document`'s cheap channel listing.
+    Coverage (`_channel_coverage`) reads a channel's full pixel buffer (seconds of work per
+    channel at full resolution), so it is computed only for `what='channels'`
+    (`_channels_described`), never bundled into `document`'s broader, cheaper read."""
+    return [{'channel_id': ch.get_id(), 'name': ch.get_name()} for ch in img.get_channels()]
 
 
 def _channels_described(img):
     """Every named channel on img, with its coverage (`_channel_coverage`) -- the same stat
-    `op_create_mask` returns for the one it just built."""
+    `op_create_mask` returns for the one it just built. `what='channels'`-only; see
+    `_channels_summary`'s own docstring for why `document` doesn't compute this."""
     w, h = img.get_width(), img.get_height()
     out = []
     for ch in img.get_channels():
         selected, fraction = _channel_coverage(ch, w, h)
-        out.append({'name': ch.get_name(), 'selected_pixels': selected, 'fraction': fraction})
+        out.append({
+            'channel_id': ch.get_id(), 'name': ch.get_name(),
+            'selected_pixels': selected, 'fraction': fraction,
+        })
     return out
 
 
 def op_describe(args):
     """`gimp_inspect`'s describe-by-id bridge op: `what` in document | layers | channels | filter
     (`documents` -- every open image's id -- stays on `op_ping`, unchanged; the tool layer never
-    routes it here). `document` bundles dims/base_type/precision/resolution with both the layer
-    tree and the channel list in one call; `layers`/`channels` return just one half of that for a
-    cheaper read when the other half isn't needed. `filter` reports one filter by id, in the exact
-    shape `op_list_filters` reports it in (`_filter_record`, via `_find_filter` so a filter_id from
-    a different or closed image is never mistaken for a match)."""
+    routes it here). `document` bundles dims/base_type/precision/resolution with the layer tree
+    and a cheap by-id/name channel listing in one call; `layers` returns just the tree (capped and
+    flagged, see `_build_layer_tree`/`MAX_DESCRIBE_LAYER_NODES`); `channels` returns the same
+    channels WITH coverage (`_channels_described`), the one part `document` deliberately leaves
+    out since it reads full pixel buffers. `filter` reports one filter by id, in the exact shape
+    `op_list_filters` reports it in (`_filter_record`, via `_find_filter` so a filter_id from a
+    different or closed image is never mistaken for a match)."""
     what = args.get('what')
     if what not in DESCRIBE_TARGETS:
-        raise ValueError('what must be one of %s' % (DESCRIBE_TARGETS,))
+        raise ValueError('what must be one of %s' % ', '.join(DESCRIBE_TARGETS))
     img = _image(args)
     if what == 'filter':
         filter_id = int(lib.require(args, 'filter_id'))
@@ -776,19 +840,22 @@ def op_describe(args):
         filters, _unknown = _ledger_get(img)
         return _filter_record(filters, layer, f)
     if what == 'layers':
-        return {'layers': [_layer_node(l) for l in img.get_layers()]}
+        layers, truncated = _build_layer_tree(img.get_layers())
+        return {'layers': layers, 'truncated': truncated}
     if what == 'channels':
         return {'channels': _channels_described(img)}
-    _ok, xres, yres = img.get_resolution()
+    ok, xres, yres = img.get_resolution()
+    layers, truncated = _build_layer_tree(img.get_layers())
     return {
         'image': img.get_id(),
         'width': img.get_width(),
         'height': img.get_height(),
         'base_type': img.get_base_type().value_nick,
         'precision': img.get_precision().value_nick,
-        'resolution': {'x': xres, 'y': yres},
-        'layers': [_layer_node(l) for l in img.get_layers()],
-        'channels': _channels_described(img),
+        'resolution': {'x': xres, 'y': yres} if ok else {'x': None, 'y': None},
+        'layers': layers,
+        'truncated': truncated,
+        'channels': _channels_summary(img),
     }
 
 
