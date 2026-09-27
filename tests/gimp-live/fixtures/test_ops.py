@@ -126,6 +126,24 @@ def op_test_proxy_filter_count(args):
     return {'filters': sum(len(layer.get_filters()) for layer in _all_layers(proxy))}
 
 
+def op_test_apply_raw_effect(args):
+    """Drive the REAL `_apply_filter` (not a bypass, unlike `op_test_add_foreign_filter` above)
+    through an arbitrary GEGL operation with a trivial passthrough setter -- for proving
+    `_append_masked`'s attach-failure guard actually fires from the production create path, not
+    just when called directly. `operation` names any GEGL op (bypassing lib.EFFECT_OPERATIONS'
+    allow-list entirely); `props` are raw GEGL property names -> values, set verbatim."""
+    img = _image(args)
+    operation = lib.require(args, 'operation')
+    props = dict(args.get('props') or {})
+
+    def _raw_setter(cfg, params):
+        for key, value in params.items():
+            cfg.set_property(key, value)
+
+    SETTERS[operation] = _raw_setter
+    return _apply_filter(img, args, operation, props, 'Test Raw Effect')
+
+
 OPS.update({
     'test_proxy_filter_count': op_test_proxy_filter_count,
     'test_metadata_tag': op_test_metadata_tag,
@@ -135,4 +153,5 @@ OPS.update({
     'test_selection_empty': op_test_selection_empty,
     'test_wrap_in_group': op_test_wrap_in_group,
     'test_add_foreign_filter': op_test_add_foreign_filter,
+    'test_apply_raw_effect': op_test_apply_raw_effect,
 })
