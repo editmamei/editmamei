@@ -392,6 +392,61 @@ def _set_gaussian_blur(cfg, params):
     cfg.set_property('std-dev-y', params['std-dev-y'])
 
 
+# ---- gimp_filter op=apply setters (lib.FILTER_OPERATIONS' parallel table to the adjust ones
+# above) -- SETTERS itself is one shared dict below: an operation name is an operation name
+# regardless of which tool (gimp_add_adjustment's `adjust` or gimp_filter's `apply`) created the
+# filter, and _apply_filter/_mirror_filters dispatch on operation alone.
+
+def _set_vignette(cfg, params):
+    cfg.set_property('radius', params['radius'])
+    cfg.set_property('softness', params['softness'])
+    cfg.set_property('gamma', params['gamma'])
+    cfg.set_property('x', params['x'])
+    cfg.set_property('y', params['y'])
+
+
+def _set_black_white(cfg, params):
+    cfg.set_property('red', params['red'])
+    cfg.set_property('green', params['green'])
+    cfg.set_property('blue', params['blue'])
+    cfg.set_property('preserve-luminosity', params['preserve-luminosity'])
+
+
+def _set_motion_blur(cfg, params):
+    cfg.set_property('length', params['length'])
+    cfg.set_property('angle', params['angle'])
+
+
+def _set_lens_blur(cfg, params):
+    # gegl:focus-blur, not gegl:lens-blur -- see lib.build_lens_blur_params' own comment.
+    #
+    # gegl:focus-blur's OWN `radius` property (distinct from the `blur-radius` this tool exposes
+    # as its user-facing `radius` field) sizes a circular IN-FOCUS zone that stays perfectly sharp
+    # regardless of `blur-radius` -- verified live: at its own default (0.75), the center ~75% of
+    # the image never blurs at all no matter how large `blur-radius` is, which is a tilt-shift/
+    # depth-of-field effect, not the uniform "lens blur" this tool advertises. Hardcoded to 0 here
+    # (not part of `params`, not merge-tracked, not user-configurable) so the blur applies
+    # uniformly across the whole layer instead.
+    cfg.set_property('radius', 0.0)
+    cfg.set_property('blur-radius', params['blur-radius'])
+    cfg.set_property('highlight-factor', params['highlight-factor'])
+
+
+def _set_add_noise(cfg, params):
+    cfg.set_property('red', params['red'])
+    cfg.set_property('green', params['green'])
+    cfg.set_property('blue', params['blue'])
+    cfg.set_property('alpha', params['alpha'])
+    cfg.set_property('seed', params['seed'])
+
+
+def _set_drop_shadow(cfg, params):
+    cfg.set_property('x', params['x'])
+    cfg.set_property('y', params['y'])
+    cfg.set_property('radius', params['radius'])
+    cfg.set_property('opacity', params['opacity'])
+
+
 SETTERS = {
     'gimp:curves': _set_curves,
     'gimp:levels': _set_levels,
@@ -406,6 +461,12 @@ SETTERS = {
     'gegl:unsharp-mask': _set_sharpen,
     'gegl:noise-reduction': _set_noise_reduction,
     'gegl:gaussian-blur': _set_gaussian_blur,
+    'gegl:vignette': _set_vignette,
+    'gegl:mono-mixer': _set_black_white,
+    'gegl:motion-blur-linear': _set_motion_blur,
+    'gegl:focus-blur': _set_lens_blur,
+    'gegl:noise-rgb': _set_add_noise,
+    'gegl:dropshadow': _set_drop_shadow,
 }
 
 
@@ -682,14 +743,35 @@ def _find_filter(img, filter_id):
     raise ValueError('no filter with id %s on image %s' % (filter_id, img.get_id()))
 
 
+def op_filter_apply(args):
+    """`gimp_filter op=apply`: create (or, with `filter_id`, re-edit in place) one of the
+    allow-listed GEGL effect filters (`lib.FILTER_OPERATIONS`) -- the same merge/mask/ledger
+    machinery `op_adjust` uses, parameterized on `filter` instead of `type`
+    (`lib.FILTER_PARAM_BUILDERS`/`FILTER_CREATE_DEFAULTS`, the parallel tables to ADJUST_*).
+    Dispatched through the shared `_apply_filter`, so the ledger, mask confinement,
+    merge-on-re-edit, geometry refusals and proxy mirroring all come free, unchanged."""
+    filter_type = args.get('filter')
+    builder = lib.FILTER_PARAM_BUILDERS.get(filter_type)
+    if builder is None:
+        raise ValueError('filter must be one of %s' % sorted(lib.FILTER_OPERATIONS))
+    img = _image(args)
+    operation = lib.FILTER_OPERATIONS[filter_type]
+    defaults = _existing_ledger_params(img, args, operation) or lib.FILTER_CREATE_DEFAULTS[filter_type]
+    params = builder(args, defaults)
+    default_name = filter_type.replace('_', ' ').title()
+    return _apply_filter(img, args, operation, params, default_name, type_=filter_type)
+
+
 def op_filter(args):
-    """Stack management: `op` in list | set_visibility | delete. There is deliberately no
+    """Stack management: `op` in list | set_visibility | delete | apply. There is deliberately no
     `reorder` -- `Gimp.DrawableFilter` exposes only delete/set_visible/update, and the PDB has no
     raise/lower-filter procedure (verified live, GIMP 3.2.6); emulating it means deleting and
     re-appending every filter above the moved one, which changes their ids and can't restore
     masks on filters this bridge didn't create."""
-    img = _image(args)
     fop = args.get('op')
+    if fop == 'apply':
+        return op_filter_apply(args)
+    img = _image(args)
     if fop == 'list':
         return op_list_filters(args)
     if fop == 'set_visibility':
@@ -715,7 +797,7 @@ def op_filter(args):
             'filter reorder is not supported: GIMP has no reorder primitive for drawable '
             'filters in this beta -- delete and re-create in the desired order instead'
         )
-    raise ValueError('op must be one of list, set_visibility, delete (got %r)' % fop)
+    raise ValueError('op must be one of list, set_visibility, delete, apply (got %r)' % fop)
 
 
 # ---- geometry -----------------------------------------------------------------------------
@@ -1409,6 +1491,11 @@ def op_describe_operation(args):
                     # differs every run and would make the schema golden fail on every diff
                     # regardless of any real drift; its points are the stable, meaningful summary.
                     default = _curve_points(default)
+                elif isinstance(default, Gegl.Color):
+                    # Same reasoning as GimpCurve above -- a bare repr() of a GeglColor (e.g.
+                    # vignette's/dropshadow's `color`) embeds two object pointer addresses that
+                    # differ every run. `get_rgba()` is the stable, meaningful summary.
+                    default = list(default.get_rgba())
                 elif hasattr(default, 'value_nick'):
                     default = default.value_nick
                 elif not isinstance(default, (int, float, str, bool, type(None))):

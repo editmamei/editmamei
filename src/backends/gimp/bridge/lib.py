@@ -85,6 +85,12 @@ SPATIAL_SCALE_PROPS = {
     'gegl:shadows-highlights': ('radius',),
     'gegl:unsharp-mask': ('std-dev',),
     'gegl:gaussian-blur': ('std-dev-x', 'std-dev-y'),
+    'gegl:motion-blur-linear': ('length',),
+    'gegl:focus-blur': ('blur-radius',),
+    'gegl:dropshadow': ('x', 'y', 'radius'),
+    # gegl:vignette and gegl:mono-mixer are deliberately absent: vignette's radius/x/y are
+    # proportional (fractions of the image's own size, not absolute pixel lengths), and
+    # mono-mixer is a per-pixel channel-weight filter with no spatial extent at all.
 }
 
 # Integer-valued properties that are scaled by the proxy factor too, but as a ROUNDED count
@@ -449,6 +455,177 @@ ADJUST_CREATE_DEFAULTS = {
 }
 
 
+# ---- gimp_filter op=apply: allow-listed GEGL effect filters --------------------------------
+#
+# The parallel tables to ADJUST_OPERATIONS/ADJUST_PARAM_BUILDERS/ADJUST_CREATE_DEFAULTS above,
+# for `gimp_filter`'s `apply` op rather than `gimp_add_adjustment`'s `adjust` op -- a DIFFERENT
+# bridge op (`filter`, dispatched by `op_filter`'s own `fop == 'apply'` branch in ops.py), so
+# these stay separate dicts rather than merged into the ADJUST_* ones; only the GEGL-property
+# SETTERS functions in ops.py are shared across both (an operation name is an operation name
+# regardless of which tool created the filter).
+#
+# Deliberately excludes gegl:gaussian-blur (already ADJUST_OPERATIONS' `gaussian_blur`, see
+# gimp-adjustment-tools.ts) and gegl:c2g (measured live at ~35s for a full-res 24 MP export --
+# over the ~30s budget the owner set for this PR, so it does not ship here; see PR 2's report).
+FILTER_OPERATIONS = {
+    'vignette': 'gegl:vignette',
+    'black_white': 'gegl:mono-mixer',
+    'motion_blur': 'gegl:motion-blur-linear',
+    # gegl:focus-blur, NOT gegl:lens-blur -- see build_lens_blur_params' own comment: lens-blur
+    # exists in this GIMP's GEGL, but GIMP itself refuses to attach it as a non-destructive
+    # DrawableFilter (an 'aux'-pad operation), so it is unusable in this bridge's architecture.
+    'lens_blur': 'gegl:focus-blur',
+    'add_noise': 'gegl:noise-rgb',
+    'drop_shadow': 'gegl:dropshadow',
+}
+
+# Every validate_range/validate_int_range call below uses `val`, not `v`, as its lambda's
+# parameter name -- deliberately, so it is NOT matched by gimp-adjustment-tools.test.ts's own
+# `parseLibPyBounds` regex (which requires the literal substring ", v,"). That regex scans this
+# WHOLE file, not just ADJUST_PARAM_BUILDERS, so an accidental match here would silently fold a
+# filter-effect bound into an unrelated adjust field's drift check (e.g. sharpen's `amount`) --
+# `val` keeps the two files' schema-bounds-drift tests fully decoupled.
+
+
+def build_vignette_params(args, defaults):
+    # Proportional/scale-invariant (radius is a fraction of the image's own half-diagonal, x/y a
+    # fraction of width/height): unlike the spatial effects below, nothing here needs a
+    # SPATIAL_SCALE_PROPS entry -- the same value renders correctly on the preview proxy as at
+    # full resolution.
+    return {
+        'radius': resolve_field(
+            args, 'radius', defaults, 'radius', lambda val: validate_range('radius', val, 0.0, 3.0)
+        ),
+        'softness': resolve_field(
+            args, 'softness', defaults, 'softness',
+            lambda val: validate_range('softness', val, 0.0, 1.0),
+        ),
+        'gamma': resolve_field(
+            args, 'gamma', defaults, 'gamma', lambda val: validate_range('gamma', val, 0.1, 10.0)
+        ),
+        'x': resolve_field(
+            args, 'center_x', defaults, 'x', lambda val: validate_range('center_x', val, 0.0, 1.0)
+        ),
+        'y': resolve_field(
+            args, 'center_y', defaults, 'y', lambda val: validate_range('center_y', val, 0.0, 1.0)
+        ),
+    }
+
+
+def build_black_white_params(args, defaults):
+    return {
+        'red': resolve_field(
+            args, 'red_weight', defaults, 'red',
+            lambda val: validate_range('red_weight', val, -5.0, 5.0),
+        ),
+        'green': resolve_field(
+            args, 'green_weight', defaults, 'green',
+            lambda val: validate_range('green_weight', val, -5.0, 5.0),
+        ),
+        'blue': resolve_field(
+            args, 'blue_weight', defaults, 'blue',
+            lambda val: validate_range('blue_weight', val, -5.0, 5.0),
+        ),
+        'preserve-luminosity': resolve_field(
+            args, 'preserve_luminosity', defaults, 'preserve-luminosity', bool
+        ),
+    }
+
+
+def build_motion_blur_params(args, defaults):
+    return {
+        'length': resolve_field(
+            args, 'length', defaults, 'length', lambda val: validate_range('length', val, 0.0, 1000.0)
+        ),
+        'angle': resolve_field(
+            args, 'angle', defaults, 'angle', lambda val: validate_range('angle', val, -180.0, 180.0)
+        ),
+    }
+
+
+def build_lens_blur_params(args, defaults):
+    # gegl:lens-blur (GIMP 3.2's GEGL does ship it) turned out unusable here -- verified live,
+    # `gimp-drawable-append-filter` refuses it outright ("effects with an 'aux' pad cannot be
+    # applied non-destructively"), so every call would silently attach nothing (no exception, no
+    # ledger record, filter count staying 0). gegl:focus-blur is the plan's own documented
+    # fallback and DOES attach; its blur amount property is named `blur-radius`, not `radius`
+    # (the external field name here stays `radius` regardless -- see FILTER_CREATE_DEFAULTS).
+    # gegl:focus-blur's OWN `radius` property (an unrelated, same-named property sizing an
+    # in-focus zone that never blurs) is forced to 0 in ops.py's `_set_lens_blur` -- not part of
+    # this dict, not user-configurable -- so the effect is a uniform blur, not a tilt-shift one.
+    return {
+        'blur-radius': resolve_field(
+            args, 'radius', defaults, 'blur-radius',
+            lambda val: validate_range('radius', val, 0.0, 1500.0),
+        ),
+        'highlight-factor': resolve_field(
+            args, 'highlight_factor', defaults, 'highlight-factor',
+            lambda val: validate_range('highlight_factor', val, 0.0, 1.0),
+        ),
+    }
+
+
+def build_add_noise_params(args, defaults):
+    # One user-facing `noise_amount` drives red/green/blue uniformly, the same "one field, several
+    # identical GEGL properties" idiom `build_gaussian_blur_params` uses for std-dev-x/std-dev-y.
+    amount = resolve_field(
+        args, 'noise_amount', defaults, 'red',
+        lambda val: validate_range('noise_amount', val, 0.0, 1.0),
+    )
+    return {
+        'red': amount,
+        'green': amount,
+        'blue': amount,
+        'alpha': resolve_field(
+            args, 'alpha', defaults, 'alpha', lambda val: validate_range('alpha', val, 0.0, 1.0)
+        ),
+        'seed': resolve_field(
+            args, 'seed', defaults, 'seed',
+            lambda val: validate_int_range('seed', val, 0, 4294967295),
+        ),
+    }
+
+
+def build_drop_shadow_params(args, defaults):
+    # Only meaningful on a layer with an alpha channel -- a shadow is cast from what's transparent
+    # around the opaque content; on a fully opaque layer there is nothing for it to show through.
+    return {
+        'x': resolve_field(
+            args, 'offset_x', defaults, 'x', lambda val: validate_range('offset_x', val, -500.0, 500.0)
+        ),
+        'y': resolve_field(
+            args, 'offset_y', defaults, 'y', lambda val: validate_range('offset_y', val, -500.0, 500.0)
+        ),
+        'radius': resolve_field(
+            args, 'radius', defaults, 'radius', lambda val: validate_range('radius', val, 0.0, 1500.0)
+        ),
+        'opacity': resolve_field(
+            args, 'opacity', defaults, 'opacity', lambda val: validate_range('opacity', val, 0.0, 1.0)
+        ),
+    }
+
+
+FILTER_PARAM_BUILDERS = {
+    'vignette': build_vignette_params,
+    'black_white': build_black_white_params,
+    'motion_blur': build_motion_blur_params,
+    'lens_blur': build_lens_blur_params,
+    'add_noise': build_add_noise_params,
+    'drop_shadow': build_drop_shadow_params,
+}
+
+# Creation-time defaults, already in GEGL-property units -- probed live via `describe_operation`
+# against GIMP 3.2.6's real GEGL pspecs (see PR 2's report for the raw probe output).
+FILTER_CREATE_DEFAULTS = {
+    'vignette': {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 0.5, 'y': 0.5},
+    'black_white': {'red': 0.333, 'green': 0.333, 'blue': 0.333, 'preserve-luminosity': False},
+    'motion_blur': {'length': 10.0, 'angle': 0.0},
+    'lens_blur': {'blur-radius': 25.0, 'highlight-factor': 0.0},
+    'add_noise': {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 0},
+    'drop_shadow': {'x': 20.0, 'y': 20.0, 'radius': 10.0, 'opacity': 0.5},
+}
+
+
 def _scaled(factor):
     # Rounded so a GEGL value that went through a /100 or /180 on the way in reads back as the
     # number the caller typed (0.2 * 100 is 20.000000000000004 in binary floating point). A value
@@ -512,6 +689,39 @@ USER_FIELDS = {
     ),
     'noise_reduction': (('strength', 'iterations', _same),),
     'gaussian_blur': (('radius', 'std-dev-x', _same),),
+    # ---- gimp_filter op=apply effects (FILTER_OPERATIONS, not ADJUST_OPERATIONS) --------------
+    'vignette': (
+        ('radius', 'radius', _same),
+        ('softness', 'softness', _same),
+        ('gamma', 'gamma', _same),
+        ('center_x', 'x', _same),
+        ('center_y', 'y', _same),
+    ),
+    'black_white': (
+        ('red_weight', 'red', _same),
+        ('green_weight', 'green', _same),
+        ('blue_weight', 'blue', _same),
+        ('preserve_luminosity', 'preserve-luminosity', _same),
+    ),
+    'motion_blur': (
+        ('length', 'length', _same),
+        ('angle', 'angle', _same),
+    ),
+    'lens_blur': (
+        ('radius', 'blur-radius', _same),
+        ('highlight_factor', 'highlight-factor', _same),
+    ),
+    'add_noise': (
+        ('noise_amount', 'red', _same),
+        ('alpha', 'alpha', _same),
+        ('seed', 'seed', _same),
+    ),
+    'drop_shadow': (
+        ('offset_x', 'x', _same),
+        ('offset_y', 'y', _same),
+        ('radius', 'radius', _same),
+        ('opacity', 'opacity', _same),
+    ),
 }
 
 CURVES_USER_FIELDS = ('channel', 'points')
@@ -553,7 +763,7 @@ def json_safe(value):
 # and an unbounded operation name is an unnecessary surface (arbitrary-op instantiation, error
 # text from GIMP's own PDB) for a probe whose only real job is confirming the schema of the
 # operations this engine actually uses.
-ALLOWED_DESCRIBE_OPERATIONS = frozenset(ADJUST_OPERATIONS.values())
+ALLOWED_DESCRIBE_OPERATIONS = frozenset(ADJUST_OPERATIONS.values()) | frozenset(FILTER_OPERATIONS.values())
 
 
 # ---- geometry-op masked-filter detection (pure logic; ops.py supplies the live GIMP state) -----
