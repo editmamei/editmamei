@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
-import { lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
@@ -18,10 +18,13 @@ import { GIMP_IMAGE_PROP } from './gimp-shared.js';
  * `.xcf` branch of the bridge's `op_export` keeps every live filter
  * re-editable via the ledger parasite (`ops.py:1231-1238`), so a restored
  * checkpoint is not just pixels. `restore` dispatches `open` on that file,
- * then `close` on the image the checkpoint is replacing. `list`/`delete`
- * touch only the in-memory registry and (for delete) the filesystem —
- * `list` never talks to the bridge at all, and `create`'s only bridge calls
- * are an optional `ping` (see `refreshOpenness`) and the `export` itself.
+ * then `close` on the image the checkpoint is replacing. `delete` touches
+ * only the in-memory registry and the filesystem, no bridge call at all.
+ * `list` touches only the registry too, UNLESS a GIMP session is already
+ * running, in which case it also sends a `ping` to refresh staleness (see
+ * `refreshOpenness`) — it never dispatches anything that would itself start
+ * one. `create`'s own bridge calls are that same optional `ping` and the
+ * `export` itself.
  *
  * Disk-backed on purpose, not an in-memory duplicate: an in-memory copy dies
  * in the exact event checkpoints exist for — a timeout or crash tree-kills
@@ -124,6 +127,11 @@ export interface CheckpointRecord {
 export interface CheckpointStore {
   registry: Map<string, CheckpointRecord>;
   dir: string | undefined;
+  /** Set while `ensureStoreDir`'s own directory creation is in flight, so a SECOND concurrent
+   * `create` (its very first, before `dir` is set) joins this SAME attempt instead of racing it
+   * and creating a second directory. Cleared once the attempt settles, success or failure, so a
+   * later call can retry fresh after a failure. */
+  dirPromise: Promise<string> | undefined;
   /** Set only once `sweepStaleCheckpointDirs` has run WITHOUT throwing — a thrown sweep leaves
    * this `false` so the next `create` call retries it, rather than silently giving up forever. */
   sweepDone: boolean;
@@ -302,15 +310,43 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+/** How old a dead-pid-owned directory must additionally be before this sweep reclaims it — a
+ * safety floor for two SEPARATE pid namespaces (e.g. two containers) sharing the same temp root:
+ * a pid alive in the OTHER namespace looks dead from here, so age is what stops that false
+ * positive from deleting an actively-used directory outright. An hour is generous next to how
+ * short-lived an actual checkpoint session is. */
+const DEAD_PID_MIN_AGE_MS = 60 * 60 * 1000;
+
 /**
- * Removes sibling `checkpoints-<pid>-<uuid>` directories under `parentDir` whose pid is confirmed
- * dead — leftovers from a process that crashed or was killed before its own exit hook could run.
- * Never by age: a directory's pid being this process's own already protects it (this process is
- * definitionally alive), so `ownDir` is an extra, explicit belt-and-suspenders check, not the
- * only one. Matched strictly by name; checked with `lstatSync` (never dereferenced), and anything
- * that isn't a real directory under that lstat — a symlink included — is left untouched.
+ * Removes two kinds of leftover `checkpoints-<pid>-<uuid>` directories under `parentDir`:
+ *
+ * 1. A directory whose pid is confirmed dead AND is older than `DEAD_PID_MIN_AGE_MS` — a leftover
+ *    from a process that crashed or was killed before its own exit hook could run. Age is an
+ *    ADDITIONAL requirement, not a substitute for the pid check: it exists for the cross-namespace
+ *    case above, where "dead" alone isn't conclusive.
+ * 2. A directory whose pid equals OUR OWN, that is NOT one of `trackedDirs` (nothing this process
+ *    itself created), AND whose creation time predates this process's own start — the
+ *    container-pid-1 leak: a container's main process is commonly pid 1 in its own namespace on
+ *    every restart, so a directory from an entirely earlier, unrelated run can share this exact
+ *    number by pure coincidence. `ownDir` (this store's own, already-created directory) is
+ *    checked first and always kept regardless.
+ *
+ * Matched strictly by name; checked with `lstatSync` (never dereferenced), and anything that
+ * isn't a real directory under that lstat — a symlink included — is left untouched.
  */
-export function sweepStaleCheckpointDirs(parentDir: string, ownDir: string): void {
+export function sweepStaleCheckpointDirs(
+  parentDir: string,
+  ownDir: string,
+  trackedDirs: ReadonlySet<string>,
+  // Injectable (tests only) — real callers get this process's own real start time. A directory's
+  // filesystem birthtime can't be faked from a test, but comparing against WHEN this process
+  // itself is considered to have started can, which is exactly the comparison this needs to
+  // prove out. `birthtimeMs` isn't universally reliable on every OS/filesystem combination
+  // (older Linux kernels/filesystems can report it equal to ctime, or 0) — this is a hardening
+  // measure for an already-rare edge case, not the primary sweep mechanism, so that residual
+  // imprecision is an acceptable trade rather than a reason to skip the check.
+  processStartedAt: number = Date.now() - process.uptime() * 1000
+): void {
   // Deliberately NOT try/caught here: a genuine failure to even list `parentDir` is the caller's
   // (`maybeSweepSiblingDirs`'s) job to catch and retry later — see its own doc comment. Only
   // PER-ENTRY failures below are swallowed, since one bad entry should never stop the rest of the
@@ -322,15 +358,27 @@ export function sweepStaleCheckpointDirs(parentDir: string, ownDir: string): voi
     const path = join(parentDir, name);
     if (path === ownDir) continue;
     const pid = Number(match[1]);
-    if (pid === process.pid) continue;
-    let isDir: boolean;
+    let stat: ReturnType<typeof lstatSync>;
     try {
-      isDir = lstatSync(path).isDirectory();
+      stat = lstatSync(path);
     } catch {
       continue;
     }
-    if (!isDir) continue;
+    if (!stat.isDirectory()) continue;
+
+    if (pid === process.pid) {
+      if (trackedDirs.has(path)) continue; // genuinely ours, from this run
+      if (stat.birthtimeMs >= processStartedAt) continue; // created during this run, by something else — leave it
+      try {
+        rmSync(path, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+      continue;
+    }
+
     if (isPidAlive(pid)) continue;
+    if (Date.now() - stat.mtimeMs < DEAD_PID_MIN_AGE_MS) continue;
     try {
       rmSync(path, { recursive: true, force: true });
     } catch {
@@ -374,23 +422,43 @@ function registerDirForExitCleanup(dir: string): void {
   process.once('exit', () => cleanupCheckpointDirs(trackedDirs));
 }
 
-/** Lazily creates (once) and returns this store's own checkpoint directory. Never runs at
+/**
+ * Lazily creates (once) and returns this store's own checkpoint directory. Never runs at
  * factory-construction time — that would need a resolved GIMP install just to register the tool
- * — only on the first actual `create`, inside the handler's own try/catch. A raw mkdir failure
- * (permissions, a full disk) is rethrown as a path-free `GimpError` rather than forwarding
- * Node's own message, which would name the absolute path. */
+ * — only on the first actual `create`, inside the handler's own try/catch. Two concurrent first
+ * creates join the SAME attempt (`store.dirPromise`, set synchronously before either can await)
+ * rather than each creating their own directory.
+ *
+ * The parent chain is created recursively (it's shared, expected to already exist most of the
+ * time), but the LEAF — this store's own directory — is created non-recursively: if it already
+ * exists (a UUID collision, or some unrelated directory that happens to share the name), `mkdir`
+ * throws `EEXIST` instead of silently adopting it, which this factory would later delete as if it
+ * were its own. A raw mkdir failure (permissions, a full disk, that collision) is rethrown as a
+ * path-free `GimpError` rather than forwarding Node's own message, which would name the absolute
+ * path.
+ */
 async function ensureStoreDir(gimp: GimpBackend, store: CheckpointStore): Promise<string> {
   if (store.dir !== undefined) return store.dir;
-  await gimp.prepare(); // a late-found install must be in place before tempPath runs
-  const dir = gimp.tempPath(`checkpoints-${process.pid}-${randomUUID()}`);
+  if (store.dirPromise !== undefined) return store.dirPromise;
+  const attempt = (async (): Promise<string> => {
+    await gimp.prepare(); // a late-found install must be in place before tempPath runs
+    const dir = gimp.tempPath(`checkpoints-${process.pid}-${randomUUID()}`);
+    try {
+      mkdirSync(dirname(dir), { recursive: true });
+      mkdirSync(dir);
+    } catch {
+      throw new GimpError('gimp_op_failed', 'could not create the checkpoint storage directory.');
+    }
+    store.dir = dir;
+    registerDirForExitCleanup(dir);
+    return dir;
+  })();
+  store.dirPromise = attempt;
   try {
-    mkdirSync(dir, { recursive: true });
-  } catch {
-    throw new GimpError('gimp_op_failed', 'could not create the checkpoint storage directory.');
+    return await attempt;
+  } finally {
+    store.dirPromise = undefined;
   }
-  store.dir = dir;
-  registerDirForExitCleanup(dir);
-  return dir;
 }
 
 /** Runs `sweepStaleCheckpointDirs` at most once per store, and only once it has ever SUCCEEDED —
@@ -401,7 +469,7 @@ async function ensureStoreDir(gimp: GimpBackend, store: CheckpointStore): Promis
 export function maybeSweepSiblingDirs(store: CheckpointStore, dir: string): void {
   if (store.sweepDone) return;
   try {
-    sweepStaleCheckpointDirs(dirname(dir), dir);
+    sweepStaleCheckpointDirs(dirname(dir), dir, trackedDirs);
     store.sweepDone = true;
   } catch {
     /* best effort — retried on the next create call since sweepDone stays false */
@@ -488,8 +556,8 @@ async function checkpointList(
   store: CheckpointStore
 ): Promise<ToolResult> {
   const { registry } = store;
-  // list is registry-only: it must never be what cold-starts a GIMP process just to answer a
-  // read, so the ping half of refreshOpenness only runs when a session is already up.
+  // list must never be what cold-starts a GIMP process just to answer a read: it pings to refresh
+  // staleness ONLY when a session is already up, and skips that half of refreshOpenness otherwise.
   await refreshOpenness(gimp, registry, { requireAlreadyRunning: true });
   const image = args.image;
   const scoped = typeof image === 'number';
@@ -599,13 +667,25 @@ async function checkpointRestore(
     });
   } catch (openError) {
     if (openError instanceof GimpError && openError.code === 'file_not_found') {
-      // The checkpoint file itself is gone (removed out of band, or a leftover directory this
-      // process's own sweep reclaimed) — there is nothing left to ever restore from, so the
-      // record is dropped rather than kept around permanently broken.
-      registry.delete(record.id);
+      // The bridge's own `op_open` raises this from one place only — an explicit
+      // `os.path.exists(path)` check before anything else runs — so this code is about as close
+      // to "the file is genuinely missing" as a bridge error gets. Still confirmed independently
+      // rather than trusted outright: dropping a record is irreversible, so this only happens
+      // once THIS process has also observed the file's absence (never a raw TOCTOU race, and
+      // safe against any future bridge change that reuses this code for a different reason).
+      if (!existsSync(record.path)) {
+        // The checkpoint file itself is gone (removed out of band, or a leftover directory this
+        // process's own sweep reclaimed) — there is nothing left to ever restore from, so the
+        // record is dropped rather than kept around permanently broken.
+        registry.delete(record.id);
+        throw new GimpError(
+          'invalid_argument',
+          `checkpoint "${record.id}"'s file is missing; it has been removed and can no longer be restored.`
+        );
+      }
       throw new GimpError(
-        'invalid_argument',
-        `checkpoint "${record.id}"'s file is missing; it has been removed and can no longer be restored.`
+        'gimp_op_failed',
+        `could not open checkpoint "${record.id}"'s file — retry gimp_checkpoint op=restore.`
       );
     }
     throw openError;
@@ -735,7 +815,12 @@ export function createGimpCheckpointTools(gimp: GimpBackend): ToolDefinition[] {
   // at boot; one per client session for a host that builds tools fresh per session, already
   // isolated from each other since each gets its own Map and its own directory. Checkpoints
   // persist across calls for the life of whichever process/session constructed this factory.
-  const store: CheckpointStore = { registry: new Map(), dir: undefined, sweepDone: false };
+  const store: CheckpointStore = {
+    registry: new Map(),
+    dir: undefined,
+    dirPromise: undefined,
+    sweepDone: false,
+  };
 
   return [
     {

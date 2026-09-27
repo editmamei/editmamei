@@ -1,7 +1,15 @@
 import { describe, it, expect, vi, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, existsSync, rmSync, symlinkSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import {
+  mkdtempSync,
+  mkdirSync,
+  existsSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { rm } from 'node:fs/promises';
@@ -893,7 +901,7 @@ describe('createGimpCheckpointTools', () => {
 });
 
 describe('sweepStaleCheckpointDirs', () => {
-  it('removes a dead-pid directory, keeps a live-pid directory and its own directory, and ignores non-matching names', () => {
+  it('removes a dead-pid directory only once old enough, keeps a live-pid directory, a too-young dead-pid one, and its own directory, and ignores non-matching names', () => {
     const parent = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-sweep-'));
     try {
       const ownDir = join(parent, `checkpoints-${process.pid}-${randomUUID()}`);
@@ -901,20 +909,109 @@ describe('sweepStaleCheckpointDirs', () => {
       const otherLiveDir = join(parent, `checkpoints-${process.pid}-${randomUUID()}`);
       mkdirSync(otherLiveDir);
       const dead = deadPid();
-      const deadDir = join(parent, `checkpoints-${dead}-${randomUUID()}`);
-      mkdirSync(deadDir);
+      const deadDirYoung = join(parent, `checkpoints-${dead}-${randomUUID()}`);
+      mkdirSync(deadDirYoung); // dead pid, freshly created — the age floor protects it
+      const deadDirOld = join(parent, `checkpoints-${dead}-${randomUUID()}`);
+      mkdirSync(deadDirOld);
+      const oldTimeSec = (Date.now() - 2 * 60 * 60 * 1000) / 1000; // 2h old
+      utimesSync(deadDirOld, oldTimeSec, oldTimeSec);
       const nonMatching = join(parent, 'not-a-checkpoint-dir');
       mkdirSync(nonMatching);
 
-      sweepStaleCheckpointDirs(parent, ownDir);
+      sweepStaleCheckpointDirs(parent, ownDir, new Set());
 
       expect(existsSync(ownDir)).toBe(true);
       expect(existsSync(otherLiveDir)).toBe(true);
       expect(existsSync(nonMatching)).toBe(true);
-      expect(existsSync(deadDir)).toBe(false);
+      expect(existsSync(deadDirYoung)).toBe(true);
+      expect(existsSync(deadDirOld)).toBe(false);
     } finally {
       rmSync(parent, { recursive: true, force: true });
     }
+  });
+
+  it("keeps a LIVE sibling process's directory, and sweeps it once that process is dead", async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-sweep-live-'));
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once('spawn', () => resolve());
+        child.once('error', reject);
+      });
+      const pid = child.pid!;
+      const dir = join(parent, `checkpoints-${pid}-${randomUUID()}`);
+      mkdirSync(dir);
+      const oldTimeSec = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+      utimesSync(dir, oldTimeSec, oldTimeSec); // old enough that only liveness protects it now
+      const ownDir = join(parent, `checkpoints-${process.pid}-${randomUUID()}`);
+      mkdirSync(ownDir);
+
+      sweepStaleCheckpointDirs(parent, ownDir, new Set());
+      expect(existsSync(dir)).toBe(true); // sibling process still alive — untouched regardless of age
+
+      child.kill();
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+
+      sweepStaleCheckpointDirs(parent, ownDir, new Set());
+      expect(existsSync(dir)).toBe(false);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  describe('the container-pid-1 leak: a directory sharing OUR OWN pid', () => {
+    // `processStartedAt` is the 4th, test-only injectable parameter — a directory's real
+    // filesystem birthtime can't be faked from a test, but WHEN this process is considered to
+    // have started can, which is exactly the comparison this rule needs proved out.
+    it('is reclaimed when untracked and it predates this process', () => {
+      const parent = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-sweep-pid1-leak-'));
+      try {
+        const leftover = join(parent, `checkpoints-${process.pid}-${randomUUID()}`);
+        mkdirSync(leftover); // real birthtime: "now"
+        const afterCreation = Date.now() + 60_000; // this process "started" AFTER leftover's birth
+        sweepStaleCheckpointDirs(parent, join(parent, 'own-nonexistent'), new Set(), afterCreation);
+        expect(existsSync(leftover)).toBe(false);
+      } finally {
+        rmSync(parent, { recursive: true, force: true });
+      }
+    });
+
+    it('is kept when it IS tracked, even though it would otherwise look like a leak', () => {
+      const parent = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-sweep-pid1-tracked-'));
+      try {
+        const ours = join(parent, `checkpoints-${process.pid}-${randomUUID()}`);
+        mkdirSync(ours);
+        const afterCreation = Date.now() + 60_000;
+        sweepStaleCheckpointDirs(
+          parent,
+          join(parent, 'own-nonexistent'),
+          new Set([ours]),
+          afterCreation
+        );
+        expect(existsSync(ours)).toBe(true);
+      } finally {
+        rmSync(parent, { recursive: true, force: true });
+      }
+    });
+
+    it('is kept when it was genuinely created during this run (birthtime after processStartedAt)', () => {
+      const parent = mkdtempSync(join(tmpdir(), 'gimp-checkpoint-sweep-pid1-fresh-'));
+      try {
+        const fresh = join(parent, `checkpoints-${process.pid}-${randomUUID()}`);
+        mkdirSync(fresh); // real birthtime: "now"
+        const beforeCreation = Date.now() - 60_000; // this process started BEFORE fresh's birth
+        sweepStaleCheckpointDirs(
+          parent,
+          join(parent, 'own-nonexistent'),
+          new Set(),
+          beforeCreation
+        );
+        expect(existsSync(fresh)).toBe(true);
+      } finally {
+        rmSync(parent, { recursive: true, force: true });
+      }
+    });
   });
 
   it('does not follow a symlink even if its name matches the pattern', () => {
@@ -929,7 +1026,7 @@ describe('sweepStaleCheckpointDirs', () => {
       } catch {
         return; // cannot create a symlink/junction in this environment — nothing to assert
       }
-      sweepStaleCheckpointDirs(parent, join(parent, 'own-nonexistent'));
+      sweepStaleCheckpointDirs(parent, join(parent, 'own-nonexistent'), new Set());
       expect(existsSync(linkPath)).toBe(true);
       expect(existsSync(target)).toBe(true);
     } finally {
@@ -941,7 +1038,8 @@ describe('sweepStaleCheckpointDirs', () => {
     expect(() =>
       sweepStaleCheckpointDirs(
         join(tmpdir(), `gimp-checkpoint-sweep-does-not-exist-${randomUUID()}`),
-        'unused'
+        'unused',
+        new Set()
       )
     ).toThrow();
   });
@@ -949,7 +1047,12 @@ describe('sweepStaleCheckpointDirs', () => {
 
 describe('maybeSweepSiblingDirs', () => {
   it('swallows a sweep failure and does not mark it done, so the next call retries it; a later successful sweep marks it done', () => {
-    const store: CheckpointStore = { registry: new Map(), dir: undefined, sweepDone: false };
+    const store: CheckpointStore = {
+      registry: new Map(),
+      dir: undefined,
+      dirPromise: undefined,
+      sweepDone: false,
+    };
     const badDir = join(
       tmpdir(),
       `gimp-checkpoint-does-not-exist-${randomUUID()}`,
@@ -1004,5 +1107,105 @@ describe('exit-hook registration (module-scoped, once per process)', () => {
     const after = process.listenerCount('exit');
     expect(after - before).toBeLessThanOrEqual(1);
     expect(after).toBeGreaterThanOrEqual(1);
+  });
+
+  it("a directory made by create is removed once the shared exit hook's own cleanup runs against its tracked set", async () => {
+    const gimp = makeCheckpointBackend();
+    const tools = createGimpCheckpointTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
+    expect(result.isError).toBeFalsy();
+    const dir = dirname(gimp.lastCall().args.path as string);
+    expect(existsSync(dir)).toBe(true);
+    // Exercise the exact cleanup function the exit listener calls, against a set that includes
+    // this directory — proving it really is one of the tracked ones an exit would remove,
+    // without firing a real process 'exit' event in this shared test run (see the handback notes
+    // on why that's deliberately avoided here).
+    cleanupCheckpointDirs([dir]);
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
+describe('store-directory creation', () => {
+  it('a creation failure (mkdir under an existing FILE) is reported without leaking the path', async () => {
+    const fileNotDir = join(scratchDir, `not-a-directory-${scratchCounter++}.txt`);
+    writeFileSync(fileNotDir, 'x');
+    const gimp = makeCheckpointBackend();
+    gimp.tempPath = (name: string) => join(fileNotDir, name); // a path SEGMENT is a plain file
+    const tools = createGimpCheckpointTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
+    expect(result.isError).toBe(true);
+    const text = (result.content?.[0] as { text: string }).text;
+    expect(text).toMatch(/could not create the checkpoint storage directory/);
+    expect(JSON.stringify(result)).not.toContain(fileNotDir);
+  });
+
+  it('creates the leaf non-recursively, so a pre-existing directory at that exact path throws EEXIST rather than being silently adopted', async () => {
+    const fixedDir = join(scratchDir, `fake-${scratchCounter++}`, 'checkpoints-fixed');
+    mkdirSync(fixedDir, { recursive: true }); // pre-exists BEFORE create ever runs
+    const gimp = makeCheckpointBackend();
+    gimp.tempPath = () => fixedDir; // every call resolves to this SAME, already-existing leaf
+    const tools = createGimpCheckpointTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
+    expect(result.isError).toBe(true);
+    expect((result.content?.[0] as { text: string }).text).toMatch(
+      /could not create the checkpoint storage directory/
+    );
+  });
+
+  it('two concurrent first creates share ONE store directory, not two', async () => {
+    const gimp = makeCheckpointBackend();
+    const tools = createGimpCheckpointTools(gimp.asBackend());
+    const [first, second] = await Promise.all([
+      callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 }),
+      callTool(tools, 'gimp_checkpoint', { op: 'create', image: 2 }),
+    ]);
+    expect(first.isError).toBeFalsy();
+    expect(second.isError).toBeFalsy();
+    const exportCalls = gimp.calls.filter((c) => c.op === 'export');
+    expect(exportCalls).toHaveLength(2);
+    const dir1 = dirname(exportCalls[0]!.args.path as string);
+    const dir2 = dirname(exportCalls[1]!.args.path as string);
+    expect(dir1).toBe(dir2);
+  });
+});
+
+describe('list/delete/restore never touch the filesystem or GIMP on a fresh (never-created) store', () => {
+  it('list never calls prepare or creates a directory', async () => {
+    const gimp = makeCheckpointBackend();
+    const tools = createGimpCheckpointTools(gimp.asBackend());
+    const prepareSpy = vi.spyOn(gimp, 'prepare');
+    const tempPathSpy = vi.spyOn(gimp, 'tempPath');
+    const result = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
+    expect(result.isError).toBeFalsy();
+    expect(prepareSpy).not.toHaveBeenCalled();
+    expect(tempPathSpy).not.toHaveBeenCalled();
+  });
+
+  it('delete on an unknown id never calls prepare or creates a directory', async () => {
+    const gimp = makeCheckpointBackend();
+    const tools = createGimpCheckpointTools(gimp.asBackend());
+    const prepareSpy = vi.spyOn(gimp, 'prepare');
+    const tempPathSpy = vi.spyOn(gimp, 'tempPath');
+    const result = await callTool(tools, 'gimp_checkpoint', {
+      op: 'delete',
+      checkpoint_id: 'ghost',
+    });
+    expect(result.isError).toBe(true);
+    expect(prepareSpy).not.toHaveBeenCalled();
+    expect(tempPathSpy).not.toHaveBeenCalled();
+  });
+
+  it('restore on an unknown id never calls prepare or creates a directory', async () => {
+    const gimp = makeCheckpointBackend();
+    const tools = createGimpCheckpointTools(gimp.asBackend());
+    const prepareSpy = vi.spyOn(gimp, 'prepare');
+    const tempPathSpy = vi.spyOn(gimp, 'tempPath');
+    const result = await callTool(tools, 'gimp_checkpoint', {
+      op: 'restore',
+      checkpoint_id: 'ghost',
+    });
+    expect(result.isError).toBe(true);
+    expect(prepareSpy).not.toHaveBeenCalled();
+    expect(tempPathSpy).not.toHaveBeenCalled();
   });
 });
