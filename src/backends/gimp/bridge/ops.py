@@ -639,35 +639,41 @@ def op_adjust(args):
     return _apply_filter(img, args, operation, params, default_name, type_=type_)
 
 
+def _filter_record(filters, layer, f):
+    """One filter's `op_list_filters`-shaped record: `filters` is the ledger's own {name: {...}}
+    map (`_ledger_get`'s first return value). Bridge-applied filters report the ledger record
+    (`source: editmamei`) with `params` in the adjust tool's own field names and units
+    (`lib.user_params`), so a listed value can be passed straight back on a re-edit. Anything else
+    reports libgimp's readback (`source: readback`): raw GEGL property names and units, lossy for
+    per-channel curves, with any value JSON can't carry (a Gegl.Color, say) stringified. Shared by
+    `op_list_filters` (every filter on the image) and `op_describe`'s `what='filter'` (one, by id)."""
+    rec = filters.get(f.get_name())
+    if rec and rec['operation'] == f.get_operation_name():
+        source = 'editmamei'
+        type_ = rec.get('type') or lib.OPERATION_TYPES.get(rec['operation'])
+        mask = rec['params'].get('mask')
+        params = lib.user_params(type_, rec['params'])
+    else:
+        cfg, params, source, type_, mask = f.get_config(), {}, 'readback', None, None
+        for p in cfg.list_properties():
+            v = cfg.get_property(p.name)
+            if isinstance(v, Gimp.Curve):
+                v = _curve_points(v)
+            elif hasattr(v, 'value_nick'):
+                v = v.value_nick
+            params[p.name] = lib.json_safe(v)
+    return {'layer': layer.get_name(), 'filter_id': f.get_id(), 'name': f.get_name(),
+            'operation': f.get_operation_name(), 'type': type_, 'visible': f.get_visible(),
+            'source': source, 'mask': mask, 'params': params}
+
+
 def op_list_filters(args):
-    """Bridge-applied filters report the ledger record (`source: editmamei`) with `params` in the
-    adjust tool's own field names and units (`lib.user_params`), so a listed value can be passed
-    straight back on a re-edit. Anything else reports libgimp's readback (`source: readback`):
-    raw GEGL property names and units, lossy for per-channel curves, with any value JSON can't
-    carry (a Gegl.Color, say) stringified."""
     img = _image(args)
     filters, _unknown = _ledger_get(img)
     out = []
     for layer in _all_layers(img):
         for f in layer.get_filters():
-            rec = filters.get(f.get_name())
-            if rec and rec['operation'] == f.get_operation_name():
-                source = 'editmamei'
-                type_ = rec.get('type') or lib.OPERATION_TYPES.get(rec['operation'])
-                mask = rec['params'].get('mask')
-                params = lib.user_params(type_, rec['params'])
-            else:
-                cfg, params, source, type_, mask = f.get_config(), {}, 'readback', None, None
-                for p in cfg.list_properties():
-                    v = cfg.get_property(p.name)
-                    if isinstance(v, Gimp.Curve):
-                        v = _curve_points(v)
-                    elif hasattr(v, 'value_nick'):
-                        v = v.value_nick
-                    params[p.name] = lib.json_safe(v)
-            out.append({'layer': layer.get_name(), 'filter_id': f.get_id(), 'name': f.get_name(),
-                        'operation': f.get_operation_name(), 'type': type_, 'visible': f.get_visible(),
-                        'source': source, 'mask': mask, 'params': params})
+            out.append(_filter_record(filters, layer, f))
     return {'filters': out}
 
 
@@ -716,6 +722,74 @@ def op_filter(args):
             'filters in this beta -- delete and re-create in the desired order instead'
         )
     raise ValueError('op must be one of list, set_visibility, delete (got %r)' % fop)
+
+
+DESCRIBE_TARGETS = ('document', 'layers', 'channels', 'filter')
+
+
+def _layer_node(layer):
+    """One layer's entry in a describe-by-id layer tree: id is canonical (unlike `_layer`'s
+    name-based lookup, which can't tell two same-named layers apart -- GIMP allows duplicate
+    names). `children` walks `get_children()` for a group, in the same top-of-stack-first order
+    `_all_layers` already relies on; empty for a non-group layer."""
+    _ok, off_x, off_y = layer.get_offsets()
+    return {
+        'layer_id': layer.get_id(),
+        'name': layer.get_name(),
+        'opacity': layer.get_opacity(),
+        'mode': layer.get_mode().value_nick,
+        'visible': layer.get_visible(),
+        'offsets': {'x': off_x, 'y': off_y},
+        'has_alpha': layer.has_alpha(),
+        'is_group': layer.is_group(),
+        'is_text_layer': layer.is_text_layer(),
+        'children': [_layer_node(c) for c in layer.get_children()] if layer.is_group() else [],
+    }
+
+
+def _channels_described(img):
+    """Every named channel on img, with its coverage (`_channel_coverage`) -- the same stat
+    `op_create_mask` returns for the one it just built."""
+    w, h = img.get_width(), img.get_height()
+    out = []
+    for ch in img.get_channels():
+        selected, fraction = _channel_coverage(ch, w, h)
+        out.append({'name': ch.get_name(), 'selected_pixels': selected, 'fraction': fraction})
+    return out
+
+
+def op_describe(args):
+    """`gimp_inspect`'s describe-by-id bridge op: `what` in document | layers | channels | filter
+    (`documents` -- every open image's id -- stays on `op_ping`, unchanged; the tool layer never
+    routes it here). `document` bundles dims/base_type/precision/resolution with both the layer
+    tree and the channel list in one call; `layers`/`channels` return just one half of that for a
+    cheaper read when the other half isn't needed. `filter` reports one filter by id, in the exact
+    shape `op_list_filters` reports it in (`_filter_record`, via `_find_filter` so a filter_id from
+    a different or closed image is never mistaken for a match)."""
+    what = args.get('what')
+    if what not in DESCRIBE_TARGETS:
+        raise ValueError('what must be one of %s' % (DESCRIBE_TARGETS,))
+    img = _image(args)
+    if what == 'filter':
+        filter_id = int(lib.require(args, 'filter_id'))
+        layer, f = _find_filter(img, filter_id)
+        filters, _unknown = _ledger_get(img)
+        return _filter_record(filters, layer, f)
+    if what == 'layers':
+        return {'layers': [_layer_node(l) for l in img.get_layers()]}
+    if what == 'channels':
+        return {'channels': _channels_described(img)}
+    _ok, xres, yres = img.get_resolution()
+    return {
+        'image': img.get_id(),
+        'width': img.get_width(),
+        'height': img.get_height(),
+        'base_type': img.get_base_type().value_nick,
+        'precision': img.get_precision().value_nick,
+        'resolution': {'x': xres, 'y': yres},
+        'layers': [_layer_node(l) for l in img.get_layers()],
+        'channels': _channels_described(img),
+    }
 
 
 # ---- geometry -----------------------------------------------------------------------------
@@ -1442,7 +1516,7 @@ def op_close(args):
 
 OPS = {
     'ping': op_ping, 'open': op_open, 'curves': op_curves, 'levels': op_levels,
-    'adjust': op_adjust, 'filter': op_filter,
+    'adjust': op_adjust, 'filter': op_filter, 'describe': op_describe,
     'list_filters': op_list_filters, 'preview': op_preview, 'histogram': op_histogram,
     'compare': op_compare, 'export': op_export, 'close': op_close,
     'crop': op_crop, 'resize': op_resize, 'rotate': op_rotate, 'flip': op_flip,
