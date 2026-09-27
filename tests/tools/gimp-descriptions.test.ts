@@ -225,10 +225,17 @@ describe('gimp_checkpoint: disk-backed undo substitute', () => {
     expect(text).toMatch(/at most 5 checkpoints/);
     expect(text).toMatch(/REFUSES outright rather than silently evicting the oldest/);
   });
-  it('says checkpoint files live until the server process shuts down', () => {
-    expect(description('gimp_checkpoint').replace(/\s+/g, ' ')).toMatch(
-      /lives until this MCP server process shuts down/
+  it('says checkpoint files are removed at shutdown, and crash leftovers are swept after 24h', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(
+      /is removed when this MCP server process shuts down, not merely abandoned/
     );
+    expect(text).toMatch(/swept the next time this tool runs, once it is more than 24 hours old/);
+  });
+  it('says a stale checkpoint (its image since closed) is still restorable and excluded from that images cap/scoped list', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(/open: false for a checkpoint whose image has since closed/);
+    expect(text).toMatch(/still restorable/);
   });
   it('says list never reports a file path, and why', () => {
     expect(description('gimp_checkpoint').replace(/\s+/g, ' ')).toMatch(
