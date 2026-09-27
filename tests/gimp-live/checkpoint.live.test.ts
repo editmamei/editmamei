@@ -342,4 +342,100 @@ describe.skipIf(!install)('gimp_checkpoint against real headless GIMP', () => {
       rmSync(freshWorkDir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it('a fresh-process generation mismatch: restoring an old checkpoint never closes an UNRELATED image that reused the old id', async () => {
+    // The residual case the opened==old guard alone cannot catch: after a restart the model
+    // opens a DIFFERENT file and gets id 1 back; restoring a checkpoint of the OLD image 1
+    // then reopens as some OTHER id (2, since 1 is now taken) — without the generation check,
+    // restore would still try to close "image 1", destroying the user's unrelated document.
+    const freshWorkDir = mkdtempSync(join(tmpdir(), 'em-gimp-checkpoint-generation-'));
+    const freshBackend = new GimpBackend(install, {
+      sessionOptions: { rootDir: join(freshWorkDir, 'session-root') },
+    });
+    try {
+      const freshTools = [
+        ...createGimpCoreTools(freshBackend),
+        ...createGimpDocumentTools(freshBackend),
+        ...createGimpCheckpointTools(freshBackend),
+      ];
+      await readyGimpRegistry((name, args) => callTool(freshTools, name, args));
+
+      const oldPngPath = join(freshWorkDir, 'old-fixture.png');
+      writeGrayRamp(oldPngPath, 32, 32);
+      const oldOpened = await callTool(freshTools, 'gimp_open_document', {
+        file_path: oldPngPath,
+      });
+      expect(oldOpened.isError, JSON.stringify(oldOpened.content)).toBeFalsy();
+      const oldImage = (oldOpened.structuredContent as { image: number }).image;
+      expect(oldImage).toBe(1);
+
+      const checkpoint = await callTool(freshTools, 'gimp_checkpoint', {
+        op: 'create',
+        image: oldImage,
+      });
+      expect(checkpoint.isError, JSON.stringify(checkpoint.content)).toBeFalsy();
+      const checkpointId = (checkpoint.structuredContent as { checkpoint_id: string })
+        .checkpoint_id;
+
+      // Force a REAL, deterministic kill.
+      killGimpProcess(freshBackend);
+
+      // Absorb the death-discovery call (same reasoning as the test above), THEN — the part
+      // that makes this scenario different — the model opens a DIFFERENT, unrelated fixture in
+      // the fresh process. It becomes id 1 again (the fresh process's own counter restarts):
+      // exactly "an unrelated image reusing the old id."
+      const staleCall = await callTool(freshTools, 'gimp_export', {
+        image: oldImage,
+        file_path: join(freshWorkDir, 'never-written.jpg'),
+      });
+      expect(staleCall.isError).toBe(true);
+      expect((staleCall.content?.[0] as { text: string }).text).toMatch(/gimp_session_restarted/);
+
+      const newPngPath = join(freshWorkDir, 'unrelated-fixture.png');
+      writeGrayRamp(newPngPath, 48, 48);
+      const unrelatedOpened = await callTool(freshTools, 'gimp_open_document', {
+        file_path: newPngPath,
+      });
+      expect(unrelatedOpened.isError, JSON.stringify(unrelatedOpened.content)).toBeFalsy();
+      const unrelatedImage = (unrelatedOpened.structuredContent as { image: number }).image;
+      expect(unrelatedImage).toBe(1); // reused the dead generation's old id
+
+      const unrelatedReferencePath = join(freshWorkDir, 'unrelated-reference.png');
+      await callTool(freshTools, 'gimp_export', {
+        image: unrelatedImage,
+        file_path: unrelatedReferencePath,
+      });
+      const unrelatedReference = readPng(unrelatedReferencePath);
+
+      // Restore the OLD checkpoint (stamped with the DEAD generation, image id 1) — its own
+      // `open` call is now the SECOND image in the fresh process, so it lands on a different id.
+      const restored = await callTool(freshTools, 'gimp_checkpoint', {
+        op: 'restore',
+        checkpoint_id: checkpointId,
+      });
+      expect(restored.isError, JSON.stringify(restored.content)).toBeFalsy();
+      const structured = restored.structuredContent as { old_image: number; image: number };
+      expect(structured.old_image).toBe(1);
+      expect(structured.image).not.toBe(1); // did not collide with the unrelated image's id
+      const text = (restored.content?.[0] as { text: string }).text;
+      expect(text).toMatch(/has since restarted/);
+      expect(text).toMatch(/left untouched/);
+
+      // The unrelated image (id 1) must still be open and renderable -- restore must NOT have
+      // closed it.
+      const unrelatedAfterPath = join(freshWorkDir, 'unrelated-after.png');
+      const unrelatedExport = await callTool(freshTools, 'gimp_export', {
+        image: unrelatedImage,
+        file_path: unrelatedAfterPath,
+      });
+      expect(unrelatedExport.isError, JSON.stringify(unrelatedExport.content)).toBeFalsy();
+      expect(maxAbsDiff(unrelatedReference, readPng(unrelatedAfterPath))).toBe(0);
+
+      await callTool(freshTools, 'gimp_close_document', { image: unrelatedImage });
+      await callTool(freshTools, 'gimp_close_document', { image: structured.image });
+    } finally {
+      await freshBackend.shutdown();
+      rmSync(freshWorkDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
