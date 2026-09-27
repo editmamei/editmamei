@@ -420,6 +420,22 @@ export class GimpSession {
     return this.startOrigin;
   }
 
+  /**
+   * How many times this session's underlying GIMP process has been confirmed dead (`#markDead`,
+   * which increments `deadGeneration`) — 0 for the very first process this session ever spawns,
+   * bumped once per crash/timeout/kill it recovers from. A call issued while generation G is
+   * current and one issued once it has become G' > G are provably talking to DIFFERENT GIMP
+   * processes, even when they reference the exact same low integer image id — GIMP's own
+   * per-process id counter restarts at 1 after every relaunch, so "same id" alone can never tell
+   * that apart. Read via `GimpBackend.generation`; `gimp_checkpoint`'s `restore` is the first
+   * caller (stamps a checkpoint with the generation current at `create` time, and refuses to
+   * `close` an id whose generation has since moved on, since that id may now belong to a
+   * completely unrelated image in the new process).
+   */
+  get generation(): number {
+    return this.deadGeneration;
+  }
+
   /** Where the human-follows-along preview lives; refreshed by `copyToLatestPreview`. */
   latestPreviewPath(): string {
     return join(this.rootDir, 'latest-preview.jpg');

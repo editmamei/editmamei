@@ -634,15 +634,18 @@ describe('GimpSession', () => {
   it('on timeout: tree-kills, rejects with gimp_timeout, and the NEXT call starts a fresh session dir', async () => {
     const h = harness({ hangOps: new Set(['slow']) });
 
+    expect(h.session.generation).toBe(0); // the very first process — never yet marked dead
     await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({
       code: 'gimp_timeout',
     });
     expect(h.killTreeSpy).toHaveBeenCalledTimes(1);
     expect(h.session.state).toBe('dead');
+    expect(h.session.generation).toBe(1); // #markDead bumped it — this process is confirmed gone
 
     const result = await h.session.call<{ op: string }>('open', {});
     expect(result).toEqual({ op: 'open' });
     expect(h.session.state).toBe('ready');
+    expect(h.session.generation).toBe(1); // unchanged by a SUCCESSFUL respawn — only #markDead bumps it
     expect(h.spawnCalls).toHaveLength(2);
     expect(h.spawnCalls[0]!.env.EM_GIMP_SESSION).not.toBe(h.spawnCalls[1]!.env.EM_GIMP_SESSION);
   });

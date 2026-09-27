@@ -27,6 +27,7 @@ function makeFakeSession(
     gimpVersion?: string;
     state?: string;
     lastStartOrigin?: 'cold' | 'restarted';
+    generation?: number;
   } = {}
 ) {
   const calls: RecordedFakeCall[] = [];
@@ -39,6 +40,7 @@ function makeFakeSession(
     gimpVersion: opts.gimpVersion,
     state: opts.state ?? 'ready',
     lastStartOrigin: opts.lastStartOrigin,
+    generation: opts.generation,
     async call(
       op: string,
       args: Record<string, unknown> = {},
@@ -311,6 +313,16 @@ describe('GimpBackend', () => {
       const { backend } = backendWithFakeSession(SAMPLE_INSTALL, fake);
       await backend.call('ping', {});
       expect(backend.startOrigin).toBe('restarted');
+    });
+
+    it('generation is undefined before any session exists, and mirrors the underlying session once one does', async () => {
+      const backend = new GimpBackend(SAMPLE_INSTALL);
+      expect(backend.generation).toBeUndefined();
+
+      const fake = makeFakeSession({ generation: 3 });
+      const { backend: withFake } = backendWithFakeSession(SAMPLE_INSTALL, fake);
+      await withFake.call('ping', {});
+      expect(withFake.generation).toBe(3);
     });
   });
 
