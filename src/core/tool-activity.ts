@@ -210,6 +210,7 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'gimp_open_document',
   'gimp_close_document',
   'gimp_add_adjustment',
+  'gimp_add_effect',
   'gimp_filter',
   'gimp_crop_document',
   'gimp_resize_image',

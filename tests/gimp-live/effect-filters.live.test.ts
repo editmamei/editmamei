@@ -1,11 +1,15 @@
 /**
- * Per-effect pixel verifiers for `gimp_filter op=apply`'s allow-listed GEGL effects (vignette,
+ * Per-effect pixel verifiers for `gimp_add_effect`'s allow-listed GEGL effects (vignette,
  * black_white, motion_blur, lens_blur, add_noise, drop_shadow) against real headless GIMP. Same
- * shape as `adjust.live.test.ts`'s own per-type verifiers, dispatched through the `filter` bridge
- * op (`op: 'apply'`) instead of `adjust`: known args -> `filter op=list` reports the SAME user
- * values -> re-editing with those listed values renders pixel-identical (maxAbsDiff 0) -> one
- * effect-specific pixel assertion -> (for the spatial effects) proxy-vs-full-res fidelity with a
- * negative control, the same shape `adjust.live.test.ts`'s gaussian_blur proxy-fidelity test uses.
+ * shape as `adjust.live.test.ts`'s own per-type verifiers, dispatched through the bridge's
+ * `effect` op (`bridge/ops.py`'s `op_effect`) instead of `adjust`: known args -> `filter op=list`
+ * reports the SAME user values -> re-editing with those listed values renders pixel-identical
+ * (maxAbsDiff 0) -> one effect-specific pixel assertion -> (for the spatial effects) proxy-vs-
+ * full-res fidelity with a negative control, the same shape `adjust.live.test.ts`'s gaussian_blur
+ * proxy-fidelity test uses. Uses the TEST_OPS_PY bridge (not the shipped one) so the append-guard
+ * test below can drive `test_apply_raw_effect`; every other call here exercises the real,
+ * shipped `op_effect`/`_apply_filter`/`_append_masked` unchanged (test_ops.py execs the real
+ * ops.py first, then adds test-only ops on top).
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -27,6 +31,7 @@ import {
   linearToSrgb,
   readySession,
   LIVE_READY_TIMEOUT_MS,
+  TEST_OPS_PY,
 } from './support.ts';
 
 // This file alone, not the project default -- see adjust.live.test.ts's identical comment.
@@ -90,14 +95,18 @@ function writeRgbaSquare(
   writeFileSync(path, png);
 }
 
-describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filters', () => {
+describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', () => {
   let workDir: string;
   let session: GimpSession;
   let swatchesPath: string;
 
   beforeAll(async () => {
     workDir = mkdtempSync(join(tmpdir(), 'em-gimp-effects-'));
-    session = new GimpSession({ install: install!, rootDir: join(workDir, 'session-root') });
+    session = new GimpSession({
+      install: install!,
+      rootDir: join(workDir, 'session-root'),
+      opsPyPath: TEST_OPS_PY,
+    });
     await readySession(session);
     swatchesPath = join(workDir, 'swatches.png');
     writeColorSwatches(swatchesPath);
@@ -108,10 +117,11 @@ describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filter
     rmSync(workDir, { recursive: true, force: true });
   });
 
-  // ---- gimp_filter op=apply reports values a re-edit can take back unchanged --------------------
-  // One filter of every effect with known, non-default args; list it; re-edit it with exactly the
-  // listed params; the render must not move by a single level -- the exact defect class
-  // adjust.live.test.ts's own "list round trip" test guards for gimp_add_adjustment's types.
+  // ---- gimp_add_effect reports values a re-edit can take back unchanged -------------------------
+  // One filter of every effect with known, non-default args; list it (via gimp_filter's shared
+  // stack); re-edit it with exactly the listed params; the render must not move by a single level
+  // -- the exact defect class adjust.live.test.ts's own "list round trip" test guards for
+  // gimp_add_adjustment's types.
 
   const LIST_ROUND_TRIP_ARGS: Array<[string, Record<string, unknown>]> = [
     ['vignette', { radius: 1.5, softness: 0.5, gamma: 1.8, center_x: 0.4, center_y: 0.6 }],
@@ -127,16 +137,15 @@ describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filter
 
   it.each(LIST_ROUND_TRIP_ARGS)(
     'list round trip: re-editing a %s filter with its own listed params changes nothing',
-    async (filter, args) => {
+    async (type, args) => {
       const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
       try {
-        const created = await session.call<{ filter_id: number }>('filter', {
+        const created = await session.call<{ filter_id: number }>('effect', {
           image: opened.image,
-          op: 'apply',
-          filter,
+          type,
           ...args,
         });
-        const before = join(workDir, `roundtrip-${filter}-before.png`);
+        const before = join(workDir, `roundtrip-${type}-before.png`);
         await session.call('export', { image: opened.image, path: before });
 
         const listed = await session.call<{
@@ -147,14 +156,13 @@ describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filter
         // The tool's own field names and units: exactly what was sent.
         expect(rec.params).toEqual(args);
 
-        await session.call('filter', {
+        await session.call('effect', {
           image: opened.image,
-          op: 'apply',
-          filter,
+          type,
           filter_id: created.filter_id,
           ...rec.params,
         });
-        const after = join(workDir, `roundtrip-${filter}-after.png`);
+        const after = join(workDir, `roundtrip-${type}-after.png`);
         await session.call('export', { image: opened.image, path: after });
         const a = readPng(before);
         const b = readPng(after);
@@ -172,10 +180,9 @@ describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filter
     writeCheckerboard(flatPath, 256, 256, 1, 200, 200); // a uniform 200-gray field
     const opened = await session.call<{ image: number }>('open', { path: flatPath });
     try {
-      await session.call('filter', {
+      await session.call('effect', {
         image: opened.image,
-        op: 'apply',
-        filter: 'vignette',
+        type: 'vignette',
         radius: 0.6,
         softness: 0.3,
       });
@@ -193,10 +200,9 @@ describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filter
   it('black_white (mono-mixer): gray output equals the weighted channel sum, in linear light', async () => {
     const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
     try {
-      await session.call('filter', {
+      await session.call('effect', {
         image: opened.image,
-        op: 'apply',
-        filter: 'black_white',
+        type: 'black_white',
         red_weight: 0.5,
         green_weight: 0.3,
         blue_weight: 0.2,
@@ -229,10 +235,9 @@ describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filter
     })();
     const opened = await session.call<{ image: number }>('open', { path: noisyPath });
     try {
-      await session.call('filter', {
+      await session.call('effect', {
         image: opened.image,
-        op: 'apply',
-        filter: 'motion_blur',
+        type: 'motion_blur',
         length: 30,
         angle: 0,
       });
@@ -265,10 +270,9 @@ describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filter
     })();
     const opened = await session.call<{ image: number }>('open', { path: edgePath });
     try {
-      await session.call('filter', {
+      await session.call('effect', {
         image: opened.image,
-        op: 'apply',
-        filter: 'lens_blur',
+        type: 'lens_blur',
         radius: 15,
       });
       const outPath = join(workDir, 'lens-edge-blurred.png');
@@ -296,10 +300,9 @@ describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filter
         await session.call('export', { image: opened.image, path: outPath });
         return readPng(outPath);
       })();
-      await session.call('filter', {
+      await session.call('effect', {
         image: opened.image,
-        op: 'apply',
-        filter: 'add_noise',
+        type: 'add_noise',
         noise_amount: 0.4,
         seed: 1,
       });
@@ -328,10 +331,9 @@ describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filter
 
     const opened = await session.call<{ image: number }>('open', { path: shapePath });
     try {
-      await session.call('filter', {
+      await session.call('effect', {
         image: opened.image,
-        op: 'apply',
-        filter: 'drop_shadow',
+        type: 'drop_shadow',
         offset_x: 15,
         offset_y: 15,
         radius: 3,
@@ -351,47 +353,52 @@ describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filter
     }
   });
 
-  // ---- proxy fidelity for a spatial effect: measured tolerance, pinned, negative control --------
-  // Mirrors adjust.live.test.ts's own gaussian_blur proxy-fidelity test: motion_blur's `length` is
-  // in `lib.SPATIAL_SCALE_PROPS`, so a re-edited filter_id's `length` gets scaled by the proxy
-  // factor on the mirrored preview -- this is what actually exercises that code path for a NEW
-  // spatial effect rather than trusting the existing gaussian_blur coverage to stand in for it.
+  // ---- proxy fidelity for the three spatial effects: measured tolerance, pinned, negative control
+  // Mirrors adjust.live.test.ts's own gaussian_blur proxy-fidelity test: each of these fields is in
+  // `lib.SPATIAL_SCALE_PROPS`, so a re-edited filter_id's field gets scaled by the proxy factor on
+  // the mirrored preview -- this is what actually exercises that code path for each NEW spatial
+  // effect rather than trusting the existing gaussian_blur coverage to stand in for all of them.
 
-  it('motion_blur proxy fidelity: length is scaled onto the proxy (negative control: an unscaled length is far off)', async () => {
-    const WIDTH = 2048;
-    const HEIGHT = 512;
-    const SCALE = 512 / WIDTH;
-    const LENGTH = 40;
-    const checkerPath = join(workDir, 'motion-checker.png');
-    writeCheckerboard(checkerPath, WIDTH, HEIGHT, 16, 60, 200);
-
-    async function proxyVsReference(proxyLength: number, tag: string): Promise<number> {
+  /** Shared harness: create `type` with `field` = FIELD (full-res), compare the proxy preview
+   * against a full-res reference downscaled the same way, once with the field scaled correctly
+   * (the real path) and once "unscaled" (the negative control — what the proxy would render if
+   * SPATIAL_SCALE_PROPS silently stopped covering this effect's operation/field). */
+  async function proxyFidelity(
+    type: string,
+    field: string,
+    baseArgs: Record<string, unknown>,
+    fieldValue: number,
+    checkerPath: string,
+    width: number,
+    height: number,
+    scale: number,
+    tagPrefix: string
+  ): Promise<{ scaled: number; unscaled: number }> {
+    async function proxyVsReference(proxyFieldValue: number, tag: string): Promise<number> {
       const opened = await session.call<{ image: number }>('open', { path: checkerPath });
       try {
-        await session.call('filter', {
+        await session.call('effect', {
           image: opened.image,
-          op: 'apply',
-          filter: 'motion_blur',
-          length: LENGTH,
-          angle: 0,
+          type,
+          ...baseArgs,
+          [field]: fieldValue,
         });
         const refPath = join(workDir, `${tag}-ref.png`);
         await session.call('preview', {
           image: opened.image,
           max_px: 512,
-          region: { x: 0, y: 0, width: WIDTH, height: HEIGHT }, // full-res render, then downscaled
+          region: { x: 0, y: 0, width, height }, // full-res render, then downscaled
           out_path: refPath,
         });
         const listed = await session.call<{ filters: Array<{ filter_id: number }> }>('filter', {
           image: opened.image,
           op: 'list',
         });
-        await session.call('filter', {
+        await session.call('effect', {
           image: opened.image,
-          op: 'apply',
-          filter: 'motion_blur',
+          type,
           filter_id: listed.filters[0]!.filter_id,
-          length: proxyLength,
+          [field]: proxyFieldValue,
         });
         const proxyPath = join(workDir, `${tag}-proxy.png`);
         await session.call('preview', { image: opened.image, max_px: 512, out_path: proxyPath });
@@ -406,12 +413,108 @@ describe.skipIf(!install)('gimp_filter op=apply: allow-listed GEGL effect filter
       }
     }
 
-    // The real path: the proxy scales LENGTH by SCALE on its own.
-    const scaled = await proxyVsReference(LENGTH, 'motion-scaled');
-    // What an unscaled proxy would render: a filter whose length, once scaled, lands on LENGTH
-    // proxy pixels, i.e. LENGTH / SCALE at full resolution.
-    const unscaled = await proxyVsReference(LENGTH / SCALE, 'motion-unscaled');
+    // The real path: the proxy scales the field by `scale` on its own.
+    const scaled = await proxyVsReference(fieldValue, `${tagPrefix}-scaled`);
+    // What an unscaled proxy would render: a filter whose field, once scaled, lands on
+    // fieldValue proxy units, i.e. fieldValue / scale at full resolution.
+    const unscaled = await proxyVsReference(fieldValue / scale, `${tagPrefix}-unscaled`);
+    return { scaled, unscaled };
+  }
+
+  it('motion_blur proxy fidelity: length is scaled onto the proxy (negative control: an unscaled length is far off)', async () => {
+    const WIDTH = 2048;
+    const HEIGHT = 512;
+    const SCALE = 512 / WIDTH;
+    const checkerPath = join(workDir, 'motion-checker.png');
+    writeCheckerboard(checkerPath, WIDTH, HEIGHT, 16, 60, 200);
+    const { scaled, unscaled } = await proxyFidelity(
+      'motion_blur',
+      'length',
+      { angle: 0 },
+      40,
+      checkerPath,
+      WIDTH,
+      HEIGHT,
+      SCALE,
+      'motion'
+    );
     expect(scaled, `scaled mean abs diff ${scaled}`).toBeLessThan(6);
     expect(unscaled, `unscaled mean abs diff ${unscaled}`).toBeGreaterThan(scaled * 4);
+  });
+
+  it('lens_blur proxy fidelity: radius (blur-radius) is scaled onto the proxy (negative control: an unscaled radius is far off)', async () => {
+    const WIDTH = 2048;
+    const HEIGHT = 512;
+    const SCALE = 512 / WIDTH;
+    const checkerPath = join(workDir, 'lens-checker.png');
+    writeCheckerboard(checkerPath, WIDTH, HEIGHT, 16, 60, 200);
+    const { scaled, unscaled } = await proxyFidelity(
+      'lens_blur',
+      'radius',
+      {},
+      40,
+      checkerPath,
+      WIDTH,
+      HEIGHT,
+      SCALE,
+      'lens'
+    );
+    expect(scaled, `scaled mean abs diff ${scaled}`).toBeLessThan(6);
+    expect(unscaled, `unscaled mean abs diff ${unscaled}`).toBeGreaterThan(scaled * 4);
+  });
+
+  it('drop_shadow proxy fidelity: radius is scaled onto the proxy (negative control: an unscaled radius is far off)', async () => {
+    // Unlike motion_blur/lens_blur (which blur EXISTING content regardless of alpha), a drop
+    // shadow renders only from an alpha edge -- a fully opaque checkerboard (this file's other
+    // proxy-fidelity fixtures) gives it nothing to cast, so both the "scaled" and "unscaled"
+    // renders come back byte-identical (0 diff) for the wrong reason: not because the scaling is
+    // correct, but because the filter has no visible effect on this fixture at all. A real alpha
+    // edge (writeRgbaSquare) plus a real offset is what actually exercises the scaling.
+    const WIDTH = 2048;
+    const HEIGHT = 2048;
+    const SCALE = 512 / WIDTH;
+    const shapePath = join(workDir, 'shadow-proxy-shape.png');
+    writeRgbaSquare(shapePath, WIDTH, HEIGHT, 624, 624, 800, [128, 128, 128]);
+    const { scaled, unscaled } = await proxyFidelity(
+      'drop_shadow',
+      'radius',
+      { offset_x: 60, offset_y: 60, opacity: 1.0 },
+      40,
+      shapePath,
+      WIDTH,
+      HEIGHT,
+      SCALE,
+      'shadow'
+    );
+    expect(scaled, `scaled mean abs diff ${scaled}`).toBeLessThan(6);
+    expect(unscaled, `unscaled mean abs diff ${unscaled}`).toBeGreaterThan(scaled * 4);
+  });
+
+  // ---- append-guard: GIMP silently refusing to attach a filter must surface as a real error -----
+  // gegl:lens-blur is the measured example (an 'aux'-pad op GIMP refuses to attach non-
+  // destructively -- see lib.build_lens_blur_params' own comment) -- driven here through the REAL
+  // `_apply_filter` (via the test-only `test_apply_raw_effect`, not `op_effect`'s allow-list, so
+  // this works regardless of which effects are allow-listed) to prove `_append_masked`'s guard
+  // fires from the production create path: an actionable `gimp_op_failed`, not a phantom filter_id
+  // with nothing actually attached.
+
+  it("_append_masked surfaces GIMP's silent attach refusal as gimp_op_failed, with no phantom filter left behind", async () => {
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    try {
+      await expect(
+        session.call('test_apply_raw_effect', {
+          image: opened.image,
+          operation: 'gegl:lens-blur',
+          props: { radius: 10.0 },
+        })
+      ).rejects.toMatchObject({ code: 'gimp_op_failed' });
+      const listed = await session.call<{ filters: unknown[] }>('filter', {
+        image: opened.image,
+        op: 'list',
+      });
+      expect(listed.filters).toHaveLength(0);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
   });
 });

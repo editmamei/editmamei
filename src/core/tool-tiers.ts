@@ -314,6 +314,11 @@ export const TOOL_TIERS: Record<string, Tier> = {
   gimp_inspect: 'community',
   gimp_add_adjustment: 'community',
   gimp_filter: 'community',
+  // Allow-listed GEGL effect filters (vignette, black_white, motion_blur, lens_blur, add_noise,
+  // drop_shadow) — a sibling of gimp_add_adjustment, not a new op on gimp_filter, so the
+  // dev-default-then-promote gate actually applies (tool-tiers.ts classifies per TOOL, not per
+  // op; grafting a new op onto the already-'community' gimp_filter would bypass it).
+  gimp_add_effect: 'dev',
   gimp_crop_document: 'community',
   gimp_resize_image: 'community',
   gimp_transform_canvas: 'community',

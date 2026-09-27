@@ -34,7 +34,7 @@ function overviewSection(title: string): string {
 describe('every gimp_* description names its editor', () => {
   it('starts with "Headless GIMP: " so the model can tell it from the ps_* twin', () => {
     const gimpTools = tools.filter((t) => t.tool.name.startsWith('gimp_'));
-    expect(gimpTools.length).toBeGreaterThanOrEqual(16);
+    expect(gimpTools.length).toBeGreaterThanOrEqual(17);
     for (const t of gimpTools) {
       expect(t.tool.description, t.tool.name).toMatch(/^Headless GIMP: /);
     }
@@ -98,7 +98,7 @@ describe('gimp_filter op=list reports params the model can pass back', () => {
   });
 });
 
-describe('gimp_filter op=apply: allow-listed GEGL effect filters', () => {
+describe('gimp_add_effect: allow-listed GEGL effect filters (dev-tier sibling of gimp_add_adjustment)', () => {
   const EFFECTS = [
     'vignette',
     'black_white',
@@ -108,28 +108,47 @@ describe('gimp_filter op=apply: allow-listed GEGL effect filters', () => {
     'drop_shadow',
   ];
 
-  it('the op field explains apply alongside list/set_visibility/delete and names every effect', () => {
-    const text = field('gimp_filter', 'op').replace(/\s+/g, ' ');
-    expect(text).toMatch(/'apply' creates/);
-    for (const effect of EFFECTS) {
-      expect(text, effect).toContain(effect);
-    }
-  });
-
   it('the tool description names every effect and the shared merge/mask conventions', () => {
-    const text = description('gimp_filter').replace(/\s+/g, ' ');
+    const text = description('gimp_add_effect').replace(/\s+/g, ' ');
     for (const effect of EFFECTS) {
       expect(text, effect).toContain(effect);
     }
-    expect(text).toMatch(/re-edit is a MERGE/);
+    expect(text).toMatch(/MERGES/);
+    expect(text).toMatch(/gimp_filter/); // the shared stack this tool's filters live on
   });
 
-  it('filter_id says apply re-edits are a merge, same contract as gimp_add_adjustment', () => {
-    expect(field('gimp_filter', 'filter_id').replace(/\s+/g, ' ')).toMatch(/MERGE, not a reset/);
+  it('filter_id says a re-edit is a merge, same contract as gimp_add_adjustment', () => {
+    expect(field('gimp_add_effect', 'filter_id').replace(/\s+/g, ' ')).toMatch(
+      /MERGE, not a reset/
+    );
   });
 
-  it('mask says apply follows the same order-matters rule as gimp_add_adjustment', () => {
-    expect(field('gimp_filter', 'mask').replace(/\s+/g, ' ')).toMatch(/ORDER MATTERS/);
+  it('mask says this tool follows the same order-matters rule as gimp_add_adjustment', () => {
+    expect(field('gimp_add_effect', 'mask').replace(/\s+/g, ' ')).toMatch(/ORDER MATTERS/);
+  });
+
+  it('lens_blur says it is a uniform blur, not a depth-of-field falloff', () => {
+    expect(field('gimp_add_effect', 'highlight_factor').replace(/\s+/g, ' ')).toMatch(
+      /uniformly across the whole/
+    );
+  });
+
+  it('vignette and drop_shadow say their color is black and not configurable yet', () => {
+    expect(field('gimp_add_effect', 'center_y').replace(/\s+/g, ' ')).toMatch(
+      /color is black and not configurable yet/
+    );
+    expect(field('gimp_add_effect', 'opacity').replace(/\s+/g, ' ')).toMatch(
+      /color is black and not configurable yet/
+    );
+  });
+
+  it('gimp_filter itself has no apply op (reverted to list/set_visibility/delete)', () => {
+    const opEnum = (
+      byName.get('gimp_filter')!.inputSchema as unknown as {
+        properties: { op: { enum: string[] } };
+      }
+    ).properties.op.enum;
+    expect(opEnum).toEqual(['list', 'set_visibility', 'delete']);
   });
 });
 

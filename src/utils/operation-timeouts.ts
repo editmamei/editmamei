@@ -273,10 +273,10 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   gimp_export: 90_000,
   gimp_inspect: 15_000,
   gimp_add_adjustment: 20_000,
-  // 15s -> 20s: op=apply's effects include real spatial GEGL ops (motion blur, lens blur, drop
-  // shadow) that render on the preview proxy at re-edit/create time, a bit more work than the
-  // list/set_visibility/delete ops this budget was originally sized for.
-  gimp_filter: 20_000,
+  gimp_filter: 15_000,
+  // Real spatial GEGL ops (motion blur, lens blur, drop shadow) render on the preview proxy at
+  // re-edit/create time -- a bit more work than gimp_add_adjustment's own budget was sized for.
+  gimp_add_effect: 20_000,
   gimp_crop_document: 20_000,
   gimp_resize_image: 45_000,
   gimp_transform_canvas: 60_000,

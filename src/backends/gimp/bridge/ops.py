@@ -392,10 +392,10 @@ def _set_gaussian_blur(cfg, params):
     cfg.set_property('std-dev-y', params['std-dev-y'])
 
 
-# ---- gimp_filter op=apply setters (lib.FILTER_OPERATIONS' parallel table to the adjust ones
+# ---- gimp_add_effect setters (lib.EFFECT_OPERATIONS' parallel table to the adjust ones
 # above) -- SETTERS itself is one shared dict below: an operation name is an operation name
-# regardless of which tool (gimp_add_adjustment's `adjust` or gimp_filter's `apply`) created the
-# filter, and _apply_filter/_mirror_filters dispatch on operation alone.
+# regardless of which tool (gimp_add_adjustment's `adjust` or gimp_add_effect's `effect`) created
+# the filter, and _apply_filter/_mirror_filters dispatch on operation alone.
 
 def _set_vignette(cfg, params):
     cfg.set_property('radius', params['radius'])
@@ -485,13 +485,29 @@ def _append_masked(img, layer, f, mask):
     When `mask` is falsy, this explicitly clears any active selection FIRST -- defence in depth
     against a stray selection left active by an earlier op (e.g. `create_mask` used to leave its
     own channel selected; that bug is fixed at the source too, but an unmasked filter must never
-    silently inherit whatever happens to be selected regardless)."""
+    silently inherit whatever happens to be selected regardless).
+
+    Verifies the filter actually attached before returning. `Gimp.Drawable.append_filter`
+    (`gimp-drawable-append-filter` in the PDB) can refuse an operation outright -- verified live
+    for `gegl:lens-blur` ("effects with an 'aux' pad cannot be applied non-destructively") -- and
+    does so SILENTLY on the Python side: a GIMP-Error goes to stderr, but `append_filter` itself
+    raises nothing and returns `None`, the same as a successful call, with the DrawableFilter's
+    own id still perfectly valid. Left unchecked, the caller (`_apply_filter`) would ledger a
+    phantom filter: `filter_id` returned as if it worked, the image silently rendering with no
+    effect at all. Raised here, before `_apply_filter` ever writes the ledger record, so a
+    refused attach never gets persisted as one."""
     if mask:
         img.select_item(Gimp.ChannelOps.REPLACE, _channel_by_name(img, mask))
     else:
         Gimp.Selection.none(img)
     try:
         layer.append_filter(f)
+        if f.get_id() not in [x.get_id() for x in layer.get_filters()]:
+            raise lib.OpError(
+                'gimp_op_failed',
+                'GIMP refused to attach %s as a live filter (some GEGL operations with an '
+                'auxiliary input cannot be applied non-destructively)' % f.get_operation_name()
+            )
     finally:
         if mask:
             Gimp.Selection.none(img)
@@ -743,35 +759,37 @@ def _find_filter(img, filter_id):
     raise ValueError('no filter with id %s on image %s' % (filter_id, img.get_id()))
 
 
-def op_filter_apply(args):
-    """`gimp_filter op=apply`: create (or, with `filter_id`, re-edit in place) one of the
-    allow-listed GEGL effect filters (`lib.FILTER_OPERATIONS`) -- the same merge/mask/ledger
-    machinery `op_adjust` uses, parameterized on `filter` instead of `type`
-    (`lib.FILTER_PARAM_BUILDERS`/`FILTER_CREATE_DEFAULTS`, the parallel tables to ADJUST_*).
+def op_effect(args):
+    """`gimp_add_effect`: create (or, with `filter_id`, re-edit in place) one of the allow-listed
+    GEGL effect filters (`lib.EFFECT_OPERATIONS`) -- the same merge/mask/ledger machinery
+    `op_adjust` uses, parameterized on `type` instead of `type`'s own ADJUST_* tables
+    (`lib.EFFECT_PARAM_BUILDERS`/`EFFECT_CREATE_DEFAULTS`, the parallel tables to ADJUST_*).
     Dispatched through the shared `_apply_filter`, so the ledger, mask confinement,
-    merge-on-re-edit, geometry refusals and proxy mirroring all come free, unchanged."""
-    filter_type = args.get('filter')
-    builder = lib.FILTER_PARAM_BUILDERS.get(filter_type)
+    merge-on-re-edit, geometry refusals and proxy mirroring all come free, unchanged.
+    gimp_add_effect is its own tool (tier 'dev') rather than an op on gimp_filter, per the
+    house rule that new capability ships at 'dev' until the owner promotes it -- a new op on
+    gimp_filter (already 'community') would have bypassed that gate, since tool-tiers.ts
+    classifies per TOOL, not per op."""
+    effect_type = args.get('type')
+    builder = lib.EFFECT_PARAM_BUILDERS.get(effect_type)
     if builder is None:
-        raise ValueError('filter must be one of %s' % sorted(lib.FILTER_OPERATIONS))
+        raise ValueError('type must be one of %s' % sorted(lib.EFFECT_OPERATIONS))
     img = _image(args)
-    operation = lib.FILTER_OPERATIONS[filter_type]
-    defaults = _existing_ledger_params(img, args, operation) or lib.FILTER_CREATE_DEFAULTS[filter_type]
+    operation = lib.EFFECT_OPERATIONS[effect_type]
+    defaults = _existing_ledger_params(img, args, operation) or lib.EFFECT_CREATE_DEFAULTS[effect_type]
     params = builder(args, defaults)
-    default_name = filter_type.replace('_', ' ').title()
-    return _apply_filter(img, args, operation, params, default_name, type_=filter_type)
+    default_name = effect_type.replace('_', ' ').title()
+    return _apply_filter(img, args, operation, params, default_name, type_=effect_type)
 
 
 def op_filter(args):
-    """Stack management: `op` in list | set_visibility | delete | apply. There is deliberately no
+    """Stack management: `op` in list | set_visibility | delete. There is deliberately no
     `reorder` -- `Gimp.DrawableFilter` exposes only delete/set_visible/update, and the PDB has no
     raise/lower-filter procedure (verified live, GIMP 3.2.6); emulating it means deleting and
     re-appending every filter above the moved one, which changes their ids and can't restore
     masks on filters this bridge didn't create."""
-    fop = args.get('op')
-    if fop == 'apply':
-        return op_filter_apply(args)
     img = _image(args)
+    fop = args.get('op')
     if fop == 'list':
         return op_list_filters(args)
     if fop == 'set_visibility':
@@ -797,7 +815,7 @@ def op_filter(args):
             'filter reorder is not supported: GIMP has no reorder primitive for drawable '
             'filters in this beta -- delete and re-create in the desired order instead'
         )
-    raise ValueError('op must be one of list, set_visibility, delete, apply (got %r)' % fop)
+    raise ValueError('op must be one of list, set_visibility, delete (got %r)' % fop)
 
 
 # ---- geometry -----------------------------------------------------------------------------
@@ -1529,7 +1547,7 @@ def op_close(args):
 
 OPS = {
     'ping': op_ping, 'open': op_open, 'curves': op_curves, 'levels': op_levels,
-    'adjust': op_adjust, 'filter': op_filter,
+    'adjust': op_adjust, 'filter': op_filter, 'effect': op_effect,
     'list_filters': op_list_filters, 'preview': op_preview, 'histogram': op_histogram,
     'compare': op_compare, 'export': op_export, 'close': op_close,
     'crop': op_crop, 'resize': op_resize, 'rotate': op_rotate, 'flip': op_flip,

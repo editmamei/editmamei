@@ -455,11 +455,12 @@ ADJUST_CREATE_DEFAULTS = {
 }
 
 
-# ---- gimp_filter op=apply: allow-listed GEGL effect filters --------------------------------
+# ---- gimp_add_effect: allow-listed GEGL effect filters --------------------------------------
 #
 # The parallel tables to ADJUST_OPERATIONS/ADJUST_PARAM_BUILDERS/ADJUST_CREATE_DEFAULTS above,
-# for `gimp_filter`'s `apply` op rather than `gimp_add_adjustment`'s `adjust` op -- a DIFFERENT
-# bridge op (`filter`, dispatched by `op_filter`'s own `fop == 'apply'` branch in ops.py), so
+# for `gimp_add_effect`'s `type` field rather than `gimp_add_adjustment`'s `type` field -- a
+# DIFFERENT bridge op (`effect`, dispatched to `op_effect` in ops.py -- gimp_add_effect is its
+# own tool, tier 'dev', a sibling of gimp_add_adjustment rather than an op on gimp_filter), so
 # these stay separate dicts rather than merged into the ADJUST_* ones; only the GEGL-property
 # SETTERS functions in ops.py are shared across both (an operation name is an operation name
 # regardless of which tool created the filter).
@@ -467,7 +468,7 @@ ADJUST_CREATE_DEFAULTS = {
 # Deliberately excludes gegl:gaussian-blur (already ADJUST_OPERATIONS' `gaussian_blur`, see
 # gimp-adjustment-tools.ts) and gegl:c2g (measured live at ~35s for a full-res 24 MP export --
 # over the ~30s budget the owner set for this PR, so it does not ship here; see PR 2's report).
-FILTER_OPERATIONS = {
+EFFECT_OPERATIONS = {
     'vignette': 'gegl:vignette',
     'black_white': 'gegl:mono-mixer',
     'motion_blur': 'gegl:motion-blur-linear',
@@ -549,7 +550,7 @@ def build_lens_blur_params(args, defaults):
     # applied non-destructively"), so every call would silently attach nothing (no exception, no
     # ledger record, filter count staying 0). gegl:focus-blur is the plan's own documented
     # fallback and DOES attach; its blur amount property is named `blur-radius`, not `radius`
-    # (the external field name here stays `radius` regardless -- see FILTER_CREATE_DEFAULTS).
+    # (the external field name here stays `radius` regardless -- see EFFECT_CREATE_DEFAULTS).
     # gegl:focus-blur's OWN `radius` property (an unrelated, same-named property sizing an
     # in-focus zone that never blurs) is forced to 0 in ops.py's `_set_lens_blur` -- not part of
     # this dict, not user-configurable -- so the effect is a uniform blur, not a tilt-shift one.
@@ -605,7 +606,7 @@ def build_drop_shadow_params(args, defaults):
     }
 
 
-FILTER_PARAM_BUILDERS = {
+EFFECT_PARAM_BUILDERS = {
     'vignette': build_vignette_params,
     'black_white': build_black_white_params,
     'motion_blur': build_motion_blur_params,
@@ -616,7 +617,7 @@ FILTER_PARAM_BUILDERS = {
 
 # Creation-time defaults, already in GEGL-property units -- probed live via `describe_operation`
 # against GIMP 3.2.6's real GEGL pspecs (see PR 2's report for the raw probe output).
-FILTER_CREATE_DEFAULTS = {
+EFFECT_CREATE_DEFAULTS = {
     'vignette': {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 0.5, 'y': 0.5},
     'black_white': {'red': 0.333, 'green': 0.333, 'blue': 0.333, 'preserve-luminosity': False},
     'motion_blur': {'length': 10.0, 'angle': 0.0},
@@ -689,7 +690,7 @@ USER_FIELDS = {
     ),
     'noise_reduction': (('strength', 'iterations', _same),),
     'gaussian_blur': (('radius', 'std-dev-x', _same),),
-    # ---- gimp_filter op=apply effects (FILTER_OPERATIONS, not ADJUST_OPERATIONS) --------------
+    # ---- gimp_add_effect's effects (EFFECT_OPERATIONS, not ADJUST_OPERATIONS) ------------------
     'vignette': (
         ('radius', 'radius', _same),
         ('softness', 'softness', _same),
@@ -763,7 +764,7 @@ def json_safe(value):
 # and an unbounded operation name is an unnecessary surface (arbitrary-op instantiation, error
 # text from GIMP's own PDB) for a probe whose only real job is confirming the schema of the
 # operations this engine actually uses.
-ALLOWED_DESCRIBE_OPERATIONS = frozenset(ADJUST_OPERATIONS.values()) | frozenset(FILTER_OPERATIONS.values())
+ALLOWED_DESCRIBE_OPERATIONS = frozenset(ADJUST_OPERATIONS.values()) | frozenset(EFFECT_OPERATIONS.values())
 
 
 # ---- geometry-op masked-filter detection (pure logic; ops.py supplies the live GIMP state) -----

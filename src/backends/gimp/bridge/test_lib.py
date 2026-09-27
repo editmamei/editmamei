@@ -710,37 +710,37 @@ class TestAdjustParamBuilders(unittest.TestCase):
         )
 
 
-def _filter_create_defaults(filter_type):
-    return lib.FILTER_CREATE_DEFAULTS[filter_type]
+def _effect_create_defaults(filter_type):
+    return lib.EFFECT_CREATE_DEFAULTS[filter_type]
 
 
-class TestFilterParamBuilders(unittest.TestCase):
-    """gimp_filter op=apply's builders -- the FILTER_* parallel tables to ADJUST_PARAM_BUILDERS
+class TestEffectParamBuilders(unittest.TestCase):
+    """gimp_add_effect's builders -- the EFFECT_* parallel tables to ADJUST_PARAM_BUILDERS
     tested above. Same (args, defaults) merge contract via resolve_field."""
 
     def test_every_filter_has_a_matching_operation(self):
-        for filter_type in lib.FILTER_PARAM_BUILDERS:
-            self.assertIn(filter_type, lib.FILTER_OPERATIONS)
+        for filter_type in lib.EFFECT_PARAM_BUILDERS:
+            self.assertIn(filter_type, lib.EFFECT_OPERATIONS)
 
     def test_build_vignette_params_defaults(self):
-        params = lib.build_vignette_params({}, _filter_create_defaults('vignette'))
+        params = lib.build_vignette_params({}, _effect_create_defaults('vignette'))
         self.assertEqual(params, {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 0.5, 'y': 0.5})
 
     def test_build_vignette_params_maps_center_x_y_to_x_y(self):
         params = lib.build_vignette_params(
-            {'center_x': 0.3, 'center_y': 0.7}, _filter_create_defaults('vignette')
+            {'center_x': 0.3, 'center_y': 0.7}, _effect_create_defaults('vignette')
         )
         self.assertEqual(params['x'], 0.3)
         self.assertEqual(params['y'], 0.7)
 
     def test_build_vignette_params_rejects_out_of_range(self):
         with self.assertRaises(ValueError):
-            lib.build_vignette_params({'radius': 3.1}, _filter_create_defaults('vignette'))
+            lib.build_vignette_params({'radius': 3.1}, _effect_create_defaults('vignette'))
         with self.assertRaises(ValueError):
-            lib.build_vignette_params({'center_x': 1.1}, _filter_create_defaults('vignette'))
+            lib.build_vignette_params({'center_x': 1.1}, _effect_create_defaults('vignette'))
 
     def test_build_black_white_params_defaults(self):
-        params = lib.build_black_white_params({}, _filter_create_defaults('black_white'))
+        params = lib.build_black_white_params({}, _effect_create_defaults('black_white'))
         self.assertEqual(
             params, {'red': 0.333, 'green': 0.333, 'blue': 0.333, 'preserve-luminosity': False}
         )
@@ -748,7 +748,7 @@ class TestFilterParamBuilders(unittest.TestCase):
     def test_build_black_white_params_field_mapping(self):
         params = lib.build_black_white_params(
             {'red_weight': 1.5, 'green_weight': 0.5, 'blue_weight': -1.0, 'preserve_luminosity': True},
-            _filter_create_defaults('black_white'),
+            _effect_create_defaults('black_white'),
         )
         self.assertEqual(
             params, {'red': 1.5, 'green': 0.5, 'blue': -1.0, 'preserve-luminosity': True}
@@ -756,39 +756,39 @@ class TestFilterParamBuilders(unittest.TestCase):
 
     def test_build_black_white_params_rejects_out_of_range(self):
         with self.assertRaises(ValueError):
-            lib.build_black_white_params({'red_weight': 5.1}, _filter_create_defaults('black_white'))
+            lib.build_black_white_params({'red_weight': 5.1}, _effect_create_defaults('black_white'))
 
     def test_build_motion_blur_params_defaults(self):
         self.assertEqual(
-            lib.build_motion_blur_params({}, _filter_create_defaults('motion_blur')),
+            lib.build_motion_blur_params({}, _effect_create_defaults('motion_blur')),
             {'length': 10.0, 'angle': 0.0},
         )
 
     def test_build_motion_blur_params_rejects_out_of_range(self):
         with self.assertRaises(ValueError):
-            lib.build_motion_blur_params({'length': 1001}, _filter_create_defaults('motion_blur'))
+            lib.build_motion_blur_params({'length': 1001}, _effect_create_defaults('motion_blur'))
         with self.assertRaises(ValueError):
-            lib.build_motion_blur_params({'angle': 181}, _filter_create_defaults('motion_blur'))
+            lib.build_motion_blur_params({'angle': 181}, _effect_create_defaults('motion_blur'))
 
     def test_build_lens_blur_params_defaults(self):
         self.assertEqual(
-            lib.build_lens_blur_params({}, _filter_create_defaults('lens_blur')),
+            lib.build_lens_blur_params({}, _effect_create_defaults('lens_blur')),
             {'blur-radius': 25.0, 'highlight-factor': 0.0},
         )
 
     def test_build_lens_blur_params_rejects_out_of_range(self):
         with self.assertRaises(ValueError):
-            lib.build_lens_blur_params({'radius': 1501}, _filter_create_defaults('lens_blur'))
+            lib.build_lens_blur_params({'radius': 1501}, _effect_create_defaults('lens_blur'))
 
     def test_build_add_noise_params_defaults(self):
-        params = lib.build_add_noise_params({}, _filter_create_defaults('add_noise'))
+        params = lib.build_add_noise_params({}, _effect_create_defaults('add_noise'))
         self.assertEqual(
             params, {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 0}
         )
 
     def test_build_add_noise_params_one_amount_drives_all_three_channels(self):
         params = lib.build_add_noise_params(
-            {'noise_amount': 0.6}, _filter_create_defaults('add_noise')
+            {'noise_amount': 0.6}, _effect_create_defaults('add_noise')
         )
         self.assertEqual(params['red'], 0.6)
         self.assertEqual(params['green'], 0.6)
@@ -796,44 +796,44 @@ class TestFilterParamBuilders(unittest.TestCase):
 
     def test_build_add_noise_params_rejects_out_of_range(self):
         with self.assertRaises(ValueError):
-            lib.build_add_noise_params({'noise_amount': 1.1}, _filter_create_defaults('add_noise'))
+            lib.build_add_noise_params({'noise_amount': 1.1}, _effect_create_defaults('add_noise'))
         with self.assertRaises(ValueError):
-            lib.build_add_noise_params({'seed': -1}, _filter_create_defaults('add_noise'))
+            lib.build_add_noise_params({'seed': -1}, _effect_create_defaults('add_noise'))
         with self.assertRaises(ValueError):
-            lib.build_add_noise_params({'seed': 4294967296}, _filter_create_defaults('add_noise'))
+            lib.build_add_noise_params({'seed': 4294967296}, _effect_create_defaults('add_noise'))
 
     def test_build_drop_shadow_params_defaults(self):
-        params = lib.build_drop_shadow_params({}, _filter_create_defaults('drop_shadow'))
+        params = lib.build_drop_shadow_params({}, _effect_create_defaults('drop_shadow'))
         self.assertEqual(params, {'x': 20.0, 'y': 20.0, 'radius': 10.0, 'opacity': 0.5})
 
     def test_build_drop_shadow_params_maps_offset_x_y_to_x_y(self):
         params = lib.build_drop_shadow_params(
-            {'offset_x': -30, 'offset_y': 45}, _filter_create_defaults('drop_shadow')
+            {'offset_x': -30, 'offset_y': 45}, _effect_create_defaults('drop_shadow')
         )
         self.assertEqual(params['x'], -30.0)
         self.assertEqual(params['y'], 45.0)
 
     def test_build_drop_shadow_params_rejects_out_of_range(self):
         with self.assertRaises(ValueError):
-            lib.build_drop_shadow_params({'offset_x': 501}, _filter_create_defaults('drop_shadow'))
+            lib.build_drop_shadow_params({'offset_x': 501}, _effect_create_defaults('drop_shadow'))
         with self.assertRaises(ValueError):
-            lib.build_drop_shadow_params({'opacity': 1.1}, _filter_create_defaults('drop_shadow'))
+            lib.build_drop_shadow_params({'opacity': 1.1}, _effect_create_defaults('drop_shadow'))
 
 
-class TestFilterResolveFieldMerge(unittest.TestCase):
+class TestEffectResolveFieldMerge(unittest.TestCase):
     """The same re-edit-is-a-merge contract TestResolveFieldMerge pins for ADJUST_PARAM_BUILDERS,
-    for FILTER_PARAM_BUILDERS."""
+    for EFFECT_PARAM_BUILDERS."""
 
     def test_every_filter_type_merges_every_field_it_has(self):
-        for filter_type, builder in lib.FILTER_PARAM_BUILDERS.items():
-            defaults = lib.FILTER_CREATE_DEFAULTS[filter_type]
+        for filter_type, builder in lib.EFFECT_PARAM_BUILDERS.items():
+            defaults = lib.EFFECT_CREATE_DEFAULTS[filter_type]
             result = builder({}, defaults)
             self.assertEqual(result, defaults, 'filter=%s' % filter_type)
 
     def test_every_filter_type_merges_from_existing_params_that_differ_from_create_defaults(self):
-        for filter_type, builder in lib.FILTER_PARAM_BUILDERS.items():
+        for filter_type, builder in lib.EFFECT_PARAM_BUILDERS.items():
             existing = {}
-            for key, value in lib.FILTER_CREATE_DEFAULTS[filter_type].items():
+            for key, value in lib.EFFECT_CREATE_DEFAULTS[filter_type].items():
                 if isinstance(value, bool):
                     existing[key] = not value
                 elif isinstance(value, int) and not isinstance(value, bool):
@@ -847,9 +847,9 @@ class TestFilterResolveFieldMerge(unittest.TestCase):
             result = builder({}, existing)
             self.assertEqual(result, existing, 'filter=%s' % filter_type)
 
-    def test_filter_create_defaults_cover_every_field_every_builder_produces(self):
-        for filter_type, builder in lib.FILTER_PARAM_BUILDERS.items():
-            defaults = lib.FILTER_CREATE_DEFAULTS[filter_type]
+    def test_effect_create_defaults_cover_every_field_every_builder_produces(self):
+        for filter_type, builder in lib.EFFECT_PARAM_BUILDERS.items():
+            defaults = lib.EFFECT_CREATE_DEFAULTS[filter_type]
             produced = builder({}, defaults)
             self.assertEqual(set(produced), set(defaults), 'filter=%s' % filter_type)
 
@@ -1072,7 +1072,7 @@ class TestAllowedDescribeOperations(unittest.TestCase):
     def test_covers_every_adjust_and_filter_operation(self):
         self.assertEqual(
             lib.ALLOWED_DESCRIBE_OPERATIONS,
-            frozenset(lib.ADJUST_OPERATIONS.values()) | frozenset(lib.FILTER_OPERATIONS.values()),
+            frozenset(lib.ADJUST_OPERATIONS.values()) | frozenset(lib.EFFECT_OPERATIONS.values()),
         )
 
 
@@ -1205,7 +1205,7 @@ class TestUserParams(unittest.TestCase):
         # with no notion of which bridge op a given type belongs to.
         self.assertEqual(
             set(lib.USER_FIELDS),
-            set(lib.ADJUST_PARAM_BUILDERS) | set(lib.FILTER_PARAM_BUILDERS),
+            set(lib.ADJUST_PARAM_BUILDERS) | set(lib.EFFECT_PARAM_BUILDERS),
         )
 
     def test_round_trip_reports_what_the_model_sent(self):
@@ -1254,9 +1254,9 @@ class TestUserParams(unittest.TestCase):
             self.assertEqual(lib.OPERATION_TYPES[operation], type_)
 
 
-# Known user-facing args per gimp_filter op=apply effect, each field set to a non-default value --
+# Known user-facing args per gimp_add_effect effect, each field set to a non-default value --
 # the same round-trip contract USER_ARGS_BY_TYPE pins for gimp_add_adjustment's types above.
-FILTER_USER_ARGS_BY_TYPE = {
+EFFECT_USER_ARGS_BY_TYPE = {
     'vignette': {'radius': 1.5, 'softness': 0.5, 'gamma': 1.8, 'center_x': 0.4, 'center_y': 0.6},
     'black_white': {
         'red_weight': 0.6, 'green_weight': 1.2, 'blue_weight': 0.2, 'preserve_luminosity': True,
@@ -1268,35 +1268,35 @@ FILTER_USER_ARGS_BY_TYPE = {
 }
 
 
-class TestFilterUserParams(unittest.TestCase):
-    """The `TestUserParams` round-trip contract above, for gimp_filter op=apply's FILTER_* tables
+class TestEffectUserParams(unittest.TestCase):
+    """The `TestUserParams` round-trip contract above, for gimp_add_effect's EFFECT_* tables
     instead of gimp_add_adjustment's ADJUST_* ones."""
 
     def test_every_filter_type_is_covered(self):
-        self.assertEqual(set(FILTER_USER_ARGS_BY_TYPE), set(lib.FILTER_PARAM_BUILDERS))
+        self.assertEqual(set(EFFECT_USER_ARGS_BY_TYPE), set(lib.EFFECT_PARAM_BUILDERS))
 
     def test_round_trip_reports_what_the_model_sent(self):
-        for filter_type, user_args in FILTER_USER_ARGS_BY_TYPE.items():
+        for filter_type, user_args in EFFECT_USER_ARGS_BY_TYPE.items():
             with self.subTest(filter_type=filter_type):
-                gegl = lib.FILTER_PARAM_BUILDERS[filter_type](
-                    user_args, _filter_create_defaults(filter_type)
+                gegl = lib.EFFECT_PARAM_BUILDERS[filter_type](
+                    user_args, _effect_create_defaults(filter_type)
                 )
                 listed = lib.user_params(filter_type, gegl)
                 self.assertEqual(listed, user_args)
 
     def test_listed_values_rebuild_the_identical_gegl_params(self):
-        for filter_type, user_args in FILTER_USER_ARGS_BY_TYPE.items():
+        for filter_type, user_args in EFFECT_USER_ARGS_BY_TYPE.items():
             with self.subTest(filter_type=filter_type):
-                builder = lib.FILTER_PARAM_BUILDERS[filter_type]
-                gegl = builder(user_args, _filter_create_defaults(filter_type))
+                builder = lib.EFFECT_PARAM_BUILDERS[filter_type]
+                gegl = builder(user_args, _effect_create_defaults(filter_type))
                 rebuilt = builder(lib.user_params(filter_type, gegl), gegl)
                 self.assertEqual(rebuilt, gegl)
 
     def test_no_gegl_key_leaks_into_the_listing(self):
-        for filter_type, user_args in FILTER_USER_ARGS_BY_TYPE.items():
+        for filter_type, user_args in EFFECT_USER_ARGS_BY_TYPE.items():
             with self.subTest(filter_type=filter_type):
-                gegl = lib.FILTER_PARAM_BUILDERS[filter_type](
-                    user_args, _filter_create_defaults(filter_type)
+                gegl = lib.EFFECT_PARAM_BUILDERS[filter_type](
+                    user_args, _effect_create_defaults(filter_type)
                 )
                 for key in lib.user_params(filter_type, gegl):
                     self.assertNotIn('-', key)
