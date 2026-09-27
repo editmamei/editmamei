@@ -212,7 +212,7 @@ describe.skipIf(!install)('gimp_checkpoint against real headless GIMP', () => {
     await callTool(tools, 'gimp_close_document', { image });
   }, 60_000);
 
-  it('restore still recovers after a REAL forced GIMP session restart (timeout -> gimp_session_restarted -> restore)', async () => {
+  it('restore still recovers after a REAL forced GIMP session restart (kill -> gimp_session_restarted -> restore)', async () => {
     const pngPath = join(workDir, 'kill-fixture.png');
     writeGrayRamp(pngPath, 64, 64);
     const opened = await callTool(tools, 'gimp_open_document', { file_path: pngPath });
@@ -271,7 +271,7 @@ describe.skipIf(!install)('gimp_checkpoint against real headless GIMP', () => {
     // checkpoint's own "old image to close" is also 1, so after the kill below, restore's OWN
     // `open` call (which spawns the replacement process) hands back id 1 again for the SAME
     // reason. If restore ever issued a `close` in that situation, it would destroy the very
-    // image it just opened — this is HIGH #2's baseline safeguard, checked live.
+    // image it just opened — this is the id-collision baseline safeguard, checked live.
     const freshWorkDir = mkdtempSync(join(tmpdir(), 'em-gimp-checkpoint-fresh-'));
     const freshBackend = new GimpBackend(install, {
       sessionOptions: { rootDir: join(freshWorkDir, 'session-root') },
