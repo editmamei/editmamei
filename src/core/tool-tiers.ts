@@ -321,6 +321,10 @@ export const TOOL_TIERS: Record<string, Tier> = {
   gimp_get_preview: 'community',
   gimp_get_histogram: 'community',
   gimp_compare: 'community',
+  // Disk-backed checkpoints (create/restore/list/delete) — new in Spiral 1
+  // PR 3, staying 'dev' until it has documented live evidence the same way
+  // every other new tool does before promotion.
+  gimp_checkpoint: 'dev',
 };
 
 /**
