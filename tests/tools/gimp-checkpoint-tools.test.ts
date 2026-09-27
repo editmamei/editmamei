@@ -493,6 +493,100 @@ describe('createGimpCheckpointTools', () => {
       expect(text).toMatch(/disk went away/);
       expect(text).toMatch(/restored as image 9/);
     });
+
+    describe('generation-aware close decision', () => {
+      it('generation known and equal (no restart) closes as usual', async () => {
+        const gimp = backendResultFor((op) => {
+          if (op === 'open') return { image: 101, width: 1, height: 1 };
+          return {};
+        });
+        gimp.generation = 7;
+        const tools = createGimpCheckpointTools(gimp.asBackend());
+        const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+        const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+        // generation unchanged (still 7) — a normal, same-process restore.
+        const restored = await callTool(tools, 'gimp_checkpoint', {
+          op: 'restore',
+          checkpoint_id: id,
+        });
+        expect(restored.isError).toBeFalsy();
+        const closeCall = gimp.calls.find((c) => c.op === 'close');
+        expect(closeCall?.args.image).toBe(5);
+      });
+
+      it('generation changed: an unrelated image reusing the old id is left untouched — no close dispatched', async () => {
+        const gimp = backendResultFor((op) => {
+          if (op === 'open') return { image: 2, width: 1, height: 1 };
+          return {};
+        });
+        gimp.generation = 1;
+        const tools = createGimpCheckpointTools(gimp.asBackend());
+        const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
+        const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+        // Simulate a restart: a NEW process is now running (generation bumped), and the model
+        // has separately opened some OTHER, unrelated image that also happens to land on id 1 in
+        // the new process — exactly the scenario the opened==old guard alone cannot catch, since
+        // restore's own reopened file gets a DIFFERENT id (2) here.
+        gimp.generation = 2;
+
+        const restored = await callTool(tools, 'gimp_checkpoint', {
+          op: 'restore',
+          checkpoint_id: id,
+        });
+        expect(restored.isError).toBeFalsy();
+        expect(gimp.allOps()).not.toContain('close');
+        const structured = restored.structuredContent as { old_image: number; image: number };
+        expect(structured.old_image).toBe(1);
+        expect(structured.image).toBe(2);
+        const text = (restored.content?.[0] as { text: string }).text;
+        expect(text).toMatch(/has since restarted/);
+        expect(text).toMatch(/left untouched/);
+      });
+
+      it('generation undefined on either side falls back to the pre-generation baseline (attempts the close)', async () => {
+        let nextImage = 100;
+        const gimp = backendResultFor((op) => {
+          if (op === 'open') return { image: ++nextImage, width: 1, height: 1 };
+          return {};
+        });
+        // gimp.generation stays undefined throughout — the degraded-shim path.
+        const tools = createGimpCheckpointTools(gimp.asBackend());
+        const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 5 });
+        const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+        const restored = await callTool(tools, 'gimp_checkpoint', {
+          op: 'restore',
+          checkpoint_id: id,
+        });
+        expect(restored.isError).toBeFalsy();
+        const closeCall = gimp.calls.find((c) => c.op === 'close');
+        expect(closeCall?.args.image).toBe(5);
+      });
+
+      it('refreshOpenness marks a record from an older generation gone, exactly, even with no ping-based signal', async () => {
+        const gimp = backendResultFor(() => ({})); // 'ping' -> {} (no images array): generation
+        // is the only usable signal in this test.
+        gimp.generation = 1;
+        const tools = createGimpCheckpointTools(gimp.asBackend());
+        const created = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
+        const id = (created.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+        gimp.generation = 2; // a restart happened
+        const listed = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
+        const record = (
+          listed.structuredContent as {
+            checkpoints: Array<{ checkpoint_id: string; open: boolean }>;
+          }
+        ).checkpoints.find((c) => c.checkpoint_id === id)!;
+        expect(record.open).toBe(false);
+
+        // A NEW image reusing the SAME number 1 in the new generation still gets its own cap.
+        const afterRestart = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
+        expect(afterRestart.isError).toBeFalsy();
+      });
+    });
   });
 
   describe('op=delete', () => {
@@ -581,8 +675,14 @@ describe('cleanupRegisteredCheckpointFiles (the exit-hook cleanup, called direct
       writeFileSync(pathA, 'x');
       writeFileSync(pathB, 'x');
       const registry = new Map<string, CheckpointRecord>([
-        ['a', { id: 'a', image: 1, path: pathA, bytes: 1, createdAt: '', open: true }],
-        ['b', { id: 'b', image: 2, path: pathB, bytes: 1, createdAt: '', open: true }],
+        [
+          'a',
+          { id: 'a', image: 1, path: pathA, bytes: 1, createdAt: '', open: true, generation: 0 },
+        ],
+        [
+          'b',
+          { id: 'b', image: 2, path: pathB, bytes: 1, createdAt: '', open: true, generation: 0 },
+        ],
       ]);
       cleanupRegisteredCheckpointFiles(registry);
       expect(existsSync(pathA)).toBe(false);

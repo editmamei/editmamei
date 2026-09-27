@@ -42,24 +42,22 @@ import { GIMP_IMAGE_PROP } from './gimp-shared.js';
  * so a later restore of any of them closes the right (post-restore) image
  * rather than one already gone.
  *
- * KNOWN LIMITATION, not fixed here (see the PR handback report): there is no
- * way to detect, through this backend's allowed surface (`call`, `prepare`,
- * `tempPath`), whether the underlying GIMP PROCESS has restarted since a
- * record's `image` id was last confirmed live. `ping`'s response carries no
- * process identity (no pid, no generation counter), and `GimpSession`'s own
- * internal `deadGeneration` counter — which WOULD serve this purpose — is
- * private and not exposed on `GimpBackend`. After a restart, GIMP's own
- * internal image-id counter restarts too, so a low id can genuinely mean "a
- * different image entirely" rather than "the same image, still open". This
- * file therefore does the one thing it CAN do safely without that signal
- * (never issue a `close` for an id that exactly equals the id `restore` just
- * reopened — see `checkpointRestore`) and no more; `refreshOpenness` below
- * only ever helps within a single, un-restarted GIMP process (detecting a
- * plain `gimp_close_document` elsewhere), not across a restart. The smallest
- * real fix is an engine change: expose a monotonic per-spawn counter (e.g.
- * `GimpSession`'s existing `deadGeneration`, already tracked internally) as a
- * new read-only `GimpBackend` getter, so a record could be stamped with it at
- * `create` time and compared at `restore` time.
+ * GIMP process restarts are told apart via `GimpBackend.generation` (backed
+ * by `GimpSession`'s own `deadGeneration` counter, bumped once per confirmed
+ * process death — see session.ts). Every record is stamped with the
+ * generation current at `create` time; `restore` compares it against
+ * `gimp.generation` at restore time. A DIFFERENT generation means the
+ * process that had `record.image` open is confirmed gone — its number, if it
+ * refers to anything at all in the new process, belongs to some unrelated
+ * image the model may still be using, so restore never issues a `close` for
+ * it. `generation` is OPTIONAL on the backend (Connect's own `GimpBackendLike`
+ * shim need not implement it): when either side is `undefined`, this file
+ * falls back to the pre-generation baseline — the `oldImage === opened.image`
+ * guard in `checkpointRestore`, plus the message-classified tolerance in
+ * `isSessionRestartedError` / `isImageAlreadyClosedError` — which is safe but
+ * strictly weaker (it cannot tell a genuinely reused id from the same image
+ * still open). `refreshOpenness` below uses generation too, for an EXACT
+ * across-restart staleness check, ahead of its own same-process `ping` check.
  *
  * No absolute paths or usernames ever reach a tool result — `record.path`
  * lives under the user's own temp/home directory and is used only to talk to
@@ -93,6 +91,12 @@ export interface CheckpointRecord {
    * own image's create cap or appears under that image's scoped `list` (HIGH #4).
    */
   open: boolean;
+  /** `gimp.generation` at the moment this record's `image` was last (re)assigned — `undefined`
+   * when the backend doesn't expose one (Connect's older shim). Compared against the CURRENT
+   * `gimp.generation` at restore time to tell "the same GIMP process, image still open" apart
+   * from "a different process that reused this same low integer id" — see this file's header
+   * comment. */
+  generation: number | undefined;
   /** Absolute path under the session temp root — never surfaced to the model. */
   path: string;
   bytes: number;
@@ -151,17 +155,37 @@ function isImageAlreadyClosedError(error: unknown): boolean {
 }
 
 /**
- * Refreshes every record's `open` belief from a live `ping`'s open-images list. A no-op when the
- * registry is empty (skips the round trip entirely) or when the bridge's answer carries no
- * `images` array at all (leaves every belief exactly as it was, rather than treating an absent
- * field as "nothing is open"). See `CheckpointRecord.open`'s own doc comment for why this only
- * ever narrows belief (`true` -> `false`), never widens it.
+ * Refreshes every record's `open` belief. Two checks, run in order:
+ *
+ * 1. EXACT, across restarts: when both the record's stamped generation and the backend's current
+ *    one are known, a mismatch proves the process that had `record.image` open is gone, no matter
+ *    what `ping` says now (a reused id can look "open" in a brand-new process too — see this
+ *    file's header comment). No round trip needed for this half.
+ * 2. Best-effort, within one un-restarted process: a live `ping`'s open-images list catches a
+ *    plain `gimp_close_document` elsewhere. Skipped entirely when the registry is empty, and a
+ *    no-op if the bridge's answer carries no `images` array at all (leaves belief exactly as it
+ *    was, rather than treating an absent field as "nothing is open").
+ *
+ * See `CheckpointRecord.open`'s own doc comment for why both only ever narrow belief (`true` ->
+ * `false`), never widen it.
  */
 async function refreshOpenness(
   gimp: GimpBackend,
   registry: Map<string, CheckpointRecord>
 ): Promise<void> {
   if (registry.size === 0) return;
+  const currentGeneration = gimp.generation;
+  if (currentGeneration !== undefined) {
+    for (const record of registry.values()) {
+      if (
+        record.open &&
+        record.generation !== undefined &&
+        record.generation !== currentGeneration
+      ) {
+        record.open = false;
+      }
+    }
+  }
   const ping = await gimp.call<{ images?: number[] }>('ping', {});
   if (!Array.isArray(ping.images)) return;
   const openIds = new Set(ping.images);
@@ -173,25 +197,43 @@ async function refreshOpenness(
 /** After a CONFIRMED close of `from` (restore's own `close` call actually succeeded — proof, not
  * a guess, that no restart raced it), every OTHER checkpoint still pointing at `from` is a
  * snapshot of the same now-transformed lineage, so it moves to `to` right along with the one
- * being restored (HIGH #3 — "sibling re-pointing"). */
-function repointSiblings(registry: Map<string, CheckpointRecord>, from: number, to: number): void {
+ * being restored (HIGH #3 — "sibling re-pointing"). `generation` scopes this to siblings from the
+ * SAME generation as the one just closed — when known, a different-generation record that
+ * happens to share the same stale image number is a coincidence, not the same lineage, and must
+ * not be re-pointed onto a document it has nothing to do with. `newGeneration` is stamped onto
+ * every record this moves, since they now describe an image live in THAT generation. */
+function repointSiblings(
+  registry: Map<string, CheckpointRecord>,
+  from: number,
+  to: number,
+  generation: number | undefined,
+  newGeneration: number | undefined
+): void {
   for (const sibling of registry.values()) {
-    if (sibling.image === from) {
-      sibling.image = to;
-      sibling.open = true;
-    }
+    if (sibling.image !== from) continue;
+    if (generation !== undefined && sibling.generation !== generation) continue;
+    sibling.image = to;
+    sibling.open = true;
+    sibling.generation = newGeneration;
   }
 }
 
 /** After `from` is confirmed gone WITHOUT a fresh image to move sibling records to (a tolerated
- * "already gone" close, whether from a plain prior close or a session restart), every OTHER
- * checkpoint still pointing at `from` is marked gone too — its own file is still fully
- * restorable, but its bookkeeping no longer claims a specific live image. Deliberately NOT
- * re-pointed to the just-opened image: that image is a live continuation of the ONE checkpoint
- * actually being restored, not of these unrelated siblings' own (different) file content. */
-function markSiblingsGone(registry: Map<string, CheckpointRecord>, image: number): void {
+ * "already gone" close, a dead generation, or a session restart), every OTHER checkpoint still
+ * pointing at `from` (in the same `generation`, when known — see `repointSiblings`'s own comment
+ * on why that scoping matters) is marked gone too — its own file is still fully restorable, but
+ * its bookkeeping no longer claims a specific live image. Deliberately NOT re-pointed to the
+ * just-opened image: that image is a live continuation of the ONE checkpoint actually being
+ * restored, not of these unrelated siblings' own (different) file content. */
+function markSiblingsGone(
+  registry: Map<string, CheckpointRecord>,
+  image: number,
+  generation: number | undefined
+): void {
   for (const sibling of registry.values()) {
-    if (sibling.image === image) sibling.open = false;
+    if (sibling.image !== image) continue;
+    if (generation !== undefined && sibling.generation !== generation) continue;
+    sibling.open = false;
   }
 }
 
@@ -221,7 +263,15 @@ async function checkpointCreate(
   const id = randomUUID();
   const path = gimp.tempPath(`checkpoint-${id}.xcf`);
   const createdAt = new Date().toISOString();
-  registry.set(id, { id, image, path, bytes: 0, createdAt, open: true });
+  registry.set(id, {
+    id,
+    image,
+    path,
+    bytes: 0,
+    createdAt,
+    open: true,
+    generation: gimp.generation,
+  });
   // ---- async again: the reservation above is what makes this safe to await ----
   try {
     const result = await gimp.call<{ bytes: number }>('export', { image, path });
@@ -352,31 +402,45 @@ async function checkpointRestore(
     path: record.path,
   });
   const oldImage = record.image;
+  const oldGeneration = record.generation;
+  const currentGeneration = gimp.generation;
+  const generationsKnown = oldGeneration !== undefined && currentGeneration !== undefined;
+  const generationChanged = generationsKnown && oldGeneration !== currentGeneration;
   let closeNote: string;
   let closeFailed = false;
 
   if (oldImage === opened.image) {
     // The id GIMP just handed back for the reopened file happens to equal the id this record
     // remembers as "the image to close" — closing it would destroy the image restore just
-    // opened. This is the one case this tool can tell apart with certainty without a GIMP
-    // process generation signal (not reachable through call/prepare/tempPath today — see this
-    // file's header comment); never close here, regardless of whether oldImage is genuinely the
-    // same document or an unrelated one that reused its number after a restart.
+    // opened. Checked first, unconditionally: this stays the last line of defense even when
+    // generation is known, since a generation match plus an id match still means "definitely the
+    // same image" and closing it would be equally wrong.
     closeNote = `image ${oldImage} is the id restore just reopened — nothing to close`;
+  } else if (generationChanged) {
+    // EXACT (not a guess): the process that had oldImage open is confirmed gone. Its number, if
+    // it refers to anything at all in the CURRENT process, belongs to some entirely unrelated
+    // image the model may still be using — never touch it.
+    closeNote =
+      `image ${oldImage} belonged to a GIMP process that has since restarted — left untouched ` +
+      `(its number may now belong to a different, unrelated image)`;
+    markSiblingsGone(registry, oldImage, oldGeneration);
   } else {
+    // Same generation, or generation isn't reachable on this backend (Connect's older
+    // `GimpBackendLike` shim) — fall back to attempting the close and classifying the result,
+    // same as before generation existed.
     try {
       await gimp.call('close', { image: oldImage });
       closeNote = `image ${oldImage} closed`;
-      repointSiblings(registry, oldImage, opened.image);
+      repointSiblings(registry, oldImage, opened.image, oldGeneration, currentGeneration);
     } catch (closeError) {
       if (isSessionRestartedError(closeError)) {
         closeNote = `image ${oldImage} was already gone (the GIMP session had restarted)`;
-        markSiblingsGone(registry, oldImage);
+        markSiblingsGone(registry, oldImage, oldGeneration);
       } else if (isImageAlreadyClosedError(closeError)) {
         // Genuinely just closed (by gimp_close_document, or an earlier restore) — no restart
         // implied, so say so plainly rather than reusing the restart wording (HIGH #8).
         closeNote = `image ${oldImage} was already closed`;
-        markSiblingsGone(registry, oldImage);
+        markSiblingsGone(registry, oldImage, oldGeneration);
       } else {
         // (HIGH #5) An unrelated close failure must not swallow the fact that restore itself
         // DID succeed — the new image is open and the model needs its id regardless. Leave
@@ -390,8 +454,9 @@ async function checkpointRestore(
   }
 
   // Unconditional: whatever happened to the old image, THIS record now describes the freshly
-  // opened one.
+  // opened one, live in the CURRENT generation.
   record.image = opened.image;
+  record.generation = currentGeneration;
   record.open = true;
   return {
     content: [
