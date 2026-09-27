@@ -126,6 +126,19 @@ def op_test_proxy_filter_count(args):
     return {'filters': sum(len(layer.get_filters()) for layer in _all_layers(proxy))}
 
 
+def op_test_add_text_layer(args):
+    """Insert a real text layer at the top of the stack -- what `describe`'s `is_text_layer` flag
+    is meant to catch, exercised against the real thing rather than only a plain pixel layer
+    (which always reads False). `Gimp.TextLayer.new` needs a `Gimp.Font`, not a font name string
+    (verified live) -- the context's current font (`Gimp.context_get_font`) is used since this
+    fixture doesn't care which font, only that the layer really is a text layer."""
+    img = _image(args)
+    font = Gimp.context_get_font()
+    layer = Gimp.TextLayer.new(img, args.get('text', 'Hi'), font, 24, Gimp.Unit.pixel())
+    img.insert_layer(layer, None, 0)
+    return {'layer_id': layer.get_id(), 'name': layer.get_name()}
+
+
 OPS.update({
     'test_proxy_filter_count': op_test_proxy_filter_count,
     'test_metadata_tag': op_test_metadata_tag,
@@ -135,4 +148,5 @@ OPS.update({
     'test_selection_empty': op_test_selection_empty,
     'test_wrap_in_group': op_test_wrap_in_group,
     'test_add_foreign_filter': op_test_add_foreign_filter,
+    'test_add_text_layer': op_test_add_text_layer,
 })

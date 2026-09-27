@@ -201,3 +201,31 @@ describe('open clears a selection saved in the file (op_open)', () => {
     );
   });
 });
+
+describe('gimp_inspect describe-by-id targets (document/layers/channels/filter)', () => {
+  // ops.py op_describe's layer tree addresses by layer_id, not name -- duplicate layer names
+  // are legal in GIMP, so only the id is a reliable handle.
+  it('the what field says layer tree nodes are addressed by layer_id, and flag is_text_layer', () => {
+    const text = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    expect(text).toMatch(/addressed by `?layer_id`?/);
+    expect(text).toMatch(/is_text_layer/);
+  });
+  it('the tool description repeats the same two facts', () => {
+    const text = description('gimp_inspect').replace(/\s+/g, ' ');
+    expect(text).toMatch(/addressed by `?layer_id`?/);
+    expect(text).toMatch(/is_text_layer/);
+  });
+  it('image says it is required for every what except documents', () => {
+    expect(field('gimp_inspect', 'image').replace(/\s+/g, ' ')).toMatch(
+      /Required for every `?what`? except 'documents'/
+    );
+  });
+  it("filter_id says it is required for what='filter'", () => {
+    expect(field('gimp_inspect', 'filter_id')).toMatch(/Required for what='filter'/);
+  });
+  it("what='filter' says it reuses gimp_filter op=list's own shape", () => {
+    expect(field('gimp_inspect', 'what').replace(/\s+/g, ' ')).toMatch(
+      /same shape gimp_filter \(op=list\) reports it in/
+    );
+  });
+});
