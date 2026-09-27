@@ -98,6 +98,41 @@ describe('gimp_filter op=list reports params the model can pass back', () => {
   });
 });
 
+describe('gimp_filter op=apply: allow-listed GEGL effect filters', () => {
+  const EFFECTS = [
+    'vignette',
+    'black_white',
+    'motion_blur',
+    'lens_blur',
+    'add_noise',
+    'drop_shadow',
+  ];
+
+  it('the op field explains apply alongside list/set_visibility/delete and names every effect', () => {
+    const text = field('gimp_filter', 'op').replace(/\s+/g, ' ');
+    expect(text).toMatch(/'apply' creates/);
+    for (const effect of EFFECTS) {
+      expect(text, effect).toContain(effect);
+    }
+  });
+
+  it('the tool description names every effect and the shared merge/mask conventions', () => {
+    const text = description('gimp_filter').replace(/\s+/g, ' ');
+    for (const effect of EFFECTS) {
+      expect(text, effect).toContain(effect);
+    }
+    expect(text).toMatch(/re-edit is a MERGE/);
+  });
+
+  it('filter_id says apply re-edits are a merge, same contract as gimp_add_adjustment', () => {
+    expect(field('gimp_filter', 'filter_id').replace(/\s+/g, ' ')).toMatch(/MERGE, not a reset/);
+  });
+
+  it('mask says apply follows the same order-matters rule as gimp_add_adjustment', () => {
+    expect(field('gimp_filter', 'mask').replace(/\s+/g, ' ')).toMatch(/ORDER MATTERS/);
+  });
+});
+
 describe('gimp_add_adjustment scope: one layer, one range', () => {
   it('says a filter applies to ONE layer, and that a layer inside a group can be named', () => {
     expect(description('gimp_add_adjustment')).toMatch(/A filter applies to ONE layer/);

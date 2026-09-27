@@ -89,6 +89,50 @@ describe.skipIf(!install)('GEGL/GIMP operation schema goldens', () => {
     expect(result.properties).toEqual(golden[operation]);
   });
 
+  // ---- gimp_filter op=apply's allow-listed GEGL effects (lib.FILTER_OPERATIONS) --------------
+  // Deliberately excludes gegl:gaussian-blur (already golden'd above as the `adjust` type
+  // gaussian_blur) and gegl:c2g (measured live at ~35s for a full-res 24 MP export -- over the
+  // ~30s budget this PR was scoped to, so it was never allow-listed).
+
+  const filterOperations = [
+    'gegl:vignette',
+    'gegl:mono-mixer',
+    'gegl:motion-blur-linear',
+    'gegl:focus-blur',
+    'gegl:noise-rgb',
+    'gegl:dropshadow',
+  ];
+
+  it("covers exactly lib.py's FILTER_OPERATIONS (a new filter effect needs its golden)", () => {
+    const libPy = readFileSync(
+      join(__dirname, '..', '..', 'src', 'backends', 'gimp', 'bridge', 'lib.py'),
+      'utf8'
+    );
+    const block = libPy.match(/FILTER_OPERATIONS = \{([\s\S]*?)\n\}/);
+    expect(block, 'FILTER_OPERATIONS not found in lib.py').toBeTruthy();
+    const libOps = [...block![1].matchAll(/:\s*'([a-z]+:[a-z-]+)'/g)].map((m) => m[1]);
+    expect([...filterOperations].sort()).toEqual([...libOps].sort());
+  });
+
+  it('the golden fixture covers every filter operation the engine uses', () => {
+    for (const op of filterOperations) {
+      expect(golden, `missing golden entry for ${op}`).toHaveProperty(op);
+    }
+  });
+
+  it.each(filterOperations)('%s matches its committed schema golden', async (operation) => {
+    const result = await session.call<{
+      properties: Array<{
+        name: string;
+        type: string;
+        minimum: unknown;
+        maximum: unknown;
+        default: unknown;
+      }>;
+    }>('describe_operation', { operation });
+    expect(result.properties).toEqual(golden[operation]);
+  });
+
   it('an unknown operation name is refused as invalid_argument, not a crash', async () => {
     await expect(
       session.call('describe_operation', { operation: 'gegl:this-does-not-exist' })
