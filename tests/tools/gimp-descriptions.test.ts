@@ -228,4 +228,23 @@ describe('gimp_inspect describe-by-id targets (document/layers/channels/filter)'
       /same shape gimp_filter \(op=list\) reports it in/
     );
   });
+  // ops.py's MAX_DESCRIBE_LAYER_NODES caps the tree and reports `truncated: true` on the way out.
+  it('the what field and the tool description both state the 2000-node cap and truncated flag', () => {
+    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
+    for (const text of [whatText, descText]) {
+      expect(text).toMatch(/2000 nodes/);
+      expect(text).toMatch(/truncated.*true/);
+    }
+  });
+  // ops.py's _channels_summary (document) vs _channels_described (channels): coverage reads a
+  // full pixel buffer per channel, so `document` deliberately skips it.
+  it("document's channel listing is id/name only; channels carries coverage instead", () => {
+    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    expect(whatText).toMatch(/id\/name only \(no coverage\)/);
+    expect(whatText).toMatch(/coverage \(selected_pixels\/fraction\)/);
+    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
+    expect(descText).toMatch(/no coverage/);
+    expect(descText).toMatch(/coverage \(selected_pixels\/fraction\)/);
+  });
 });

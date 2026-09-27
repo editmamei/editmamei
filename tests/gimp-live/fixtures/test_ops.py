@@ -9,6 +9,7 @@
 # ops.py finds its sibling lib.py through EM_GIMP_OPS, so that is repointed before the exec.
 
 import os
+import time
 
 _here = os.path.dirname(os.path.abspath(os.environ['EM_GIMP_OPS']))
 _real_ops = os.path.normpath(
@@ -126,22 +127,64 @@ def op_test_proxy_filter_count(args):
     return {'filters': sum(len(layer.get_filters()) for layer in _all_layers(proxy))}
 
 
+def _pick_a_font():
+    """`Gimp.context_get_font()`, falling back to the first of `Gimp.fonts_get_list('')` (both
+    verified live) -- observed live that the context font can read None under concurrent load (a
+    fresh gimp-console still building its font cache while several others start at once), so a
+    single reliance on the context alone is flaky. Retries briefly (the font list itself can still
+    be loading, not just the context default) before giving up."""
+    font = Gimp.context_get_font()
+    if font is not None:
+        return font
+    for _ in range(20):
+        fonts = Gimp.fonts_get_list('')
+        if fonts:
+            return fonts[0]
+        time.sleep(0.25)
+    return None
+
+
 def op_test_add_text_layer(args):
     """Insert a real text layer at the top of the stack -- what `describe`'s `is_text_layer` flag
     is meant to catch, exercised against the real thing rather than only a plain pixel layer
     (which always reads False). `Gimp.TextLayer.new` needs a `Gimp.Font`, not a font name string
-    (verified live) -- the context's current font (`Gimp.context_get_font`) is used since this
-    fixture doesn't care which font, only that the layer really is a text layer."""
+    (verified live) -- `_pick_a_font` supplies one, retrying past a transient None rather than
+    failing this whole fixture on it."""
     img = _image(args)
-    font = Gimp.context_get_font()
+    font = _pick_a_font()
+    if font is None:
+        raise ValueError(
+            'no font available to build the text-layer fixture (GIMP font list empty or never '
+            'became ready)'
+        )
     layer = Gimp.TextLayer.new(img, args.get('text', 'Hi'), font, 24, Gimp.Unit.pixel())
     img.insert_layer(layer, None, 0)
     return {'layer_id': layer.get_id(), 'name': layer.get_name()}
 
 
+def op_test_nest_groups(args):
+    """Two levels of group nesting plus a separate empty group -- deep/edge-case structure for
+    `describe`'s layer tree: 'Outer' (group) > 'Inner' (group) > 'Deepest' (a copy of the base
+    layer), and a sibling 'Empty' group with no children at all."""
+    img = _image(args)
+    base = img.get_layers()[0]
+    outer = Gimp.GroupLayer.new(img, 'Outer')
+    img.insert_layer(outer, None, 0)
+    inner = Gimp.GroupLayer.new(img, 'Inner')
+    img.insert_layer(inner, outer, 0)
+    deepest = Gimp.Layer.new_from_drawable(base, img)
+    deepest.set_name('Deepest')
+    img.insert_layer(deepest, inner, 0)
+    empty = Gimp.GroupLayer.new(img, 'Empty')
+    img.insert_layer(empty, None, 0)
+    _drop_proxies(img.get_id())
+    return {'layers': [l.get_name() for l in _all_layers(img)]}
+
+
 OPS.update({
     'test_proxy_filter_count': op_test_proxy_filter_count,
     'test_metadata_tag': op_test_metadata_tag,
+    'test_nest_groups': op_test_nest_groups,
     'select_mask': op_test_select_mask,
     'export_mask': op_test_export_mask,
     'test_select_rect': op_test_select_rect,

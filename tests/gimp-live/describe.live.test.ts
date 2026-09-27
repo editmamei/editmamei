@@ -40,7 +40,15 @@ interface LayerNode {
   children: LayerNode[];
 }
 
-interface ChannelEntry {
+/** `document`'s cheap channel listing -- id/name only, no coverage (see `ChannelCoverage`). */
+interface ChannelSummary {
+  channel_id: number;
+  name: string;
+}
+
+/** `channels`' own listing -- the coverage stat `document` deliberately skips. */
+interface ChannelCoverage {
+  channel_id: number;
   name: string;
   selected_pixels: number;
   fraction: number;
@@ -54,11 +62,18 @@ interface DocumentDescribe {
   precision: string;
   resolution: { x: number; y: number };
   layers: LayerNode[];
-  channels: ChannelEntry[];
+  truncated: boolean;
+  channels: ChannelSummary[];
+}
+
+interface LayersDescribe {
+  layers: LayerNode[];
+  truncated: boolean;
 }
 
 interface FilterRecord {
   layer: string;
+  layer_id: number;
   filter_id: number;
   name: string;
   operation: string;
@@ -160,12 +175,16 @@ describe.skipIf(!install)('gimp_inspect describe-by-id', () => {
       });
       expect(backgroundNode).toMatchObject({ is_group: false, is_text_layer: false });
 
+      // 'document' lists channels by id/name only -- no coverage (that's what='channels' job,
+      // asserted in the next test): a small, deliberately fixed-shape fixture, so an unexpected
+      // 'selected_pixels'/'fraction' key here would mean the cost 'document' is meant to skip
+      // leaked back in.
+      expect(doc.truncated).toBe(false);
       expect(doc.channels).toHaveLength(1);
-      expect(doc.channels[0]).toMatchObject({ name: 'HalfMask' });
-      expect(doc.channels[0]!.fraction).toBeGreaterThan(0);
-      expect(doc.channels[0]!.fraction).toBeLessThanOrEqual(1);
+      expect(doc.channels[0]).toEqual({ channel_id: expect.any(Number), name: 'HalfMask' });
 
-      // ids are canonical: the nested filter's own filter_id round-trips through 'filter'.
+      // ids are canonical: the nested filter's own filter_id round-trips through 'filter', and
+      // its layer_id matches the nested layer's own id from the tree above.
       const described = await session.call<FilterRecord>('describe', {
         image,
         what: 'filter',
@@ -179,6 +198,7 @@ describe.skipIf(!install)('gimp_inspect describe-by-id', () => {
       expect(described).toEqual(fromList);
       expect(described).toMatchObject({
         layer: 'Nested',
+        layer_id: groupNode!.children[0]!.layer_id,
         name: 'NestedLift',
         source: 'editmamei',
         mask: 'HalfMask',
@@ -188,22 +208,104 @@ describe.skipIf(!install)('gimp_inspect describe-by-id', () => {
     }
   });
 
-  it("what='layers' and what='channels' each report just their own half of 'document'", async () => {
+  it("what='layers' returns exactly document's own layer tree + truncated flag; what='channels' adds coverage document deliberately skips", async () => {
     const { image } = await buildFixture();
     try {
       const doc = await session.call<DocumentDescribe>('describe', { image, what: 'document' });
-      const layersOnly = await session.call<{ layers: LayerNode[] }>('describe', {
+      const layersOnly = await session.call<LayersDescribe>('describe', {
         image,
         what: 'layers',
       });
-      const channelsOnly = await session.call<{ channels: ChannelEntry[] }>('describe', {
+      const channelsOnly = await session.call<{ channels: ChannelCoverage[] }>('describe', {
         image,
         what: 'channels',
       });
-      expect(layersOnly).toEqual({ layers: doc.layers });
-      expect(channelsOnly).toEqual({ channels: doc.channels });
+      expect(layersOnly).toEqual({ layers: doc.layers, truncated: doc.truncated });
+
+      // Same channel (by id and name), but 'channels' carries coverage that 'document' left out.
+      expect(channelsOnly.channels).toHaveLength(doc.channels.length);
+      expect(channelsOnly.channels[0]).toMatchObject({
+        channel_id: doc.channels[0]!.channel_id,
+        name: doc.channels[0]!.name,
+      });
+      expect(channelsOnly.channels[0]!.fraction).toBeGreaterThan(0);
+      expect(channelsOnly.channels[0]!.fraction).toBeLessThanOrEqual(1);
+      expect(typeof channelsOnly.channels[0]!.selected_pixels).toBe('number');
+      expect(doc.channels[0]).not.toHaveProperty('fraction');
+      expect(doc.channels[0]).not.toHaveProperty('selected_pixels');
     } finally {
       await session.call('close', { image });
+    }
+  });
+
+  it("what='document'/'layers' walk group-in-group (2 levels) and an empty group, and the deepest layer's filter is found by what='filter'", async () => {
+    const opened = await session.call<{ image: number }>('open', { path: rampPath });
+    const image = opened.image;
+    try {
+      await session.call('test_nest_groups', { image });
+      const filter = await session.call<{ filter_id: number }>('adjust', {
+        image,
+        type: 'brightness_contrast',
+        brightness: 20,
+        layer: 'Deepest',
+        name: 'DeepLift',
+      });
+
+      const doc = await session.call<DocumentDescribe>('describe', { image, what: 'document' });
+      expect(doc.truncated).toBe(false);
+      // Top-of-stack first: 'Empty' was inserted last (top level), then 'Outer' (also top
+      // level, inserted before 'Empty' existed), then the original background layer.
+      expect(doc.layers.map((l) => l.name)).toEqual(['Empty', 'Outer', 'Background']);
+      const [emptyNode, outerNode] = doc.layers;
+      expect(emptyNode).toMatchObject({ is_group: true, children: [] });
+      expect(outerNode).toMatchObject({ is_group: true });
+      expect(outerNode!.children).toHaveLength(1);
+      const innerNode = outerNode!.children[0]!;
+      expect(innerNode).toMatchObject({ name: 'Inner', is_group: true });
+      expect(innerNode.children).toHaveLength(1);
+      const deepestNode = innerNode.children[0]!;
+      expect(deepestNode).toMatchObject({ name: 'Deepest', is_group: false, is_text_layer: false });
+
+      const described = await session.call<FilterRecord>('describe', {
+        image,
+        what: 'filter',
+        filter_id: filter.filter_id,
+      });
+      expect(described).toMatchObject({ layer: 'Deepest', layer_id: deepestNode.layer_id });
+    } finally {
+      await session.call('close', { image });
+    }
+  });
+
+  it("what='filter' refuses a filter_id that belongs to a DIFFERENT image, even though the filter really exists", async () => {
+    const a = await session.call<{ image: number }>('open', { path: rampPath });
+    const b = await session.call<{ image: number }>('open', { path: rampPath });
+    try {
+      const filter = await session.call<{ filter_id: number }>('curves', {
+        image: a.image,
+        points: [
+          [0, 0],
+          [255, 255],
+        ],
+      });
+      await expect(
+        session.call('describe', { image: b.image, what: 'filter', filter_id: filter.filter_id })
+      ).rejects.toMatchObject({
+        code: 'invalid_argument',
+        message: expect.stringContaining(
+          `no filter with id ${filter.filter_id} on image ${b.image}`
+        ),
+      });
+      // Confirms the filter really does exist -- on A, just not on B.
+      const onA = await session.call<FilterRecord>('describe', {
+        image: a.image,
+        what: 'filter',
+        filter_id: filter.filter_id,
+      });
+      expect(onA.filter_id).toBe(filter.filter_id);
+    } finally {
+      await session.call('close', { image: a.image });
+      await session.call('close', { image: b.image });
     }
   });
 
