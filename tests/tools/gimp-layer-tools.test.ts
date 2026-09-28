@@ -6,10 +6,10 @@ import { callTool, assertToolShape } from '../fixtures/tool-helpers.ts';
 // `gimp_layer`'s schema is flat (one object covers every op), so `validateArgs` applies EVERY
 // declared default on EVERY call regardless of which op is active — the same "a default rides
 // along on an op that ignores it" behavior gimp_transform_canvas's own test file documents for
-// `expand`. `fill`/`position` therefore appear in every dispatched call below. `to_top_level` gets
-// the same default, but `layerBridgeArgs` always strips it before the bridge ever sees it (see its
-// own tests further down) -- a tool-only field, never one of the bridge's own.
-const LAYER_DEFAULTS = { fill: 'transparent', position: 0 };
+// `expand`. `fill`/`position`/`discard_hidden` therefore appear in every dispatched call below.
+// `to_top_level` gets the same default, but `layerBridgeArgs` always strips it before the bridge
+// ever sees it (see its own tests further down) -- a tool-only field, never one of the bridge's own.
+const LAYER_DEFAULTS = { fill: 'transparent', position: 0, discard_hidden: false };
 
 describe('createGimpLayerTools', () => {
   it('returns 2 well-formed tools with these names', () => {

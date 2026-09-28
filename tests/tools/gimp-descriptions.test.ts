@@ -292,11 +292,13 @@ describe('gimp_inspect describe-by-id targets (document/layers/channels/filter)'
   });
 });
 
-describe('gimp_layer: gimp_group is folded in', () => {
-  it('the tool description says create_group + reorder cover it', () => {
-    expect(description('gimp_layer').replace(/\s+/g, ' ')).toMatch(
-      /gimp_group is folded in as create_group \+ reorder's parent_group/
+describe('gimp_layer: a group is just another layer, no separate group tool', () => {
+  it('the tool description says so, without naming a tool that does not exist', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(
+      /a group is created, addressed, and reordered the same as any other layer — there is no separate group tool/
     );
+    expect(desc).not.toMatch(/gimp_group/);
   });
 });
 
@@ -311,15 +313,16 @@ describe('gimp_layer: addressing is layer_id (canonical) or layer (name)', () =>
 });
 
 describe('gimp_layer op=duplicate refuses on an Editmamei filter', () => {
-  // ops.py's op_layer duplicate branch: DrawableFilter.set_name does not exist on this GIMP
-  // build (verified live), and the ledger is keyed by filter name.
-  it('the tool description and op field both name DrawableFilter.set_name and the ledger-name collision', () => {
+  // ops.py's op_layer duplicate branch refuses rather than risk a ledger-name collision --
+  // the description states the behaviour (would collide) without probe narration (GIMP internals
+  // like DrawableFilter.set_name have no business in a user-facing description).
+  it('the tool description and op field both name the ledger-collision behaviour', () => {
     const desc = description('gimp_layer').replace(/\s+/g, ' ');
-    expect(desc).toMatch(/DrawableFilter\.set_name does not exist/);
+    expect(desc).toMatch(/would collide with the original's own ledger record/);
     expect(desc).toMatch(/bake it first \(gimp_bake\) or delete it, then duplicate/i);
     const opField = field('gimp_layer', 'op').replace(/\s+/g, ' ');
     expect(opField).toMatch(/REFUSED when the layer/);
-    expect(opField).toMatch(/silently rewrite the original's own record/);
+    expect(opField).toMatch(/collide with the original's own ledger record/);
   });
 });
 
@@ -338,12 +341,21 @@ describe('gimp_layer op=move refuses on a masked or unverifiable filter', () => 
   });
 });
 
-describe('gimp_layer merge_down/flatten bake filters and can rasterize text', () => {
-  it('the tool description says masked filters survive the merge, text is rasterized, and flatten drops alpha', () => {
+describe('gimp_layer merge_down/flatten bake filters and can rasterize a visible text layer', () => {
+  it('the tool description says masked filters are baked, a VISIBLE text layer is rasterized, and flatten drops alpha', () => {
     const desc = description('gimp_layer').replace(/\s+/g, ' ');
-    expect(desc).toMatch(/masked filters included.{0,40}verified correct through the merge/);
-    expect(desc).toMatch(/rasterize any text layer.*rasterized_text/);
+    expect(desc).toMatch(/masked filters included/);
+    expect(desc).toMatch(/rasterize any VISIBLE text layer.*rasterized_text/);
     expect(desc).toMatch(/flatten always drops alpha \(has_alpha: false\)/);
+  });
+  it('flatten refuses on a hidden layer by default and describes discard_hidden', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(
+      /REFUSES outright when any layer is hidden rather than silently discarding it \(discard_hidden: true proceeds and reports what was discarded\)/
+    );
+    const discardField = field('gimp_layer', 'discard_hidden').replace(/\s+/g, ' ');
+    expect(discardField).toMatch(/flatten only/);
+    expect(discardField).toMatch(/discarded_hidden_layers/);
   });
 });
 
@@ -364,21 +376,29 @@ describe('gimp_layer set: a fixed blend-mode list, not raw GEGL/GIMP names', () 
   });
 });
 
-describe('gimp_bake: probed and verified, clears the masked-filter refusal', () => {
-  it('the tool description says a masked filter survives the bake, and baking clears the geometry refusal', () => {
+describe('gimp_bake: bakes a masked filter correctly, never rasterizes text, clears the masked-filter refusal', () => {
+  it('the tool description states the bake behaviour without probe narration', () => {
     const desc = description('gimp_bake').replace(/\s+/g, ' ');
-    expect(desc).toMatch(
-      /Verified live that a MASKED filter's confinement survives the bake exactly/
-    );
+    expect(desc).toMatch(/A masked filter's confinement survives the bake exactly/);
+    expect(desc).toMatch(/a text layer stays a text layer \(baking never rasterizes one\)/);
     expect(desc).toMatch(/Baking clears any masked-filter refusal/);
     expect(desc).toMatch(
       /sanctioned way to make a masked adjustment safe to move, resize, rotate, or flip/
     );
+    expect(desc).not.toMatch(/verified live/i);
   });
-  it('says group layers are always skipped for all: true', () => {
+  it('says bake with no layer given defaults to the selected/topmost layer, like any other addressing', () => {
     expect(description('gimp_bake').replace(/\s+/g, ' ')).toMatch(
-      /group layers are always skipped \(GIMP cannot merge filters on a group item\)/
+      /Defaults to the selected layer, or the topmost layer if none is selected/
     );
+  });
+  it('says a group that carries its own filter is skipped under all: true and reported, and a direct group target is refused', () => {
+    const desc = description('gimp_bake').replace(/\s+/g, ' ');
+    expect(desc).toMatch(
+      /a group layer is always skipped, even one that carries its own filter \(GIMP cannot merge filters on a group item\)/
+    );
+    expect(desc).toMatch(/reported under skipped_groups_with_filters rather than silently ignored/);
+    expect(desc).toMatch(/Targeting a group directly \(layer\/layer_id\) is refused outright/);
   });
   it('is marked destructive and says there is no undo', () => {
     expect(byName.get('gimp_bake')!.annotations?.destructiveHint).toBe(true);
