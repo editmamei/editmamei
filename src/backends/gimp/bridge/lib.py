@@ -116,6 +116,51 @@ TIFF_COMPRESSIONS = ('none', 'lzw', 'packbits', 'jpeg', 'adobe_deflate')
 
 MASK_TYPES = ('rectangle', 'ellipse', 'gradient_linear', 'gradient_radial')
 
+# gimp_layer's blend-mode allow-list: user-facing name -> the `Gimp.LayerMode` enum member NAME
+# (a string; ops.py does `getattr(Gimp.LayerMode, LAYER_MODES[mode])` since this module stays
+# gi-free). Deliberately the NON-legacy modes only, and only the ones with a plain Photoshop-style
+# name -- GIMP 3.2.6 exposes ~30 more (LCH_*, *_LEGACY, DISSOLVE, BEHIND, ...) this tool doesn't
+# surface. Probed live (GIMP 3.2.6) and goldened via each member's own `.value_nick`:
+#   normal=normal multiply=multiply screen=screen overlay=overlay soft_light=softlight
+#   hard_light=hardlight darken=darken-only lighten=lighten-only difference=difference
+#   exclusion=exclusion addition=addition subtract=subtract divide=divide dodge=dodge burn=burn
+#   hue=hsv-hue saturation=hsv-saturation color=hsl-color luminosity=luminance
+# hue/saturation/color/luminosity map to the HSV/HSL (not LCH) variants -- those are the ones
+# GIMP's own UI labels plainly "Hue"/"Saturation"/"Color"/"Luminosity" without a "(LCH)" suffix.
+LAYER_MODES = {
+    'normal': 'NORMAL',
+    'multiply': 'MULTIPLY',
+    'screen': 'SCREEN',
+    'overlay': 'OVERLAY',
+    'soft_light': 'SOFTLIGHT',
+    'hard_light': 'HARDLIGHT',
+    'darken': 'DARKEN_ONLY',
+    'lighten': 'LIGHTEN_ONLY',
+    'difference': 'DIFFERENCE',
+    'exclusion': 'EXCLUSION',
+    'addition': 'ADDITION',
+    'subtract': 'SUBTRACT',
+    'divide': 'DIVIDE',
+    'dodge': 'DODGE',
+    'burn': 'BURN',
+    'hue': 'HSV_HUE',
+    'saturation': 'HSV_SATURATION',
+    'color': 'HSL_COLOR',
+    'luminosity': 'LUMINANCE',
+}
+
+
+def validate_layer_mode(value):
+    if value not in LAYER_MODES:
+        raise ValueError('mode must be one of %s' % sorted(LAYER_MODES))
+    return value
+
+
+# gimp_layer op=create's fill options -- verified live that `Gimp.FillType.TRANSPARENT` exists
+# and that a freshly created layer's content is otherwise undefined, so `create` always fills
+# explicitly rather than trusting whatever `Gimp.Layer.new` leaves behind.
+LAYER_FILLS = ('white', 'black', 'transparent')
+
 # Formats `_export_stripped` (ops.py) will write; every export/preview/compare raster save goes
 # through it, and it refuses any other extension outright rather than falling back to a bare,
 # metadata-unaware save.
@@ -597,6 +642,19 @@ def classify_geometry_filters(filters, live_filters):
         else:
             unverifiable.append(name)
     return masked, unverifiable
+
+
+def unique_name(taken, base):
+    """`base`, or `base` suffixed " 2", " 3", ... until it is not in `taken` (an iterable of
+    already-used names). GIMP allows duplicate names for both filters and layers, so nothing on
+    the GIMP side stops a caller who doesn't check first -- this is what backs the "unique names
+    enforced" contract for both the filter ledger (ops.py's `_unique_name`) and `gimp_layer`'s own
+    layer naming (`_unique_layer_name`)."""
+    taken = set(taken)
+    name, n = base, 2
+    while name in taken:
+        name, n = '%s %d' % (base, n), n + 1
+    return name
 
 
 def region_to_proxy_px(region, scale):

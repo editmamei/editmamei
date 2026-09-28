@@ -1175,5 +1175,63 @@ class TestGaussianBlur(unittest.TestCase):
         self.assertIn('gegl:gaussian-blur', lib.ALLOWED_DESCRIBE_OPERATIONS)
 
 
+class TestUniqueName(unittest.TestCase):
+    def test_returns_base_when_free(self):
+        self.assertEqual(lib.unique_name({'Other'}, 'Layer'), 'Layer')
+
+    def test_suffixes_when_taken(self):
+        self.assertEqual(lib.unique_name({'Layer'}, 'Layer'), 'Layer 2')
+
+    def test_keeps_incrementing_past_multiple_collisions(self):
+        self.assertEqual(lib.unique_name({'Layer', 'Layer 2', 'Layer 3'}, 'Layer'), 'Layer 4')
+
+    def test_does_not_mutate_its_input(self):
+        taken = {'Layer'}
+        lib.unique_name(taken, 'Layer')
+        self.assertEqual(taken, {'Layer'})
+
+    def test_accepts_any_iterable_not_just_a_set(self):
+        self.assertEqual(lib.unique_name(['Layer', 'Layer'], 'Layer'), 'Layer 2')
+
+
+class TestLayerModes(unittest.TestCase):
+    # gimp_layer op=set's blend-mode allow-list -- probed live (GIMP 3.2.6) and goldened via each
+    # member's own .value_nick in lib.py's own LAYER_MODES comment.
+    def test_every_user_facing_name_from_the_plan_is_present(self):
+        expected = {
+            'normal', 'multiply', 'screen', 'overlay', 'soft_light', 'hard_light', 'darken',
+            'lighten', 'difference', 'exclusion', 'addition', 'subtract', 'divide', 'dodge',
+            'burn', 'hue', 'saturation', 'color', 'luminosity',
+        }
+        self.assertEqual(set(lib.LAYER_MODES), expected)
+
+    def test_every_value_is_a_real_gimp_layermode_member_name(self):
+        # gi-free: this only checks the shape (an UPPER_CASE identifier-looking string) that
+        # ops.py's `getattr(Gimp.LayerMode, ...)` will resolve -- an actual GIMP round trip is the
+        # live test's job.
+        for name, member in lib.LAYER_MODES.items():
+            self.assertTrue(member.isupper(), '%s -> %r should be upper-case' % (name, member))
+            self.assertTrue(member.replace('_', '').isalpha(), '%s -> %r should be a bare identifier' % (name, member))
+
+    def test_validate_layer_mode_accepts_every_listed_name(self):
+        for name in lib.LAYER_MODES:
+            self.assertEqual(lib.validate_layer_mode(name), name)
+
+    def test_validate_layer_mode_rejects_a_raw_gimp_nick(self):
+        # 'darken-only' is what ops.py's own value_nick readback would report -- this validator
+        # only accepts the tool's own user-facing vocabulary, not the raw nick.
+        with self.assertRaises(ValueError):
+            lib.validate_layer_mode('darken-only')
+
+    def test_validate_layer_mode_rejects_unknown(self):
+        with self.assertRaises(ValueError):
+            lib.validate_layer_mode('vivid-light')
+
+
+class TestLayerFills(unittest.TestCase):
+    def test_fills_are_the_three_documented_choices(self):
+        self.assertEqual(set(lib.LAYER_FILLS), {'white', 'black', 'transparent'})
+
+
 if __name__ == '__main__':
     unittest.main()
