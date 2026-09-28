@@ -544,6 +544,14 @@ describe('gimp_place_image: multi-layer sources, mode conversion, and no metadat
       /there is no undo in this session: gimp_checkpoint or gimp_save_xcf first when in doubt/
     );
   });
+  it('says a filtered source layer is baked into its pixels before placing, never placed live', () => {
+    const text = description('gimp_place_image').replace(/\s+/g, ' ');
+    expect(text).toMatch(/baked into its pixels before placing/);
+    expect(text).toMatch(/never placed live/);
+    expect(text).toMatch(/baked_filters/);
+    const field_text = field('gimp_place_image', 'file_path').replace(/\s+/g, ' ');
+    expect(field_text).toMatch(/collide with a filter of the same name already on the target/);
+  });
 });
 
 describe('gimp_canvas: extend-only, anchor xor explicit offsets', () => {
@@ -561,6 +569,36 @@ describe('gimp_canvas: extend-only, anchor xor explicit offsets', () => {
   it("fill's transparent option says no fill layer is added at all", () => {
     expect(field('gimp_canvas', 'fill').replace(/\s+/g, ' ')).toMatch(
       /no fill layer is added at all/
+    );
+  });
+  it("fill's transparent option states the literal gimp_export/flatten behaviour (background color, not transparency)", () => {
+    const text = field('gimp_canvas', 'fill').replace(/\s+/g, ' ');
+    expect(text).toMatch(/gimp_export and gimp_layer op=flatten both flatten first/);
+    expect(text).toMatch(/GIMP's ambient background color \(white/);
+    expect(text).toMatch(/not with transparency/);
+  });
+  it('a non-transparent fill is described as a backdrop under the WHOLE canvas, showing through existing transparency too', () => {
+    const text = field('gimp_canvas', 'fill').replace(/\s+/g, ' ');
+    expect(text).toMatch(
+      /solid backdrop behind every existing layer, not just the newly added area/
+    );
+    expect(text).toMatch(/shows through any pre-existing transparency/);
+  });
+  it('describes a hex fill on a grayscale image as luminance', () => {
+    expect(field('gimp_canvas', 'fill').replace(/\s+/g, ' ')).toMatch(
+      /GRAYSCALE image a hex color renders as its LUMINANCE/
+    );
+  });
+  it('refuses a target that grows neither dimension', () => {
+    const text = description('gimp_canvas').replace(/\s+/g, ' ');
+    expect(text).toMatch(/REFUSED when neither dimension actually grows/);
+    expect(field('gimp_canvas', 'width')).toMatch(
+      /at least one of width\/height must actually be LARGER/
+    );
+  });
+  it('mentions gimp_checkpoint alongside gimp_save_xcf', () => {
+    expect(description('gimp_canvas').replace(/\s+/g, ' ')).toMatch(
+      /gimp_checkpoint or gimp_save_xcf first when in doubt/
     );
   });
   it('is marked destructive and says there is no undo', () => {
@@ -585,5 +623,15 @@ describe('gimp_convert_image_mode: indexed refused, no-op reported, refuses on a
     expect(text).toMatch(/REFUSES outright while the image has ANY live filter/);
     expect(text).toMatch(/gimp_bake/);
     expect(text).toMatch(/gimp_filter op=delete/);
+  });
+  it('says the no-op check runs BEFORE the live-filter refusal', () => {
+    expect(description('gimp_convert_image_mode').replace(/\s+/g, ' ')).toMatch(
+      /checked BEFORE the live-filter refusal below/
+    );
+  });
+  it('mentions gimp_checkpoint alongside gimp_save_xcf', () => {
+    expect(description('gimp_convert_image_mode').replace(/\s+/g, ' ')).toMatch(
+      /gimp_checkpoint or gimp_save_xcf first when in doubt/
+    );
   });
 });
