@@ -1326,6 +1326,13 @@ describe.skipIf(!install)('geometry and masks', () => {
       // _refuse_if_masked_filters already uses), not just a bare "refused".
       expect(message).toContain('Vignette');
       expect(message).toContain('15');
+      // Refused BEFORE anything mutates: the canvas is still exactly its pre-rotate size (the
+      // ramp fixture is 256x32), not left half-transformed or resized by the refused attempt.
+      const unchangedPath = join(workDir, 'arbitrary-rotate-refused-unchanged.png');
+      await session.call('export', { image: opened.image, path: unchangedPath });
+      const unchanged = readPng(unchangedPath);
+      expect(unchanged.width).toBe(256);
+      expect(unchanged.height).toBe(32);
       // A right angle on the SAME image, with the SAME effect present, must NOT be refused for
       // this reason -- proves the refusal is scoped to the angle, not to the effect's mere
       // presence.
@@ -1394,8 +1401,9 @@ describe.skipIf(!install)('geometry and masks', () => {
       }
       expect(error).toMatchObject({ code: 'invalid_argument' });
       const message = (error as Error).message;
-      expect(message).toContain('motion_blur');
-      expect(message).toContain('length');
+      expect(message).toContain('Motion Blur'); // the filter's own (default) name
+      expect(message).toContain('length'); // the tool's own field name
+      expect(message).not.toContain('bake');
       // Nothing was mutated: the canvas is still the original size, and the filter's own length
       // is still exactly what it was created with.
       const unchangedPath = join(workDir, 'resize-refusal-unchanged.png');
@@ -1408,6 +1416,130 @@ describe.skipIf(!install)('geometry and masks', () => {
       }>('filter', { image: opened.image, op: 'list' });
       const rec = listed.filters.find((f) => f.filter_id === created.filter_id)!;
       expect(rec.params.length).toBe(900);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it("rotate 90 moves a vignette on an OFFSET, non-canvas-sized layer using that layer's own extent", async () => {
+    // A 300x300 canvas with a 100x50 layer sitting at (100,125) -- not spanning the canvas at
+    // all -- so this can only pass if the transform reads the LAYER's own (100x50 -> 50x100)
+    // extent, not the canvas's (300x300, which wouldn't swap at 90 the same way and would give a
+    // visibly different center).
+    const canvasPath = join(workDir, 'vignette-offset-layer-canvas.png');
+    writeCheckerboard(canvasPath, 300, 300, 999, 150, 150);
+
+    const a = await session.call<{ image: number }>('open', { path: canvasPath });
+    await session.call('test_add_offset_layer', {
+      image: a.image,
+      name: 'Small',
+      x: 100,
+      y: 125,
+      width: 100,
+      height: 50,
+    });
+    await session.call('effect', {
+      image: a.image,
+      type: 'vignette',
+      layer: 'Small',
+      center_x: 0.3,
+      center_y: 0.7,
+      radius: 0.4,
+      softness: 0.3,
+    });
+    await session.call('rotate', { image: a.image, degrees: 90, expand: false });
+    const outA = join(workDir, 'vignette-offset-layer-a.png');
+    await session.call('export', { image: a.image, path: outA });
+    await session.call('close', { image: a.image });
+
+    // rotate_point_fraction(0.3, 0.7, 90, 100, 50, 50, 100): old_cx=50,old_cy=25;
+    // dx=0.3*100-50=-20, dy=0.7*50-25=10; rx=dx*cos90-dy*sin90=0-10=-10;
+    // ry=dx*sin90+dy*cos90=-20+0=-20; new center=(25-10,50-20)/(50,100)=(0.3,0.3).
+    const b = await session.call<{ image: number }>('open', { path: canvasPath });
+    await session.call('test_add_offset_layer', {
+      image: b.image,
+      name: 'Small',
+      x: 100,
+      y: 125,
+      width: 100,
+      height: 50,
+    });
+    await session.call('rotate', { image: b.image, degrees: 90, expand: false });
+    await session.call('effect', {
+      image: b.image,
+      type: 'vignette',
+      layer: 'Small',
+      center_x: 0.3,
+      center_y: 0.3,
+      radius: 0.4,
+      softness: 0.3,
+    });
+    const outB = join(workDir, 'vignette-offset-layer-b.png');
+    await session.call('export', { image: b.image, path: outB });
+    await session.call('close', { image: b.image });
+
+    expect(maxAbsDiff(readPng(outA), readPng(outB))).toBeLessThanOrEqual(3);
+  });
+
+  it('a live-update failure restores the filter to its OLD params (ledger matches what renders) and reports effect_update_failures', async () => {
+    const flatPath = join(workDir, 'vignette-update-failure-flat.png');
+    writeCheckerboard(flatPath, 200, 200, 999, 150, 150);
+    const opened = await session.call<{ image: number }>('open', { path: flatPath });
+    try {
+      const created = await session.call<{ filter_id: number; name: string }>('effect', {
+        image: opened.image,
+        type: 'vignette',
+        center_x: 0.2,
+        center_y: 0.5,
+        radius: 0.4,
+        softness: 0.3,
+      });
+      const result = await session.call<{ effect_update_failures?: string[] }>(
+        'test_force_effect_update_failure',
+        {
+          image: opened.image,
+          operation: 'gegl:vignette',
+          geometry_op: 'flip',
+          orientation: 'horizontal',
+        }
+      );
+      expect(result.effect_update_failures).toEqual([created.name]);
+      // The ledger record must still say the OLD center (0.2), not the flipped 0.8 the transform
+      // computed but couldn't apply -- the ledger has to match what's actually rendering.
+      const listed = await session.call<{
+        filters: Array<{ filter_id: number; params: Record<string, unknown> }>;
+      }>('filter', { image: opened.image, op: 'list' });
+      const rec = listed.filters.find((f) => f.filter_id === created.filter_id)!;
+      expect(rec.params.center_x).toBe(0.2);
+      expect(rec.params.center_y).toBe(0.5);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('a name shared by more than one live filter refuses the geometry op (cannot tell which ledger record is which)', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: rampPath });
+    try {
+      const created = await session.call<{ filter_id: number; name: string }>('effect', {
+        image: opened.image,
+        type: 'vignette',
+        radius: 0.6,
+      });
+      // A second, live filter under the EXACT same name -- what a hand-edited or GUI-authored
+      // document could produce, bypassing _unique_name (which only ever runs on THIS bridge's
+      // own create path).
+      await session.call('test_add_foreign_filter', {
+        image: opened.image,
+        operation: 'gegl:vignette',
+        name: created.name,
+      });
+      for (const [label, call] of [
+        ['rotate', () => session.call('rotate', { image: opened.image, degrees: 90 })],
+        ['flip', () => session.call('flip', { image: opened.image, orientation: 'horizontal' })],
+        ['resize', () => session.call('resize', { image: opened.image, long_edge: 64 })],
+      ] as const) {
+        await expect(call(), label).rejects.toMatchObject({ code: 'invalid_argument' });
+      }
     } finally {
       await session.call('close', { image: opened.image });
     }

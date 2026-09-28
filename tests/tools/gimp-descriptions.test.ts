@@ -190,6 +190,10 @@ describe('gimp_add_effect: allow-listed GEGL effect filters (dev-tier sibling of
     expect(text).toMatch(/refused while a position\/direction-dependent filter is present/);
     expect(text).not.toContain('gimp_add_effect');
   });
+
+  it('the arbitrary-angle refusal says to delete and re-add, never "bake"', () => {
+    expect(description('gimp_transform_canvas')).not.toMatch(/\bbake\b/);
+  });
 });
 
 describe('gimp_add_adjustment scope: one layer, one range', () => {
