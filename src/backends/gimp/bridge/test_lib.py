@@ -1221,7 +1221,7 @@ class TestUserParams(unittest.TestCase):
     def test_every_generic_type_is_covered(self):
         self.assertEqual(set(USER_ARGS_BY_TYPE), set(lib.ADJUST_PARAM_BUILDERS))
         # USER_FIELDS is one shared dict covering BOTH families (gimp_add_adjustment's `adjust`
-        # types and gimp_filter's `apply` effects) -- `user_params` dispatches on `type_` alone,
+        # types and gimp_add_effect's `effect` types) -- `user_params` dispatches on `type_` alone,
         # with no notion of which bridge op a given type belongs to.
         self.assertEqual(
             set(lib.USER_FIELDS),
@@ -1370,6 +1370,40 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
     new effect filters only (vignette/motion_blur/drop_shadow have direction/position params;
     black_white/add_noise/lens_blur do not and must round-trip unchanged, except lens_blur's own
     radius under resize, covered separately below)."""
+
+    # ---- gimp_add_adjustment filters (and any other operation not in this table) must round-trip
+    # through flip/rotate/resize completely untouched -- an earlier version of this code rounded
+    # the WHOLE returned params dict unconditionally, which perturbed a non-terminating value (like
+    # hue_saturation's own `hue`, stored as degrees/180) in its 9th-10th decimal place -- enough for
+    # `_snapshot_effect_transform`'s `new_params == params` check to wrongly treat an UNTOUCHED
+    # adjustment filter as needing a live re-apply and a ledger rewrite on every single flip/
+    # rotate/resize, regardless of what it actually did.
+
+    def test_flip_leaves_hue_saturation_completely_untouched_at_10_over_180(self):
+        params = {'range': 'all', 'hue': lib.degrees_to_unit('hue', 10), 'saturation': 0.2, 'lightness': 0.0}
+        self.assertEqual(params['hue'], 10 / 180)  # the exact non-terminating value under test
+        result = lib.flip_effect_params('gimp:hue-saturation', params, 'horizontal')
+        self.assertEqual(result, params)
+        self.assertIs(result, params)  # not even a copy -- this operation has nothing to say here
+
+    def test_flip_leaves_hue_saturation_completely_untouched_at_a_second_non_terminating_value(self):
+        params = {'range': 'red', 'hue': lib.degrees_to_unit('hue', 100), 'saturation': 0.5, 'lightness': -0.2}
+        self.assertEqual(params['hue'], 100 / 180)
+        result = lib.flip_effect_params('gimp:hue-saturation', params, 'vertical')
+        self.assertEqual(result, params)
+        self.assertIs(result, params)
+
+    def test_rotate_leaves_hue_saturation_completely_untouched(self):
+        params = {'range': 'all', 'hue': lib.degrees_to_unit('hue', 10), 'saturation': 0.2, 'lightness': 0.0}
+        result = lib.rotate_effect_params('gimp:hue-saturation', params, 90.0, 200, 200)
+        self.assertEqual(result, params)
+        self.assertIs(result, params)
+
+    def test_resize_leaves_hue_saturation_completely_untouched(self):
+        params = {'range': 'all', 'hue': lib.degrees_to_unit('hue', 100), 'saturation': 0.2, 'lightness': 0.0}
+        result = lib.resize_effect_params('gimp:hue-saturation', params, 2.0, 3.0)
+        self.assertEqual(result, params)
+        self.assertIs(result, params)
 
     def test_wrap_angle_normalizes_into_the_validated_range(self):
         self.assertEqual(lib._wrap_angle_deg(0.0), 0.0)
