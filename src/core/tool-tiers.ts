@@ -333,6 +333,12 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // flatten) and baking a layer's live filters into its own pixels.
   gimp_layer: 'dev',
   gimp_bake: 'dev',
+  // First-class multi-layer documents: build one from scratch, composite another file into it,
+  // extend its canvas, and change its color mode.
+  gimp_create_document: 'dev',
+  gimp_place_image: 'dev',
+  gimp_canvas: 'dev',
+  gimp_convert_image_mode: 'dev',
 };
 
 /**

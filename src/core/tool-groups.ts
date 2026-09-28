@@ -316,6 +316,10 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   gimp_checkpoint: 'document',
   gimp_layer: 'layers',
   gimp_bake: 'layers',
+  gimp_create_document: 'document',
+  gimp_place_image: 'document',
+  gimp_canvas: 'document',
+  gimp_convert_image_mode: 'document',
 };
 
 /**

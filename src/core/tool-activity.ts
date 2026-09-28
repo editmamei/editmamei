@@ -227,6 +227,13 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   // same gimp_filter/gimp_checkpoint bias) and every OTHER op mutates.
   'gimp_layer',
   'gimp_bake',
+  // gimp_create_document/gimp_place_image/gimp_canvas/gimp_convert_image_mode: document
+  // creation/composition and canvas/mode changes, the same document-lifecycle class
+  // gimp_open_document counts as mutating above.
+  'gimp_create_document',
+  'gimp_place_image',
+  'gimp_canvas',
+  'gimp_convert_image_mode',
 ]);
 
 /*
