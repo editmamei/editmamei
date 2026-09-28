@@ -7,15 +7,15 @@ import { GIMP_IMAGE_PROP, GIMP_LAYER_PROP, pickSchemaDeclaredKeys } from './gimp
 /**
  * gimp_add_effect — the sibling of gimp_add_adjustment for a small allow-listed set of GEGL
  * EFFECT filters (vignette, black_white, motion_blur, lens_blur, add_noise, drop_shadow), rather
- * than a new op on gimp_filter: tier 'dev', per the house rule that new capability ships at
- * 'dev' until the owner promotes it — `tool-tiers.ts` classifies per TOOL, not per op, so an
- * `apply` op grafted onto gimp_filter (already 'community') would have bypassed that gate
- * entirely. `type` picks the GEGL operation (`bridge/lib.py`'s `EFFECT_OPERATIONS`), the same
- * discriminated-tool shape gimp_add_adjustment uses for its own `type`. Dispatches through the
- * bridge's `effect` op (`bridge/ops.py`'s `op_effect`), which reuses the SAME `_apply_filter`
- * machinery `op_adjust` does — ledger, mask confinement, merge-on-re-edit, geometry refusals,
- * and proxy mirroring all come free, unchanged. `gimp_filter` (list / set_visibility / delete)
- * manages the resulting stack exactly as it does for gimp_add_adjustment's own filters.
+ * than a new op on gimp_filter: tier 'dev' (`tool-tiers.ts` classifies per TOOL, not per op, so
+ * an `apply` op grafted onto gimp_filter, already 'community', would ship live immediately with
+ * no dev-tier gate at all). `type` picks the GEGL operation (`bridge/lib.py`'s
+ * `EFFECT_OPERATIONS`), the same discriminated-tool shape gimp_add_adjustment uses for its own
+ * `type`. Dispatches through the bridge's `effect` op (`bridge/ops.py`'s `op_effect`), which
+ * reuses the SAME `_apply_filter` machinery `op_adjust` does — ledger, mask confinement,
+ * merge-on-re-edit, geometry refusals, and proxy mirroring all come free, unchanged.
+ * `gimp_filter` (list / set_visibility / delete) manages the resulting stack exactly as it does
+ * for gimp_add_adjustment's own filters.
  *
  * ## Why most numeric fields below have NO schema `default`
  *
@@ -26,11 +26,13 @@ import { GIMP_IMAGE_PROP, GIMP_LAYER_PROP, pickSchemaDeclaredKeys } from './gimp
  *
  * ## Field-name collisions across `type`s (a real bridge-side fact, not a schema bug, the same
  * situation gimp_add_adjustment documents for its own fields): `radius` is used by vignette
- * (0..3, a fraction of the image's own half-diagonal, scale-invariant), lens_blur (0..1500 px,
- * full-resolution) and drop_shadow (0..1500 px). A flat JSON Schema can only declare ONE bound
- * per property name, so it is widened here to the UNION (0..1500) — the bridge still enforces
- * the PRECISE per-effect bound and reports `invalid_argument` naming it when a value is in the
- * union but out of range for the `type` actually given.
+ * (0..3, proportional — see the `radius` field's own description), lens_blur (0..150 px,
+ * full-resolution — a much lower cap than the other two, measured live: 'lens' mode blur is
+ * expensive, ~35s for a full-res 24 MP export at radius 300) and drop_shadow (0..1500 px). A
+ * flat JSON Schema can only declare ONE bound per property name, so it is widened here to the
+ * UNION (0..1500) — the bridge still enforces the PRECISE per-effect bound and reports
+ * `invalid_argument` naming it when a value is in the union but out of range for the `type`
+ * actually given.
  *
  * `color` (vignette's tint, drop_shadow's shadow color) is NOT exposed as a schema field —
  * left at GEGL's own default (black) — the same posture as the unexposed `shape` fields below.
@@ -97,11 +99,13 @@ const effectSchema: JsonSchemaObject = {
       minimum: 0,
       maximum: 1500,
       description:
-        "vignette: how far the darkened corners reach in, 0..3 as a fraction of the image's own " +
-        'half-diagonal (scale-invariant — the same value looks right at any resolution). Default ' +
-        '(when creating): 1.2. lens_blur: blur radius in pixels at full resolution, 0..1500 ' +
-        '(default 25 when creating). drop_shadow: blur radius in pixels at full resolution, ' +
-        '0..1500 (default 10 when creating). Both are SPATIAL (radius-scaled on the proxy ' +
+        'vignette: how far the darkened corners reach in, 0..3, proportional to the image (not ' +
+        'absolute pixels — the same value looks visually equivalent at any resolution). Default ' +
+        '(when creating): 1.2. lens_blur: blur radius in pixels at full resolution, 0..150 ' +
+        '(default 25 when creating) — capped much lower than the other two effects here (measured ' +
+        'live: expensive at full resolution). drop_shadow: blur radius in pixels at full ' +
+        'resolution, 0..1500 (default 10 when creating), clipped to the layer bounds rather than ' +
+        'growing it. Both lens_blur and drop_shadow are SPATIAL (radius-scaled on the proxy ' +
         'preview, see gimp_overview). The bridge enforces the precise range for whichever ' +
         '`type` you gave.',
     },
