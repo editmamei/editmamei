@@ -15,9 +15,10 @@ import { GIMP_IMAGE_PROP } from './gimp-shared.js';
  * There is no bridge op here: `create` dispatches the SAME `export` op
  * `gimp_save_xcf` uses, to a file inside this factory's OWN checkpoint
  * directory (see "Storage" below) instead of a caller-supplied path — the
- * `.xcf` branch of the bridge's `op_export` keeps every live filter
- * re-editable via the ledger parasite (`ops.py:1231-1238`), so a restored
- * checkpoint is not just pixels. `restore` dispatches `open` on that file,
+ * `.xcf` branch of the bridge's `op_export` (selected by the path's own
+ * extension, same as `gimp_save_xcf`) keeps every live filter re-editable
+ * via the ledger parasite, so a restored checkpoint is not just pixels.
+ * `restore` dispatches `open` on that file,
  * then `close` on the image the checkpoint is replacing. `delete` touches
  * only the in-memory registry and the filesystem, no bridge call at all.
  * `list` touches only the registry too, UNLESS a GIMP session is already
@@ -44,7 +45,10 @@ import { GIMP_IMAGE_PROP } from './gimp-shared.js';
  * `registerDirForExitCleanup`). A directory left behind by a process that
  * crashed or was killed before its own exit hook could run is swept the
  * next time a checkpoint is created, matched by name and confirmed dead by
- * pid liveness (never by age) — see `sweepStaleCheckpointDirs`.
+ * pid liveness — reclaimed only once it is ALSO more than an hour old (a
+ * safety floor for two separate pid namespaces sharing one temp root; see
+ * `sweepStaleCheckpointDirs`'s own doc comment for that and the narrower
+ * same-pid case it also handles).
  *
  * The registry is a plain `Map` living in this factory's closure. A host
  * that builds this factory once per server process gets one registry for
@@ -89,6 +93,12 @@ import { GIMP_IMAGE_PROP } from './gimp-shared.js';
 
 /** Refuse the 6th `create` for one image rather than silently evicting the oldest. */
 export const MAX_CHECKPOINTS_PER_IMAGE = 5;
+
+/** Refuse a `create` once this store holds this many records OVERALL, across every image and
+ * regardless of openness — bounds this store's own disk usage, which a record whose image has
+ * since closed still consumes until it's explicitly deleted, not just how many one still-open
+ * image may accumulate (`MAX_CHECKPOINTS_PER_IMAGE` above). */
+export const MAX_CHECKPOINTS_TOTAL = 20;
 
 /** Exported for `cleanupCheckpointDirs` / `sweepStaleCheckpointDirs`'s own unit tests — see
  * tests/tools/gimp-checkpoint-tools.test.ts. */
@@ -250,8 +260,10 @@ async function refreshOpenness(
  * has nothing to do with. When generation is NOT known (the baseline path), a sibling already
  * marked gone for some other reason is left alone too, rather than incorrectly reviving it just
  * because its stale number matches. `newGeneration` is stamped onto every record this moves,
- * since they now describe an image live in THAT generation. */
-function repointSiblings(
+ * since they now describe an image live in THAT generation.
+ *
+ * Exported for its own direct unit test — see tests/tools/gimp-checkpoint-tools.test.ts. */
+export function repointSiblings(
   registry: Map<string, CheckpointRecord>,
   from: number,
   to: number,
@@ -422,6 +434,14 @@ function registerDirForExitCleanup(dir: string): void {
   process.once('exit', () => cleanupCheckpointDirs(trackedDirs));
 }
 
+/** Exposed ONLY for this file's own unit tests — proves a directory `ensureStoreDir` creates is
+ * really a member of the SAME module-scoped set the shared exit listener above sweeps, not merely
+ * independently cleanable via `cleanupCheckpointDirs`. Read-only: nothing outside this file can
+ * add to or remove from `trackedDirs` through it. */
+export function isTrackedForExitCleanup(dir: string): boolean {
+  return trackedDirs.has(dir);
+}
+
 /**
  * Lazily creates (once) and returns this store's own checkpoint directory. Never runs at
  * factory-construction time — that would need a resolved GIMP install just to register the tool
@@ -489,9 +509,18 @@ async function checkpointCreate(
   const dir = await ensureStoreDir(gimp, store);
   maybeSweepSiblingDirs(store, dir);
   await refreshOpenness(gimp, registry, { requireAlreadyRunning: false });
-  // ---- Synchronous from here to the reservation below: no `await` runs between the cap check
-  // and placing the reservation in the registry, so two concurrent creates for the same image
-  // can never both pass the check before either one counts against the cap. ----
+  // ---- Synchronous from here to the reservation below: no `await` runs between either cap check
+  // and placing the reservation in the registry, so two concurrent creates can never both pass a
+  // check before either one counts against it. ----
+  if (registry.size >= MAX_CHECKPOINTS_TOTAL) {
+    throw new GimpError(
+      'invalid_argument',
+      `this checkpoint store already holds ${MAX_CHECKPOINTS_TOTAL} checkpoints, its overall ` +
+        `limit across every image (including ones whose image has since closed — they still hold ` +
+        `disk space until deleted). Delete one first — gimp_checkpoint op=delete — or list them ` +
+        `with op=list.`
+    );
+  }
   const existingOpen = [...registry.values()].filter((r) => r.image === image && r.open);
   if (existingOpen.length >= MAX_CHECKPOINTS_PER_IMAGE) {
     throw new GimpError(
@@ -653,6 +682,17 @@ async function checkpointDelete(
   };
 }
 
+/** The bridge's `open` op answers with its full `_describe(img)` result — same shape
+ * gimp_open_document's own `OpenResult` surfaces — not just the id/dimensions a new image needs. */
+interface OpenedCheckpointImage {
+  image: number;
+  width: number;
+  height: number;
+  base_type: string;
+  precision: string;
+  layers: string[];
+}
+
 async function checkpointRestore(
   gimp: GimpBackend,
   args: Record<string, unknown>,
@@ -660,9 +700,11 @@ async function checkpointRestore(
 ): Promise<ToolResult> {
   const { registry } = store;
   const record = requireKnownCheckpoint(args, 'restore', registry);
-  let opened: { image: number; width: number; height: number };
+  // Same `open` op, same bridge `_describe(img)` result shape gimp_open_document surfaces —
+  // forwarded below the same way, not just the bare image/width/height a NEW image needs.
+  let opened: OpenedCheckpointImage;
   try {
-    opened = await gimp.call<{ image: number; width: number; height: number }>('open', {
+    opened = await gimp.call<OpenedCheckpointImage>('open', {
       path: record.path,
     });
   } catch (openError) {
@@ -719,8 +761,9 @@ async function checkpointRestore(
       `(its number may now belong to a different, unrelated image)`;
     markSiblingsGone(registry, oldImage, oldGeneration);
   } else {
-    // Same generation, or generation isn't reachable on this backend — fall back to attempting
-    // the close and classifying the result, same as before generation existed.
+    // Same generation, or generation isn't reachable on this backend — attempt the close and
+    // classify the outcome by its error CODE (isSessionRestartedError / isImageAlreadyClosedError
+    // below), rather than assuming anything from generation alone.
     try {
       await gimp.call('close', { image: oldImage });
       closeNote = `image ${oldImage} closed`;
@@ -782,6 +825,9 @@ async function checkpointRestore(
       image: opened.image,
       width: opened.width,
       height: opened.height,
+      base_type: opened.base_type,
+      precision: opened.precision,
+      layers: opened.layers,
       close_failed: closeFailed,
     },
   };
@@ -841,13 +887,17 @@ export function createGimpCheckpointTools(gimp: GimpBackend): ToolDefinition[] {
           "image has since closed doesn't count against a different image that later reuses the " +
           'same number. A 6th op=create for the same still-open image REFUSES outright rather ' +
           'than silently evicting the oldest — delete one first (op=delete) or list them ' +
-          '(op=list) to see what exists. Checkpoint files are kept while this server runs and ' +
-          'removed when it exits; files left by a server that crashed are removed the next time ' +
-          'a checkpoint is made. op=list reports checkpoint_id, the image it currently belongs ' +
-          'to, created_at, and its size in bytes — never a file path (a full path carries the ' +
-          'username) — plus open: false for a checkpoint whose image has since closed (still ' +
-          "restorable; just excluded from that image's own scoped list and cap) and pending: " +
-          'true while a create is still in flight. An unknown checkpoint_id on restore or delete ' +
+          `(op=list) to see what exists. This store also holds at most ${MAX_CHECKPOINTS_TOTAL} ` +
+          'checkpoints in total, across every image, since each one still takes up disk space ' +
+          'until deleted. Checkpoint files are kept while this server runs and removed when it ' +
+          'exits; files left by a server that crashed or was killed are cleaned up by a later ' +
+          'server, once they are more than an hour old, the next time a checkpoint is made. ' +
+          'op=list reports checkpoint_id, the image it currently belongs to, created_at, and its ' +
+          'size in bytes — never a file path (a full path carries the username) — plus open: ' +
+          'false for a checkpoint whose image has since closed (still restorable; just excluded ' +
+          "from that image's own scoped list and cap) and pending: true while a create is still " +
+          "in flight. op=restore also returns the reopened image's base_type, precision, and " +
+          'layers, the same as gimp_open_document. An unknown checkpoint_id on restore or delete ' +
           'is refused, naming every checkpoint_id that IS known.',
         inputSchema: checkpointSchema,
         outputSchema: {
@@ -858,6 +908,9 @@ export function createGimpCheckpointTools(gimp: GimpBackend): ToolDefinition[] {
             old_image: { type: 'number' },
             width: { type: 'number' },
             height: { type: 'number' },
+            base_type: { type: 'string' },
+            precision: { type: 'string' },
+            layers: { type: 'array', items: { type: 'string' } },
             bytes: { type: 'number' },
             created_at: { type: 'string' },
             deleted: { type: 'boolean' },

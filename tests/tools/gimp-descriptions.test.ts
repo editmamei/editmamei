@@ -208,13 +208,23 @@ describe('gimp_checkpoint: disk-backed undo substitute', () => {
     expect(text).toMatch(/at most 5 checkpoints/);
     expect(text).toMatch(/REFUSES outright rather than silently evicting the oldest/);
   });
-  it("says checkpoint files are kept while the server runs and removed at exit, and a crashed server's leftovers are removed on the next checkpoint", () => {
+  it("says checkpoint files are kept while the server runs and removed at exit, and a crashed server's leftovers are cleaned up later once they're over an hour old", () => {
     const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
     expect(text).toMatch(
       /Checkpoint files are kept while this server runs and removed when it exits/
     );
     expect(text).toMatch(
-      /files left by a server that crashed are removed the next time a checkpoint is made/
+      /files left by a server that crashed or was killed are cleaned up by a later server, once they are more than an hour old, the next time a checkpoint is made/
+    );
+  });
+  it('states the total-checkpoint-store cap, across every image', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(/at most 20 checkpoints in total, across every image/);
+  });
+  it('says restore also returns base_type, precision, and layers, like gimp_open_document', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(
+      /returns the reopened image's base_type, precision, and layers, the same as gimp_open_document/
     );
   });
   it('qualifies "the old image id stops working" for when close fails', () => {

@@ -45,15 +45,12 @@ const install: GimpInstall | null = await detectGimp();
  * proc?: { pid?: number } }).proc?.pid`), one level further through `GimpBackend`'s own private
  * `session` field.
  *
- * An earlier version of this file tried to force the same thing by racing a 1ms `timeoutMs`
- * against a real bridge round trip (reasoning that the bridge's own `serve(poll_s=0.005)` loop
- * couldn't possibly answer that fast) — that raced GENUINE bridge latency against a wall-clock
- * deadline and, on a warmed-up session, occasionally lost: `ping` sometimes answered inside 1ms
- * anyway, so the "timeout" never fired and the test flaked. A direct `SIGKILL` has no such race:
- * the process is simply gone, and `GimpSession`'s own `#send` loop notices via `hasExited(proc)`
- * on its very next poll, with the full default call timeout to retry into — no deadline pressure
- * at all. This is also a more faithful model of the real-world event these tests exist for (an
- * OS or the user killing gimp-console out from under the session) than a self-inflicted timeout.
+ * A direct `SIGKILL` has no race against wall-clock timing: the process is simply gone, and
+ * `GimpSession`'s own `#send` loop notices via `hasExited(proc)` on its very next poll, with the
+ * full default call timeout to retry into — no deadline pressure at all, unlike racing a real
+ * bridge round trip against an artificially short `timeoutMs`. It is also a more faithful model
+ * of the real-world event these tests exist for (an OS or the user killing gimp-console out from
+ * under the session) than a self-inflicted timeout.
  */
 function killGimpProcess(backend: GimpBackend): void {
   const pid = (backend as unknown as { session?: { proc?: { pid?: number } } }).session?.proc?.pid;
@@ -233,8 +230,8 @@ describe.skipIf(!install)('gimp_checkpoint against real headless GIMP', () => {
     expect(checkpoint.isError, JSON.stringify(checkpoint.content)).toBeFalsy();
     const checkpointId = (checkpoint.structuredContent as { checkpoint_id: string }).checkpoint_id;
 
-    // Force a REAL, deterministic kill — see killGimpProcess's own doc comment for why this
-    // replaced an earlier, flakier attempt at forcing the same thing via a racy timeout.
+    // Force a REAL, deterministic kill — see killGimpProcess's own doc comment for why a direct
+    // SIGKILL is used here instead of forcing a timeout.
     killGimpProcess(backend);
 
     // The NEXT call referencing the now-gone image surfaces the restart to the model
