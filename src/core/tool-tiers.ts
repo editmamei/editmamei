@@ -329,6 +329,16 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // Disk-backed checkpoints (create/restore/list/delete), the headless
   // substitute for undo.
   gimp_checkpoint: 'dev',
+  // Layer management (create/create_group/delete/duplicate/select/set/move/reorder/merge_down/
+  // flatten) and baking a layer's live filters into its own pixels.
+  gimp_layer: 'dev',
+  gimp_bake: 'dev',
+  // First-class multi-layer documents: build one from scratch, composite another file into it,
+  // extend its canvas, and change its color mode.
+  gimp_create_document: 'dev',
+  gimp_place_image: 'dev',
+  gimp_canvas: 'dev',
+  gimp_convert_image_mode: 'dev',
 };
 
 /**

@@ -67,6 +67,7 @@ describe('geometry refusals name BOTH conditions (masked filters and filters Edi
   const places: Array<[string, string]> = [
     ['gimp_resize_image', description('gimp_resize_image')],
     ['gimp_transform_canvas', description('gimp_transform_canvas')],
+    ['gimp_canvas', description('gimp_canvas')],
     ['gimp_add_adjustment', description('gimp_add_adjustment')],
     ['gimp_add_adjustment mask', field('gimp_add_adjustment', 'mask')],
     ['gimp_create_mask', description('gimp_create_mask')],
@@ -431,6 +432,278 @@ describe('gimp_inspect describe-by-id targets (document/layers/channels/filter)'
     expect(descText).toMatch(/no coverage/);
     expect(descText).toMatch(/coverage \(selected_pixels\/fraction\)/);
   });
+});
+
+describe('gimp_layer: a group is just another layer, no separate group tool', () => {
+  it('the tool description says so, without naming a tool that does not exist', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(
+      /a group is created, addressed, and reordered the same as any other layer — there is no separate group tool/
+    );
+    expect(desc).not.toMatch(/gimp_group/);
+  });
+});
+
+describe('gimp_layer: addressing is layer_id (canonical) or layer (name)', () => {
+  it('the tool description and layer_id field both say layer_id is canonical', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/layer_id \(canonical/);
+    expect(field('gimp_layer', 'layer_id').replace(/\s+/g, ' ')).toMatch(
+      /only way to address two layers that happen to share a name/
+    );
+  });
+});
+
+describe('gimp_layer op=duplicate refuses on an Editmamei filter', () => {
+  // ops.py's op_layer duplicate branch refuses rather than risk a ledger-name collision --
+  // the description states the behaviour (would collide) without probe narration (GIMP internals
+  // like DrawableFilter.set_name have no business in a user-facing description).
+  it('the tool description and op field both name the ledger-collision behaviour', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/would collide with the original's own ledger record/);
+    expect(desc).toMatch(/bake it first \(gimp_bake\) or delete it, then duplicate/i);
+    const opField = field('gimp_layer', 'op').replace(/\s+/g, ' ');
+    expect(opField).toMatch(/REFUSED when the layer/);
+    expect(opField).toMatch(/collide with the original's own ledger record/);
+  });
+});
+
+describe('gimp_layer op=move refuses on a masked or unverifiable filter', () => {
+  // ops.py's _refuse_if_masked_filters_on: a filter's mask does not travel with set_offsets
+  // (verified live), the same physics gimp_transform_canvas already refuses on.
+  it('the tool description, op field, and x/y fields all say move is an ABSOLUTE offset that refuses on a masked filter, on the layer or a containing group', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/ABSOLUTE x\/y \(not a delta\)/);
+    expect(desc).toMatch(/does not travel with content that moves beneath it/);
+    const opField = field('gimp_layer', 'op').replace(/\s+/g, ' ');
+    expect(opField).toMatch(/ABSOLUTE x\/y \(not a delta\)/);
+    expect(opField).toMatch(/or a group containing it, carries a masked or unverifiable/);
+    expect(opField).toMatch(/does not travel with content that moves beneath it/);
+    expect(field('gimp_layer', 'x')).toMatch(/ABSOLUTE horizontal offset/);
+    expect(field('gimp_layer', 'y')).toMatch(/ABSOLUTE vertical offset/);
+  });
+});
+
+describe('gimp_layer merge_down/flatten bake filters and can rasterize a visible text layer', () => {
+  it('the tool description says masked filters are baked, a VISIBLE text layer is rasterized, and flatten drops alpha', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/masked filters included/);
+    expect(desc).toMatch(/rasterize any VISIBLE text layer.*rasterized_text/);
+    expect(desc).toMatch(/flatten always drops alpha \(has_alpha: false\)/);
+  });
+  it('merge_down refuses when the SOURCE layer itself is hidden', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/merge_down REFUSES outright when the SOURCE layer itself is hidden/);
+    expect(field('gimp_layer', 'op').replace(/\s+/g, ' ')).toMatch(
+      /REFUSED if the SOURCE layer itself is hidden/
+    );
+  });
+  it('flatten refuses on a hidden layer by default and describes discard_hidden', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(
+      /REFUSES outright when any layer is hidden — INCLUDING one whose own visibility is on but sits inside a hidden group/
+    );
+    expect(field('gimp_layer', 'op').replace(/\s+/g, ' ')).toMatch(
+      /REFUSES by default when any layer is hidden, INCLUDING a layer whose own visibility is on but sits inside a hidden group/
+    );
+    const discardField = field('gimp_layer', 'discard_hidden').replace(/\s+/g, ' ');
+    expect(discardField).toMatch(/flatten only/);
+    expect(discardField).toMatch(/discarded_hidden_layers/);
+  });
+});
+
+describe('gimp_layer: no undo in this session', () => {
+  it('says gimp_checkpoint or gimp_save_xcf first, matching the checkpoint/save framing elsewhere', () => {
+    expect(description('gimp_layer').replace(/\s+/g, ' ')).toMatch(
+      /there is no undo in this session: gimp_checkpoint or gimp_save_xcf first when in doubt/
+    );
+  });
+});
+
+describe('gimp_layer set: a fixed blend-mode list, not raw GEGL/GIMP names', () => {
+  it('the op field and mode field both say so', () => {
+    expect(field('gimp_layer', 'op').replace(/\s+/g, ' ')).toMatch(
+      /mode is a blend mode from a fixed list, not a raw GEGL\/GIMP name/
+    );
+    expect(field('gimp_layer', 'mode')).toMatch(/not a raw GEGL\/GIMP mode name/);
+  });
+});
+
+describe('gimp_bake: bakes a masked filter correctly, never rasterizes text, clears the masked-filter refusal', () => {
+  it('the tool description states the bake behaviour without probe narration', () => {
+    const desc = description('gimp_bake').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/A masked filter's confinement survives the bake exactly/);
+    expect(desc).toMatch(/a text layer stays a text layer \(baking never rasterizes one\)/);
+    expect(desc).toMatch(/Baking clears any masked-filter refusal/);
+    expect(desc).toMatch(
+      /\(gimp_layer op=move, gimp_canvas, gimp_resize_image, gimp_transform_canvas\)/
+    );
+    expect(desc).toMatch(
+      /sanctioned way to make a masked adjustment safe to move, resize, rotate, or flip/
+    );
+    expect(desc).not.toMatch(/verified live/i);
+  });
+  it('says bake with no layer given defaults to the selected/topmost layer, like any other addressing', () => {
+    expect(description('gimp_bake').replace(/\s+/g, ' ')).toMatch(
+      /Defaults to the selected layer, or the topmost layer if none is selected/
+    );
+  });
+  it('says a group that carries its own filter is skipped under all: true and reported, and a direct group target is refused', () => {
+    const desc = description('gimp_bake').replace(/\s+/g, ' ');
+    expect(desc).toMatch(
+      /a group layer is always skipped, even one that carries its own filter \(GIMP cannot merge filters on a group item\)/
+    );
+    expect(desc).toMatch(/reported under skipped_groups_with_filters rather than silently ignored/);
+    expect(desc).toMatch(/Targeting a group directly \(layer\/layer_id\) is refused outright/);
+  });
+  it('is marked destructive and says there is no undo', () => {
+    expect(byName.get('gimp_bake')!.annotations?.destructiveHint).toBe(true);
+    expect(description('gimp_bake').replace(/\s+/g, ' ')).toMatch(
+      /IRREVERSIBLE in this session: there is no undo/
+    );
+  });
+});
+
+describe('gimp_create_document: returns the same shape gimp_open_document does', () => {
+  it('the tool description says so', () => {
+    expect(description('gimp_create_document').replace(/\s+/g, ' ')).toMatch(
+      /exact same shape gimp_open_document does/
+    );
+  });
+  it('is not from a file (that distinction is stated explicitly)', () => {
+    expect(description('gimp_create_document')).toMatch(/not from a file/);
+  });
+});
+
+describe('gimp_place_image: multi-layer sources, mode conversion, and no metadata leak', () => {
+  it('says a multi-layer source places only one layer, not a flattened composite', () => {
+    const text = description('gimp_place_image').replace(/\s+/g, ' ');
+    expect(text).toMatch(/only ONE of them is placed/);
+    expect(text).toMatch(/not a flattened composite/);
+  });
+  it('says a color-mode mismatch converts automatically rather than being refused', () => {
+    expect(description('gimp_place_image').replace(/\s+/g, ' ')).toMatch(
+      /converted automatically on load, never refused/
+    );
+  });
+  it('says x/y are an ABSOLUTE offset, matching gimp_layer op=move', () => {
+    expect(description('gimp_place_image').replace(/\s+/g, ' ')).toMatch(
+      /ABSOLUTE document-pixel offset \(not a delta\)/
+    );
+  });
+  it("says nothing from the source file's own metadata attaches, and no path appears in the result", () => {
+    const text = description('gimp_place_image').replace(/\s+/g, ' ');
+    expect(text).toMatch(/[Nn]othing from the source file's own metadata.*attaches/);
+    expect(text).toMatch(/no path.*appears in the result/);
+  });
+  it('says there is no undo in this session', () => {
+    expect(description('gimp_place_image').replace(/\s+/g, ' ')).toMatch(
+      /there is no undo in this session: gimp_checkpoint or gimp_save_xcf first when in doubt/
+    );
+  });
+  it('says a filtered source layer is baked into its pixels before placing, never placed live', () => {
+    const text = description('gimp_place_image').replace(/\s+/g, ' ');
+    expect(text).toMatch(/baked into its pixels before placing/);
+    expect(text).toMatch(/never placed live/);
+    expect(text).toMatch(/baked_filters/);
+    const field_text = field('gimp_place_image', 'file_path').replace(/\s+/g, ' ');
+    expect(field_text).toMatch(/collide with a filter of the same name already on the target/);
+  });
+});
+
+describe('gimp_canvas: extend-only, anchor xor explicit offsets', () => {
+  it('refuses to shrink, naming gimp_crop_document instead', () => {
+    const text = description('gimp_canvas').replace(/\s+/g, ' ');
+    expect(text).toMatch(/never shrink/);
+    expect(text).toMatch(/gimp_crop_document/);
+  });
+  it('anchor and offset_x/offset_y are described as mutually exclusive', () => {
+    const desc = description('gimp_canvas').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/give one or the other, not both/);
+    expect(field('gimp_canvas', 'anchor')).toMatch(/[Mm]utually exclusive with offset_x/);
+    expect(field('gimp_canvas', 'offset_x')).toMatch(/mutually exclusive with anchor/);
+  });
+  it("fill's transparent option says no fill layer is added at all", () => {
+    expect(field('gimp_canvas', 'fill').replace(/\s+/g, ' ')).toMatch(
+      /no fill layer is added at all/
+    );
+  });
+  it("fill's transparent option states the literal gimp_export/flatten behaviour (background color, not transparency)", () => {
+    const text = field('gimp_canvas', 'fill').replace(/\s+/g, ' ');
+    expect(text).toMatch(/gimp_export and gimp_layer op=flatten both flatten first/);
+    expect(text).toMatch(/GIMP's ambient background color \(white/);
+    expect(text).toMatch(/not with transparency/);
+  });
+  it('a non-transparent fill is described as a backdrop under the WHOLE canvas, showing through existing transparency too', () => {
+    const text = field('gimp_canvas', 'fill').replace(/\s+/g, ' ');
+    expect(text).toMatch(
+      /solid backdrop behind every existing layer, not just the newly added area/
+    );
+    expect(text).toMatch(/shows through any pre-existing transparency/);
+  });
+  it('describes a hex fill on a grayscale image as luminance', () => {
+    expect(field('gimp_canvas', 'fill').replace(/\s+/g, ' ')).toMatch(
+      /GRAYSCALE image a hex color renders as its LUMINANCE/
+    );
+  });
+  it('refuses a target that grows neither dimension', () => {
+    const text = description('gimp_canvas').replace(/\s+/g, ' ');
+    expect(text).toMatch(/REFUSED when neither dimension actually grows/);
+    expect(field('gimp_canvas', 'width')).toMatch(
+      /at least one of width\/height must actually be LARGER/
+    );
+  });
+  it('mentions gimp_checkpoint alongside gimp_save_xcf', () => {
+    expect(description('gimp_canvas').replace(/\s+/g, ' ')).toMatch(
+      /gimp_checkpoint or gimp_save_xcf first when in doubt/
+    );
+  });
+  it('is marked destructive and says there is no undo', () => {
+    expect(byName.get('gimp_canvas')!.annotations?.destructiveHint).toBe(true);
+    expect(description('gimp_canvas').replace(/\s+/g, ' ')).toMatch(
+      /IRREVERSIBLE in this session: there is no undo/
+    );
+  });
+  it('says the masked-filter refusal only fires when the existing content actually moves', () => {
+    const desc = description('gimp_canvas').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/AND the existing content actually moves/);
+    expect(desc).toMatch(/a top-left anchor never moves anything/);
+  });
+  it('says a non-transparent fill is refused outright on an indexed image', () => {
+    expect(field('gimp_canvas', 'fill').replace(/\s+/g, ' ')).toMatch(
+      /REFUSED outright, before the canvas resizes at all/
+    );
+  });
+});
+
+describe('gimp_convert_image_mode: indexed refused, no-op reported, refuses on any live filter', () => {
+  it('refuses an indexed source outright', () => {
+    expect(description('gimp_convert_image_mode')).toMatch(/indexed.*is refused outright/);
+  });
+  it('says converting to the current mode is a no-op reported as converted: false', () => {
+    expect(description('gimp_convert_image_mode').replace(/\s+/g, ' ')).toMatch(
+      /no-op when the image is already the requested mode \(reported as converted: false/
+    );
+  });
+  it('refuses while ANY live filter is present, naming both the bake and delete escapes', () => {
+    const text = description('gimp_convert_image_mode').replace(/\s+/g, ' ');
+    expect(text).toMatch(/REFUSES outright while the image has ANY live filter/);
+    expect(text).toMatch(/gimp_bake/);
+    expect(text).toMatch(/gimp_filter op=delete/);
+  });
+  it('says the no-op check runs BEFORE the live-filter refusal', () => {
+    expect(description('gimp_convert_image_mode').replace(/\s+/g, ' ')).toMatch(
+      /checked BEFORE the live-filter refusal below/
+    );
+  });
+  it('mentions gimp_checkpoint alongside gimp_save_xcf', () => {
+    expect(description('gimp_convert_image_mode').replace(/\s+/g, ' ')).toMatch(
+      /gimp_checkpoint or gimp_save_xcf first when in doubt/
+    );
+  });
+});
+
+describe('gimp_inspect describe-by-id: top_level_count/total_nodes/channels_skipped', () => {
   // ops.py's op_describe adds top_level_count (the image's real top-level layer count) and
   // total_nodes (how many nodes this response carries) alongside truncated.
   it('the what field and the tool description both mention top_level_count and total_nodes', () => {

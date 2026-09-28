@@ -223,6 +223,17 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   // as mutating above), and classification is per tool NAME, so the same
   // known bias as gimp_filter's read-only op=list applies here.
   'gimp_checkpoint',
+  // gimp_layer: op=select changes no pixels/structure, but classification is per tool NAME (the
+  // same gimp_filter/gimp_checkpoint bias) and every OTHER op mutates.
+  'gimp_layer',
+  'gimp_bake',
+  // gimp_create_document/gimp_place_image/gimp_canvas/gimp_convert_image_mode: document
+  // creation/composition and canvas/mode changes, the same document-lifecycle class
+  // gimp_open_document counts as mutating above.
+  'gimp_create_document',
+  'gimp_place_image',
+  'gimp_canvas',
+  'gimp_convert_image_mode',
 ]);
 
 /*

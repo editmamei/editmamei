@@ -302,6 +302,28 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // list/delete touch no bridge op at all, but the tool shares one timeout
   // across whichever op a call makes.
   gimp_checkpoint: 90_000,
+  // gimp_layer: merge_down and flatten render every touched layer's live filters at full
+  // resolution before compositing -- the same class of cost gimp_export/gimp_save_xcf/gimp_bake
+  // already budget 90s for -- and every other sub-op still pays a proxy rebuild on top of its own
+  // cost, so the whole tool shares that one, higher budget rather than a per-op split.
+  gimp_layer: 90_000,
+  // gimp_bake: `Drawable.merge_filters()` renders every live filter at full resolution -- the
+  // same class of cost gimp_export/gimp_save_xcf already budget 90s for, and `all: true` can do
+  // this for several layers in one call.
+  gimp_bake: 90_000,
+  // gimp_create_document: builds an image and its default preview proxy, no file I/O -- cheap,
+  // same order of magnitude as gimp_inspect/gimp_create_mask.
+  gimp_create_document: 15_000,
+  // gimp_place_image: loads a file plus an optional scale of the placed layer -- matched to
+  // gimp_open_document's own budget for the same class of file-load cost.
+  gimp_place_image: 30_000,
+  // gimp_canvas: a resize-canvas primitive plus (unless fill is transparent) one full-canvas
+  // fill layer -- matched to gimp_resize_image's own budget for the same "grows the working set"
+  // reasoning, though canvas extend itself is cheaper since it never resamples existing pixels.
+  gimp_canvas: 30_000,
+  // gimp_convert_image_mode: a single base-type conversion pass over the whole image -- matched
+  // to gimp_resize_image's budget for the same "full-image pass" class of cost.
+  gimp_convert_image_mode: 30_000,
 };
 
 /**

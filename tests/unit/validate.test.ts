@@ -91,6 +91,64 @@ describe('validateArgs', () => {
       expect(validateArgs(schema, { x: 'a' })).toEqual({ x: 'a' });
       expect(() => validateArgs(schema, { x: 'c' })).toThrow(/Allowed: a, b/);
     });
+
+    it('enforces a pattern alone (no enum)', () => {
+      const schema: JsonSchemaObject = {
+        type: 'object',
+        properties: { x: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$' } },
+      };
+      expect(validateArgs(schema, { x: '#336699' })).toEqual({ x: '#336699' });
+      expect(() => validateArgs(schema, { x: 'red' })).toThrow(/required pattern/);
+    });
+
+    it('when BOTH enum and pattern are declared, a value must satisfy BOTH (standard JSON Schema semantics, not "either")', () => {
+      const schema: JsonSchemaObject = {
+        type: 'object',
+        properties: {
+          x: {
+            type: 'string',
+            enum: ['white', 'black'],
+            pattern: '^w', // 'white' passes; 'black' is in the enum but fails this pattern
+          },
+        },
+      };
+      expect(validateArgs(schema, { x: 'white' })).toEqual({ x: 'white' });
+      // In the enum but fails the pattern -- proves AND, not OR: passing one check is not enough.
+      expect(() => validateArgs(schema, { x: 'black' })).toThrow(/required pattern/);
+      // Fails the enum outright (and, incidentally, the pattern too).
+      expect(() => validateArgs(schema, { x: 'wrong' })).toThrow(/Allowed: white, black/);
+      expect(() => validateArgs(schema, { x: 'bogus' })).toThrow(/Allowed: white, black/);
+    });
+
+    it('a value in the enum but failing the pattern is still rejected (AND, not OR)', () => {
+      const schema: JsonSchemaObject = {
+        type: 'object',
+        properties: {
+          x: {
+            type: 'string',
+            enum: ['white', 'black', 'transparent'],
+            pattern: '^#[0-9a-fA-F]{6}$',
+          },
+        },
+      };
+      // No value can satisfy BOTH a plain-word enum and a hex-only pattern at once -- this
+      // constructed example exists purely to prove AND-not-OR (a real schema declares one or the
+      // other, never a combination that admits nothing, which is why gimp_canvas's own `fill`
+      // field uses `pattern` alone). 'white' passes the enum but fails the pattern; '#336699'
+      // passes the pattern but fails the enum -- BOTH are refused, each for a different reason.
+      expect(() => validateArgs(schema, { x: 'white' })).toThrow(/required pattern/);
+      expect(() => validateArgs(schema, { x: '#336699' })).toThrow(
+        /Allowed: white, black, transparent/
+      );
+    });
+
+    it('a malformed pattern string surfaces as a clear schema-bug error, naming the field', () => {
+      const schema: JsonSchemaObject = {
+        type: 'object',
+        properties: { x: { type: 'string', pattern: '[' } }, // an unterminated character class
+      };
+      expect(() => validateArgs(schema, { x: 'anything' })).toThrow(/schema bug.*"x"/i);
+    });
   });
 
   describe('number coercion', () => {

@@ -911,6 +911,29 @@ class TestRequireBool(unittest.TestCase):
             lib.require_bool({}, 'visible')
 
 
+class TestOptionalBool(unittest.TestCase):
+    def test_accepts_true_and_false(self):
+        self.assertIs(lib.optional_bool({'discard_hidden': True}, 'discard_hidden'), True)
+        self.assertIs(lib.optional_bool({'discard_hidden': False}, 'discard_hidden'), False)
+
+    def test_missing_key_returns_the_default(self):
+        self.assertIs(lib.optional_bool({}, 'discard_hidden'), False)
+        self.assertIs(lib.optional_bool({}, 'all', default=True), True)
+
+    def test_none_returns_the_default(self):
+        self.assertIs(lib.optional_bool({'discard_hidden': None}, 'discard_hidden'), False)
+
+    def test_rejects_the_string_false(self):
+        # The same regression require_bool guards against: `bool("false")` is `True` in Python,
+        # so a caller sending the STRING "false" must be rejected, not silently coerced to True.
+        with self.assertRaisesRegex(ValueError, 'discard_hidden'):
+            lib.optional_bool({'discard_hidden': 'false'}, 'discard_hidden')
+
+    def test_rejects_the_integer_one(self):
+        with self.assertRaisesRegex(ValueError, 'all'):
+            lib.optional_bool({'all': 1}, 'all')
+
+
 class TestValidateRegion(unittest.TestCase):
     def test_accepts_a_region_entirely_within_bounds(self):
         region = {'x': 10, 'y': 10, 'width': 50, 'height': 50}
@@ -970,6 +993,92 @@ class TestValidateResizeDims(unittest.TestCase):
     def test_rejects_non_positive(self):
         with self.assertRaises(ValueError):
             lib.validate_resize_dims(0, 100)
+
+
+class TestValidateDocumentDims(unittest.TestCase):
+    def test_defaults_to_the_8_bit_cap(self):
+        self.assertEqual(lib.validate_document_dims(1920, 1080), (1920, 1080))
+        self.assertEqual(lib.DOCUMENT_MEGAPIXEL_CAP['8'], lib.MAX_RESIZE_MEGAPIXELS)
+
+    def test_16_bit_cap_is_half_the_8_bit_cap(self):
+        self.assertEqual(lib.DOCUMENT_MEGAPIXEL_CAP['16'], 125)
+        over_16 = int((125 * 1_000_000) ** 0.5) + 100
+        with self.assertRaises(ValueError):
+            lib.validate_document_dims(over_16, over_16, '16')
+        # The identical dims stay under the 8-bit cap -- the ceiling is precision-specific, not an
+        # absolute size limit.
+        lib.validate_document_dims(over_16, over_16, '8')
+
+    def test_32_bit_cap_is_a_quarter_of_the_8_bit_cap(self):
+        self.assertEqual(lib.DOCUMENT_MEGAPIXEL_CAP['32'], 60)
+        over_32 = int((60 * 1_000_000) ** 0.5) + 100
+        with self.assertRaises(ValueError):
+            lib.validate_document_dims(over_32, over_32, '32')
+        lib.validate_document_dims(over_32, over_32, '16')
+
+    def test_rejects_a_side_over_the_shared_per_side_cap_regardless_of_precision(self):
+        with self.assertRaises(ValueError):
+            lib.validate_document_dims(lib.MAX_RESIZE_SIDE_PX + 1, 100, '32')
+
+    def test_rejects_non_positive(self):
+        with self.assertRaises(ValueError):
+            lib.validate_document_dims(0, 100)
+
+
+class TestValidateCanvasFill(unittest.TestCase):
+    def test_accepts_every_layer_fill(self):
+        for value in lib.LAYER_FILLS:
+            self.assertEqual(lib.validate_canvas_fill(value), value)
+
+    def test_accepts_a_hex_color(self):
+        self.assertEqual(lib.validate_canvas_fill('#336699'), '#336699')
+        self.assertEqual(lib.validate_canvas_fill('#FFFFFF'), '#FFFFFF')
+
+    def test_rejects_a_malformed_hex_color(self):
+        for bad in ('#369', '336699', '#gggggg', '#3366990', '', '#336699\n', ' #336699'):
+            with self.assertRaises(ValueError):
+                lib.validate_canvas_fill(bad)
+
+    def test_rejects_an_unknown_word(self):
+        with self.assertRaises(ValueError):
+            lib.validate_canvas_fill('red')
+
+
+class TestCanvasAnchorOffset(unittest.TestCase):
+    def test_top_left_pins_the_old_content_at_the_origin(self):
+        self.assertEqual(lib.canvas_anchor_offset('top_left', 100, 50, 200, 150), (0, 0))
+
+    def test_bottom_right_puts_all_the_growth_before_the_old_content(self):
+        self.assertEqual(lib.canvas_anchor_offset('bottom_right', 100, 50, 200, 150), (100, 100))
+
+    def test_center_splits_the_growth_evenly(self):
+        self.assertEqual(lib.canvas_anchor_offset('center', 100, 50, 200, 150), (50, 50))
+
+    def test_center_floors_an_odd_split(self):
+        # 100 -> 203 is 103px of growth; center's 0.5 fraction gives exactly 51.5 -- floor() picks
+        # 51 (round() would pick 52 here, since Python's round() is round-half-TO-EVEN: 52 is the
+        # nearer even integer to 51.5) -- pinned as a literal so a future round()/floor() swap
+        # would be caught by an exact-value regression, not just the general property test below.
+        self.assertEqual(lib.canvas_anchor_offset('center', 100, 100, 203, 100), (51, 0))
+
+    def test_every_named_anchor_keeps_old_content_within_the_new_canvas(self):
+        for anchor in lib.CANVAS_ANCHORS:
+            ox, oy = lib.canvas_anchor_offset(anchor, 100, 50, 200, 150)
+            self.assertTrue(0 <= ox <= 100, anchor)
+            self.assertTrue(0 <= oy <= 100, anchor)
+
+    def test_rejects_an_unknown_anchor(self):
+        with self.assertRaises(ValueError):
+            lib.canvas_anchor_offset('upper-leftish', 100, 50, 200, 150)
+
+    def test_no_growth_is_always_zero_offset_regardless_of_anchor(self):
+        for anchor in lib.CANVAS_ANCHORS:
+            self.assertEqual(lib.canvas_anchor_offset(anchor, 100, 100, 100, 100), (0, 0))
+
+
+class TestImageModes(unittest.TestCase):
+    def test_is_rgb_and_grayscale_only(self):
+        self.assertEqual(set(lib.IMAGE_MODES), {'rgb', 'grayscale'})
 
 
 class TestValidateFeatherPx(unittest.TestCase):
@@ -1897,6 +2006,64 @@ class TestGaussianBlur(unittest.TestCase):
     def test_is_spatial_on_the_proxy(self):
         self.assertEqual(lib.SPATIAL_SCALE_PROPS['gegl:gaussian-blur'], ('std-dev-x', 'std-dev-y'))
         self.assertIn('gegl:gaussian-blur', lib.ALLOWED_DESCRIBE_OPERATIONS)
+
+
+class TestUniqueName(unittest.TestCase):
+    def test_returns_base_when_free(self):
+        self.assertEqual(lib.unique_name({'Other'}, 'Layer'), 'Layer')
+
+    def test_suffixes_when_taken(self):
+        self.assertEqual(lib.unique_name({'Layer'}, 'Layer'), 'Layer 2')
+
+    def test_keeps_incrementing_past_multiple_collisions(self):
+        self.assertEqual(lib.unique_name({'Layer', 'Layer 2', 'Layer 3'}, 'Layer'), 'Layer 4')
+
+    def test_does_not_mutate_its_input(self):
+        taken = {'Layer'}
+        lib.unique_name(taken, 'Layer')
+        self.assertEqual(taken, {'Layer'})
+
+    def test_accepts_any_iterable_not_just_a_set(self):
+        self.assertEqual(lib.unique_name(['Layer', 'Layer'], 'Layer'), 'Layer 2')
+
+
+class TestLayerModes(unittest.TestCase):
+    # gimp_layer op=set's blend-mode allow-list -- probed live (GIMP 3.2.6) and goldened via each
+    # member's own .value_nick in lib.py's own LAYER_MODES comment.
+    def test_every_supported_blend_mode_name_is_present(self):
+        expected = {
+            'normal', 'multiply', 'screen', 'overlay', 'soft_light', 'hard_light', 'darken',
+            'lighten', 'difference', 'exclusion', 'addition', 'subtract', 'divide', 'dodge',
+            'burn', 'hue', 'saturation', 'color', 'luminosity',
+        }
+        self.assertEqual(set(lib.LAYER_MODES), expected)
+
+    def test_every_value_is_a_real_gimp_layermode_member_name(self):
+        # gi-free: this only checks the shape (an UPPER_CASE identifier-looking string) that
+        # ops.py's `getattr(Gimp.LayerMode, ...)` will resolve -- an actual GIMP round trip is the
+        # live test's job.
+        for name, member in lib.LAYER_MODES.items():
+            self.assertTrue(member.isupper(), '%s -> %r should be upper-case' % (name, member))
+            self.assertTrue(member.replace('_', '').isalpha(), '%s -> %r should be a bare identifier' % (name, member))
+
+    def test_validate_layer_mode_accepts_every_listed_name(self):
+        for name in lib.LAYER_MODES:
+            self.assertEqual(lib.validate_layer_mode(name), name)
+
+    def test_validate_layer_mode_rejects_a_raw_gimp_nick(self):
+        # 'darken-only' is what ops.py's own value_nick readback would report -- this validator
+        # only accepts the tool's own user-facing vocabulary, not the raw nick.
+        with self.assertRaises(ValueError):
+            lib.validate_layer_mode('darken-only')
+
+    def test_validate_layer_mode_rejects_unknown(self):
+        with self.assertRaises(ValueError):
+            lib.validate_layer_mode('vivid-light')
+
+
+class TestLayerFills(unittest.TestCase):
+    def test_fills_are_the_three_documented_choices(self):
+        self.assertEqual(set(lib.LAYER_FILLS), {'white', 'black', 'transparent'})
 
 
 if __name__ == '__main__':

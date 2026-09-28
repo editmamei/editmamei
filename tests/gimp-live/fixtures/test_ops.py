@@ -159,6 +159,7 @@ def op_test_add_text_layer(args):
         )
     layer = Gimp.TextLayer.new(img, args.get('text', 'Hi'), font, 24, Gimp.Unit.pixel())
     img.insert_layer(layer, None, 0)
+    _drop_proxies(img.get_id())  # cached proxies predate this layer
     return {'layer_id': layer.get_id(), 'name': layer.get_name()}
 
 
@@ -336,6 +337,37 @@ def op_test_ledger_dump(args):
     return {'names': sorted(filters.keys())}
 
 
+_TEST_IMAGE_BASE_TYPES = {
+    'rgb': Gimp.ImageBaseType.RGB,
+    'gray': Gimp.ImageBaseType.GRAY,
+    'indexed': Gimp.ImageBaseType.INDEXED,
+}
+
+
+def op_test_new_image(args):
+    """A bare, empty image (no layers) of the given base type ('rgb'/'gray'/'indexed') -- a direct
+    bridge-level fixture for tests that need a grayscale or indexed image to test against, with no
+    tool-level indirection in the way."""
+    base = args.get('base_type', 'rgb')
+    if base not in _TEST_IMAGE_BASE_TYPES:
+        raise ValueError('base_type must be one of %s' % sorted(_TEST_IMAGE_BASE_TYPES))
+    img = Gimp.Image.new(8, 8, _TEST_IMAGE_BASE_TYPES[base])
+    return {'image': img.get_id()}
+
+
+def op_test_reorder_without_dropping_proxy(args):
+    """Swaps the image's two topmost layers WITHOUT calling `_drop_proxies` -- deliberately
+    bypasses the proxy-invalidation discipline every real structural op in ops.py follows, so a
+    live test can confirm `_mirror_filters`'s own (name, is_group) structural guard actually
+    fires against a stale, now-mismatched proxy instead of silently mis-rendering."""
+    img = _image(args)
+    layers = img.get_layers()
+    if len(layers) < 2:
+        raise ValueError('test_reorder_without_dropping_proxy needs at least 2 top-level layers')
+    img.reorder_item(layers[1], None, 0)
+    return {'reordered': [l.get_name() for l in img.get_layers()]}
+
+
 OPS.update({
     'test_proxy_filter_count': op_test_proxy_filter_count,
     'test_metadata_tag': op_test_metadata_tag,
@@ -350,6 +382,8 @@ OPS.update({
     'test_build_layer_tree': op_test_build_layer_tree,
     'test_all_layers_order': op_test_all_layers_order,
     'test_set_channels_deadline': op_test_set_channels_deadline,
+    'test_new_image': op_test_new_image,
+    'test_reorder_without_dropping_proxy': op_test_reorder_without_dropping_proxy,
     'test_apply_raw_effect': op_test_apply_raw_effect,
     'test_mirror_unattachable': op_test_mirror_unattachable,
     'test_force_effect_update_failure': op_test_force_effect_update_failure,

@@ -314,6 +314,14 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   gimp_add_effect: 'filter',
   gimp_create_mask: 'masks',
   gimp_checkpoint: 'document',
+  gimp_layer: 'layers',
+  gimp_bake: 'layers',
+  gimp_create_document: 'document',
+  // Adds a LAYER to an already-open document (compositing), not a document-lifecycle op --
+  // grouped with gimp_layer/gimp_bake, not gimp_open_document/gimp_create_document.
+  gimp_place_image: 'layers',
+  gimp_canvas: 'document',
+  gimp_convert_image_mode: 'document',
 };
 
 /**

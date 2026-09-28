@@ -119,6 +119,56 @@ TIFF_COMPRESSIONS = ('none', 'lzw', 'packbits', 'jpeg', 'adobe_deflate')
 
 MASK_TYPES = ('rectangle', 'ellipse', 'gradient_linear', 'gradient_radial')
 
+# gimp_layer's blend-mode allow-list: user-facing name -> the `Gimp.LayerMode` enum member NAME
+# (a string; ops.py does `getattr(Gimp.LayerMode, LAYER_MODES[mode])` since this module stays
+# gi-free). Deliberately the NON-legacy modes only, and only the ones with a plain Photoshop-style
+# name -- GIMP 3.2.6 exposes ~30 more (LCH_*, *_LEGACY, DISSOLVE, BEHIND, ...) this tool doesn't
+# surface. Probed live (GIMP 3.2.6) and goldened via each member's own `.value_nick`:
+#   normal=normal multiply=multiply screen=screen overlay=overlay soft_light=softlight
+#   hard_light=hardlight darken=darken-only lighten=lighten-only difference=difference
+#   exclusion=exclusion addition=addition subtract=subtract divide=divide dodge=dodge burn=burn
+#   hue=hsv-hue saturation=hsv-saturation color=hsl-color luminosity=luminance
+# hue/saturation/color/luminosity map to the HSV/HSL (not LCH) variants -- those are the ones
+# GIMP's own UI labels plainly "Hue"/"Saturation"/"Color"/"Luminosity" without a "(LCH)" suffix.
+LAYER_MODES = {
+    'normal': 'NORMAL',
+    'multiply': 'MULTIPLY',
+    'screen': 'SCREEN',
+    'overlay': 'OVERLAY',
+    'soft_light': 'SOFTLIGHT',
+    'hard_light': 'HARDLIGHT',
+    'darken': 'DARKEN_ONLY',
+    'lighten': 'LIGHTEN_ONLY',
+    'difference': 'DIFFERENCE',
+    'exclusion': 'EXCLUSION',
+    'addition': 'ADDITION',
+    'subtract': 'SUBTRACT',
+    'divide': 'DIVIDE',
+    'dodge': 'DODGE',
+    'burn': 'BURN',
+    'hue': 'HSV_HUE',
+    'saturation': 'HSV_SATURATION',
+    'color': 'HSL_COLOR',
+    'luminosity': 'LUMINANCE',
+}
+
+
+def validate_layer_mode(value):
+    if value not in LAYER_MODES:
+        raise ValueError('mode must be one of %s' % sorted(LAYER_MODES))
+    return value
+
+
+# gimp_layer op=create's fill options -- verified live that `Gimp.FillType.TRANSPARENT` exists
+# and that a freshly created layer's content is otherwise undefined, so `create` always fills
+# explicitly rather than trusting whatever `Gimp.Layer.new` leaves behind.
+LAYER_FILLS = ('white', 'black', 'transparent')
+
+# gimp_create_document / gimp_convert_image_mode's base-type choices -- indexed is deliberately
+# absent (gimp_create_document has nothing to build a palette from, and gimp_convert_image_mode
+# refuses an indexed source outright; see ops.py's own comments on both).
+IMAGE_MODES = ('rgb', 'grayscale')
+
 # Formats `_export_stripped` (ops.py) will write; every export/preview/compare raster save goes
 # through it, and it refuses any other extension outright rather than falling back to a bare,
 # metadata-unaware save.
@@ -153,6 +203,18 @@ def require_bool(args, name):
     if not isinstance(value, bool):
         raise ValueError('%s must be a boolean, got %r' % (name, value))
     return value
+
+
+def optional_bool(args, name, default=False):
+    """Like `require_bool`, but returns `default` when `name` is absent or explicitly null --
+    for an opt-in flag (e.g. `discard_hidden`, `all`) rather than one the caller must always
+    supply. Still rejects a non-boolean when the field IS present, the same `bool("false")`
+    trap `require_bool` guards against."""
+    if name not in args or args[name] is None:
+        return default
+    if not isinstance(args[name], bool):
+        raise ValueError('%s must be a boolean, got %r' % (name, args[name]))
+    return args[name]
 
 
 def validate_range(name, value, lo, hi):
@@ -212,8 +274,80 @@ def validate_resize_dims(width, height):
     return width, height
 
 
+# gimp_create_document's own megapixel ceiling, precision-aware: MAX_RESIZE_MEGAPIXELS (250) is
+# sized for 8-bit-per-channel content; a 16-bit image is 2 bytes/channel (half the pixel budget
+# for the same memory footprint, 125 MP) and a 32-bit float image is 4 bytes/channel (a quarter,
+# 60 MP -- rounded down from the exact 62.5 to a plain number). `create_document` is the one op
+# that picks its own bit depth up front (`open`/`resize`/etc. all work on whatever precision an
+# already-open image happens to be), so it is the one place this DoS floor needs to vary by
+# precision rather than assuming 8-bit throughout.
+DOCUMENT_MEGAPIXEL_CAP = {'8': MAX_RESIZE_MEGAPIXELS, '16': 125, '32': 60}
+
+
+def validate_document_dims(width, height, precision='8'):
+    """Like `validate_resize_dims`, but the megapixel ceiling depends on `precision` ('8', '16', or
+    '32') -- see `DOCUMENT_MEGAPIXEL_CAP`'s own comment for why create_document needs its own
+    variant instead of the plain 8-bit-assuming one."""
+    if width <= 0 or height <= 0:
+        raise ValueError('width and height must be positive')
+    if width > MAX_RESIZE_SIDE_PX or height > MAX_RESIZE_SIDE_PX:
+        raise ValueError('width and height must each be at most %d px' % MAX_RESIZE_SIDE_PX)
+    cap = DOCUMENT_MEGAPIXEL_CAP[precision]
+    megapixels = (width * height) / 1_000_000.0
+    if megapixels > cap:
+        raise ValueError('a %s-bit document must be at most %d MP' % (precision, cap))
+    return width, height
+
+
 def validate_feather_px(value):
     return validate_range('feather_px', value, 0.0, MAX_FEATHER_PX)
+
+
+_HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+# gimp_canvas's fill choices: the same white/black/transparent LAYER_FILLS a new layer gets, plus
+# a #rrggbb hex color the fixed enum can't express -- validated by regex here since it's an open
+# set, not a membership check like every other choice validator in this file.
+CANVAS_FILLS = LAYER_FILLS
+
+
+def validate_canvas_fill(value):
+    if value in CANVAS_FILLS or (isinstance(value, str) and _HEX_COLOR_RE.fullmatch(value)):
+        return value
+    raise ValueError(
+        "fill must be one of %s, or a '#rrggbb' hex color, got %r" % (sorted(CANVAS_FILLS), value)
+    )
+
+
+# gimp_canvas's anchor grid -> the fraction of the GROWTH (new size minus old size) that lands
+# BEFORE the existing content on each axis. 0.0 pins that edge (no padding there); 1.0 puts all
+# the padding there instead; 0.5 splits it evenly. Keyed by the full 3x3 grid a Photoshop-style
+# "Canvas Size" anchor picker offers.
+_CANVAS_ANCHOR_FRACTIONS = {
+    'top_left': (0.0, 0.0), 'top_center': (0.5, 0.0), 'top_right': (1.0, 0.0),
+    'middle_left': (0.0, 0.5), 'center': (0.5, 0.5), 'middle_right': (1.0, 0.5),
+    'bottom_left': (0.0, 1.0), 'bottom_center': (0.5, 1.0), 'bottom_right': (1.0, 1.0),
+}
+CANVAS_ANCHORS = tuple(_CANVAS_ANCHOR_FRACTIONS)
+
+
+def canvas_anchor_offset(anchor, old_width, old_height, new_width, new_height):
+    """(offset_x, offset_y) for `Image.resize(new_width, new_height, offset_x, offset_y)` that
+    places the EXISTING old_width x old_height content at `anchor` within the new, larger canvas.
+    Pure arithmetic (gi-free) -- ops.py's `op_canvas` supplies the live image's own before/after
+    dimensions and passes the result straight to the bridge primitive."""
+    if anchor not in _CANVAS_ANCHOR_FRACTIONS:
+        raise ValueError('anchor must be one of %s' % sorted(_CANVAS_ANCHOR_FRACTIONS))
+    # Floor, not round: the growth is always >= 0 (gimp_canvas is extend-only), so floor is just
+    # `int()` truncation here -- picked over `round()` because Python's round() is round-half-to-
+    # EVEN (banker's rounding), which would silently flip which side of an odd split gets the
+    # extra pixel depending on whether that half-pixel count happens to be even or odd. floor()
+    # always gives the same, simpler rule: the leading edge (top/left) gets the smaller share.
+    fx, fy = _CANVAS_ANCHOR_FRACTIONS[anchor]
+    return (
+        math.floor((new_width - old_width) * fx),
+        math.floor((new_height - old_height) * fy),
+    )
 
 
 def pct_to_unit(name, value, lo=-100.0, hi=100.0):
@@ -868,6 +1002,19 @@ def classify_geometry_filters(filters, live_filters):
         else:
             unverifiable.append(name)
     return masked, unverifiable
+
+
+def unique_name(taken, base):
+    """`base`, or `base` suffixed " 2", " 3", ... until it is not in `taken` (an iterable of
+    already-used names). GIMP allows duplicate names for both filters and layers, so nothing on
+    the GIMP side stops a caller who doesn't check first -- this is what backs the "unique names
+    enforced" contract for both the filter ledger (ops.py's `_unique_name`) and `gimp_layer`'s own
+    layer naming (`_unique_layer_name`)."""
+    taken = set(taken)
+    name, n = base, 2
+    while name in taken:
+        name, n = '%s %d' % (base, n), n + 1
+    return name
 
 
 # ---- geometry transforms for direction/position-dependent EFFECT params ---------------------
