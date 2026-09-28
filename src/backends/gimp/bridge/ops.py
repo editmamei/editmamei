@@ -1013,7 +1013,7 @@ def _snapshot_effect_transform(img, op_name, transform_fn):
             new_params = transform_fn(operation, params, layer)
             if new_params == params:
                 continue
-            lib.validate_effect_transform(op_name, operation, new_params)
+            lib.validate_effect_transform(op_name, operation, f.get_name(), new_params)
             planned[f.get_name()] = (operation, new_params)
     return planned
 
@@ -1021,12 +1021,19 @@ def _snapshot_effect_transform(img, op_name, transform_fn):
 def _apply_planned_effect_transform(img, planned):
     """Push each planned (operation, new_params) -- already validated by
     `_snapshot_effect_transform` -- into the live GEGL config and the ledger record. Called AFTER
-    the geometry mutation. A live update failure for one filter does not stop the others, and the
-    ledger is written with the INTENDED new params regardless: the geometry pixels have already
-    moved by this point, so leaving the ledger at the stale pre-transform value would just trade
-    one kind of drift (a misaligned render) for another (a stale record silently believed live)."""
+    the geometry mutation.
+
+    A live update failure for one filter does not stop the others. Unlike an earlier version of
+    this function, the ledger is NOT left at the new (unapplied) params on failure: the ledger
+    must always match what actually renders, so this instead tries to restore the filter's OLD
+    params live (best effort -- if that ALSO fails, the filter is simply left wherever the failed
+    attempt left it) and keeps the ledger record at the OLD params either way. The filter's name is
+    collected and returned so the caller can report it (`effect_update_failures`) -- a silent
+    partial failure here would otherwise look identical to a filter the geometry op never touched
+    at all."""
     if not planned:
-        return
+        return []
+    failures = []
     filters, unknown = _ledger_get(img)
     for layer in _all_layers(img):
         for f in layer.get_filters():
@@ -1034,18 +1041,31 @@ def _apply_planned_effect_transform(img, planned):
             if entry is None:
                 continue
             operation, new_params = entry
+            rec = filters.get(f.get_name())
+            old_params = rec['params'] if rec is not None else None
             try:
                 SETTERS[operation](f.get_config(), new_params)
                 f.update()
             except Exception as e:
+                failures.append(f.get_name())
                 sys.stderr.write(
-                    'geometry transform: live update failed for filter %r (%s); the ledger will '
-                    'still record the intended params: %s\n' % (f.get_name(), operation, e)
+                    'geometry transform: live update failed for filter %r (%s): %s -- '
+                    'restoring its old params\n' % (f.get_name(), operation, e)
                 )
-            rec = filters.get(f.get_name())
+                if old_params is not None:
+                    try:
+                        SETTERS[operation](f.get_config(), old_params)
+                        f.update()
+                    except Exception as restore_error:
+                        sys.stderr.write(
+                            'geometry transform: restoring filter %r also failed: %s\n'
+                            % (f.get_name(), restore_error)
+                        )
+                continue  # ledger record stays at old_params -- never advances to new_params
             if rec is not None:
                 rec['params'] = new_params
     _ledger_put(img, filters, unknown)
+    return failures
 
 
 def op_crop(args):
@@ -1103,9 +1123,12 @@ def op_resize(args):
     )
     Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     img.scale(width, height)
-    _apply_planned_effect_transform(img, planned)
+    failures = _apply_planned_effect_transform(img, planned)
     _drop_proxies(img.get_id())
-    return {'width': img.get_width(), 'height': img.get_height()}
+    result = {'width': img.get_width(), 'height': img.get_height()}
+    if failures:
+        result['effect_update_failures'] = failures
+    return result
 
 
 def op_rotate(args):
@@ -1152,9 +1175,12 @@ def op_rotate(args):
         channel.transform_rotate(angle, False, cx, cy)
     if expand:
         img.resize_to_layers()
-    _apply_planned_effect_transform(img, planned)
+    failures = _apply_planned_effect_transform(img, planned)
     _drop_proxies(img.get_id())
-    return {'width': img.get_width(), 'height': img.get_height(), 'degrees': degrees}
+    result = {'width': img.get_width(), 'height': img.get_height(), 'degrees': degrees}
+    if failures:
+        result['effect_update_failures'] = failures
+    return result
 
 
 _FLIP_ORIENTATIONS = {
@@ -1177,9 +1203,12 @@ def op_flip(args):
     )
     Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     img.flip(_FLIP_ORIENTATIONS[orientation])
-    _apply_planned_effect_transform(img, planned)
+    failures = _apply_planned_effect_transform(img, planned)
     _drop_proxies(img.get_id())
-    return {'width': img.get_width(), 'height': img.get_height()}
+    result = {'width': img.get_width(), 'height': img.get_height()}
+    if failures:
+        result['effect_update_failures'] = failures
+    return result
 
 
 def _proxy_render(img, max_px):
