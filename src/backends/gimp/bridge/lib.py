@@ -840,11 +840,27 @@ def classify_geometry_filters(filters, live_filters):
     reported `unverifiable`: it might be masked, and there is no way to tell, so the caller must
     treat it as if it were.
 
+    A name seen on MORE THAN ONE live filter is unverifiable too, regardless of what the ledger
+    says: the ledger's {name: record} shape can only ever describe ONE of them, so a lookup by
+    name can silently answer for the wrong filter -- a masked one hiding behind an unmasked one's
+    ledger record (or the reverse) would otherwise slip through unnoticed. This bridge's own
+    create path never produces a duplicate (`_unique_name` checks every layer first), but nothing
+    stops a foreign filter (the GUI, a hand-edited document) from colliding with one this bridge
+    DID create.
+
     Returns (masked_names, unverifiable_names), both lists, in the order `live_filters` was
-    given."""
+    given (a duplicate name appears in `unverifiable` once per occurrence, not de-duplicated, so
+    the caller's own count of what it iterated still lines up)."""
+    live_filters = list(live_filters)
+    name_counts = {}
+    for name, _operation in live_filters:
+        name_counts[name] = name_counts.get(name, 0) + 1
     masked = []
     unverifiable = []
     for name, operation in live_filters:
+        if name_counts[name] > 1:
+            unverifiable.append(name)
+            continue
         rec = filters.get(name)
         if rec and rec.get('operation') == operation:
             if rec.get('params', {}).get('mask'):
@@ -913,25 +929,68 @@ def _dims_after_right_angle_rotation(width, height, degrees):
     return width, height
 
 
+def _right_angle_k(degrees):
+    """`degrees` as a whole number of 90-degree clockwise steps, 0-3. `is_right_angle_degrees`
+    only confirms `degrees` is within floating-point TOLERANCE of an exact multiple of 90 (e.g.
+    89.9999999 or 90.0000003 both pass) -- rounding to the nearest integer multiple here snaps it
+    to the exact canonical step before any trig happens, so that tolerance-level noise can never
+    reach `_right_angle_cos_sin`."""
+    return round(degrees / 90.0) % 4
+
+
+def _right_angle_cos_sin(degrees):
+    """Exact cos/sin for a right-angle rotation, looked up from {0, 1, -1} rather than computed
+    via `math.cos`/`math.sin(math.radians(...))` -- the latter returns a tiny nonzero (e.g.
+    6.123233995736766e-17) for cos(90 degrees) instead of an exact 0.0. Left uncorrected, that
+    noise propagates into a value that should land EXACTLY on its pre-rotation number (a vignette
+    center at a canvas edge, 0.0 or 1.0; a drop shadow offset at the schema's own bound, +/-500),
+    and `gimp_filter op=list` would report something like 4.999999999999999e-17 or
+    500.00000000000006 instead of a clean value -- and, worse, could push a value that started
+    exactly AT a validated bound just outside it."""
+    k = _right_angle_k(degrees)
+    cos_by_k = (1.0, 0.0, -1.0, 0.0)
+    sin_by_k = (0.0, 1.0, 0.0, -1.0)
+    return cos_by_k[k], sin_by_k[k]
+
+
+# How many decimal places a transformed float is rounded to before it is validated or written to
+# the ledger -- defence in depth alongside the exact right-angle trig above: resize's sqrt/hypot
+# math has genuine (much smaller) irrational rounding noise of its own that no lookup table can
+# remove, and this keeps every transform's output equally clean rather than exact-only for
+# rotation and merely "close" for resize.
+_TRANSFORM_ROUND_NDIGITS = 9
+
+
+def _round_transform_params(params):
+    """`params` with every float value rounded to `_TRANSFORM_ROUND_NDIGITS` places -- the last
+    step of flip_effect_params/rotate_effect_params/resize_effect_params, so what
+    validate_effect_transform checks and what the ledger stores are the same clean number `list`
+    reports. Non-float values (mask, an int seed) pass through untouched."""
+    return {
+        key: (round(value, _TRANSFORM_ROUND_NDIGITS) if isinstance(value, float) else value)
+        for key, value in params.items()
+    }
+
+
 def rotate_point_fraction(x_frac, y_frac, degrees, old_width, old_height, new_width, new_height):
     """Rotate a point expressed as a FRACTION of a layer's own width/height (vignette's center_x/
-    center_y) by `degrees`, using the exact same clockwise-positive convention `ops.py`'s
-    `op_rotate` applies to layer/channel pixels via `Item.transform_rotate`, re-expressing the
-    result as a fraction of the possibly-different NEW extent (`rotate_effect_params` only ever
-    passes a right angle here, so old/new either match or swap -- see `is_right_angle_degrees`).
+    center_y) by `degrees` -- always an exact right angle, see `is_right_angle_degrees` -- using
+    the exact same clockwise-positive convention `ops.py`'s `op_rotate` applies to layer/channel
+    pixels via `Item.transform_rotate`, re-expressing the result as a fraction of the
+    possibly-different NEW extent (old/new either match or swap at a right angle).
 
-    Exact for any angle, not just 90-degree multiples, though only right angles are ever passed
-    in: rotating a rectangle around its own center always leaves the new bounding box centered at
+    Rotating a rectangle around its own center always leaves the new bounding box centered at
     that SAME physical point, so the old and new centers coincide regardless of whether the
     dimensions swapped -- the old center (in old-extent coordinates) and the new center (in
     new-extent coordinates) name the identical point in space, which is what lets this convert
-    between the two coordinate frames with no separate translation term."""
+    between the two coordinate frames with no separate translation term. Uses the EXACT cos/sin
+    lookup (`_right_angle_cos_sin`), not raw trig, so a point already at an extent's edge (0.0 or
+    1.0) lands exactly back on an edge rather than a hair off it."""
     old_cx, old_cy = old_width / 2.0, old_height / 2.0
     new_cx, new_cy = new_width / 2.0, new_height / 2.0
     dx = x_frac * old_width - old_cx
     dy = y_frac * old_height - old_cy
-    theta = math.radians(degrees)
-    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    cos_t, sin_t = _right_angle_cos_sin(degrees)
     rx = dx * cos_t - dy * sin_t
     ry = dx * sin_t + dy * cos_t
     return (new_cx + rx) / new_width, (new_cy + ry) / new_height
@@ -962,7 +1021,7 @@ def flip_effect_params(operation, params, orientation):
             params['x'] = -params['x']
         else:
             params['y'] = -params['y']
-    return params
+    return _round_transform_params(params)
 
 
 def rotate_effect_params(operation, params, degrees, layer_width, layer_height):
@@ -974,21 +1033,25 @@ def rotate_effect_params(operation, params, degrees, layer_width, layer_height):
     swaps width/height under a 90/270 rotation independently of whether the canvas itself grows
     (`expand`) to match. motion_blur and drop_shadow need no dimensions at all -- their params are
     layer-agnostic at a right angle (see flip_effect_params's own doc comment for the angle/offset
-    conventions reused here)."""
+    conventions reused here). `degrees` is snapped to its exact canonical step (`_right_angle_k`)
+    before use everywhere below, including the plain addition for motion_blur's angle -- not just
+    where trig is involved -- so a tolerance-fuzzy `degrees` (e.g. 90.0000003) can never leak into
+    a stored value."""
     params = dict(params)
+    canonical_degrees = _right_angle_k(degrees) * 90.0
     if operation == 'gegl:vignette':
         new_width, new_height = _dims_after_right_angle_rotation(layer_width, layer_height, degrees)
         params['x'], params['y'] = rotate_point_fraction(
             params['x'], params['y'], degrees, layer_width, layer_height, new_width, new_height
         )
     elif operation == 'gegl:motion-blur-linear':
-        params['angle'] = _wrap_angle_deg(params['angle'] + degrees)
+        params['angle'] = _wrap_angle_deg(params['angle'] + canonical_degrees)
     elif operation == 'gegl:dropshadow':
-        theta = math.radians(degrees)
+        cos_t, sin_t = _right_angle_cos_sin(degrees)
         dx, dy = params['x'], params['y']
-        params['x'] = dx * math.cos(theta) - dy * math.sin(theta)
-        params['y'] = dx * math.sin(theta) + dy * math.cos(theta)
-    return params
+        params['x'] = dx * cos_t - dy * sin_t
+        params['y'] = dx * sin_t + dy * cos_t
+    return _round_transform_params(params)
 
 
 def resize_effect_params(operation, params, scale_x, scale_y):
@@ -1027,7 +1090,7 @@ def resize_effect_params(operation, params, scale_x, scale_y):
         params['x'] = params['x'] * scale_x
         params['y'] = params['y'] * scale_y
         params['radius'] = params['radius'] * isotropic_scale
-    return params
+    return _round_transform_params(params)
 
 
 # Bounds for the GEGL properties a geometry transform can touch, keyed by operation -- the SAME
@@ -1042,24 +1105,42 @@ EFFECT_TRANSFORM_BOUNDS = {
     'gegl:dropshadow': {'x': (-500.0, 500.0), 'y': (-500.0, 500.0), 'radius': (0.0, 1500.0)},
 }
 
+# The user-facing (gimp_add_effect) field name for each EFFECT_TRANSFORM_BOUNDS entry -- so a
+# refusal message can say "center_x", "offset_x", or "radius" (what the model actually typed and
+# what gimp_filter op=list reports back), not the internal GEGL property name ("x") a caller has
+# never seen. TestEffectTransformBoundsMatchBuilders (test_lib.py) pins that every entry here maps
+# to a real field the matching build_*_params function actually validates.
+EFFECT_TRANSFORM_FIELD_NAMES = {
+    ('gegl:vignette', 'x'): 'center_x',
+    ('gegl:vignette', 'y'): 'center_y',
+    ('gegl:motion-blur-linear', 'length'): 'length',
+    ('gegl:motion-blur-linear', 'angle'): 'angle',
+    ('gegl:focus-blur', 'blur-radius'): 'radius',
+    ('gegl:dropshadow', 'x'): 'offset_x',
+    ('gegl:dropshadow', 'y'): 'offset_y',
+    ('gegl:dropshadow', 'radius'): 'radius',
+}
 
-def validate_effect_transform(op_name, operation, new_params):
+
+def validate_effect_transform(op_name, operation, filter_name, new_params):
     """Refuse `op_name` (the geometry op about to run) outright if any of `new_params` -- already
     computed for `operation` by flip_effect_params/rotate_effect_params/resize_effect_params --
     would leave the range its own create/re-edit path enforces. Called BEFORE the geometry
     mutation runs (ops.py's `_snapshot_effect_transform`), so a filter that would end up out of
     range never gets a chance to silently clamp via GObject's own property setter instead of a
-    clear, actionable refusal -- and the geometry op never partially applies."""
+    clear, actionable refusal -- and the geometry op never partially applies. Names the filter
+    (`filter_name`, the same way `_refuse_if_masked_filters` does) and the field in gimp_add_
+    effect's OWN terms (`EFFECT_TRANSFORM_FIELD_NAMES`), not the raw GEGL property name."""
     for prop, (lo, hi) in EFFECT_TRANSFORM_BOUNDS.get(operation, {}).items():
         if prop not in new_params:
             continue
         value = new_params[prop]
         if not lo <= value <= hi:
-            type_ = OPERATION_TYPES.get(operation, operation)
+            field = EFFECT_TRANSFORM_FIELD_NAMES.get((operation, prop), prop)
             raise ValueError(
-                "%s would leave the %s effect's %s at %.4g, outside its %s..%s range. Delete it "
-                'and re-add it after this geometry change, or bake it into the image first.'
-                % (op_name, type_, prop, value, lo, hi)
+                '%s would leave %r\'s %s at %.4g, outside its %s..%s range. Delete it '
+                '(gimp_filter op=delete) and re-add it after this geometry change.'
+                % (op_name, filter_name, field, value, lo, hi)
             )
 
 

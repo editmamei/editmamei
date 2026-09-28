@@ -1142,6 +1142,25 @@ class TestClassifyGeometryFilters(unittest.TestCase):
         self.assertEqual(masked, ['Masked'])
         self.assertEqual(unverifiable, ['Unknown'])
 
+    def test_a_name_seen_on_more_than_one_live_filter_is_unverifiable_even_if_unmasked(self):
+        # The ledger's {name: record} shape can only ever answer for ONE of the two -- even
+        # though the record itself says unmasked, a name lookup can't tell which live filter it
+        # actually describes, so BOTH occurrences must be treated as possibly masked.
+        filters = {'Dup': {'operation': 'gimp:curves', 'params': {'mask': None}}}
+        live = [('Dup', 'gimp:curves'), ('Dup', 'gimp:curves')]
+        masked, unverifiable = lib.classify_geometry_filters(filters, live)
+        self.assertEqual(masked, [])
+        self.assertEqual(unverifiable, ['Dup', 'Dup'])
+
+    def test_a_duplicate_name_does_not_affect_classification_of_other_live_filters(self):
+        filters = {
+            'Dup': {'operation': 'gimp:curves', 'params': {'mask': 'M'}},
+            'Fine': {'operation': 'gimp:levels', 'params': {'mask': None}},
+        }
+        live = [('Dup', 'gimp:curves'), ('Dup', 'gimp:curves'), ('Fine', 'gimp:levels')]
+        masked, unverifiable = lib.classify_geometry_filters(filters, live)
+        self.assertEqual(masked, [])  # Dup's own masked record is never consulted -- unverifiable wins
+        self.assertEqual(unverifiable, ['Dup', 'Dup'])
 
 
 class TestMetadataStripSettings(unittest.TestCase):
@@ -1513,6 +1532,86 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
         ):
             self.assertEqual(lib.rotate_effect_params(operation, params, 90.0, 200, 200), params)
 
+    # ---- exact right-angle trig: 180/270/-90/360, plus edge values that must round-trip exactly
+
+    def test_right_angle_cos_sin_is_exact_at_every_canonical_step(self):
+        self.assertEqual(lib._right_angle_cos_sin(0.0), (1.0, 0.0))
+        self.assertEqual(lib._right_angle_cos_sin(90.0), (0.0, 1.0))
+        self.assertEqual(lib._right_angle_cos_sin(180.0), (-1.0, 0.0))
+        self.assertEqual(lib._right_angle_cos_sin(270.0), (0.0, -1.0))
+        self.assertEqual(lib._right_angle_cos_sin(-90.0), (0.0, -1.0))
+        self.assertEqual(lib._right_angle_cos_sin(360.0), (1.0, 0.0))
+        # Tolerance-fuzzy input (still accepted by is_right_angle_degrees) snaps to the exact step.
+        self.assertEqual(lib._right_angle_cos_sin(90.0000003), (0.0, 1.0))
+
+    def test_rotate_effect_params_vignette_at_180_270_minus90_360(self):
+        # center (0.2, 0.7) on a 200x200 (square, no dimension swap needed to reason about).
+        for degrees, expected in (
+            (180.0, (0.8, 0.3)),
+            (270.0, (0.7, 0.8)),
+            (-90.0, (0.7, 0.8)),
+            (360.0, (0.2, 0.7)),
+        ):
+            with self.subTest(degrees=degrees):
+                result = lib.rotate_effect_params(
+                    'gegl:vignette', {'radius': 1.0, 'softness': 0.5, 'gamma': 2.0, 'x': 0.2, 'y': 0.7},
+                    degrees, 200, 200,
+                )
+                self.assertAlmostEqual(result['x'], expected[0], places=9)
+                self.assertAlmostEqual(result['y'], expected[1], places=9)
+
+    def test_rotate_effect_params_vignette_edge_values_are_exact_not_a_hair_off(self):
+        # A center exactly AT an extent's edge (0.0 or 1.0) must land back exactly on an edge --
+        # not 1e-17 off it -- at every right angle, including the ones (90/270) where raw
+        # math.cos/sin would otherwise leak a tiny nonzero.
+        for degrees in (90.0, 180.0, 270.0, -90.0, 360.0):
+            with self.subTest(degrees=degrees):
+                result = lib.rotate_effect_params(
+                    'gegl:vignette', {'radius': 1.0, 'softness': 0.5, 'gamma': 2.0, 'x': 0.0, 'y': 0.5},
+                    degrees, 200, 200,
+                )
+                self.assertIn(result['x'], (0.0, 0.5, 1.0))
+                self.assertIn(result['y'], (0.0, 0.5, 1.0))
+                # Never refused -- an edge value must stay comfortably within 0.0..1.0.
+                lib.validate_effect_transform('rotate', 'gegl:vignette', 'Vignette', result)
+
+    def test_rotate_effect_params_motion_blur_at_180_270_minus90_360(self):
+        for degrees, expected in ((180.0, -150.0), (270.0, -60.0), (-90.0, -60.0), (360.0, 30.0)):
+            with self.subTest(degrees=degrees):
+                result = lib.rotate_effect_params(
+                    'gegl:motion-blur-linear', {'length': 10.0, 'angle': 30.0}, degrees, 200, 200
+                )
+                self.assertAlmostEqual(result['angle'], expected, places=9)
+
+    def test_rotate_effect_params_drop_shadow_at_180_270_minus90_360(self):
+        for degrees, expected in (
+            (180.0, (-20.0, 0.0)),
+            (270.0, (0.0, -20.0)),
+            (-90.0, (0.0, -20.0)),
+            (360.0, (20.0, 0.0)),
+        ):
+            with self.subTest(degrees=degrees):
+                result = lib.rotate_effect_params(
+                    'gegl:dropshadow', {'x': 20.0, 'y': 0.0, 'radius': 5.0, 'opacity': 0.5},
+                    degrees, 200, 200,
+                )
+                self.assertAlmostEqual(result['x'], expected[0], places=9)
+                self.assertAlmostEqual(result['y'], expected[1], places=9)
+
+    def test_rotate_effect_params_drop_shadow_edge_offsets_are_exact_and_not_refused(self):
+        # +/-500 is the schema's own bound (build_drop_shadow_params' offset_x/offset_y) -- a
+        # right-angle rotation of an offset already AT that bound must land back exactly on it,
+        # never a hair over (which raw trig noise could otherwise push out of range).
+        for degrees in (90.0, 180.0, 270.0, -90.0, 360.0):
+            with self.subTest(degrees=degrees):
+                result = lib.rotate_effect_params(
+                    'gegl:dropshadow', {'x': 500.0, 'y': -500.0, 'radius': 5.0, 'opacity': 0.5},
+                    degrees, 200, 200,
+                )
+                self.assertIn(result['x'], (500.0, -500.0, 0.0))
+                self.assertIn(result['y'], (500.0, -500.0, 0.0))
+                lib.validate_effect_transform('rotate', 'gegl:dropshadow', 'Drop Shadow', result)
+
     def test_resize_scales_motion_blur_length_under_uniform_scale(self):
         # Uniform scale (scale_x == scale_y): the anisotropic formula degenerates to plain
         # isotropic scaling, angle unchanged, regardless of the blur's own direction.
@@ -1585,41 +1684,97 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
 class TestValidateEffectTransform(unittest.TestCase):
     """`validate_effect_transform` is the refuse-before-mutate gate `_snapshot_effect_transform`
     calls for every planned param change -- it must accept anything within the SAME bounds
-    build_*_params enforces on create/re-edit, and refuse (naming the op, the effect, and the
-    field) anything outside them."""
+    build_*_params enforces on create/re-edit, and refuse (naming the op, the FILTER, and the
+    field in gimp_add_effect's OWN terms) anything outside them."""
 
     def test_accepts_in_range_vignette_coordinates(self):
-        lib.validate_effect_transform('rotate', 'gegl:vignette', {'x': 0.0, 'y': 1.0})  # no raise
+        lib.validate_effect_transform(
+            'rotate', 'gegl:vignette', 'Vignette', {'x': 0.0, 'y': 1.0}
+        )  # no raise
 
     def test_refuses_out_of_range_motion_blur_length(self):
         with self.assertRaises(ValueError) as ctx:
             lib.validate_effect_transform(
-                'resize', 'gegl:motion-blur-linear', {'length': 1000.1, 'angle': 0.0}
+                'resize', 'gegl:motion-blur-linear', 'Motion Blur',
+                {'length': 1000.1, 'angle': 0.0},
             )
         message = str(ctx.exception)
         self.assertIn('resize', message)
-        self.assertIn('motion_blur', message)
-        self.assertIn('length', message)
+        self.assertIn('Motion Blur', message)  # the FILTER's own name
+        self.assertIn('length', message)  # the tool's field name (not "length" vs some GEGL name)
 
-    def test_refuses_out_of_range_lens_blur_radius(self):
-        with self.assertRaises(ValueError):
+    def test_refuses_out_of_range_lens_blur_radius_naming_the_tools_field_name(self):
+        # lens_blur's GEGL property is `blur-radius`; the tool's own field is `radius` -- the
+        # message must say the latter, since that's what a caller actually typed.
+        with self.assertRaises(ValueError) as ctx:
             lib.validate_effect_transform(
-                'resize', 'gegl:focus-blur', {'blur-radius': 150.1, 'highlight-factor': 0.0}
+                'resize', 'gegl:focus-blur', 'Lens Blur', {'blur-radius': 150.1, 'highlight-factor': 0.0}
             )
+        message = str(ctx.exception)
+        self.assertIn('radius', message)
+        self.assertNotIn('blur-radius', message)
 
-    def test_refuses_out_of_range_drop_shadow_offset(self):
-        with self.assertRaises(ValueError):
+    def test_refuses_out_of_range_drop_shadow_offset_naming_offset_x(self):
+        # dropshadow's GEGL property is `x`; the tool's own field is `offset_x`.
+        with self.assertRaises(ValueError) as ctx:
             lib.validate_effect_transform(
-                'resize', 'gegl:dropshadow', {'x': 500.1, 'y': 0.0, 'radius': 5.0, 'opacity': 0.5}
+                'resize', 'gegl:dropshadow', 'Drop Shadow',
+                {'x': 500.1, 'y': 0.0, 'radius': 5.0, 'opacity': 0.5},
             )
+        message = str(ctx.exception)
+        self.assertIn('offset_x', message)
+
+    def test_refusal_message_never_says_bake(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.validate_effect_transform(
+                'resize', 'gegl:motion-blur-linear', 'Motion Blur',
+                {'length': 1000.1, 'angle': 0.0},
+            )
+        self.assertNotIn('bake', str(ctx.exception))
+        self.assertIn('gimp_filter op=delete', str(ctx.exception))
 
     def test_accepts_operations_with_no_bounds_table_entry(self):
-        lib.validate_effect_transform('flip', 'gegl:mono-mixer', {'red': 99.0})  # no raise
+        lib.validate_effect_transform('flip', 'gegl:mono-mixer', 'B&W', {'red': 99.0})  # no raise
 
     def test_ignores_fields_not_present_in_new_params(self):
         # rotate_effect_params never touches motion_blur's `length` -- validate_effect_transform
         # must not demand it be present to validate the fields that ARE there.
-        lib.validate_effect_transform('rotate', 'gegl:motion-blur-linear', {'angle': 45.0})
+        lib.validate_effect_transform(
+            'rotate', 'gegl:motion-blur-linear', 'Motion Blur', {'angle': 45.0}
+        )
+
+
+class TestEffectTransformBoundsMatchBuilders(unittest.TestCase):
+    """EFFECT_TRANSFORM_BOUNDS is a table maintained SEPARATELY from the validate_range calls
+    inside build_vignette_params/build_motion_blur_params/build_lens_blur_params/
+    build_drop_shadow_params -- a real drift risk if one changes without the other. This pins
+    that every entry's (lo, hi) is accepted by the matching builder at exactly lo/hi and refused
+    just outside both ends."""
+
+    BUILDER_AND_TYPE = {
+        'gegl:vignette': ('vignette', lib.build_vignette_params),
+        'gegl:motion-blur-linear': ('motion_blur', lib.build_motion_blur_params),
+        'gegl:focus-blur': ('lens_blur', lib.build_lens_blur_params),
+        'gegl:dropshadow': ('drop_shadow', lib.build_drop_shadow_params),
+    }
+
+    def test_every_bound_is_accepted_at_its_edges_and_refused_just_outside(self):
+        for operation, props in lib.EFFECT_TRANSFORM_BOUNDS.items():
+            type_, builder = self.BUILDER_AND_TYPE[operation]
+            defaults = lib.EFFECT_CREATE_DEFAULTS[type_]
+            for prop, (lo, hi) in props.items():
+                user_field = lib.EFFECT_TRANSFORM_FIELD_NAMES[(operation, prop)]
+                eps = max(abs(hi - lo), 1.0) * 1e-6
+                with self.subTest(operation=operation, field=user_field, edge='lo'):
+                    builder({user_field: lo}, defaults)  # must not raise
+                with self.subTest(operation=operation, field=user_field, edge='hi'):
+                    builder({user_field: hi}, defaults)  # must not raise
+                with self.subTest(operation=operation, field=user_field, edge='lo-eps'):
+                    with self.assertRaises(ValueError):
+                        builder({user_field: lo - eps}, defaults)
+                with self.subTest(operation=operation, field=user_field, edge='hi-eps'):
+                    with self.assertRaises(ValueError):
+                        builder({user_field: hi + eps}, defaults)
 
 
 class TestJsonSafe(unittest.TestCase):
