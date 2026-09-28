@@ -181,6 +181,25 @@ def op_test_nest_groups(args):
     return {'layers': [l.get_name() for l in _all_layers(img)]}
 
 
+def op_test_build_layer_tree(args):
+    """Direct probe of `_build_layer_tree`'s own `max_nodes` cap, bypassing `describe`'s fixed
+    MAX_DESCRIBE_LAYER_NODES (2000) -- lets a live test exercise truncation behaviour (the cutoff
+    itself, a group left with missing children, and the exactly-full-tree case) against a small
+    fixture instead of needing a 2000+-node one."""
+    img = _image(args)
+    max_nodes = int(lib.require(args, 'max_nodes'))
+    layers, truncated, total_nodes = _build_layer_tree(img.get_layers(), max_nodes=max_nodes)
+    return {'layers': layers, 'truncated': truncated, 'total_nodes': total_nodes}
+
+
+def op_test_all_layers_order(args):
+    """The name of every layer `_all_layers` visits, in order -- proves the iterative rewrite
+    (explicit stack) still produces the same top-of-stack-first, pre-order-descend-into-groups
+    sequence the original recursive version did."""
+    img = _image(args)
+    return {'names': [l.get_name() for l in _all_layers(img)]}
+
+
 OPS.update({
     'test_proxy_filter_count': op_test_proxy_filter_count,
     'test_metadata_tag': op_test_metadata_tag,
@@ -192,4 +211,6 @@ OPS.update({
     'test_wrap_in_group': op_test_wrap_in_group,
     'test_add_foreign_filter': op_test_add_foreign_filter,
     'test_add_text_layer': op_test_add_text_layer,
+    'test_build_layer_tree': op_test_build_layer_tree,
+    'test_all_layers_order': op_test_all_layers_order,
 })
