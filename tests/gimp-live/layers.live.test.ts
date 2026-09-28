@@ -892,6 +892,213 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
+  // ---- permanent regression coverage for the smoke-probed QA fixes (S1-S3, B4, B8, B10, B16, B17)
+  //
+  // B5 (_assert_layer_attached walks the live tree instead of trusting Item.get_image()) has no
+  // separate case here: every create/create_group/duplicate test above already exercises its
+  // SUCCESS path (the returned layer_id must appear in gimp_inspect's own tree), and there is no
+  // way to force GIMP to silently fail an insert from a live test -- that would need mocking GIMP
+  // itself, which is what the fake-session unit tests are for. Covered implicitly.
+
+  it('create refuses over the size cap (S1), image unchanged', async () => {
+    const image = await openRamp();
+    try {
+      const before = await snapshot(image);
+      const oversized = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        width: 40_000,
+        height: 40_000,
+      });
+      expect(oversized.isError).toBe(true);
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('move refuses beyond the offset bound (S2), image unchanged', async () => {
+    const image = await openRamp();
+    try {
+      const before = await snapshot(image);
+      const tooFar = await callTool(tools, 'gimp_layer', { image, op: 'move', x: 999_999, y: 0 });
+      expect(tooFar.isError).toBe(true);
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('merge_down refuses when the merged union bbox would exceed the size cap (S2), image unchanged', async () => {
+    const image = await openRamp();
+    try {
+      const extra = await callTool(tools, 'gimp_layer', { image, op: 'create', name: 'FarExtra' });
+      const extraId = structuredOf(extra).layer_id as number;
+      // Within move's own bound (canvas width + MAX_RESIZE_SIDE_PX = 64 + 30000), but far enough
+      // that merging it with Background's own 0..64 extent unions to a width over 30000px.
+      const moved = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'move',
+        layer_id: extraId,
+        x: 30_000,
+        y: 0,
+      });
+      expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
+
+      const before = await snapshot(image);
+      const merged = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'merge_down',
+        layer_id: extraId,
+      });
+      expect(merged.isError).toBe(true);
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('a preview-proxy image id is refused as an `image` argument (S3)', async () => {
+    const image = await openRamp();
+    try {
+      await backend.call('preview', {
+        image,
+        max_px: 512,
+        out_path: join(workDir, 's3-warm.png'),
+      });
+      const documents = await callTool(tools, 'gimp_inspect', { what: 'documents' });
+      expect(documents.isError, JSON.stringify(documents.content)).toBeFalsy();
+      const ids = (structuredOf(documents).documents as Array<{ image: number }>).map(
+        (d) => d.image
+      );
+      const proxyId = ids.find((id) => id !== image);
+      expect(
+        proxyId,
+        `expected a second (proxy) image id alongside ${image}; got ${JSON.stringify(ids)}`
+      ).toBeDefined();
+
+      const result = await callTool(tools, 'gimp_layer', {
+        image: proxyId,
+        op: 'create',
+        name: 'ShouldNotAttach',
+      });
+      expect(result.isError).toBe(true);
+      expect((result.content?.[0] as { text: string }).text).toContain('no open image');
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('create on a grayscale image gives a GRAYA layer; indexed is refused (B4)', async () => {
+    const gray = await backend.call<{ image: number }>('test_new_image', { base_type: 'gray' });
+    try {
+      const created = await callTool(tools, 'gimp_layer', {
+        image: gray.image,
+        op: 'create',
+        name: 'GrayLayer',
+      });
+      expect(created.isError, JSON.stringify(created.content)).toBeFalsy();
+      const tree = await layerTree(gray.image);
+      const node = tree.find((n) => n.layer_id === structuredOf(created).layer_id);
+      expect(node?.has_alpha).toBe(true);
+      // gimp_inspect doesn't report the raw GEGL layer type, but a GRAYA layer on a GRAY image
+      // exports and previews without error, which an RGBA-on-GRAY mismatch would not survive
+      // silently -- confirms the create path picked a type GIMP actually accepted for this image.
+      const exportPath = join(workDir, 'b4-gray-export.png');
+      const exported = await callTool(tools, 'gimp_export', {
+        image: gray.image,
+        file_path: exportPath,
+      });
+      expect(exported.isError, JSON.stringify(exported.content)).toBeFalsy();
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image: gray.image });
+    }
+
+    const indexed = await backend.call<{ image: number }>('test_new_image', {
+      base_type: 'indexed',
+    });
+    try {
+      const refused = await callTool(tools, 'gimp_layer', {
+        image: indexed.image,
+        op: 'create',
+        name: 'IndexedLayer',
+      });
+      expect(refused.isError).toBe(true);
+      expect((refused.content?.[0] as { text: string }).text).toContain('indexed');
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image: indexed.image });
+    }
+  });
+
+  it("delete refuses the image's last remaining layer (B8), image unchanged", async () => {
+    const image = await openRamp();
+    try {
+      const before = await snapshot(image);
+      const result = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'delete',
+        layer: 'Background',
+      });
+      expect(result.isError).toBe(true);
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('the (name, is_group) structural guard trips on a proxy left stale by a fixture reorder (B10)', async () => {
+    const image = await openRamp();
+    try {
+      await callTool(tools, 'gimp_layer', { image, op: 'create', name: 'GuardA' });
+      await callTool(tools, 'gimp_layer', { image, op: 'create', name: 'GuardB' });
+      // Warm the proxy against the CURRENT (pre-swap) structure.
+      await backend.call('preview', {
+        image,
+        max_px: 512,
+        out_path: join(workDir, 'b10-warm.png'),
+      });
+      // Reorder the live document WITHOUT going through gimp_layer (so _drop_proxies never runs) --
+      // simulates a future op that forgets the invariant, which the guard exists to catch.
+      await backend.call('test_reorder_without_dropping_proxy', { image });
+      await expect(
+        backend.call('preview', { image, max_px: 512, out_path: join(workDir, 'b10-stale.png') })
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('drifted from the document'),
+      });
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('set refuses an empty name (B16), image unchanged', async () => {
+    const image = await openRamp();
+    try {
+      const before = await snapshot(image);
+      const result = await callTool(tools, 'gimp_layer', { image, op: 'set', name: '   ' });
+      expect(result.isError).toBe(true);
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('create refuses a negative position (B17), image unchanged', async () => {
+    const image = await openRamp();
+    try {
+      const before = await snapshot(image);
+      const result = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'NegativePosition',
+        position: -1,
+      });
+      expect(result.isError).toBe(true);
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
   // ---- Q1/Q6: the structural-op proxy matrix -----------------------------------------------
   //
   // Every gimp_layer sub-op except select, and gimp_bake, must drop the preview-proxy cache (the

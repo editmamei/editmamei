@@ -181,6 +181,37 @@ def op_test_nest_groups(args):
     return {'layers': [l.get_name() for l in _all_layers(img)]}
 
 
+_TEST_IMAGE_BASE_TYPES = {
+    'rgb': Gimp.ImageBaseType.RGB,
+    'gray': Gimp.ImageBaseType.GRAY,
+    'indexed': Gimp.ImageBaseType.INDEXED,
+}
+
+
+def op_test_new_image(args):
+    """A bare, empty image (no layers) of the given base type ('rgb'/'gray'/'indexed') -- fixture
+    for gimp_layer's own create/base-type tests, which need a grayscale or indexed image to test
+    against before gimp_create_document/gimp_convert_image_mode exist to produce one."""
+    base = args.get('base_type', 'rgb')
+    if base not in _TEST_IMAGE_BASE_TYPES:
+        raise ValueError('base_type must be one of %s' % sorted(_TEST_IMAGE_BASE_TYPES))
+    img = Gimp.Image.new(8, 8, _TEST_IMAGE_BASE_TYPES[base])
+    return {'image': img.get_id()}
+
+
+def op_test_reorder_without_dropping_proxy(args):
+    """Swaps the image's two topmost layers WITHOUT calling `_drop_proxies` -- deliberately
+    bypasses the proxy-invalidation discipline every real structural op in ops.py follows, so a
+    live test can confirm `_mirror_filters`'s own (name, is_group) structural guard actually
+    fires against a stale, now-mismatched proxy instead of silently mis-rendering."""
+    img = _image(args)
+    layers = img.get_layers()
+    if len(layers) < 2:
+        raise ValueError('test_reorder_without_dropping_proxy needs at least 2 top-level layers')
+    img.reorder_item(layers[1], None, 0)
+    return {'reordered': [l.get_name() for l in img.get_layers()]}
+
+
 OPS.update({
     'test_proxy_filter_count': op_test_proxy_filter_count,
     'test_metadata_tag': op_test_metadata_tag,
@@ -192,4 +223,6 @@ OPS.update({
     'test_wrap_in_group': op_test_wrap_in_group,
     'test_add_foreign_filter': op_test_add_foreign_filter,
     'test_add_text_layer': op_test_add_text_layer,
+    'test_new_image': op_test_new_image,
+    'test_reorder_without_dropping_proxy': op_test_reorder_without_dropping_proxy,
 })
