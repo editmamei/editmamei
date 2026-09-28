@@ -561,8 +561,74 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
         y: 5,
       });
       expect(refused.isError).toBe(true);
-      expect((refused.content?.[0] as { text: string }).text).toContain('Shared');
+      const text = (refused.content?.[0] as { text: string }).text;
+      // Names the OTHER layer carrying the duplicate, and advises fixing that one, not the
+      // ledgered copy on Background.
+      expect(text).toContain("'Shared' (also on layer 'Other')");
+      expect(text).toMatch(/rename or delete the FOREIGN duplicate/);
       expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('move refuses on a genuinely foreign filter with a UNIQUE name (no duplicate anywhere), naming it unrecognized', async () => {
+    const image = await openRamp();
+    try {
+      await backend.call('test_add_foreign_filter', {
+        image,
+        layer: 'Background',
+        operation: 'gimp:brightness-contrast',
+        name: 'OnlyOneOfMe',
+      });
+
+      const before = await snapshot(image);
+      const refused = await callTool(tools, 'gimp_layer', { image, op: 'move', x: 5, y: 5 });
+      expect(refused.isError).toBe(true);
+      const text = (refused.content?.[0] as { text: string }).text;
+      expect(text).toContain("'OnlyOneOfMe'");
+      expect(text).toMatch(/were not created by Editmamei/);
+      expect(text).not.toMatch(/shared with another live filter/);
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('move is NOT blocked by a masked filter on an UNRELATED layer (a sibling, neither ancestor nor descendant)', async () => {
+    const image = await openRamp();
+    try {
+      const other = await callTool(tools, 'gimp_layer', { image, op: 'create', name: 'Other' });
+      expect(other.isError, JSON.stringify(other.content)).toBeFalsy();
+
+      await callTool(tools, 'gimp_create_mask', {
+        image,
+        type: 'rectangle',
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        name: 'UnrelatedMask',
+      });
+      const masked = await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'brightness_contrast',
+        brightness: 40,
+        layer: 'Other',
+        mask: 'UnrelatedMask',
+      });
+      expect(masked.isError, JSON.stringify(masked.content)).toBeFalsy();
+
+      // 'Background' is neither an ancestor nor a descendant of 'Other' -- a sibling at the same
+      // top level -- so 'Other's masked filter must not be in scope for this move at all.
+      const moved = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'move',
+        layer: 'Background',
+        x: 5,
+        y: 5,
+      });
+      expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
     } finally {
       await callTool(tools, 'gimp_close_document', { image });
     }
@@ -738,7 +804,10 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
         layer_id: sourceId,
       });
       expect(refused.isError).toBe(true);
-      expect((refused.content?.[0] as { text: string }).text).toContain('HiddenSource');
+      const text = (refused.content?.[0] as { text: string }).text;
+      expect(text).toContain('HiddenSource');
+      expect(text).toMatch(/gimp_layer op=delete/);
+      expect(text).not.toMatch(/flatten/);
       expect(await snapshot(image)).toEqual(before);
     } finally {
       await callTool(tools, 'gimp_close_document', { image });
@@ -812,6 +881,50 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       }>;
       expect(discarded).toEqual([{ layer_id: hiddenId, name: 'FlattenHidden' }]);
       expect(await layerTree(image)).toHaveLength(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('flatten succeeds on a VISIBLE group whose only content is HIDDEN, filling with the background color', async () => {
+    const bare = await backend.call<{ image: number }>('test_new_image', { base_type: 'rgb' });
+    const image = bare.image;
+    try {
+      const group = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create_group',
+        name: 'OnlyGroup',
+      });
+      const groupId = structuredOf(group).layer_id as number;
+      const child = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'HiddenOnlyChild',
+        parent_group: groupId,
+        fill: 'white',
+      });
+      const childId = structuredOf(child).layer_id as number;
+      await callTool(tools, 'gimp_layer', { image, op: 'set', layer_id: childId, visible: false });
+
+      // No effectively visible drawable anywhere -- only a visible, otherwise-empty group -- but
+      // this is not the all-hidden case: the group itself is not hidden, so the ordinary
+      // per-layer hidden refusal (not the all-hidden one) is what fires here.
+      const refused = await callTool(tools, 'gimp_layer', { image, op: 'flatten' });
+      expect(refused.isError).toBe(true);
+      expect((refused.content?.[0] as { text: string }).text).toContain('HiddenOnlyChild');
+
+      const flattened = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'flatten',
+        discard_hidden: true,
+      });
+      expect(flattened.isError, JSON.stringify(flattened.content)).toBeFalsy();
+      expect(structuredOf(flattened).discarded_hidden_layers).toEqual([
+        { layer_id: childId, name: 'HiddenOnlyChild' },
+      ]);
+      const tree = await layerTree(image);
+      expect(tree).toHaveLength(1);
+      expect(tree[0]!.is_group).toBe(false);
     } finally {
       await callTool(tools, 'gimp_close_document', { image });
     }
