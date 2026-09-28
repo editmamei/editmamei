@@ -20,6 +20,10 @@ export default defineConfig({
     exclude: [...configDefaults.exclude, ...(gimpLiveRequested ? [] : [`${GIMP_LIVE}/**`])],
     reporters: ['default'],
     testTimeout: 10_000,
+    // Live GIMP teardown (`session.shutdown()` in each file's afterAll) is a graceful quit bounded
+    // by SHUTDOWN_GRACE_MS plus a process-tree kill; with many GIMPs running at once on a CI
+    // runner that can exceed vitest's 10 s default hook budget even though every test passed.
+    ...(gimpLiveRequested ? { hookTimeout: 60_000 } : {}),
   },
   resolve: {
     alias: {
