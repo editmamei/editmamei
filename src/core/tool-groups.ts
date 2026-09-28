@@ -313,6 +313,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   // ps_filter, not a tonal adjustment.
   gimp_add_effect: 'filter',
   gimp_create_mask: 'masks',
+  gimp_checkpoint: 'document',
 };
 
 /**

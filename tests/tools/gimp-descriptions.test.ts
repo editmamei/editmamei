@@ -295,6 +295,59 @@ describe('levels input rules match lib.validate_levels', () => {
   });
 });
 
+describe('gimp_checkpoint: disk-backed undo substitute', () => {
+  it('explains create/restore/list/delete and the replace-semantics recovery phrasing', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(/op=create exports the image's CURRENT state/);
+    expect(text).toMatch(/replace semantics, not a copy/);
+    expect(text).toMatch(/closed; restored as image M — use M from now on/);
+  });
+  it('says a checkpoint still works after a gimp_session_restarted error', () => {
+    expect(description('gimp_checkpoint').replace(/\s+/g, ' ')).toMatch(
+      /still works right after a gimp_session_restarted error/
+    );
+  });
+  it('states the 5-per-image cap and that it refuses rather than evicts', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(/at most 5 checkpoints/);
+    expect(text).toMatch(/REFUSES outright rather than silently evicting the oldest/);
+  });
+  it("says checkpoint files are kept while the server runs and removed at exit, and a crashed server's leftovers are cleaned up later once they're over an hour old", () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(
+      /Checkpoint files are kept while this server runs and removed when it exits/
+    );
+    expect(text).toMatch(
+      /files left by a server that crashed or was killed are cleaned up by a later server, once they are more than an hour old, the next time a checkpoint is made/
+    );
+  });
+  it('states the total-checkpoint-store cap, across every image', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(/at most 20 checkpoints in total, across every image/);
+  });
+  it('says restore also returns base_type, precision, and layers, like gimp_open_document', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(
+      /returns the reopened image's base_type, precision, and layers, the same as gimp_open_document/
+    );
+  });
+  it('qualifies "the old image id stops working" for when close fails', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(/the old image id stops working once the close succeeds/);
+    expect(text).toMatch(/if it fails instead.*close_failed: true.*the old image stays open/);
+  });
+  it('says a stale checkpoint (its image since closed) is still restorable and excluded from that images cap/scoped list', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(/open: false for a checkpoint whose image has since closed/);
+    expect(text).toMatch(/still restorable/);
+  });
+  it('says list never reports a file path, and why', () => {
+    expect(description('gimp_checkpoint').replace(/\s+/g, ' ')).toMatch(
+      /never a file path \(a full path carries the username\)/
+    );
+  });
+});
+
 describe('open clears a selection saved in the file (op_open)', () => {
   it('is stated on gimp_open_document and in the overview', () => {
     expect(description('gimp_open_document').replace(/\s+/g, ' ')).toMatch(

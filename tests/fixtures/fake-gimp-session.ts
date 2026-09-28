@@ -20,6 +20,10 @@ export interface FakeGimpBackendOptions {
   state?: string;
   /** Defaults to undefined (no start attempt has ever begun). Set alongside `state: 'starting'` to test gimp_ping's origin-aware labeling. */
   startOrigin?: 'cold' | 'restarted';
+  /** `GimpBackend.generation`'s stand-in. Defaults to `undefined` — the "no signal" / older-shim
+   * degraded path some tests exercise deliberately (see gimp-checkpoint-tools.ts's own handling
+   * of an undefined generation). */
+  generation?: number;
 }
 
 const DEFAULT_INSTALL: GimpInstall = {
@@ -44,6 +48,10 @@ export class FakeGimpBackend {
   private readonly version?: string;
   private readonly sessionState: string;
   private readonly origin?: 'cold' | 'restarted';
+  /** Plain mutable field, unlike the other fields above — a test simulates a restart by writing
+   * to it directly (`gimp.generation = 1`) between two calls, since there's no fake process to
+   * actually kill. */
+  public generation?: number;
 
   constructor(opts: FakeGimpBackendOptions = {}) {
     this.installInfo = opts.install === undefined ? DEFAULT_INSTALL : opts.install;
@@ -53,6 +61,7 @@ export class FakeGimpBackend {
     this.version = opts.gimpVersion;
     this.sessionState = opts.state ?? 'ready';
     this.origin = opts.startOrigin;
+    this.generation = opts.generation;
   }
 
   get installed(): boolean {

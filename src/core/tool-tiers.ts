@@ -326,6 +326,9 @@ export const TOOL_TIERS: Record<string, Tier> = {
   gimp_get_preview: 'community',
   gimp_get_histogram: 'community',
   gimp_compare: 'community',
+  // Disk-backed checkpoints (create/restore/list/delete), the headless
+  // substitute for undo.
+  gimp_checkpoint: 'dev',
 };
 
 /**
