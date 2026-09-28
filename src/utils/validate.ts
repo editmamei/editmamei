@@ -42,8 +42,13 @@ export interface JsonSchemaProperty {
   minItems?: number;
   maxItems?: number;
   // A regex a string value must satisfy — for an open-ended field an `enum` can't express (e.g.
-  // gimp_canvas's `fill`, a fixed word list PLUS an arbitrary '#rrggbb' hex color). When `enum` is
-  // ALSO given, a value matching either one is accepted (not both required) — see `coerceAndCheck`.
+  // gimp_canvas's `fill`, a fixed word list PLUS an arbitrary '#rrggbb' hex color: expressed as
+  // `pattern` ALONE, `'^(white|black|transparent|#[0-9a-fA-F]{6})$'`, never `enum` + `pattern`
+  // together). Standard JSON Schema semantics: when both `enum` and `pattern` are declared on the
+  // same property, a value must satisfy BOTH, not either — this is advisory to MCP clients and
+  // models too (they read the same schema), and a non-standard "either" reading has already once
+  // silently broken a client elsewhere in this codebase (a `oneOf` outputSchema). See
+  // `coerceAndCheck`.
   pattern?: string;
 }
 
@@ -122,19 +127,41 @@ export function validateArgs(
  */
 const POLLUTION_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
+/**
+ * Compile a schema-declared `pattern` into a `RegExp`, naming the field if the pattern string
+ * itself is malformed. An invalid `pattern` is a bug in THIS codebase's own schema, never
+ * something a caller's argument value could cause — surfaced with its own clear message instead
+ * of letting `new RegExp`'s own cryptic "Invalid regular expression: ..." reach a caller looking
+ * for what THEY got wrong.
+ */
+function compilePattern(key: string, pattern: string): RegExp {
+  try {
+    return new RegExp(pattern);
+  } catch (err) {
+    throw new Error(
+      `Tool schema bug: "${key}" declares an invalid pattern ${JSON.stringify(pattern)} (${
+        err instanceof Error ? err.message : String(err)
+      })`,
+      { cause: err }
+    );
+  }
+}
+
 function coerceAndCheck(key: string, value: unknown, schema: JsonSchemaProperty): unknown {
   switch (schema.type) {
     case 'string': {
       if (typeof value !== 'string') {
         throw new ValidationError(`Expected string for "${key}", got ${typeof value}`);
       }
-      const matchesPattern = schema.pattern !== undefined && new RegExp(schema.pattern).test(value);
-      if (schema.enum && !schema.enum.includes(value as never) && !matchesPattern) {
+      // Standard JSON Schema semantics: `enum` and `pattern` are independent constraints — when
+      // both are declared, a value must satisfy BOTH, not either. (This codebase's own tools only
+      // ever declare one or the other today; see `pattern`'s own doc comment for why.)
+      if (schema.enum && !schema.enum.includes(value as never)) {
         throw new ValidationError(
           `Invalid value for "${key}": ${JSON.stringify(value)}. Allowed: ${schema.enum.join(', ')}`
         );
       }
-      if (!schema.enum && schema.pattern !== undefined && !matchesPattern) {
+      if (schema.pattern !== undefined && !compilePattern(key, schema.pattern).test(value)) {
         throw new ValidationError(
           `Invalid value for "${key}": ${JSON.stringify(value)} does not match the required pattern`
         );
