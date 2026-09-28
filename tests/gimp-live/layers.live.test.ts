@@ -32,6 +32,7 @@ import { createGimpCoreTools } from '@editmamei/tools/gimp-core-tools.ts';
 import { createGimpDocumentTools } from '@editmamei/tools/gimp-document-tools.ts';
 import { createGimpInspectTools } from '@editmamei/tools/gimp-inspect-tools.ts';
 import { createGimpAdjustmentTools } from '@editmamei/tools/gimp-adjustment-tools.ts';
+import { createGimpEffectTools } from '@editmamei/tools/gimp-effect-tools.ts';
 import { createGimpFilterTools } from '@editmamei/tools/gimp-filter-tools.ts';
 import { createGimpGeometryTools } from '@editmamei/tools/gimp-geometry-tools.ts';
 import { createGimpMaskTools } from '@editmamei/tools/gimp-mask-tools.ts';
@@ -44,6 +45,7 @@ import {
   writeGrayRamp,
   writeColorSwatches,
   readPng,
+  pixelAt,
   maxAbsDiff,
   readyGimpRegistry,
   LIVE_READY_TIMEOUT_MS,
@@ -97,6 +99,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       ...createGimpDocumentTools(backend),
       ...createGimpInspectTools(backend),
       ...createGimpAdjustmentTools(backend),
+      ...createGimpEffectTools(backend),
       ...createGimpFilterTools(backend),
       ...createGimpGeometryTools(backend),
       ...createGimpMaskTools(backend),
@@ -1096,6 +1099,133 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       expect(await snapshot(image)).toEqual(before);
     } finally {
       await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  // ---- gimp_layer/gimp_bake treat a gimp_add_effect filter exactly like any other ledgered
+  // filter -- both dispatch through the SAME _apply_filter/ledger/_all_layers machinery, so none
+  // of this section is new bridge behaviour; it exists to prove that generic treatment actually
+  // holds for the effect family too, not just gimp_add_adjustment's own filters.
+
+  it('move with a vignette effect present keeps the vignette locked to the LAYER content, not the canvas', async () => {
+    // The ramp fixture is 64x64 with one layer the same size as the canvas -- moving it by (dx,
+    // dy) shifts what the canvas shows at every point (a plain, expected consequence of moving a
+    // same-size layer, nothing to do with the vignette), so comparing the two WHOLE-CANVAS exports
+    // directly would always show a large diff regardless of correctness. What actually matters --
+    // vignette center/radius are fractions of the LAYER's own extent, unaffected by a canvas-level
+    // offset -- is that canvas pixel (x, y) BEFORE the move equals canvas pixel (x+dx, y+dy) AFTER
+    // it, for any (x, y) that stays on-canvas both ways: the layer's rendered CONTENT simply slid
+    // over, unchanged.
+    const image = await openRamp();
+    try {
+      const effect = await callTool(tools, 'gimp_add_effect', { image, type: 'vignette' });
+      expect(effect.isError, JSON.stringify(effect.content)).toBeFalsy();
+
+      const beforePath = join(workDir, 'vignette-move-before.png');
+      await callTool(tools, 'gimp_export', { image, file_path: beforePath });
+      const before = readPng(beforePath);
+
+      const dx = 5;
+      const dy = 5;
+      const moved = await callTool(tools, 'gimp_layer', { image, op: 'move', x: dx, y: dy });
+      expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
+
+      const afterPath = join(workDir, 'vignette-move-after.png');
+      await callTool(tools, 'gimp_export', { image, file_path: afterPath });
+      const after = readPng(afterPath);
+
+      for (const [x, y] of [
+        [2, 2],
+        [32, 32],
+        [10, 50],
+        [50, 10],
+        [58, 58],
+      ]) {
+        expect(pixelAt(after, x! + dx, y! + dy)).toEqual(pixelAt(before, x!, y!));
+      }
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('duplicate refuses a layer carrying a gimp_add_effect filter, the same as an adjustment filter', async () => {
+    const image = await openRamp();
+    try {
+      const effect = await callTool(tools, 'gimp_add_effect', { image, type: 'black_white' });
+      expect(effect.isError, JSON.stringify(effect.content)).toBeFalsy();
+      const before = await snapshot(image);
+
+      const dup = await callTool(tools, 'gimp_layer', { image, op: 'duplicate' });
+      expect(dup.isError).toBe(true);
+      expect((dup.content?.[0] as { text: string }).text).toContain('Editmamei filter');
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('merge_down, flatten, and bake each remove an effect filter ledger record like any other', async () => {
+    async function ledgerNames(image: number): Promise<string[]> {
+      const listed = await callTool(tools, 'gimp_filter', { image, op: 'list' });
+      return (structuredOf(listed).filters as Array<{ name: string }>).map((f) => f.name);
+    }
+
+    // merge_down
+    const mergeImage = await openRamp();
+    try {
+      const top = await callTool(tools, 'gimp_layer', {
+        image: mergeImage,
+        op: 'create',
+        name: 'EffectMergeTop',
+      });
+      const topId = structuredOf(top).layer_id as number;
+      const effect = await callTool(tools, 'gimp_add_effect', {
+        image: mergeImage,
+        type: 'add_noise',
+        layer: 'EffectMergeTop',
+      });
+      expect(effect.isError, JSON.stringify(effect.content)).toBeFalsy();
+      expect(await ledgerNames(mergeImage)).toContain(structuredOf(effect).name as string);
+      const merged = await callTool(tools, 'gimp_layer', {
+        image: mergeImage,
+        op: 'merge_down',
+        layer_id: topId,
+      });
+      expect(merged.isError, JSON.stringify(merged.content)).toBeFalsy();
+      expect(await ledgerNames(mergeImage)).toEqual([]);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image: mergeImage });
+    }
+
+    // flatten
+    const flattenImage = await openRamp();
+    try {
+      const effect = await callTool(tools, 'gimp_add_effect', {
+        image: flattenImage,
+        type: 'motion_blur',
+      });
+      expect(effect.isError, JSON.stringify(effect.content)).toBeFalsy();
+      const flattened = await callTool(tools, 'gimp_layer', { image: flattenImage, op: 'flatten' });
+      expect(flattened.isError, JSON.stringify(flattened.content)).toBeFalsy();
+      expect(await ledgerNames(flattenImage)).toEqual([]);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image: flattenImage });
+    }
+
+    // bake
+    const bakeImage = await openRamp();
+    try {
+      const effect = await callTool(tools, 'gimp_add_effect', {
+        image: bakeImage,
+        type: 'vignette',
+      });
+      expect(effect.isError, JSON.stringify(effect.content)).toBeFalsy();
+      const baked = await callTool(tools, 'gimp_bake', { image: bakeImage });
+      expect(baked.isError, JSON.stringify(baked.content)).toBeFalsy();
+      expect(structuredOf(baked).baked).toBe(true);
+      expect(await ledgerNames(bakeImage)).toEqual([]);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image: bakeImage });
     }
   });
 
