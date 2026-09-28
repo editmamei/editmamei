@@ -52,20 +52,23 @@ const layerSchema: JsonSchemaObject = {
         "that changes nothing else. 'set' changes opacity, mode, visible, and/or name (at least " +
         'one required, name may not be empty) — mode is a blend mode from a fixed list, not a raw ' +
         "GEGL/GIMP name. 'move' repositions a layer to an ABSOLUTE x/y (not a delta), bounded to " +
-        'stay near the canvas — REFUSED when the layer carries a masked or unverifiable adjustment ' +
-        "filter, since a filter's mask does not travel with the layer when it moves. 'reorder' " +
+        'stay near the canvas — REFUSED when the layer, or a group containing it, carries a ' +
+        "masked or unverifiable adjustment filter, since a filter's mask does not travel with " +
+        "content that moves beneath it. 'reorder' " +
         "changes a layer's stack position and/or moves it into a group (parent_group) or out to " +
         'top-level (to_top_level: true) — neither given keeps the layer in its current group and ' +
         'only changes `position`; REFUSED if parent_group would nest a group inside itself or one ' +
         "of its own descendants. 'merge_down' bakes ONE layer's live filters (masked ones " +
         'included) into pixels and merges it into the first VISIBLE layer below it in the same ' +
-        'group/level — REFUSED if that target would be a group, if there is no visible layer ' +
-        'below (a hidden one in between is skipped, not merged), or if the merged result would ' +
-        'exceed the same size cap gimp_resize_image enforces; a visible text layer involved is ' +
+        'group/level — REFUSED if the SOURCE layer itself is hidden (GIMP cannot merge a hidden ' +
+        'layer down), if that target would be a group, if there is no visible layer below (a ' +
+        'hidden one in between is skipped, not merged), or if the merged result would exceed the ' +
+        'same size cap gimp_resize_image enforces; a visible text layer involved is ' +
         "rasterized (reported as rasterized_text). 'flatten' collapses the WHOLE image into a " +
         'single layer the same way, always drops alpha (reported as has_alpha: false), and ' +
-        'REFUSES by default when any layer is hidden (GIMP discards a hidden layer outright rather ' +
-        'than compositing it in) unless discard_hidden: true is given.',
+        'REFUSES by default when any layer is hidden, INCLUDING a layer whose own visibility is ' +
+        'on but sits inside a hidden group (GIMP discards a hidden layer outright rather than ' +
+        'compositing it in) unless discard_hidden: true is given.',
     },
     layer: {
       ...GIMP_LAYER_PROP,
@@ -189,7 +192,11 @@ interface DiscardedLayer {
   name: string;
 }
 
-function layerSuccessText(op: string, result: Record<string, unknown>): string {
+function layerSuccessText(
+  op: string,
+  result: Record<string, unknown>,
+  args: Record<string, unknown>
+): string {
   switch (op) {
     case 'create':
       return `Created layer ${result.layer_id} ("${result.name as string}").`;
@@ -226,8 +233,11 @@ function layerSuccessText(op: string, result: Record<string, unknown>): string {
       );
     }
     default: {
-      // 'set'
-      const changed = Object.keys(result).filter((k) => k !== 'layer_id' && k !== 'name');
+      // 'set' -- `result` always carries `name` as the layer's own current identifier, so a
+      // rename can't be told apart from an untouched name by diffing result's own keys. Reading
+      // which of opacity/mode/visible/name the caller actually passed reports a name-only set as
+      // "updated: name.", not "updated: .".
+      const changed = (['opacity', 'mode', 'visible', 'name'] as const).filter((k) => k in args);
       return `Layer ${result.layer_id} ("${result.name as string}") updated: ${changed.join(', ')}.`;
     }
   }
@@ -262,7 +272,7 @@ async function gimpLayer(gimp: GimpBackend, rawArgs: Record<string, unknown>): P
     }
     const result = await gimp.call<Record<string, unknown>>('layer', layerBridgeArgs(args));
     return {
-      content: [{ type: 'text' as const, text: layerSuccessText(op, result) }],
+      content: [{ type: 'text' as const, text: layerSuccessText(op, result, args) }],
       structuredContent: result,
     };
   } catch (error) {
@@ -344,14 +354,17 @@ export function createGimpLayerTools(gimp: GimpBackend): ToolDefinition[] {
           'first when in doubt. duplicate REFUSES outright when the layer (or, for a group, any ' +
           "descendant) carries an Editmamei filter, since the copy's filter would collide with " +
           "the original's own ledger record; bake it first (gimp_bake) or delete it, then " +
-          'duplicate. move takes an ABSOLUTE x/y (not a delta) and REFUSES when the layer carries ' +
-          "a masked or unverifiable adjustment filter — a filter's mask does not travel with the " +
-          'layer when it moves, the same physics gimp_transform_canvas refuses on. merge_down and ' +
+          'duplicate. move takes an ABSOLUTE x/y (not a delta) and REFUSES when the layer, or ' +
+          'a group containing it, carries a masked or unverifiable adjustment filter — a ' +
+          "filter's mask does not travel with content that moves beneath it, the same physics " +
+          'gimp_transform_canvas refuses on. merge_down REFUSES outright when the SOURCE layer ' +
+          'itself is hidden (GIMP cannot merge a hidden layer down); it and ' +
           'flatten both bake every live filter they touch into pixels first (masked filters ' +
           'included) and rasterize any VISIBLE text layer in the process (rasterized_text); ' +
           'flatten always drops alpha (has_alpha: false) and, by default, REFUSES outright when ' +
-          'any layer is hidden rather than silently discarding it (discard_hidden: true proceeds ' +
-          'and reports what was discarded).',
+          'any layer is hidden — INCLUDING one whose own visibility is on but sits inside a ' +
+          'hidden group — rather than silently discarding it (discard_hidden: true proceeds and ' +
+          'reports what was discarded).',
         inputSchema: layerSchema,
         outputSchema: {
           type: 'object',
@@ -396,7 +409,7 @@ export function createGimpLayerTools(gimp: GimpBackend): ToolDefinition[] {
           'filters; a text layer stays a text layer (baking never rasterizes one). A masked ' +
           "filter's confinement survives the bake exactly. Defaults to the selected layer, or the " +
           'topmost layer if none is selected, the same as any other gimp_layer addressing. Baking ' +
-          'clears any masked-filter refusal (gimp_layer op=move, gimp_resize_image, ' +
+          'clears any masked-filter refusal (gimp_layer op=move, gimp_canvas, gimp_resize_image, ' +
           'gimp_transform_canvas) that filter would otherwise trigger — it is the sanctioned way ' +
           'to make a masked adjustment safe to move, resize, rotate, or flip around. all: true ' +
           'bakes every ordinary layer with a live filter at once; a group layer is always skipped, ' +

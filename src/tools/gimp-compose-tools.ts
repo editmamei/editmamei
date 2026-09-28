@@ -274,7 +274,8 @@ const canvasSchema: JsonSchemaObject = {
         'transparent only in a live, layered document (e.g. saved via gimp_save_xcf) — ' +
         'gimp_export and gimp_layer op=flatten both flatten first, which fills any transparent ' +
         "area with GIMP's ambient background color (white, unchanged by this tool) and drops " +
-        'alpha, not with transparency.',
+        'alpha, not with transparency. A non-transparent fill on an INDEXED image is REFUSED ' +
+        'outright, before the canvas resizes at all — indexed has no backdrop layer type to add.',
     },
   },
   required: ['image', 'width', 'height'],
@@ -426,11 +427,13 @@ export function createGimpComposeTools(gimp: GimpBackend): ToolDefinition[] {
           'means at export/flatten time). IRREVERSIBLE in this session: there is no undo, so ' +
           'gimp_checkpoint or gimp_save_xcf first when in doubt. REFUSES outright when the image ' +
           'has a masked filter, or any filter not created by Editmamei (for example one added in ' +
-          'the GIMP GUI) — extend the canvas before adding any masked filter, not after: a ' +
-          "filter's mask does not travel with the layer it confines when the canvas repositions " +
-          'it, the same physics gimp_resize_image and gimp_transform_canvas already refuse on. An ' +
-          'unmasked effect filter (vignette and friends) is unaffected — its own params key off ' +
-          "the LAYER's own unchanged extent, never the canvas.",
+          'the GIMP GUI) AND the existing content actually moves (offset_x/offset_y not both 0 — ' +
+          'for example a top-left anchor never moves anything) — extend the canvas before adding ' +
+          "any masked filter, not after: a filter's mask does not travel with the layer it " +
+          'confines when the canvas repositions it, the same physics gimp_resize_image and ' +
+          'gimp_transform_canvas already refuse on. An unmasked effect filter (vignette and ' +
+          "friends) is unaffected — its own params key off the LAYER's own unchanged extent, " +
+          'never the canvas.',
         inputSchema: canvasSchema,
         outputSchema: {
           type: 'object',
