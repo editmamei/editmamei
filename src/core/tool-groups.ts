@@ -311,6 +311,8 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   gimp_filter: 'filter',
   gimp_create_mask: 'masks',
   gimp_checkpoint: 'document',
+  gimp_layer: 'layers',
+  gimp_bake: 'layers',
 };
 
 /**

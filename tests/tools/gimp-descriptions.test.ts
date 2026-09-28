@@ -291,3 +291,99 @@ describe('gimp_inspect describe-by-id targets (document/layers/channels/filter)'
     expect(descText).toMatch(/coverage \(selected_pixels\/fraction\)/);
   });
 });
+
+describe('gimp_layer: gimp_group is folded in', () => {
+  it('the tool description says create_group + reorder cover it', () => {
+    expect(description('gimp_layer').replace(/\s+/g, ' ')).toMatch(
+      /gimp_group is folded in as create_group \+ reorder's parent_group/
+    );
+  });
+});
+
+describe('gimp_layer: addressing is layer_id (canonical) or layer (name)', () => {
+  it('the tool description and layer_id field both say layer_id is canonical', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/layer_id \(canonical/);
+    expect(field('gimp_layer', 'layer_id').replace(/\s+/g, ' ')).toMatch(
+      /only way to address two layers that happen to share a name/
+    );
+  });
+});
+
+describe('gimp_layer op=duplicate refuses on an Editmamei filter', () => {
+  // ops.py's op_layer duplicate branch: DrawableFilter.set_name does not exist on this GIMP
+  // build (verified live), and the ledger is keyed by filter name.
+  it('the tool description and op field both name DrawableFilter.set_name and the ledger-name collision', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/DrawableFilter\.set_name does not exist/);
+    expect(desc).toMatch(/bake it first \(gimp_bake\) or delete it, then duplicate/i);
+    const opField = field('gimp_layer', 'op').replace(/\s+/g, ' ');
+    expect(opField).toMatch(/REFUSED when the layer/);
+    expect(opField).toMatch(/silently rewrite the original's own record/);
+  });
+});
+
+describe('gimp_layer op=move refuses on a masked or unverifiable filter', () => {
+  // ops.py's _refuse_if_masked_filters_on: a filter's mask does not travel with set_offsets
+  // (verified live), the same physics gimp_transform_canvas already refuses on.
+  it('the tool description, op field, and x/y fields all say move is an ABSOLUTE offset that refuses on a masked filter', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/ABSOLUTE x\/y \(not a delta\)/);
+    expect(desc).toMatch(/does not travel with the layer when it moves/);
+    const opField = field('gimp_layer', 'op').replace(/\s+/g, ' ');
+    expect(opField).toMatch(/ABSOLUTE x\/y \(not a delta\)/);
+    expect(opField).toMatch(/does not travel with the layer/);
+    expect(field('gimp_layer', 'x')).toMatch(/ABSOLUTE horizontal offset/);
+    expect(field('gimp_layer', 'y')).toMatch(/ABSOLUTE vertical offset/);
+  });
+});
+
+describe('gimp_layer merge_down/flatten bake filters and can rasterize text', () => {
+  it('the tool description says masked filters survive the merge, text is rasterized, and flatten drops alpha', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/masked filters included.{0,40}verified correct through the merge/);
+    expect(desc).toMatch(/rasterize any text layer.*rasterized_text/);
+    expect(desc).toMatch(/flatten always drops alpha \(has_alpha: false\)/);
+  });
+});
+
+describe('gimp_layer: no undo in this session', () => {
+  it('says gimp_checkpoint or gimp_save_xcf first, matching the checkpoint/save framing elsewhere', () => {
+    expect(description('gimp_layer').replace(/\s+/g, ' ')).toMatch(
+      /there is no undo in this session: gimp_checkpoint or gimp_save_xcf first when in doubt/
+    );
+  });
+});
+
+describe('gimp_layer set: a fixed blend-mode list, not raw GEGL/GIMP names', () => {
+  it('the op field and mode field both say so', () => {
+    expect(field('gimp_layer', 'op').replace(/\s+/g, ' ')).toMatch(
+      /mode is a blend mode from a fixed list, not a raw GEGL\/GIMP name/
+    );
+    expect(field('gimp_layer', 'mode')).toMatch(/not a raw GEGL\/GIMP mode name/);
+  });
+});
+
+describe('gimp_bake: probed and verified, clears the masked-filter refusal', () => {
+  it('the tool description says a masked filter survives the bake, and baking clears the geometry refusal', () => {
+    const desc = description('gimp_bake').replace(/\s+/g, ' ');
+    expect(desc).toMatch(
+      /Verified live that a MASKED filter's confinement survives the bake exactly/
+    );
+    expect(desc).toMatch(/Baking clears any masked-filter refusal/);
+    expect(desc).toMatch(
+      /sanctioned way to make a masked adjustment safe to move, resize, rotate, or flip/
+    );
+  });
+  it('says group layers are always skipped for all: true', () => {
+    expect(description('gimp_bake').replace(/\s+/g, ' ')).toMatch(
+      /group layers are always skipped \(GIMP cannot merge filters on a group item\)/
+    );
+  });
+  it('is marked destructive and says there is no undo', () => {
+    expect(byName.get('gimp_bake')!.annotations?.destructiveHint).toBe(true);
+    expect(description('gimp_bake').replace(/\s+/g, ' ')).toMatch(
+      /IRREVERSIBLE in this session: there is no undo/
+    );
+  });
+});
