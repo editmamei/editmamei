@@ -26,6 +26,7 @@ import {
   writeNoisyField,
   writeHardEdge,
   writeColorSwatches,
+  writeRgbaSquare,
   SWATCH_SIZE,
   maxAbsDiff,
   srgbToLinear,
@@ -40,10 +41,11 @@ vi.setConfig({ testTimeout: 30_000 });
 
 const install: GimpInstall | null = await detectGimp();
 
-/** A PNG signature + chunk writer, RGBA (color type 6) -- support.ts's own `writePng` is RGB-only
- * (every existing gimp-live fixture is opaque), and drop_shadow is the first effect here that
- * needs a real transparent region to cast a shadow through. Kept local to this file rather than
- * added to the shared support.ts, since this is the only file that needs it. */
+/** A PNG signature + chunk writer, RGB (color type 2) -- support.ts's own `writePng` is
+ * function-per-pixel, awkward for a filled-region-on-background shape like this one. Kept local
+ * to this file rather than added to the shared support.ts, since this is the only file that needs
+ * an RGB (non-alpha) filled-region writer -- the RGBA one (`writeRgbaSquare`, for drop_shadow) is
+ * shared, in support.ts, since geometry-and-masks.live.test.ts needs that one too. */
 function pngChunkLocal(type: string, data: Buffer): Buffer {
   const length = Buffer.alloc(4);
   length.writeUInt32BE(data.length, 0);
@@ -56,44 +58,6 @@ function pngChunkLocal(type: string, data: Buffer): Buffer {
   const crc = Buffer.alloc(4);
   crc.writeUInt32BE(~c >>> 0, 0);
   return Buffer.concat([length, typeBuf, data, crc]);
-}
-
-/** width x height RGBA PNG: an opaque `fill` square from (sx,sy) to (sx+size,sy+size), fully
- * transparent (alpha 0) everywhere else -- a real alpha edge for drop_shadow to cast a shadow
- * from, unlike every other fixture here (opaque RGB, no alpha channel at all). */
-function writeRgbaSquare(
-  path: string,
-  width: number,
-  height: number,
-  sx: number,
-  sy: number,
-  size: number,
-  fill: [number, number, number]
-): void {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // color type: truecolor with alpha (RGBA)
-  const raw = Buffer.alloc(height * (1 + width * 4));
-  let offset = 0;
-  for (let y = 0; y < height; y++) {
-    raw[offset++] = 0; // per-scanline filter: None
-    for (let x = 0; x < width; x++) {
-      const inside = x >= sx && x < sx + size && y >= sy && y < sy + size;
-      raw[offset++] = fill[0];
-      raw[offset++] = fill[1];
-      raw[offset++] = fill[2];
-      raw[offset++] = inside ? 255 : 0;
-    }
-  }
-  const png = Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    pngChunkLocal('IHDR', ihdr),
-    pngChunkLocal('IDAT', deflateSync(raw)),
-    pngChunkLocal('IEND', Buffer.alloc(0)),
-  ]);
-  writeFileSync(path, png);
 }
 
 /** width x height RGB (opaque, no alpha) PNG: a `fg` square centered at (cx,cy) on a `bg`
@@ -644,16 +608,24 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
   // fires from the production create path: an actionable `gimp_op_failed`, not a phantom filter_id
   // with nothing actually attached.
 
-  it("_append_masked surfaces GIMP's silent attach refusal as gimp_op_failed, with no phantom filter left behind", async () => {
+  it("_append_masked surfaces GIMP's silent attach refusal as gimp_op_failed, naming the operation, with no phantom filter left behind", async () => {
     const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
     try {
-      await expect(
-        session.call('test_apply_raw_effect', {
+      let error: unknown;
+      try {
+        await session.call('test_apply_raw_effect', {
           image: opened.image,
           operation: 'gegl:lens-blur',
           props: { radius: 10.0 },
-        })
-      ).rejects.toMatchObject({ code: 'gimp_op_failed' });
+        });
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toMatchObject({ code: 'gimp_op_failed' });
+      // The operation name is captured BEFORE f.delete() runs (see _append_masked's own comment)
+      // -- this proves that capture actually reaches the error message, not just that SOME
+      // message comes back.
+      expect((error as Error).message).toContain('gegl:lens-blur');
       // Both directions: the live filter stack is empty (nothing actually attached)...
       const listed = await session.call<{ filters: unknown[] }>('filter', {
         image: opened.image,
@@ -727,7 +699,7 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
     }
   });
 
-  // ---- op_effect's own re-edit/mask/type contracts, through the real bridge (Q1/Q3) -------------
+  // ---- op_effect's own re-edit/mask/type contracts, through the real bridge -----------------
 
   it('re-editing a filter with the wrong type is refused, naming both types', async () => {
     const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
@@ -737,14 +709,21 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
         type: 'vignette',
         radius: 0.6,
       });
-      await expect(
-        session.call('effect', {
+      let error: unknown;
+      try {
+        await session.call('effect', {
           image: opened.image,
           type: 'motion_blur',
           filter_id: created.filter_id,
           length: 10,
-        })
-      ).rejects.toMatchObject({ code: 'invalid_argument' });
+        });
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toMatchObject({ code: 'invalid_argument' });
+      const message = (error as Error).message;
+      expect(message).toContain('vignette');
+      expect(message).toContain('motion_blur');
     } finally {
       await session.call('close', { image: opened.image });
     }
