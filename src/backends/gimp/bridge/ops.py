@@ -1192,8 +1192,7 @@ def _classify_geometry_filters(img):
 def _refuse_if_masked_filters(img, op_name, before_hint='Rotate, flip or resize'):
     """`before_hint` names the alternative ordering this op's own refusal message suggests --
     'Rotate, flip or resize' for resize/rotate/flip, 'Extend the canvas' for `gimp_canvas` (see its
-    own call site) -- so the advice matches the op that actually refused, not just whichever ops
-    existed when this function was first written."""
+    own call site) -- so the advice matches the op that actually refused."""
     masked, unverifiable = _classify_geometry_filters(img)
     if unverifiable:
         # `sorted(set(...))`, not `sorted(...)`: classify_geometry_filters reports a duplicate
@@ -2027,14 +2026,19 @@ def op_describe_operation(args):
 #     therefore refuses outright when the source (or, for a group, any descendant) carries an
 #     Editmamei-ledgered filter.
 #   - `Item.set_offsets(x, y)` is an ABSOLUTE move, not a delta -- verified live (two successive
-#     calls land the layer exactly where each one asked, not summed).
+#     calls land the layer exactly where each one asked, not summed). Called on a GROUP layer, it
+#     moves every descendant by the same delta too (verified live: a child's own reported offset
+#     shifts by exactly the same amount as the group's) -- `move` needs no special-casing for a
+#     group target.
 #   - A masked filter's confinement does NOT travel with `set_offsets`: verified live with a
 #     brightness-contrast filter masked to the left half of a layer, moved by set_offsets -- the
 #     darkened region did not reappear anywhere in the layer's new position (its mask stayed
 #     pinned to the OLD canvas coordinates, the same "confinement is a fixed snapshot" physics
 #     `_refuse_if_masked_filters`'s own comment documents for rotate/flip). `move` therefore
-#     refuses under the same conditions, scoped to just the moved layer's own subtree (an untouched
-#     OTHER layer's masked filter is unaffected by this layer moving).
+#     refuses under the same conditions, scoped to the moved layer's own subtree AND its containing
+#     groups (an untouched OTHER, unrelated layer's masked filter is unaffected by this layer
+#     moving) -- see `_refuse_if_masked_filters_on`'s own comment for why duplicate filter NAMES
+#     are classified over the whole image even though the refusal itself stays scoped.
 #   - `Image.merge_down(layer, merge_type)` merges INTO THE FIRST VISIBLE LAYER BELOW -- verified
 #     live that a HIDDEN layer directly beneath the one being merged is skipped entirely and left
 #     untouched, not merged and not removed. Refuses (returns None, no Python exception -- GIMP
@@ -2096,26 +2100,57 @@ def _ledgered_filter_names_on(img, layers):
     return out
 
 
-def _refuse_if_masked_filters_on(img, op_name, layers):
-    """The same refuse-rather-than-corrupt check as `_refuse_if_masked_filters`, scoped to just
-    `layers` (a single layer's own subtree) instead of the whole image -- moving one layer cannot
-    misalign a masked filter that lives on some OTHER, untouched layer."""
+def _layer_ancestors(layer):
+    """Every GROUP layer between `layer` and the top of the stack, immediate parent first -- the
+    complement of `_layer_subtree` (which walks DOWN into descendants, never up). A masked filter
+    on one of these confines to that group's own rendered composite, which shifts under it when a
+    layer inside the group moves, exactly the same misalignment a masked filter directly on the
+    moving layer would suffer."""
+    out = []
+    parent = layer.get_parent()
+    while parent is not None:
+        out.append(parent)
+        parent = parent.get_parent()
+    return out
+
+
+def _refuse_if_masked_filters_on(img, op_name, layer):
+    """The same refuse-rather-than-corrupt check as `_refuse_if_masked_filters`, scoped to `layer`
+    itself, its own subtree (`_layer_subtree` -- moving a group takes its children with it), and
+    its containing groups (`_layer_ancestors`) -- moving `layer` cannot misalign a masked filter
+    that lives on some OTHER, unrelated part of the image.
+
+    Duplicate-name classification runs over the WHOLE image's live filters, not just this scope: a
+    name is ambiguous the moment it appears on more than one live filter ANYWHERE in the image,
+    since the ledger's {name: record} shape can only ever describe one of them -- a masked filter
+    elsewhere hiding behind an unmasked one's ledger record in this scope (or the reverse) would
+    otherwise slip through unnoticed. The refusal itself still only fires for a name that actually
+    appears in `layer`'s own scope, so a masked filter on a completely unrelated layer never blocks
+    this move."""
+    scope = set(_layer_subtree(layer)) | set(_layer_ancestors(layer))
+    scoped_names = {f.get_name() for l in scope for f in l.get_filters()}
     filters = _prune_stale_ledger_records(img)
-    live = [(f.get_name(), f.get_operation_name()) for layer in layers for f in layer.get_filters()]
-    masked, unverifiable = lib.classify_geometry_filters(filters, live)
+    whole_image_live = [
+        (f.get_name(), f.get_operation_name()) for l in _all_layers(img) for f in l.get_filters()
+    ]
+    masked, unverifiable = lib.classify_geometry_filters(filters, whole_image_live)
+    masked = sorted(set(n for n in masked if n in scoped_names))
+    unverifiable = sorted(set(n for n in unverifiable if n in scoped_names))
     if unverifiable:
         raise ValueError(
-            '%s cannot proceed: filter(s) %s on this layer were not created by Editmamei (no '
-            'matching ledger record for their name and operation), so whether they are masked '
-            'cannot be checked. Delete them first, or move the layer before adding them.'
-            % (op_name, ', '.join(repr(n) for n in sorted(unverifiable)))
+            '%s cannot proceed: filter(s) %s on this layer, or a group containing it, were not '
+            'created by Editmamei (no matching ledger record for their name and operation), so '
+            'whether they are masked cannot be checked. Delete them first, or move the layer '
+            'before adding them.'
+            % (op_name, ', '.join(repr(n) for n in unverifiable))
         )
     if masked:
         raise ValueError(
             '%s would misalign the masked adjustment(s) %s: a filter\'s mask does not travel with '
-            'the layer it is on. Move the layer before adding masked adjustments, or delete those '
-            'filters first and re-create them afterwards.'
-            % (op_name, ', '.join(repr(n) for n in sorted(masked)))
+            'content that moves beneath it, whether the filter is on this layer or a group that '
+            'contains it. Move the layer before adding masked adjustments, or delete those filters '
+            'first and re-create them afterwards.'
+            % (op_name, ', '.join(repr(n) for n in masked))
         )
 
 
@@ -2367,7 +2402,7 @@ def _op_layer_set(img, args):
     layer = _layer(img, args)
     # Every field is validated FIRST, before any setter runs at all: a later field failing
     # validation must never leave an earlier one already applied with nothing to show for it (no
-    # proxy drop, no error) -- see this section's own B1/B2/B3-class discipline.
+    # proxy drop, no error).
     to_apply = []
     if args.get('opacity') is not None:
         to_apply.append(('opacity', lib.validate_range('opacity', args['opacity'], 0.0, 100.0)))
@@ -2403,7 +2438,7 @@ def _op_layer_set(img, args):
 
 def _op_layer_move(img, args):
     layer = _layer(img, args)
-    _refuse_if_masked_filters_on(img, 'move', _layer_subtree(layer))
+    _refuse_if_masked_filters_on(img, 'move', layer)
     x, y = int(lib.require(args, 'x')), int(lib.require(args, 'y'))
     _validated_move_offset(img, x, y)
     try:
@@ -2439,6 +2474,18 @@ def _op_layer_merge_down(img, args):
             'merge_down does not accept a group layer -- move its children out first, or use '
             'flatten to collapse the whole image'
         )
+    # Verified live: GIMP's own merge_down silently fails (returns None) when the SOURCE layer's
+    # own visibility is off, regardless of the target -- checked explicitly, before anything else,
+    # so the refusal names the real reason instead of surfacing as a generic gimp_op_failed. An
+    # ancestor group being hidden does not trigger this: verified live, GIMP merges two VISIBLE
+    # siblings inside a hidden group without complaint, since the merge only ever touches the two
+    # layers directly involved.
+    if not layer.get_visible():
+        raise ValueError(
+            'merge_down refuses on the HIDDEN layer %r -- GIMP cannot merge a hidden layer down. '
+            'Make it visible first, or use flatten (with discard_hidden: true) to drop it instead.'
+            % layer.get_name()
+        )
     parent = layer.get_parent()
     siblings = list(parent.get_children()) if parent is not None else list(img.get_layers())
     idx = next((i for i, s in enumerate(siblings) if s.get_id() == layer.get_id()), None)
@@ -2465,19 +2512,28 @@ def _op_layer_merge_down(img, args):
     return {'layer_id': merged.get_id(), 'name': merged.get_name(), 'rasterized_text': rasterized_text}
 
 
+def _effectively_visible(layer):
+    """Whether `layer` actually renders: its own visible flag AND every ANCESTOR group's own
+    visible flag. `Item.get_visible()` reflects only that one item's own checkbox -- a visible
+    child of a hidden group renders as invisible (and flatten discards it) exactly like a directly
+    hidden layer would."""
+    return layer.get_visible() and all(a.get_visible() for a in _layer_ancestors(layer))
+
+
 def _op_layer_flatten(img, args):
     all_layers = _all_layers(img)
-    hidden = [l for l in all_layers if not l.get_visible()]
-    discard_hidden = bool(args.get('discard_hidden', False))
+    hidden = [l for l in all_layers if not _effectively_visible(l)]
+    discard_hidden = lib.optional_bool(args, 'discard_hidden')
     if hidden and not discard_hidden:
         raise ValueError(
             'flatten would discard %d hidden layer(s) (%s) -- GIMP drops a hidden layer entirely '
-            'rather than compositing it in. Pass discard_hidden: true to proceed, or make them '
-            'visible first.' % (len(hidden), ', '.join(repr(l.get_name()) for l in hidden))
+            'rather than compositing it in (a layer inside a hidden group counts as hidden too, '
+            'even when its own visibility is on). Pass discard_hidden: true to proceed, or make '
+            'them visible first.' % (len(hidden), ', '.join(repr(l.get_name()) for l in hidden))
         )
     if len(hidden) == len(all_layers):
         raise ValueError('cannot flatten: every layer is hidden, and flatten needs at least one visible layer')
-    rasterized_text = any(l.is_text_layer() and l.get_visible() for l in all_layers)
+    rasterized_text = any(l.is_text_layer() and _effectively_visible(l) for l in all_layers)
     discarded_hidden_layers = [{'layer_id': l.get_id(), 'name': l.get_name()} for l in hidden]
     try:
         flat = img.flatten()
@@ -2556,7 +2612,7 @@ def op_bake(args):
     `_refuse_if_masked_filters`/`_refuse_if_masked_filters_on` only ever look at LIVE filters, and
     baking leaves none behind."""
     img = _image(args)
-    if bool(args.get('all', False)):
+    if lib.optional_bool(args, 'all'):
         baked = []
         skipped_groups_with_filters = []
         try:
@@ -2833,7 +2889,6 @@ def _fill_canvas_layer(layer, fill):
 
 def op_canvas(args):
     img = _image(args)
-    _refuse_if_masked_filters(img, 'canvas', before_hint='Extend the canvas')
     old_w, old_h = img.get_width(), img.get_height()
     new_w, new_h = int(lib.require(args, 'width')), int(lib.require(args, 'height'))
     if new_w < old_w or new_h < old_h:
@@ -2849,6 +2904,15 @@ def op_canvas(args):
         )
     new_w, new_h = lib.validate_resize_dims(new_w, new_h)
     fill = lib.validate_canvas_fill(args.get('fill', 'transparent'))
+    # Checked before anything mutates: a non-transparent fill needs a backdrop layer, and
+    # `_layer_type_for` only supports RGB/GRAY -- refusing here keeps an indexed image's canvas
+    # untouched, rather than committing the resize and only then discovering the backdrop layer
+    # can't be created.
+    if fill != 'transparent' and img.get_base_type() == Gimp.ImageBaseType.INDEXED:
+        raise ValueError(
+            'gimp_canvas cannot add a %s backdrop layer to an indexed image -- only RGB and '
+            'grayscale support a non-transparent fill; use fill=transparent instead' % fill
+        )
     anchor = args.get('anchor')
     has_explicit_offset = 'offset_x' in args or 'offset_y' in args
     if has_explicit_offset and anchor is not None:
@@ -2863,6 +2927,13 @@ def op_canvas(args):
             'canvas: 0..%d for offset_x, 0..%d for offset_y'
             % (old_w, old_h, new_w, new_h, new_w - old_w, new_h - old_h)
         )
+    # Checked only once the ACTUAL offset is known, and skipped entirely at (0, 0): a masked
+    # filter's confinement is a fixed snapshot of the existing content's position, and content that
+    # does not move at all (top-left anchor, or an explicit offset_x/offset_y of 0/0) cannot
+    # misalign it -- refusing here anyway would block the single most common gimp_canvas call
+    # (extend to the bottom-right) for no real reason.
+    if (offset_x, offset_y) != (0, 0):
+        _refuse_if_masked_filters(img, 'canvas', before_hint='Extend the canvas')
     Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     try:
         img.resize(new_w, new_h, offset_x, offset_y)
@@ -2881,8 +2952,8 @@ def op_canvas(args):
                 _fill_canvas_layer(layer, fill)
             except Exception as e:
                 _discard_layer(img, layer)
-                # B7: the canvas resize itself already committed and is not undone here (reversing
-                # it risks compounding one failure into two) -- the error says so plainly instead.
+                # The canvas resize itself already committed and is not undone here (reversing it
+                # risks compounding one failure into two) -- the error says so plainly instead.
                 raise lib.OpError(
                     'gimp_op_failed',
                     'the canvas was extended to %dx%d, but the %s backdrop layer could not be '
