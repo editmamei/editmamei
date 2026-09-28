@@ -944,18 +944,21 @@ def _classify_geometry_filters(img):
 def _refuse_if_masked_filters(img, op_name):
     masked, unverifiable = _classify_geometry_filters(img)
     if unverifiable:
+        # `sorted(set(...))`, not `sorted(...)`: classify_geometry_filters reports a duplicate
+        # live filter NAME once per occurrence (so a caller counting what it iterated still gets
+        # a consistent count), but the refusal message only needs to name it once.
         raise ValueError(
             '%s cannot proceed: filter(s) %s were not created by Editmamei (no matching ledger '
             'record for their name and operation), so whether they are masked cannot be checked. '
             'Delete them first, or make this geometry change before adding them.'
-            % (op_name, ', '.join(repr(n) for n in sorted(unverifiable)))
+            % (op_name, ', '.join(repr(n) for n in sorted(set(unverifiable))))
         )
     if masked:
         raise ValueError(
             '%s would misalign the masked filter(s) %s: a filter\'s mask cannot move with '
             'this transform. Rotate, flip or resize before adding masked filters, or delete '
             'those filters first and re-create them afterwards. Crop is unaffected.'
-            % (op_name, ', '.join(repr(n) for n in sorted(masked)))
+            % (op_name, ', '.join(repr(n) for n in sorted(set(masked))))
         )
 
 
@@ -1023,14 +1026,13 @@ def _apply_planned_effect_transform(img, planned):
     `_snapshot_effect_transform` -- into the live GEGL config and the ledger record. Called AFTER
     the geometry mutation.
 
-    A live update failure for one filter does not stop the others. Unlike an earlier version of
-    this function, the ledger is NOT left at the new (unapplied) params on failure: the ledger
-    must always match what actually renders, so this instead tries to restore the filter's OLD
-    params live (best effort -- if that ALSO fails, the filter is simply left wherever the failed
-    attempt left it) and keeps the ledger record at the OLD params either way. The filter's name is
-    collected and returned so the caller can report it (`effect_update_failures`) -- a silent
-    partial failure here would otherwise look identical to a filter the geometry op never touched
-    at all."""
+    A live update failure for one filter does not stop the others. The ledger must always match
+    what actually renders, so a failure never leaves the ledger record at the new (unapplied)
+    params: this instead tries to restore the filter's OLD params live (best effort -- if that
+    ALSO fails, the filter is simply left wherever the failed attempt left it) and keeps the ledger
+    record at the OLD params either way. The filter's name is collected and returned so the caller
+    can report it (`effect_update_failures`) -- a silent partial failure here would otherwise look
+    identical to a filter the geometry op never touched at all."""
     if not planned:
         return []
     failures = []
