@@ -972,6 +972,60 @@ class TestValidateResizeDims(unittest.TestCase):
             lib.validate_resize_dims(0, 100)
 
 
+class TestValidateCanvasFill(unittest.TestCase):
+    def test_accepts_every_layer_fill(self):
+        for value in lib.LAYER_FILLS:
+            self.assertEqual(lib.validate_canvas_fill(value), value)
+
+    def test_accepts_a_hex_color(self):
+        self.assertEqual(lib.validate_canvas_fill('#336699'), '#336699')
+        self.assertEqual(lib.validate_canvas_fill('#FFFFFF'), '#FFFFFF')
+
+    def test_rejects_a_malformed_hex_color(self):
+        for bad in ('#369', '336699', '#gggggg', '#3366990', ''):
+            with self.assertRaises(ValueError):
+                lib.validate_canvas_fill(bad)
+
+    def test_rejects_an_unknown_word(self):
+        with self.assertRaises(ValueError):
+            lib.validate_canvas_fill('red')
+
+
+class TestCanvasAnchorOffset(unittest.TestCase):
+    def test_top_left_pins_the_old_content_at_the_origin(self):
+        self.assertEqual(lib.canvas_anchor_offset('top_left', 100, 50, 200, 150), (0, 0))
+
+    def test_bottom_right_puts_all_the_growth_before_the_old_content(self):
+        self.assertEqual(lib.canvas_anchor_offset('bottom_right', 100, 50, 200, 150), (100, 100))
+
+    def test_center_splits_the_growth_evenly(self):
+        self.assertEqual(lib.canvas_anchor_offset('center', 100, 50, 200, 150), (50, 50))
+
+    def test_center_rounds_an_odd_split(self):
+        # 201 - 100 = 101, an odd amount of growth -- round() picks the nearer integer (round-half
+        # -to-even at the exact .5 case, Python's own `round` behavior, not re-implemented here).
+        self.assertEqual(lib.canvas_anchor_offset('center', 100, 100, 201, 100), (round(50.5), 0))
+
+    def test_every_named_anchor_keeps_old_content_within_the_new_canvas(self):
+        for anchor in lib.CANVAS_ANCHORS:
+            ox, oy = lib.canvas_anchor_offset(anchor, 100, 50, 200, 150)
+            self.assertTrue(0 <= ox <= 100, anchor)
+            self.assertTrue(0 <= oy <= 100, anchor)
+
+    def test_rejects_an_unknown_anchor(self):
+        with self.assertRaises(ValueError):
+            lib.canvas_anchor_offset('upper-leftish', 100, 50, 200, 150)
+
+    def test_no_growth_is_always_zero_offset_regardless_of_anchor(self):
+        for anchor in lib.CANVAS_ANCHORS:
+            self.assertEqual(lib.canvas_anchor_offset(anchor, 100, 100, 100, 100), (0, 0))
+
+
+class TestImageModes(unittest.TestCase):
+    def test_is_rgb_and_grayscale_only(self):
+        self.assertEqual(set(lib.IMAGE_MODES), {'rgb', 'grayscale'})
+
+
 class TestValidateFeatherPx(unittest.TestCase):
     def test_accepts_zero_and_the_cap(self):
         self.assertEqual(lib.validate_feather_px(0), 0.0)
