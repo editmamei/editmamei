@@ -190,6 +190,58 @@ def op_test_mirror_unattachable(args):
         globals()['_append_masked'] = real_append_masked
 
 
+def op_test_force_effect_update_failure(args):
+    """Exercises `_apply_planned_effect_transform`'s failure-and-restore path directly: replaces
+    SETTERS[operation] with a stub that applies the REAL setter and then raises, on its FIRST
+    call only (simulating a live update that partially succeeds -- e.g. `f.update()` failing
+    after every `cfg.set_property()` already ran -- not one that never touches the filter at
+    all). Every later call behaves normally, so the SAME poisoned setter also serves as the
+    restore attempt `_apply_planned_effect_transform` makes with the filter's OLD params,
+    round-tripping the live config back for real rather than merely leaving it untouched.
+    Restores the real setter in a `finally` regardless of outcome.
+
+    `operation` names the GEGL operation to sabotage (e.g. 'gegl:vignette'); `geometry_op` is
+    'rotate' | 'flip' | 'resize'; every other arg is forwarded to that op (image, degrees/
+    orientation/width etc.)."""
+    operation = lib.require(args, 'operation')
+    geometry_op = lib.require(args, 'geometry_op')
+    real_setter = SETTERS[operation]
+    calls = {'n': 0}
+
+    def _poisoned_setter(cfg, params):
+        calls['n'] += 1
+        real_setter(cfg, params)
+        if calls['n'] == 1:
+            raise RuntimeError('poisoned for test: %s' % operation)
+
+    SETTERS[operation] = _poisoned_setter
+    try:
+        fn = {'rotate': op_rotate, 'flip': op_flip, 'resize': op_resize}[geometry_op]
+        return fn(args)
+    finally:
+        SETTERS[operation] = real_setter
+
+
+def op_test_add_offset_layer(args):
+    """A new, blank layer smaller than the canvas and positioned at an offset -- for proving a
+    geometry transform's math for gimp_add_effect's filters uses the OWNING LAYER's own extent
+    and position, not the canvas's, even when the layer doesn't span the whole canvas. `width`/
+    `height`/`x`/`y` are the new layer's size and position in document pixels; `name` labels it
+    (target it afterward via `effect`'s own `layer` argument)."""
+    img = _image(args)
+    width, height = int(lib.require(args, 'width')), int(lib.require(args, 'height'))
+    x, y = int(lib.require(args, 'x')), int(lib.require(args, 'y'))
+    name = args.get('name', 'Offset')
+    layer = Gimp.Layer.new(
+        img, name, width, height, Gimp.ImageType.RGB_IMAGE, 100.0, Gimp.LayerMode.NORMAL
+    )
+    img.insert_layer(layer, None, 0)
+    layer.fill(Gimp.FillType.WHITE)
+    layer.set_offsets(x, y)
+    _drop_proxies(img.get_id())
+    return {'layer': layer.get_name(), 'width': layer.get_width(), 'height': layer.get_height()}
+
+
 def op_test_ledger_dump(args):
     """The editmamei-filters ledger's own filter names, read directly via `_ledger_get` -- NOT
     through `op_list_filters`, which also reports "readback" (foreign, unledgered) filters found
@@ -212,5 +264,7 @@ OPS.update({
     'test_add_foreign_filter': op_test_add_foreign_filter,
     'test_apply_raw_effect': op_test_apply_raw_effect,
     'test_mirror_unattachable': op_test_mirror_unattachable,
+    'test_force_effect_update_failure': op_test_force_effect_update_failure,
+    'test_add_offset_layer': op_test_add_offset_layer,
     'test_ledger_dump': op_test_ledger_dump,
 })
