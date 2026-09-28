@@ -101,7 +101,26 @@ describe('validateArgs', () => {
       expect(() => validateArgs(schema, { x: 'red' })).toThrow(/required pattern/);
     });
 
-    it('accepts a value matching EITHER the enum or the pattern, not requiring both', () => {
+    it('when BOTH enum and pattern are declared, a value must satisfy BOTH (standard JSON Schema semantics, not "either")', () => {
+      const schema: JsonSchemaObject = {
+        type: 'object',
+        properties: {
+          x: {
+            type: 'string',
+            enum: ['white', 'black'],
+            pattern: '^[wb]', // matches both 'white' and 'black', but also 'wrong' and 'bogus'
+          },
+        },
+      };
+      expect(validateArgs(schema, { x: 'white' })).toEqual({ x: 'white' });
+      // In the enum but fails the pattern -- 'black' starts with 'b', which the pattern accepts,
+      // so pick a value that proves the AND: none of this schema's own enum values fail the
+      // pattern, so assert the pattern is genuinely enforced via a value the pattern rejects.
+      expect(() => validateArgs(schema, { x: 'wrong' })).toThrow(/Allowed: white, black/);
+      expect(() => validateArgs(schema, { x: 'bogus' })).toThrow(/Allowed: white, black/);
+    });
+
+    it('a value in the enum but failing the pattern is still rejected (AND, not OR)', () => {
       const schema: JsonSchemaObject = {
         type: 'object',
         properties: {
@@ -112,11 +131,23 @@ describe('validateArgs', () => {
           },
         },
       };
-      expect(validateArgs(schema, { x: 'white' })).toEqual({ x: 'white' });
-      expect(validateArgs(schema, { x: '#336699' })).toEqual({ x: '#336699' });
-      expect(() => validateArgs(schema, { x: 'red' })).toThrow(
+      // No value can satisfy BOTH a plain-word enum and a hex-only pattern at once -- this
+      // constructed example exists purely to prove AND-not-OR (a real schema declares one or the
+      // other, never a combination that admits nothing, which is why gimp_canvas's own `fill`
+      // field uses `pattern` alone). 'white' passes the enum but fails the pattern; '#336699'
+      // passes the pattern but fails the enum -- BOTH are refused, each for a different reason.
+      expect(() => validateArgs(schema, { x: 'white' })).toThrow(/required pattern/);
+      expect(() => validateArgs(schema, { x: '#336699' })).toThrow(
         /Allowed: white, black, transparent/
       );
+    });
+
+    it('a malformed pattern string surfaces as a clear schema-bug error, naming the field', () => {
+      const schema: JsonSchemaObject = {
+        type: 'object',
+        properties: { x: { type: 'string', pattern: '[' } }, // an unterminated character class
+      };
+      expect(() => validateArgs(schema, { x: 'anything' })).toThrow(/schema bug.*"x"/i);
     });
   });
 
