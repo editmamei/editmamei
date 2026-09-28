@@ -291,10 +291,11 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // list/delete touch no bridge op at all, but the tool shares one timeout
   // across whichever op a call makes.
   gimp_checkpoint: 90_000,
-  // gimp_layer: structural ops (create/delete/duplicate/reorder/merge_down/flatten) render a
-  // proxy rebuild and/or a full merge/flatten on top of the ordinary per-op cost; estimated, not
-  // yet measured against a large document.
-  gimp_layer: 30_000,
+  // gimp_layer: merge_down and flatten render every touched layer's live filters at full
+  // resolution before compositing -- the same class of cost gimp_export/gimp_save_xcf/gimp_bake
+  // already budget 90s for -- and every other sub-op still pays a proxy rebuild on top of its own
+  // cost, so the whole tool shares that one, higher budget rather than a per-op split.
+  gimp_layer: 90_000,
   // gimp_bake: `Drawable.merge_filters()` renders every live filter at full resolution -- the
   // same class of cost gimp_export/gimp_save_xcf already budget 90s for, and `all: true` can do
   // this for several layers in one call.

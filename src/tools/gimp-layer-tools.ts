@@ -5,9 +5,9 @@ import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers
 import { GIMP_IMAGE_PROP, GIMP_LAYER_PROP, pickSchemaDeclaredKeys } from './gimp-shared.js';
 
 /**
- * gimp_layer / gimp_bake — first-class multi-layer documents. `gimp_group` (a separately floated
- * tool) is folded into `gimp_layer` as `create_group` + `reorder`'s `parent_group`: nothing a
- * dedicated group tool would do isn't already covered here.
+ * gimp_layer / gimp_bake — first-class multi-layer documents. A group is just another kind of
+ * layer here: `create_group` + `reorder`'s `parent_group`/`to_top_level` are the whole group
+ * story, no separate tool.
  *
  * Addressing: `layer_id` (canonical — an id from gimp_inspect or a prior gimp_layer/gimp_bake
  * result) takes priority over `layer` (name, searched inside groups too, but GIMP allows duplicate
@@ -15,8 +15,8 @@ import { GIMP_IMAGE_PROP, GIMP_LAYER_PROP, pickSchemaDeclaredKeys } from './gimp
  * the topmost layer if none is selected — `bridge/ops.py`'s `_layer`.
  *
  * Every sub-op except `select` changes pixels or layer structure and therefore drops the preview
- * proxy cache (`bridge/ops.py`'s `_drop_proxies`, now documented as the general invariant rather
- * than "only non-destructive filters change pixels").
+ * proxy cache (`bridge/ops.py`'s `_drop_proxies`, the general invariant every structural op
+ * follows, not just a non-destructive filter).
  */
 
 const LAYER_OPS = [
@@ -40,30 +40,32 @@ const layerSchema: JsonSchemaObject = {
       type: 'string',
       enum: [...LAYER_OPS],
       description:
-        "'create' adds a new, empty layer (width/height default to the image size; fill " +
-        "white/black/transparent, default transparent). 'create_group' adds a group layer (a " +
-        "folder for other layers) — this is gimp_group, folded in here. 'delete' removes a layer " +
-        '(a group takes its children with it) and prunes any of its filters from the ledger. ' +
-        "'duplicate' copies a layer, inserted directly above the source — REFUSED when the layer " +
-        '(or, for a group, any descendant) carries an Editmamei filter: GIMP has no way to rename ' +
-        "a copied filter in this build, and the ledger is keyed by filter name, so the copy's " +
-        "filter would silently rewrite the original's own record the next time either is " +
-        "re-edited. Bake it first (gimp_bake) or delete it, then duplicate. 'select' sets the " +
-        'active layer (the default target for gimp_add_adjustment and friends when no layer is ' +
-        "named) and is the one sub-op that changes nothing else. 'set' changes opacity, mode, " +
-        'visible, and/or name (at least one required) — mode is a blend mode from a fixed list, ' +
-        "not a raw GEGL/GIMP name. 'move' repositions a layer to an ABSOLUTE x/y (not a delta) — " +
-        'REFUSED when the layer carries a masked or unverifiable adjustment filter: a ' +
-        "filter's mask is a fixed confinement that does not travel with the layer when it moves " +
-        "(verified live), so moving first would silently misalign it. 'reorder' changes a " +
-        "layer's stack position and/or moves it into a group (parent_group) or out to top-level " +
-        '(to_top_level: true) — neither given keeps the layer in its current group and only ' +
-        "changes `position`. 'merge_down' bakes ONE layer's live filters (masked ones included — " +
-        'verified live that a masked filter renders correctly through the merge) into pixels and ' +
-        'merges it into the layer directly below it in the same group/level; text layers are ' +
-        "rasterized in the process (reported as rasterized_text). 'flatten' collapses the WHOLE " +
-        'image into a single layer the same way, and always drops alpha (reported as has_alpha: ' +
-        'false) — say so before relying on transparency afterward.',
+        "'create' adds a new, empty layer (width/height default to the image size, capped the " +
+        "same way gimp_resize_image's target is; fill white/black/transparent, default " +
+        "transparent). 'create_group' adds a group layer (a folder for other layers). 'delete' " +
+        'removes a layer (a group takes its children with it) and prunes any of its filters from ' +
+        "the ledger — REFUSED if it is or contains the image's only remaining layer. 'duplicate' " +
+        'copies a layer, inserted directly above the source — REFUSED when the layer (or, for a ' +
+        "group, any descendant) carries an Editmamei filter, since the copy's filter would collide " +
+        "with the original's own ledger record. 'select' sets the active layer (the default " +
+        'target for gimp_add_adjustment and friends when no layer is named) and is the one sub-op ' +
+        "that changes nothing else. 'set' changes opacity, mode, visible, and/or name (at least " +
+        'one required, name may not be empty) — mode is a blend mode from a fixed list, not a raw ' +
+        "GEGL/GIMP name. 'move' repositions a layer to an ABSOLUTE x/y (not a delta), bounded to " +
+        'stay near the canvas — REFUSED when the layer carries a masked or unverifiable adjustment ' +
+        "filter, since a filter's mask does not travel with the layer when it moves. 'reorder' " +
+        "changes a layer's stack position and/or moves it into a group (parent_group) or out to " +
+        'top-level (to_top_level: true) — neither given keeps the layer in its current group and ' +
+        'only changes `position`; REFUSED if parent_group would nest a group inside itself or one ' +
+        "of its own descendants. 'merge_down' bakes ONE layer's live filters (masked ones " +
+        'included) into pixels and merges it into the first VISIBLE layer below it in the same ' +
+        'group/level — REFUSED if that target would be a group, if there is no visible layer ' +
+        'below (a hidden one in between is skipped, not merged), or if the merged result would ' +
+        'exceed the same size cap gimp_resize_image enforces; a visible text layer involved is ' +
+        "rasterized (reported as rasterized_text). 'flatten' collapses the WHOLE image into a " +
+        'single layer the same way, always drops alpha (reported as has_alpha: false), and ' +
+        'REFUSES by default when any layer is hidden (GIMP discards a hidden layer outright rather ' +
+        'than compositing it in) unless discard_hidden: true is given.',
     },
     layer: {
       ...GIMP_LAYER_PROP,
@@ -82,8 +84,8 @@ const layerSchema: JsonSchemaObject = {
       type: 'string',
       description:
         "create/create_group: the new layer's name (default 'Layer'/'Group'). set: renames the " +
-        'target layer. Every case enforces a unique name, suffixing " 2", " 3", ... if the name ' +
-        'is already taken (GIMP itself allows duplicates; this tool does not).',
+        'target layer; may not be empty. Every case enforces a unique name, suffixing " 2", " 3", ' +
+        '... if the name is already taken (GIMP itself allows duplicates; this tool does not).',
     },
     width: {
       type: 'integer',
@@ -161,18 +163,31 @@ const layerSchema: JsonSchemaObject = {
       description: 'set only.',
     },
     x: {
-      type: 'number',
+      type: 'integer',
       description:
         "move only. The layer's new ABSOLUTE horizontal offset in document pixels (not a delta).",
     },
     y: {
-      type: 'number',
+      type: 'integer',
       description:
         "move only. The layer's new ABSOLUTE vertical offset in document pixels (not a delta).",
+    },
+    discard_hidden: {
+      type: 'boolean',
+      default: false,
+      description:
+        'flatten only. Without it, flatten REFUSES when any layer is hidden (naming them) rather ' +
+        'than silently discarding them — pass true to proceed; the discarded layers are reported ' +
+        'back as discarded_hidden_layers.',
     },
   },
   required: ['image', 'op'],
 };
+
+interface DiscardedLayer {
+  layer_id: number;
+  name: string;
+}
 
 function layerSuccessText(op: string, result: Record<string, unknown>): string {
   switch (op) {
@@ -198,13 +213,18 @@ function layerSuccessText(op: string, result: Record<string, unknown>): string {
     case 'merge_down':
       return (
         `Merged down into layer ${result.layer_id} ("${result.name as string}").` +
-        (result.rasterized_text ? ' A text layer was rasterized in the process.' : '')
+        (result.rasterized_text ? ' A visible text layer was rasterized in the process.' : '')
       );
-    case 'flatten':
+    case 'flatten': {
+      const discarded = (result.discarded_hidden_layers as DiscardedLayer[] | undefined) ?? [];
       return (
         `Flattened to a single layer ${result.layer_id} ("${result.name as string}"), alpha dropped.` +
-        (result.rasterized_text ? ' A text layer was rasterized in the process.' : '')
+        (result.rasterized_text ? ' A visible text layer was rasterized in the process.' : '') +
+        (discarded.length > 0
+          ? ` Discarded ${discarded.length} hidden layer(s): ${discarded.map((l) => l.name).join(', ')}.`
+          : '')
       );
+    }
     default: {
       // 'set'
       const changed = Object.keys(result).filter((k) => k !== 'layer_id' && k !== 'name');
@@ -266,9 +286,10 @@ const bakeSchema: JsonSchemaObject = {
       type: 'boolean',
       default: false,
       description:
-        'Bake every layer on the image that has any live filter, instead of just one. Group ' +
-        'layers themselves are always skipped (GIMP cannot merge filters on a group item; only ' +
-        'the ordinary layers inside one ever carry filters).',
+        'Bake every layer on the image that has any live filter, instead of just one. A group ' +
+        'layer is always skipped even when it carries its own filter (GIMP cannot merge filters ' +
+        'on a group item) — any such group is reported under skipped_groups_with_filters rather ' +
+        'than silently ignored.',
     },
   },
   required: ['image'],
@@ -284,10 +305,15 @@ async function gimpBake(gimp: GimpBackend, rawArgs: Record<string, unknown>): Pr
     let text: string;
     if (args.all) {
       const baked = (result.baked_layers as Array<{ name: string }> | undefined) ?? [];
+      const skipped =
+        (result.skipped_groups_with_filters as Array<{ name: string }> | undefined) ?? [];
       text =
         baked.length > 0
           ? `Baked ${baked.length} layer(s): ${baked.map((l) => l.name).join(', ')}.`
           : 'No layer had a live filter to bake.';
+      if (skipped.length > 0) {
+        text += ` Skipped ${skipped.length} group(s) that carry a filter GIMP cannot bake: ${skipped.map((l) => l.name).join(', ')}.`;
+      }
     } else {
       text = result.baked
         ? `Baked every filter on layer ${result.layer_id} ("${result.name as string}") into its pixels.`
@@ -309,22 +335,23 @@ export function createGimpLayerTools(gimp: GimpBackend): ToolDefinition[] {
         name: 'gimp_layer',
         description:
           'Headless GIMP: layer management. op: create | create_group | delete | duplicate | ' +
-          'select | set | move | reorder | merge_down | flatten (gimp_group is folded in as ' +
-          "create_group + reorder's parent_group). Addressed by layer_id (canonical — an id from " +
-          'gimp_inspect or a prior gimp_layer/gimp_bake result) or layer (name; GIMP allows ' +
-          'duplicate names, so layer_id is the only handle that always tells two apart). Every ' +
-          'op except select changes pixels or layer structure, and there is no undo in this ' +
-          'session: gimp_checkpoint or gimp_save_xcf first when in doubt. duplicate REFUSES ' +
-          'outright when the layer (or, for a group, any descendant) carries an Editmamei ' +
-          'filter — DrawableFilter.set_name does not exist in this GIMP build, so a copied ' +
-          "filter's name collides with the original's own ledger record; bake it first " +
-          '(gimp_bake) or delete it, then duplicate. move takes an ABSOLUTE x/y (not a delta) and ' +
-          'REFUSES when the layer carries a masked or unverifiable adjustment filter — a ' +
-          "filter's mask does not travel with the layer when it moves (verified live), the same " +
-          'physics gimp_transform_canvas refuses on. merge_down and flatten both bake every live ' +
-          'filter they touch into pixels first (masked filters included — verified correct through ' +
-          'the merge) and rasterize any text layer in the process (rasterized_text); flatten ' +
-          'always drops alpha (has_alpha: false).',
+          'select | set | move | reorder | merge_down | flatten (a group is created, addressed, ' +
+          'and reordered the same as any other layer — there is no separate group tool). ' +
+          'Addressed by layer_id (canonical — an id from gimp_inspect or a prior gimp_layer/' +
+          'gimp_bake result) or layer (name; GIMP allows duplicate names, so layer_id is the only ' +
+          'handle that always tells two apart). Every op except select changes pixels or layer ' +
+          'structure, and there is no undo in this session: gimp_checkpoint or gimp_save_xcf ' +
+          'first when in doubt. duplicate REFUSES outright when the layer (or, for a group, any ' +
+          "descendant) carries an Editmamei filter, since the copy's filter would collide with " +
+          "the original's own ledger record; bake it first (gimp_bake) or delete it, then " +
+          'duplicate. move takes an ABSOLUTE x/y (not a delta) and REFUSES when the layer carries ' +
+          "a masked or unverifiable adjustment filter — a filter's mask does not travel with the " +
+          'layer when it moves, the same physics gimp_transform_canvas refuses on. merge_down and ' +
+          'flatten both bake every live filter they touch into pixels first (masked filters ' +
+          'included) and rasterize any VISIBLE text layer in the process (rasterized_text); ' +
+          'flatten always drops alpha (has_alpha: false) and, by default, REFUSES outright when ' +
+          'any layer is hidden rather than silently discarding it (discard_hidden: true proceeds ' +
+          'and reports what was discarded).',
         inputSchema: layerSchema,
         outputSchema: {
           type: 'object',
@@ -341,6 +368,13 @@ export function createGimpLayerTools(gimp: GimpBackend): ToolDefinition[] {
             parent_group: { type: ['number', 'null'] },
             rasterized_text: { type: 'boolean' },
             has_alpha: { type: 'boolean' },
+            discarded_hidden_layers: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: { layer_id: { type: 'number' }, name: { type: 'string' } },
+              },
+            },
           },
         },
         annotations: {
@@ -357,15 +391,19 @@ export function createGimpLayerTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_bake',
         description:
-          "Headless GIMP: bake a layer's live filters into its own pixels (Drawable.merge_" +
-          'filters()) without merging it into anything else — the layer survives as itself, just ' +
-          "with no more re-editable filters. Verified live that a MASKED filter's confinement " +
-          'survives the bake exactly. Baking clears any masked-filter refusal (gimp_layer ' +
-          'op=move, gimp_resize_image, gimp_transform_canvas) that filter would otherwise trigger ' +
-          '— it is the sanctioned way to make a masked adjustment safe to move, resize, rotate, or ' +
-          'flip around. all: true bakes every ordinary layer with a live filter at once; group ' +
-          'layers are always skipped (GIMP cannot merge filters on a group item). IRREVERSIBLE in ' +
-          'this session: there is no undo, so gimp_checkpoint or gimp_save_xcf first when in doubt.',
+          "Headless GIMP: bake a layer's live filters into its own pixels without merging it " +
+          'into anything else — the layer survives as itself, just with no more re-editable ' +
+          'filters; a text layer stays a text layer (baking never rasterizes one). A masked ' +
+          "filter's confinement survives the bake exactly. Defaults to the selected layer, or the " +
+          'topmost layer if none is selected, the same as any other gimp_layer addressing. Baking ' +
+          'clears any masked-filter refusal (gimp_layer op=move, gimp_resize_image, ' +
+          'gimp_transform_canvas) that filter would otherwise trigger — it is the sanctioned way ' +
+          'to make a masked adjustment safe to move, resize, rotate, or flip around. all: true ' +
+          'bakes every ordinary layer with a live filter at once; a group layer is always skipped, ' +
+          'even one that carries its own filter (GIMP cannot merge filters on a group item) — ' +
+          'reported under skipped_groups_with_filters rather than silently ignored. Targeting a ' +
+          'group directly (layer/layer_id) is refused outright. IRREVERSIBLE in this session: ' +
+          'there is no undo, so gimp_checkpoint or gimp_save_xcf first when in doubt.',
         inputSchema: bakeSchema,
         outputSchema: {
           type: 'object',
@@ -374,6 +412,13 @@ export function createGimpLayerTools(gimp: GimpBackend): ToolDefinition[] {
             name: { type: 'string' },
             baked: { type: 'boolean' },
             baked_layers: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: { layer_id: { type: 'number' }, name: { type: 'string' } },
+              },
+            },
+            skipped_groups_with_filters: {
               type: 'array',
               items: {
                 type: 'object',
