@@ -53,7 +53,29 @@ def _image(args):
     return img
 
 
+def _owning_image(item):
+    """`item`'s own image, or None -- a plain wrapper around `Item.get_image()` so every id-based
+    membership check below (`_layer`, `_resolve_parent_group`) reads the same way, and so a layer
+    that somehow reports no image at all (should not happen for one just returned by GIMP, but
+    never trusted blindly) degrades to "not found" rather than an AttributeError."""
+    return item.get_image() if item is not None else None
+
+
 def _layer(img, args):
+    """Resolve the layer `args` addresses: `layer_id` (canonical -- GIMP allows duplicate layer
+    names, so an id is the only handle that always tells two apart; the id `gimp_inspect`'s layer
+    tree and `gimp_layer`'s own results report) takes priority over `layer` (name, searched inside
+    groups too); neither given falls back to the selected layer, or the topmost layer if none is
+    selected. `layer_id` is checked for IMAGE MEMBERSHIP the same way `_existing_filter` checks a
+    filter_id -- a global id lookup could otherwise hand back a layer belonging to a different
+    (possibly closed) image and let an op silently touch the wrong document."""
+    layer_id = args.get('layer_id')
+    if layer_id is not None:
+        layer = Gimp.Layer.get_by_id(int(layer_id))
+        owner = _owning_image(layer)
+        if layer is None or owner is None or owner.get_id() != img.get_id():
+            raise ValueError('no layer with id %s on image %s' % (layer_id, img.get_id()))
+        return layer
     name = args.get('layer')
     if name:
         layer = img.get_layer_by_name(name)  # searches inside layer groups too
@@ -304,10 +326,18 @@ def _ledger_put(img, filters, unknown, removed=None):
 
 def _unique_name(img, base):
     taken = {f.get_name() for layer in _all_layers(img) for f in layer.get_filters()}
-    name, n = base, 2
-    while name in taken:
-        name, n = '%s %d' % (base, n), n + 1
-    return name
+    return lib.unique_name(taken, base)
+
+
+def _unique_layer_name(img, base, exclude=None):
+    """Like `_unique_name`, but over LAYER names (`gimp_layer`'s create/create_group/duplicate/
+    set(name=...) naming) rather than filter names. `exclude`, when given, is a layer whose own
+    current name never counts as "taken" -- renaming a layer to the name it already has must not
+    force an unwanted suffix onto itself."""
+    taken = {
+        l.get_name() for l in _all_layers(img) if exclude is None or l.get_id() != exclude.get_id()
+    }
+    return lib.unique_name(taken, base)
 
 
 def _set_curves(cfg, params):
@@ -1590,6 +1620,387 @@ def op_describe_operation(args):
         img.delete()
 
 
+# ---- layer management (gimp_layer) ---------------------------------------------------------
+#
+# `gimp_group` (the roadmap's separate tool) is folded in here: `create_group` + `reorder`'s
+# `parent_group` cover everything a dedicated group tool would have.
+#
+# Verified live (GIMP 3.2.6), the assumptions this section is built on:
+#   - `Gimp.GroupLayer.new(image, name)` + `Image.insert_layer(layer, parent, position)` works for
+#     both a plain layer and a group, nested arbitrarily deep; `Image.reorder_item(item, parent,
+#     position)` moves an existing item (including into/out of a group) the same way.
+#   - `layer.copy()` returns a new, unattached layer whose filters carry the SAME NAMES as the
+#     source's -- and `DrawableFilter.set_name` does NOT exist on this GIMP build (verified: not in
+#     its method list at all), so a copy of a layer with an Editmamei filter cannot be renamed. The
+#     ledger is keyed by filter name (`_apply_filter`), so leaving the collision in place would
+#     mean a later re-edit of EITHER copy silently rewrites the other's ledger record. `duplicate`
+#     therefore refuses outright when the source (or, for a group, any descendant) carries an
+#     Editmamei-ledgered filter.
+#   - `Item.set_offsets(x, y)` is an ABSOLUTE move, not a delta -- verified live (two successive
+#     calls land the layer exactly where each one asked, not summed).
+#   - A masked filter's confinement does NOT travel with `set_offsets`: verified live with a
+#     brightness-contrast filter masked to the left half of a layer, moved by set_offsets -- the
+#     darkened region did not reappear anywhere in the layer's new position (its mask stayed
+#     pinned to the OLD canvas coordinates, the same "confinement is a fixed snapshot" physics
+#     `_refuse_if_masked_filters`'s own comment documents for rotate/flip). `move` therefore
+#     refuses under the same conditions, scoped to just the moved layer's own subtree (an untouched
+#     OTHER layer's masked filter is unaffected by this layer moving).
+#   - `Image.merge_down(layer, merge_type)` and `Image.flatten()` both render each source layer's
+#     live filters (masked ones included) into real pixels BEFORE compositing -- verified live: a
+#     masked brightness-contrast filter's confined darkening survived merge_down exactly, on a
+#     top-level pair and on a pair nested inside a group. Both consume every live filter on every
+#     layer they touch (verified: a layer being merged INTO, which had its own separate live
+#     filter, ends up with `get_filters() == []` afterward too, not just the layer merged away) --
+#     no masked-filter refusal is needed for either, only a ledger prune afterward.
+#   - `Image.flatten()` always drops alpha (verified: `has_alpha()` is False on the result even
+#     when the only layer had one) -- surfaced in the result and the tool description, not hidden.
+#   - A text layer merges/flattens into an ordinary raster layer with no error (verified); this
+#     bridge does not blind-edit a text layer's own pixels anywhere else (`gimp_layer` has no paint
+#     op), so the only place a text layer's editability is actually lost is here, and the result
+#     says so (`rasterized_text`).
+
+
+def _layer_subtree(layer):
+    """`layer` itself, plus every descendant if it is a group -- the scope a structural op on
+    `layer` actually reaches (deleting, duplicating, or moving a group takes its children with
+    it). A plain (non-group) layer's subtree is just itself."""
+    out = [layer]
+
+    def walk(items):
+        for item in items:
+            out.append(item)
+            if item.is_group():
+                walk(item.get_children())
+
+    if layer.is_group():
+        walk(layer.get_children())
+    return out
+
+
+def _ledgered_filter_names_on(img, layers):
+    """Names of live filters on `layers` (see `_layer_subtree`) that match an Editmamei ledger
+    record -- the ones `duplicate` cannot safely carry onto a copy (see its own comment above)."""
+    filters, _unknown = _ledger_get(img)
+    out = []
+    for layer in layers:
+        for f in layer.get_filters():
+            rec = filters.get(f.get_name())
+            if rec and rec.get('operation') == f.get_operation_name():
+                out.append(f.get_name())
+    return out
+
+
+def _refuse_if_masked_filters_on(img, op_name, layers):
+    """The same refuse-rather-than-corrupt check as `_refuse_if_masked_filters`, scoped to just
+    `layers` (a single layer's own subtree) instead of the whole image -- moving one layer cannot
+    misalign a masked filter that lives on some OTHER, untouched layer."""
+    filters = _prune_stale_ledger_records(img)
+    live = [(f.get_name(), f.get_operation_name()) for layer in layers for f in layer.get_filters()]
+    masked, unverifiable = lib.classify_geometry_filters(filters, live)
+    if unverifiable:
+        raise ValueError(
+            '%s cannot proceed: filter(s) %s on this layer were not created by Editmamei (no '
+            'matching ledger record for their name and operation), so whether they are masked '
+            'cannot be checked. Delete them first, or move the layer before adding them.'
+            % (op_name, ', '.join(repr(n) for n in sorted(unverifiable)))
+        )
+    if masked:
+        raise ValueError(
+            '%s would misalign the masked adjustment(s) %s: a filter\'s mask does not travel with '
+            'the layer it is on. Move the layer before adding masked adjustments, or delete those '
+            'filters first and re-create them afterwards.'
+            % (op_name, ', '.join(repr(n) for n in sorted(masked)))
+        )
+
+
+def _resolve_parent_group(img, args):
+    """`args['parent_group']` (a layer_id) resolved to a group layer belonging to `img`, or None
+    for top-level (the key absent, or explicitly null). Membership- and group-checked the same way
+    `_layer`'s own `layer_id` path is -- a stray id, one from another image, or one that names an
+    ordinary layer, is refused rather than silently misinserted."""
+    parent_id = args.get('parent_group')
+    if parent_id is None:
+        return None
+    parent = Gimp.Layer.get_by_id(int(parent_id))
+    owner = _owning_image(parent)
+    if parent is None or owner is None or owner.get_id() != img.get_id():
+        raise ValueError('no layer with id %s on image %s' % (parent_id, img.get_id()))
+    if not parent.is_group():
+        raise ValueError('parent_group %s is not a group layer' % parent_id)
+    return parent
+
+
+def _assert_layer_attached(img, layer, what):
+    """Some GIMP calls return normally having silently done nothing at all rather than raising on
+    failure (`convert_precision`, `op_open`'s own comment) -- so every insertion this section
+    relies on is verified the same defensive way: confirm the layer actually landed in `img`
+    before reporting success, rather than assume an API that returned without raising did what it
+    was asked."""
+    owner = _owning_image(layer)
+    if owner is None or owner.get_id() != img.get_id():
+        raise lib.OpError('gimp_op_failed', '%s did not attach to the image' % what)
+
+
+def _sibling_index(layer, parent):
+    """`layer`'s own index among its current siblings (`parent`'s children, or the image's
+    top-level layers when `parent` is None) -- compared by id, never by GObject identity (each
+    `get_children()`/`get_layers()` call can hand back a fresh Python wrapper for the same
+    underlying item)."""
+    siblings = list(parent.get_children()) if parent is not None else list(_owning_image(layer).get_layers())
+    return next((i for i, s in enumerate(siblings) if s.get_id() == layer.get_id()), None)
+
+
+# `Gimp.FillType` has no BLACK member (verified live: WHITE, TRANSPARENT, FOREGROUND, BACKGROUND,
+# PATTERN, CIELAB_MIDDLE_GRAY only) -- FOREGROUND/BACKGROUND are whatever color the session's
+# ambient context happens to hold, not reliably black, so a black fill is done by pushing the
+# context, setting the foreground to an explicit black, filling with FOREGROUND, and popping the
+# context back -- the same push/pop bracket `op_create_mask` already uses around its own context
+# changes. Module-level so a typo'd enum member here fails at import time, not on the first call
+# that happens to hit it.
+_LAYER_FILL_TYPES = {'white': Gimp.FillType.WHITE, 'transparent': Gimp.FillType.TRANSPARENT}
+
+
+def _fill_new_layer(layer, fill):
+    if fill == 'black':
+        Gimp.context_push()
+        try:
+            Gimp.context_set_foreground(Gegl.Color.new('black'))
+            layer.fill(Gimp.FillType.FOREGROUND)
+        finally:
+            Gimp.context_pop()
+    else:
+        layer.fill(_LAYER_FILL_TYPES[fill])
+
+
+def _op_layer_create(img, args):
+    name = _unique_layer_name(img, args.get('name') or 'Layer')
+    width = int(args['width']) if args.get('width') is not None else img.get_width()
+    height = int(args['height']) if args.get('height') is not None else img.get_height()
+    if width <= 0 or height <= 0:
+        raise ValueError('width and height must be positive')
+    fill = lib.validate_choice('fill', args.get('fill', 'transparent'), lib.LAYER_FILLS)
+    parent = _resolve_parent_group(img, args)
+    position = int(args.get('position', 0))
+    layer = Gimp.Layer.new(img, name, width, height, Gimp.ImageType.RGBA_IMAGE, 100.0, Gimp.LayerMode.NORMAL)
+    img.insert_layer(layer, parent, position)
+    _assert_layer_attached(img, layer, 'the new layer')
+    _fill_new_layer(layer, fill)
+    _drop_proxies(img.get_id())
+    return {'layer_id': layer.get_id(), 'name': layer.get_name(), 'is_group': False}
+
+
+def _op_layer_create_group(img, args):
+    name = _unique_layer_name(img, args.get('name') or 'Group')
+    parent = _resolve_parent_group(img, args)
+    position = int(args.get('position', 0))
+    group = Gimp.GroupLayer.new(img, name)
+    img.insert_layer(group, parent, position)
+    _assert_layer_attached(img, group, 'the new group')
+    _drop_proxies(img.get_id())
+    return {'layer_id': group.get_id(), 'name': group.get_name(), 'is_group': True}
+
+
+def _op_layer_delete(img, args):
+    layer = _layer(img, args)
+    layer_id, name = layer.get_id(), layer.get_name()
+    img.remove_layer(layer)
+    if any(l.get_id() == layer_id for l in _all_layers(img)):
+        raise lib.OpError('gimp_op_failed', 'GIMP did not remove this layer')
+    _prune_stale_ledger_records(img)
+    _drop_proxies(img.get_id())
+    return {'layer_id': layer_id, 'name': name, 'deleted': True}
+
+
+def _op_layer_duplicate(img, args):
+    layer = _layer(img, args)
+    ledgered = _ledgered_filter_names_on(img, _layer_subtree(layer))
+    if ledgered:
+        raise ValueError(
+            'cannot duplicate %r: it carries Editmamei filter(s) %s. GIMP has no way to rename a '
+            "copied filter in this build (DrawableFilter.set_name does not exist), and the ledger "
+            "is keyed by filter name, so the copy's filter would silently rewrite the original's "
+            'own record the next time either is re-edited. Bake it first (gimp_bake) or delete it, '
+            'then duplicate.' % (layer.get_name(), ', '.join(repr(n) for n in sorted(set(ledgered))))
+        )
+    copy = layer.copy()
+    if copy is None:
+        raise lib.OpError('gimp_op_failed', 'GIMP could not duplicate this layer')
+    copy.set_name(_unique_layer_name(img, layer.get_name()))
+    parent = layer.get_parent()
+    position = _sibling_index(layer, parent)
+    img.insert_layer(copy, parent, position if position is not None else 0)
+    _assert_layer_attached(img, copy, 'the duplicated layer')
+    _drop_proxies(img.get_id())
+    return {'layer_id': copy.get_id(), 'name': copy.get_name(), 'is_group': copy.is_group()}
+
+
+def _op_layer_select(img, args):
+    # The one sub-op that changes neither pixels nor structure -- deliberately does NOT drop
+    # proxies (see the PROXIES cache's own comment).
+    layer = _layer(img, args)
+    img.set_selected_layers([layer])
+    return {'layer_id': layer.get_id(), 'name': layer.get_name()}
+
+
+def _op_layer_set(img, args):
+    layer = _layer(img, args)
+    changed = {}
+    if args.get('opacity') is not None:
+        opacity = lib.validate_range('opacity', args['opacity'], 0.0, 100.0)
+        layer.set_opacity(opacity)
+        changed['opacity'] = opacity
+    if args.get('mode') is not None:
+        mode = lib.validate_layer_mode(args['mode'])
+        layer.set_mode(getattr(Gimp.LayerMode, lib.LAYER_MODES[mode]))
+        changed['mode'] = mode
+    if 'visible' in args and args['visible'] is not None:
+        visible = lib.require_bool(args, 'visible')
+        layer.set_visible(visible)
+        changed['visible'] = visible
+    if args.get('name') is not None:
+        new_name = _unique_layer_name(img, args['name'], exclude=layer)
+        layer.set_name(new_name)
+        changed['name'] = new_name
+    if not changed:
+        raise ValueError('set needs at least one of opacity, mode, visible, name')
+    _drop_proxies(img.get_id())
+    return {'layer_id': layer.get_id(), 'name': layer.get_name(), **changed}
+
+
+def _op_layer_move(img, args):
+    layer = _layer(img, args)
+    _refuse_if_masked_filters_on(img, 'move', _layer_subtree(layer))
+    x, y = int(lib.require(args, 'x')), int(lib.require(args, 'y'))
+    layer.set_offsets(x, y)
+    _drop_proxies(img.get_id())
+    ok, off_x, off_y = layer.get_offsets()
+    return {'layer_id': layer.get_id(), 'x': off_x if ok else None, 'y': off_y if ok else None}
+
+
+def _op_layer_reorder(img, args):
+    layer = _layer(img, args)
+    parent = _resolve_parent_group(img, args) if 'parent_group' in args else layer.get_parent()
+    # GIMP itself only logs a "Gimp-Core-CRITICAL" console assertion for this (verified live) --
+    # it does not raise -- so it is checked here explicitly rather than left to that assertion plus
+    # the post-hoc `_sibling_index` check below to catch it.
+    if parent is not None and any(s.get_id() == parent.get_id() for s in _layer_subtree(layer)):
+        raise ValueError('parent_group cannot be the layer itself, or one of its own descendants')
+    position = int(args.get('position', 0))
+    img.reorder_item(layer, parent, position)
+    _drop_proxies(img.get_id())
+    if _sibling_index(layer, parent) is None:
+        raise lib.OpError('gimp_op_failed', 'GIMP did not reorder this layer')
+    return {'layer_id': layer.get_id(), 'parent_group': parent.get_id() if parent is not None else None}
+
+
+def _op_layer_merge_down(img, args):
+    layer = _layer(img, args)
+    if layer.is_group():
+        raise ValueError(
+            'merge_down does not accept a group layer -- move its children out first, or use '
+            'flatten to collapse the whole image'
+        )
+    parent = layer.get_parent()
+    siblings = list(parent.get_children()) if parent is not None else list(img.get_layers())
+    idx = next((i for i, s in enumerate(siblings) if s.get_id() == layer.get_id()), None)
+    if idx is None or idx + 1 >= len(siblings):
+        raise ValueError('there is no layer below %r to merge into' % layer.get_name())
+    rasterized_text = layer.is_text_layer() or siblings[idx + 1].is_text_layer()
+    merged = img.merge_down(layer, Gimp.MergeType.EXPAND_AS_NECESSARY)
+    if merged is None:
+        raise lib.OpError('gimp_op_failed', 'GIMP could not merge this layer down')
+    _prune_stale_ledger_records(img)
+    _drop_proxies(img.get_id())
+    return {'layer_id': merged.get_id(), 'name': merged.get_name(), 'rasterized_text': rasterized_text}
+
+
+def _op_layer_flatten(img, args):
+    rasterized_text = any(l.is_text_layer() for l in _all_layers(img))
+    flat = img.flatten()
+    if flat is None:
+        raise lib.OpError('gimp_op_failed', 'GIMP could not flatten this image')
+    _prune_stale_ledger_records(img)
+    _drop_proxies(img.get_id())
+    return {
+        'layer_id': flat.get_id(), 'name': flat.get_name(),
+        'rasterized_text': rasterized_text, 'has_alpha': flat.has_alpha(),
+    }
+
+
+LAYER_OPS = {
+    'create': _op_layer_create,
+    'create_group': _op_layer_create_group,
+    'delete': _op_layer_delete,
+    'duplicate': _op_layer_duplicate,
+    'select': _op_layer_select,
+    'set': _op_layer_set,
+    'move': _op_layer_move,
+    'reorder': _op_layer_reorder,
+    'merge_down': _op_layer_merge_down,
+    'flatten': _op_layer_flatten,
+}
+
+
+def op_layer(args):
+    img = _image(args)
+    lop = args.get('op')
+    fn = LAYER_OPS.get(lop)
+    if fn is None:
+        raise ValueError('op must be one of %s' % sorted(LAYER_OPS))
+    return fn(img, args)
+
+
+# ---- gimp_bake --------------------------------------------------------------------------------
+
+
+def _bake_one(layer):
+    """Bake every live filter on `layer` into its own pixels via `Drawable.merge_filters()` --
+    probed live (GIMP 3.2.6) and confirmed correct even for a masked filter (its confinement
+    survives into the baked pixels exactly). Returns False (a no-op, not an error) for a layer with
+    no filters. Raises for a group layer: verified live that GIMP accepts the call but silently
+    does nothing (a console \"Calling error ... cannot be modified because it is a group item\", no
+    Python exception, no filters removed) -- the same "returned without raising, but didn't do it"
+    failure class `_assert_layer_attached`'s own comment names, so this is refused up front rather
+    than reported as a silent success."""
+    if layer.is_group():
+        raise ValueError(
+            'layer %r is a group; bake targets individual layers, not groups -- GIMP has no way to '
+            'merge filters on a group item' % layer.get_name()
+        )
+    if not layer.get_filters():
+        return False
+    layer.merge_filters()
+    if layer.get_filters():
+        raise lib.OpError('gimp_op_failed', 'GIMP did not bake every filter on layer %r' % layer.get_name())
+    return True
+
+
+def op_bake(args):
+    """`layer_id`/`layer` bakes one layer; `all: true` bakes every non-group layer on the image
+    that has any live filters (silently skipping the rest, including every group layer itself --
+    see `_bake_one`). Either way, baked filters' ledger records are pruned (`_prune_stale_ledger_
+    records`, the same generic staleness sweep every other structural op relies on) and the
+    proxy cache is dropped. Baking a layer's masked filter also clears it from the next geometry
+    op's refusal check for free: `_refuse_if_masked_filters`/`_refuse_if_masked_filters_on` only
+    ever look at LIVE filters, and baking leaves none behind."""
+    img = _image(args)
+    if bool(args.get('all', False)):
+        baked = []
+        for layer in _all_layers(img):
+            if layer.is_group() or not layer.get_filters():
+                continue
+            _bake_one(layer)
+            baked.append({'layer_id': layer.get_id(), 'name': layer.get_name()})
+        _prune_stale_ledger_records(img)
+        _drop_proxies(img.get_id())
+        return {'baked_layers': baked}
+    layer = _layer(img, args)
+    baked = _bake_one(layer)
+    _prune_stale_ledger_records(img)
+    _drop_proxies(img.get_id())
+    return {'layer_id': layer.get_id(), 'name': layer.get_name(), 'baked': baked}
+
+
 def op_select_none(args):
     Gimp.Selection.none(_image(args))
     return {'selection': 'none'}
@@ -1609,7 +2020,7 @@ OPS = {
     'compare': op_compare, 'export': op_export, 'close': op_close,
     'crop': op_crop, 'resize': op_resize, 'rotate': op_rotate, 'flip': op_flip,
     'create_mask': op_create_mask, 'describe_operation': op_describe_operation,
-    'select_none': op_select_none,
+    'select_none': op_select_none, 'layer': op_layer, 'bake': op_bake,
 }
 
 
