@@ -108,14 +108,14 @@ describe('validateArgs', () => {
           x: {
             type: 'string',
             enum: ['white', 'black'],
-            pattern: '^[wb]', // matches both 'white' and 'black', but also 'wrong' and 'bogus'
+            pattern: '^w', // 'white' passes; 'black' is in the enum but fails this pattern
           },
         },
       };
       expect(validateArgs(schema, { x: 'white' })).toEqual({ x: 'white' });
-      // In the enum but fails the pattern -- 'black' starts with 'b', which the pattern accepts,
-      // so pick a value that proves the AND: none of this schema's own enum values fail the
-      // pattern, so assert the pattern is genuinely enforced via a value the pattern rejects.
+      // In the enum but fails the pattern -- proves AND, not OR: passing one check is not enough.
+      expect(() => validateArgs(schema, { x: 'black' })).toThrow(/required pattern/);
+      // Fails the enum outright (and, incidentally, the pattern too).
       expect(() => validateArgs(schema, { x: 'wrong' })).toThrow(/Allowed: white, black/);
       expect(() => validateArgs(schema, { x: 'bogus' })).toThrow(/Allowed: white, black/);
     });

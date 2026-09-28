@@ -159,6 +159,7 @@ def op_test_add_text_layer(args):
         )
     layer = Gimp.TextLayer.new(img, args.get('text', 'Hi'), font, 24, Gimp.Unit.pixel())
     img.insert_layer(layer, None, 0)
+    _drop_proxies(img.get_id())  # cached proxies predate this layer
     return {'layer_id': layer.get_id(), 'name': layer.get_name()}
 
 
@@ -344,9 +345,9 @@ _TEST_IMAGE_BASE_TYPES = {
 
 
 def op_test_new_image(args):
-    """A bare, empty image (no layers) of the given base type ('rgb'/'gray'/'indexed') -- fixture
-    for gimp_layer's own create/base-type tests, which need a grayscale or indexed image to test
-    against before gimp_create_document/gimp_convert_image_mode exist to produce one."""
+    """A bare, empty image (no layers) of the given base type ('rgb'/'gray'/'indexed') -- a direct
+    bridge-level fixture for tests that need a grayscale or indexed image to test against, with no
+    tool-level indirection in the way."""
     base = args.get('base_type', 'rgb')
     if base not in _TEST_IMAGE_BASE_TYPES:
         raise ValueError('base_type must be one of %s' % sorted(_TEST_IMAGE_BASE_TYPES))

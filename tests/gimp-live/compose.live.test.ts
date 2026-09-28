@@ -127,8 +127,9 @@ describe.skipIf(!install)(
 
     beforeAll(async () => {
       workDir = mkdtempSync(join(tmpdir(), 'em-gimp-compose-'));
-      // opsPyPath: TEST_OPS_PY -- adds test_metadata_tag (Q4) and test_add_foreign_filter (Q2's
-      // unverifiable-filter case), mirroring layers.live.test.ts's own reason for the same option.
+      // opsPyPath: TEST_OPS_PY -- adds test_metadata_tag and test_add_foreign_filter (the
+      // unverifiable-filter case below), mirroring layers.live.test.ts's own reason for the same
+      // option.
       backend = new GimpBackend(install, {
         sessionOptions: { rootDir: join(workDir, 'session-root'), opsPyPath: TEST_OPS_PY },
       });
@@ -246,7 +247,7 @@ describe.skipIf(!install)(
         expect(result.isError).toBe(true);
       });
 
-      it("B11: the megapixel cap is precision-aware -- refused over each precision's own (lower) cap", async () => {
+      it("the megapixel cap is precision-aware -- refused over each precision's own (lower) cap", async () => {
         // Both refusals only -- the validator runs BEFORE Gimp.Image.new() is ever called, so
         // neither case actually allocates a huge buffer (kept fast and light on purpose).
         const over16 = Math.ceil(Math.sqrt(125_000_000)) + 200; // just over the 16-bit cap (125 MP)
@@ -446,10 +447,10 @@ describe.skipIf(!install)(
         }
       });
 
-      // ---- Q2/B1: refusals leave the document UNCHANGED (dims, layer tree, and the selected
-      // layer -- gimp_bake with no layer/layer_id given reports whichever layer is CURRENTLY
-      // selected, without mutating anything, as long as that layer has no filters to bake; used
-      // here purely as a read of the current selection) ------------------------------------------
+      // ---- refusals leave the document UNCHANGED (dims, layer tree, and the selected layer --
+      // gimp_bake with no layer/layer_id given reports whichever layer is CURRENTLY selected,
+      // without mutating anything, as long as that layer has no filters to bake; used here purely
+      // as a read of the current selection) ---------------------------------------------------
 
       async function selectedLayerId(image: number): Promise<number> {
         const baked = await callTool(tools, 'gimp_bake', { image });
@@ -458,7 +459,7 @@ describe.skipIf(!install)(
         return structuredOf(baked).layer_id as number;
       }
 
-      it('B1: a refusal after insert restores the PREVIOUSLY SELECTED layer, not the half-placed one', async () => {
+      it('a refusal after insert restores the PREVIOUSLY SELECTED layer, not the half-placed one', async () => {
         const opened = await callTool(tools, 'gimp_create_document', { width: 40, height: 40 });
         const image = (structuredOf(opened) as { image: number }).image;
         try {
@@ -469,7 +470,8 @@ describe.skipIf(!install)(
 
           const before = await layerTree(image);
           // An out-of-range x refuses AFTER the layer is already loaded and named -- exactly the
-          // failure window B1 guards.
+          // failure window that must restore the previous selection, not leave the half-placed
+          // layer selected.
           const placed = await callTool(tools, 'gimp_place_image', {
             image,
             file_path: rampPath,
@@ -571,7 +573,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('S1: a garbage-bytes .png is refused WITHOUT echoing its full path or the session work dir', async () => {
+      it('a garbage-bytes .png is refused WITHOUT echoing its full path or the session work dir', async () => {
         const garbage = join(workDir, 'garbage.png');
         writeFileSync(garbage, Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]));
         const opened = await callTool(tools, 'gimp_create_document', { width: 10, height: 10 });
@@ -588,9 +590,9 @@ describe.skipIf(!install)(
         }
       });
 
-      // ---- S3: a filtered source layer is baked BEFORE it is placed --------------------------
+      // ---- a filtered source layer is baked BEFORE it is placed -------------------------------
 
-      it('S3: a filtered .xcf source is baked before placing, reported as baked_filters, with no live filter left', async () => {
+      it('a filtered .xcf source is baked before placing, reported as baked_filters, with no live filter left', async () => {
         const sourceDoc = await callTool(tools, 'gimp_create_document', { width: 10, height: 10 });
         const sourceImage = (structuredOf(sourceDoc) as { image: number }).image;
         await callTool(tools, 'gimp_add_adjustment', {
@@ -624,7 +626,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it("S3: a same-named filter already on the target is untouched by baking the placed layer's own", async () => {
+      it("a same-named filter already on the target is untouched by baking the placed layer's own", async () => {
         const sourceDoc = await callTool(tools, 'gimp_create_document', { width: 10, height: 10 });
         const sourceImage = (structuredOf(sourceDoc) as { image: number }).image;
         await callTool(tools, 'gimp_add_adjustment', {
@@ -699,7 +701,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it("Q4: placing a file with real GPS/XMP metadata attaches NOTHING to the target image's own metadata", async () => {
+      it("placing a file with real GPS/XMP metadata attaches NOTHING to the target image's own metadata", async () => {
         const gpsJpegPath = join(workDir, 'gps-source.jpg');
         writeGpsXmpJpeg(gpsJpegPath);
         // Sanity: the FIXTURE itself really carries the GPS tag, or this test would pass vacuously.
@@ -766,6 +768,36 @@ describe.skipIf(!install)(
         }
       });
 
+      it('refuses a non-transparent fill on an indexed image before the canvas resizes at all', async () => {
+        const indexed = await backend.call<{ image: number }>('test_new_image', {
+          base_type: 'indexed',
+        });
+        try {
+          const before = await callTool(tools, 'gimp_inspect', {
+            what: 'document',
+            image: indexed.image,
+          });
+          const result = await callTool(tools, 'gimp_canvas', {
+            image: indexed.image,
+            width: 40,
+            height: 40,
+            fill: 'white',
+          });
+          expect(result.isError).toBe(true);
+          expect((result.content?.[0] as { text: string }).text).toContain('indexed');
+          const after = await callTool(tools, 'gimp_inspect', {
+            what: 'document',
+            image: indexed.image,
+          });
+          expect(structuredOf(after)).toMatchObject({
+            width: (structuredOf(before) as { width: number }).width,
+            height: (structuredOf(before) as { height: number }).height,
+          });
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image: indexed.image });
+        }
+      });
+
       it.each(CANVAS_ANCHORS)(
         'anchor=%s positions the existing content correctly',
         async (anchor) => {
@@ -822,7 +854,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('Q2: refuses a negative or out-of-range explicit offset, leaving the document unchanged', async () => {
+      it('refuses a negative or out-of-range explicit offset, leaving the document unchanged', async () => {
         const opened = await callTool(tools, 'gimp_create_document', { width: 10, height: 10 });
         const image = (structuredOf(opened) as { image: number }).image;
         try {
@@ -849,7 +881,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('Q2: refuses offset_x given without offset_y, leaving the document unchanged', async () => {
+      it('refuses offset_x given without offset_y, leaving the document unchanged', async () => {
         const opened = await callTool(tools, 'gimp_create_document', { width: 10, height: 10 });
         const image = (structuredOf(opened) as { image: number }).image;
         try {
@@ -867,7 +899,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('Q2: refuses an invalid fill word live, leaving the document unchanged', async () => {
+      it('refuses an invalid fill word live, leaving the document unchanged', async () => {
         const opened = await callTool(tools, 'gimp_create_document', { width: 10, height: 10 });
         const image = (structuredOf(opened) as { image: number }).image;
         try {
@@ -885,7 +917,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('Q2: refuses a target that grows neither dimension', async () => {
+      it('refuses a target that grows neither dimension', async () => {
         const opened = await callTool(tools, 'gimp_create_document', { width: 10, height: 10 });
         const image = (structuredOf(opened) as { image: number }).image;
         try {
@@ -898,7 +930,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('Q2: refuses when a live filter is UNVERIFIABLE (not created by Editmamei), leaving the document unchanged', async () => {
+      it('refuses when a live filter is UNVERIFIABLE (not created by Editmamei), leaving the document unchanged', async () => {
         const opened = await callTool(tools, 'gimp_create_document', { width: 20, height: 20 });
         const image = (structuredOf(opened) as { image: number }).image;
         try {
@@ -922,7 +954,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('Q2/B8: a non-transparent fill (black and hex) works correctly on a GRAYSCALE image', async () => {
+      it('a non-transparent fill (black and hex) works correctly on a GRAYSCALE image', async () => {
         const opened = await callTool(tools, 'gimp_create_document', {
           width: 10,
           height: 10,
@@ -962,7 +994,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it("Q5: fill=white paints the BACKDROP LAYER's own pixels (checked in isolation, not just the composite)", async () => {
+      it("fill=white paints the BACKDROP LAYER's own pixels (checked in isolation, not just the composite)", async () => {
         const opened = await callTool(tools, 'gimp_create_document', {
           width: 10,
           height: 10,
@@ -1003,7 +1035,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('B3: fill=transparent is genuinely transparent only pre-flatten -- gimp_layer op=flatten and gimp_export both fill it with the background color instead', async () => {
+      it('fill=transparent is genuinely transparent only pre-flatten -- gimp_layer op=flatten and gimp_export both fill it with the background color instead', async () => {
         const opened = await callTool(tools, 'gimp_create_document', {
           width: 10,
           height: 10,
@@ -1126,6 +1158,53 @@ describe.skipIf(!install)(
         }
       });
 
+      it('succeeds with a masked adjustment present when the resulting offset is (0,0) -- nothing moves', async () => {
+        const opened = await callTool(tools, 'gimp_create_document', { width: 20, height: 20 });
+        const image = (structuredOf(opened) as { image: number }).image;
+        try {
+          await callTool(tools, 'gimp_create_mask', {
+            image,
+            type: 'rectangle',
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 20,
+            name: 'ZeroOffsetMask',
+          });
+          await callTool(tools, 'gimp_add_adjustment', {
+            image,
+            type: 'brightness_contrast',
+            brightness: 40,
+            mask: 'ZeroOffsetMask',
+          });
+          const before = await exportPng(image, 'canvas-zero-offset-before');
+          const beforeDecoded = readPng(before);
+
+          // top_left anchor on a canvas that only grows -- offset_x/offset_y both land at 0, so
+          // the existing content (and the mask confining the filter to it) never moves at all.
+          const canvas = await callTool(tools, 'gimp_canvas', {
+            image,
+            width: 40,
+            height: 40,
+            anchor: 'top_left',
+          });
+          expect(canvas.isError, JSON.stringify(canvas.content)).toBeFalsy();
+          expect(structuredOf(canvas)).toMatchObject({ offset_x: 0, offset_y: 0 });
+
+          const after = await exportPng(image, 'canvas-zero-offset-after');
+          const afterDecoded = readPng(after);
+          // The masked darkening on the original 20x20 region is unchanged in place.
+          for (const [x, y] of [
+            [2, 2],
+            [15, 2],
+          ]) {
+            expect(pixelAt(afterDecoded, x, y)).toEqual(pixelAt(beforeDecoded, x, y));
+          }
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
       it('an unmasked effect filter (vignette) renders identically on the original content after extending', async () => {
         const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
         const image = (structuredOf(opened) as { image: number }).image;
@@ -1158,7 +1237,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('Q3: an unmasked effect filter (vignette) is unaffected even when the anchor MOVES the layer (center)', async () => {
+      it('an unmasked effect filter (vignette) is unaffected even when the anchor MOVES the layer (center)', async () => {
         const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
         const image = (structuredOf(opened) as { image: number }).image;
         try {
@@ -1228,7 +1307,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('Q6: precision and alpha both survive an rgb -> grayscale -> rgb round trip', async () => {
+      it('precision and alpha both survive an rgb -> grayscale -> rgb round trip', async () => {
         const opened = await callTool(tools, 'gimp_create_document', {
           width: 10,
           height: 10,
@@ -1278,7 +1357,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('B9: a no-op (already the requested mode) succeeds even with a live filter present', async () => {
+      it('a no-op (already the requested mode) succeeds even with a live filter present', async () => {
         const opened = await callTool(tools, 'gimp_create_document', { width: 10, height: 10 });
         const image = (structuredOf(opened) as { image: number }).image;
         try {
@@ -1317,7 +1396,7 @@ describe.skipIf(!install)(
       });
     });
 
-    // ---- Q1/Q6: the structural-op proxy matrix, extended to these four ops --------------------
+    // ---- the structural-op proxy matrix, extended to these four ops --------------------------
 
     async function warmProxy(image: number): Promise<void> {
       await backend.call('preview', {

@@ -155,6 +155,40 @@ describe('createGimpLayerTools', () => {
       expect(result.isError).toBeFalsy();
     });
 
+    it('op=set success text names every field actually requested, including a name-only rename', async () => {
+      const multi = makeGimpBackend({
+        result: { layer_id: 2, name: 'Renamed', opacity: 50, mode: 'multiply', visible: false },
+      });
+      const multiTools = createGimpLayerTools(multi.asBackend());
+      const multiResult = await callTool(multiTools, 'gimp_layer', {
+        image: 1,
+        op: 'set',
+        layer_id: 2,
+        opacity: 50,
+        mode: 'multiply',
+        visible: false,
+        name: 'Renamed',
+      });
+      expect((multiResult.content?.[0] as { text: string }).text).toBe(
+        'Layer 2 ("Renamed") updated: opacity, mode, visible, name.'
+      );
+
+      // A rename is the ONLY field in `result` besides `layer_id` even though it changed --
+      // `result.name` is always the layer's current name, renamed or not, so the success text
+      // must read which field was actually requested, not diff `result`'s own keys.
+      const renameOnly = makeGimpBackend({ result: { layer_id: 2, name: 'Renamed' } });
+      const renameTools = createGimpLayerTools(renameOnly.asBackend());
+      const renameResult = await callTool(renameTools, 'gimp_layer', {
+        image: 1,
+        op: 'set',
+        layer_id: 2,
+        name: 'Renamed',
+      });
+      expect((renameResult.content?.[0] as { text: string }).text).toBe(
+        'Layer 2 ("Renamed") updated: name.'
+      );
+    });
+
     it('rejects a mode outside the fixed blend-mode enum', async () => {
       const gimp = makeGimpBackend();
       const tools = createGimpLayerTools(gimp.asBackend());

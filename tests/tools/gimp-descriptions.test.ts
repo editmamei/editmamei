@@ -471,13 +471,14 @@ describe('gimp_layer op=duplicate refuses on an Editmamei filter', () => {
 describe('gimp_layer op=move refuses on a masked or unverifiable filter', () => {
   // ops.py's _refuse_if_masked_filters_on: a filter's mask does not travel with set_offsets
   // (verified live), the same physics gimp_transform_canvas already refuses on.
-  it('the tool description, op field, and x/y fields all say move is an ABSOLUTE offset that refuses on a masked filter', () => {
+  it('the tool description, op field, and x/y fields all say move is an ABSOLUTE offset that refuses on a masked filter, on the layer or a containing group', () => {
     const desc = description('gimp_layer').replace(/\s+/g, ' ');
     expect(desc).toMatch(/ABSOLUTE x\/y \(not a delta\)/);
-    expect(desc).toMatch(/does not travel with the layer when it moves/);
+    expect(desc).toMatch(/does not travel with content that moves beneath it/);
     const opField = field('gimp_layer', 'op').replace(/\s+/g, ' ');
     expect(opField).toMatch(/ABSOLUTE x\/y \(not a delta\)/);
-    expect(opField).toMatch(/does not travel with the layer/);
+    expect(opField).toMatch(/or a group containing it, carries a masked or unverifiable/);
+    expect(opField).toMatch(/does not travel with content that moves beneath it/);
     expect(field('gimp_layer', 'x')).toMatch(/ABSOLUTE horizontal offset/);
     expect(field('gimp_layer', 'y')).toMatch(/ABSOLUTE vertical offset/);
   });
@@ -490,10 +491,20 @@ describe('gimp_layer merge_down/flatten bake filters and can rasterize a visible
     expect(desc).toMatch(/rasterize any VISIBLE text layer.*rasterized_text/);
     expect(desc).toMatch(/flatten always drops alpha \(has_alpha: false\)/);
   });
+  it('merge_down refuses when the SOURCE layer itself is hidden', () => {
+    const desc = description('gimp_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/merge_down REFUSES outright when the SOURCE layer itself is hidden/);
+    expect(field('gimp_layer', 'op').replace(/\s+/g, ' ')).toMatch(
+      /REFUSED if the SOURCE layer itself is hidden/
+    );
+  });
   it('flatten refuses on a hidden layer by default and describes discard_hidden', () => {
     const desc = description('gimp_layer').replace(/\s+/g, ' ');
     expect(desc).toMatch(
-      /REFUSES outright when any layer is hidden rather than silently discarding it \(discard_hidden: true proceeds and reports what was discarded\)/
+      /REFUSES outright when any layer is hidden — INCLUDING one whose own visibility is on but sits inside a hidden group/
+    );
+    expect(field('gimp_layer', 'op').replace(/\s+/g, ' ')).toMatch(
+      /REFUSES by default when any layer is hidden, INCLUDING a layer whose own visibility is on but sits inside a hidden group/
     );
     const discardField = field('gimp_layer', 'discard_hidden').replace(/\s+/g, ' ');
     expect(discardField).toMatch(/flatten only/);
@@ -524,6 +535,9 @@ describe('gimp_bake: bakes a masked filter correctly, never rasterizes text, cle
     expect(desc).toMatch(/A masked filter's confinement survives the bake exactly/);
     expect(desc).toMatch(/a text layer stays a text layer \(baking never rasterizes one\)/);
     expect(desc).toMatch(/Baking clears any masked-filter refusal/);
+    expect(desc).toMatch(
+      /\(gimp_layer op=move, gimp_canvas, gimp_resize_image, gimp_transform_canvas\)/
+    );
     expect(desc).toMatch(
       /sanctioned way to make a masked adjustment safe to move, resize, rotate, or flip/
     );
@@ -648,6 +662,16 @@ describe('gimp_canvas: extend-only, anchor xor explicit offsets', () => {
     expect(byName.get('gimp_canvas')!.annotations?.destructiveHint).toBe(true);
     expect(description('gimp_canvas').replace(/\s+/g, ' ')).toMatch(
       /IRREVERSIBLE in this session: there is no undo/
+    );
+  });
+  it('says the masked-filter refusal only fires when the existing content actually moves', () => {
+    const desc = description('gimp_canvas').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/AND the existing content actually moves/);
+    expect(desc).toMatch(/a top-left anchor never moves anything/);
+  });
+  it('says a non-transparent fill is refused outright on an indexed image', () => {
+    expect(field('gimp_canvas', 'fill').replace(/\s+/g, ' ')).toMatch(
+      /REFUSED outright, before the canvas resizes at all/
     );
   });
 });
