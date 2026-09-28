@@ -118,22 +118,45 @@ describe('createGimpInspectTools', () => {
     );
   });
 
-  it("what='layers' dispatches describe with image, passes truncated through, and reports the top-level layer count", async () => {
+  it("what='document' summary falls back to the layers array's own length when top_level_count is absent", async () => {
+    const gimp = makeGimpBackend({
+      result: {
+        image: 5,
+        width: 1,
+        height: 1,
+        base_type: 'rgb',
+        precision: 'u8-non-linear',
+        resolution: { x: 72, y: 72 },
+        layers: [{ layer_id: 1, name: 'A' }],
+        truncated: false,
+        channels: [],
+      },
+    });
+    const tools = createGimpInspectTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_inspect', { what: 'document', image: 5 });
+    expect((result.content?.[0] as { text: string }).text).toContain('1 top-level layer(s)');
+  });
+
+  it("what='layers' dispatches describe with image, passes truncated through, and reports top_level_count", async () => {
+    // top_level_count (5) deliberately differs from both the layers array's own length (2) and
+    // total_nodes (2000, the node cap) -- a real truncated response commonly has all three differ,
+    // and a mock where they coincide (e.g. top_level_count == total_nodes) misleadingly reads as
+    // "nothing missing" despite truncated: true.
     const layersResult = {
       layers: [
         { layer_id: 1, name: 'A' },
         { layer_id: 2, name: 'B' },
       ],
       truncated: true,
-      top_level_count: 2,
-      total_nodes: 2,
+      top_level_count: 5,
+      total_nodes: 2000,
     };
     const gimp = makeGimpBackend({ result: layersResult });
     const tools = createGimpInspectTools(gimp.asBackend());
     const result = await callTool(tools, 'gimp_inspect', { what: 'layers', image: 5 });
     expect(gimp.lastCall()).toEqual({ op: 'describe', args: { what: 'layers', image: 5 } });
     expect((result.content?.[0] as { text: string }).text).toBe(
-      '2 top-level layer(s) on image 5 (truncated at the node cap).'
+      '5 top-level layer(s) on image 5 (truncated at the node cap).'
     );
     expect(result.structuredContent).toEqual({ what: 'layers', ...layersResult });
   });
@@ -154,6 +177,23 @@ describe('createGimpInspectTools', () => {
     );
   });
 
+  it("what='layers' summary falls back to the layers array's own length when top_level_count is absent", async () => {
+    // Guards describeSummary's `?? layers.length` fallback branch, for a result shape that
+    // predates top_level_count (or a test double that doesn't supply it).
+    const gimp = makeGimpBackend({
+      result: {
+        layers: [
+          { layer_id: 1, name: 'A' },
+          { layer_id: 2, name: 'B' },
+        ],
+        truncated: false,
+      },
+    });
+    const tools = createGimpInspectTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_inspect', { what: 'layers', image: 5 });
+    expect((result.content?.[0] as { text: string }).text).toBe('2 top-level layer(s) on image 5.');
+  });
+
   it("what='channels' dispatches describe with image and reports the channel count, with coverage in structuredContent", async () => {
     const channelsResult = {
       channels: [{ channel_id: 9, name: 'Mask', selected_pixels: 10, fraction: 0.5 }],
@@ -163,6 +203,21 @@ describe('createGimpInspectTools', () => {
     const result = await callTool(tools, 'gimp_inspect', { what: 'channels', image: 5 });
     expect(gimp.lastCall()).toEqual({ op: 'describe', args: { what: 'channels', image: 5 } });
     expect((result.content?.[0] as { text: string }).text).toBe('1 channel(s) on image 5.');
+    expect(result.structuredContent).toEqual({ what: 'channels', ...channelsResult });
+  });
+
+  it("what='channels' summary notes it stopped early and how many channels were skipped", async () => {
+    const channelsResult = {
+      channels: [{ channel_id: 9, name: 'A', selected_pixels: 10, fraction: 0.5 }],
+      truncated: true,
+      channels_skipped: 2,
+    };
+    const gimp = makeGimpBackend({ result: channelsResult });
+    const tools = createGimpInspectTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_inspect', { what: 'channels', image: 5 });
+    expect((result.content?.[0] as { text: string }).text).toBe(
+      '1 channel(s) on image 5 (stopped early, 2 channel(s) skipped).'
+    );
     expect(result.structuredContent).toEqual({ what: 'channels', ...channelsResult });
   });
 
