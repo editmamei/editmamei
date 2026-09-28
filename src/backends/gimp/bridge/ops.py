@@ -69,16 +69,22 @@ def _all_layers(img):
     included, then its children). `img.get_layers()` is top-level only, and `_layer` can resolve a
     layer nested inside a group, so every walk over the filter stack goes through this: a filter
     on a nested layer must be listed, mirrored onto the proxy, ledger-tracked, and seen by the
-    geometry refusal like any other."""
+    geometry refusal like any other.
+
+    Walked with an EXPLICIT stack, the same reasoning (and the same shape) as `_build_layer_tree`'s
+    own walk: a pathological chain of nested single-child groups would otherwise risk Python's OWN
+    recursion limit through a recursive version of this function, not just some cap this function
+    itself imposes (it imposes none -- every caller here matters exactly because it doesn't). A
+    group's children are pushed in REVERSE order so popping (LIFO) still visits top-of-stack-first,
+    which keeps this in the same order a prior recursive version produced -- positional proxy
+    mirroring and other callers depend on that order, not just on the same set of layers."""
     out = []
-
-    def walk(items):
-        for item in items:
-            out.append(item)
-            if item.is_group():
-                walk(item.get_children())
-
-    walk(img.get_layers())
+    stack = list(reversed(img.get_layers()))
+    while stack:
+        item = stack.pop()
+        out.append(item)
+        if item.is_group():
+            stack.extend(reversed(item.get_children()))
     return out
 
 
@@ -764,7 +770,11 @@ def _build_layer_tree(top_layers, max_nodes=MAX_DESCRIBE_LAYER_NODES):
     walked with an EXPLICIT stack rather than one recursive call per nesting level -- a
     pathological chain of nested single-child groups would otherwise risk Python's OWN recursion
     limit, not just some output-size limit of this op's choosing. Capped at `max_nodes` total
-    nodes across the whole tree. Returns (nodes, truncated).
+    nodes across the whole tree. Returns (nodes, truncated, total_nodes) -- `total_nodes` is simply
+    the walk's own `seen` counter, so it costs nothing extra to report; it is what a truncated
+    response is actually counted from, distinct from `top_level_count` (the caller's own
+    `len(top_layers)`, always the TRUE top-level count even when the walk stopped before reaching
+    every top-level sibling).
 
     Each stack entry is (layer, parent_id); a group's children are pushed in REVERSE order so
     popping (LIFO) still visits them top-of-stack-first, the same order `_all_layers` already
@@ -794,7 +804,7 @@ def _build_layer_tree(top_layers, max_nodes=MAX_DESCRIBE_LAYER_NODES):
         if layer.is_group():
             for child in reversed(layer.get_children()):
                 stack.append((child, layer.get_id()))
-    return top, truncated
+    return top, truncated, seen
 
 
 def _channels_summary(img):
@@ -829,7 +839,11 @@ def op_describe(args):
     channels WITH coverage (`_channels_described`), the one part `document` deliberately leaves
     out since it reads full pixel buffers. `filter` reports one filter by id, in the exact shape
     `op_list_filters` reports it in (`_filter_record`, via `_find_filter` so a filter_id from a
-    different or closed image is never mistaken for a match)."""
+    different or closed image is never mistaken for a match). `document`/`layers` also report
+    `top_level_count` (the image's real top-level layer count, from `get_layers()` directly -- true
+    even when `truncated` cut the tree off before every top-level sibling was reached) and
+    `total_nodes` (how many nodes THIS response actually carries) alongside `truncated`, so a
+    truncated response says exactly how much is missing rather than just that something is."""
     what = args.get('what')
     if what not in DESCRIBE_TARGETS:
         raise ValueError('what must be one of %s' % ', '.join(DESCRIBE_TARGETS))
@@ -840,12 +854,19 @@ def op_describe(args):
         filters, _unknown = _ledger_get(img)
         return _filter_record(filters, layer, f)
     if what == 'layers':
-        layers, truncated = _build_layer_tree(img.get_layers())
-        return {'layers': layers, 'truncated': truncated}
+        top_layers = img.get_layers()
+        layers, truncated, total_nodes = _build_layer_tree(top_layers)
+        return {
+            'layers': layers,
+            'truncated': truncated,
+            'top_level_count': len(top_layers),
+            'total_nodes': total_nodes,
+        }
     if what == 'channels':
         return {'channels': _channels_described(img)}
     ok, xres, yres = img.get_resolution()
-    layers, truncated = _build_layer_tree(img.get_layers())
+    top_layers = img.get_layers()
+    layers, truncated, total_nodes = _build_layer_tree(top_layers)
     return {
         'image': img.get_id(),
         'width': img.get_width(),
@@ -855,6 +876,8 @@ def op_describe(args):
         'resolution': {'x': xres, 'y': yres} if ok else {'x': None, 'y': None},
         'layers': layers,
         'truncated': truncated,
+        'top_level_count': len(top_layers),
+        'total_nodes': total_nodes,
         'channels': _channels_summary(img),
     }
 
@@ -1406,7 +1429,19 @@ def _channel_coverage(ch, w, h):
     # reproduces the ramp exactly. Every mask/selection buffer read or write in this file uses
     # the primed, perceptual format for the same reason.
     data = ch.get_buffer().get(Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
-    selected = sum(1 for b in data if b >= 128)
+    # `bytes.translate(None, delete)` runs the byte-by-byte pass in C rather than the interpreter
+    # loop a `sum(1 for b in data if b >= 128)` generator pays per byte -- `delete` names the bytes
+    # to DROP, so deleting every byte below 128 (0..127) leaves exactly the >=128 ones behind, and
+    # len() of what's left IS the selected count directly (no subtraction -- an earlier draft of
+    # this line computed `len(data) - len(...)` instead, which silently counts the UNselected bytes
+    # on anything but a coincidentally symmetric 50/50 buffer; caught live by
+    # geometry-and-masks.live.test.ts's ellipse-coverage and mask-replacement assertions, both of
+    # which use asymmetric coverage). Same result as the generator (verified live, GIMP 3.2.6:
+    # identical selected-pixel counts across rectangle, ellipse, and gradient masks), but this is
+    # what keeps `describe`'s `channels` target -- which reads this per NAMED channel, not just one
+    # -- inside gimp_inspect's timeout budget (`operation-timeouts.ts`) on a document with several
+    # masks.
+    selected = len(data.translate(None, bytes(range(128))))
     return selected, round(selected / len(data), 4)
 
 
