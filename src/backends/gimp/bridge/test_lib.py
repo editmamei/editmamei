@@ -911,6 +911,29 @@ class TestRequireBool(unittest.TestCase):
             lib.require_bool({}, 'visible')
 
 
+class TestOptionalBool(unittest.TestCase):
+    def test_accepts_true_and_false(self):
+        self.assertIs(lib.optional_bool({'discard_hidden': True}, 'discard_hidden'), True)
+        self.assertIs(lib.optional_bool({'discard_hidden': False}, 'discard_hidden'), False)
+
+    def test_missing_key_returns_the_default(self):
+        self.assertIs(lib.optional_bool({}, 'discard_hidden'), False)
+        self.assertIs(lib.optional_bool({}, 'all', default=True), True)
+
+    def test_none_returns_the_default(self):
+        self.assertIs(lib.optional_bool({'discard_hidden': None}, 'discard_hidden'), False)
+
+    def test_rejects_the_string_false(self):
+        # The same regression require_bool guards against: `bool("false")` is `True` in Python,
+        # so a caller sending the STRING "false" must be rejected, not silently coerced to True.
+        with self.assertRaisesRegex(ValueError, 'discard_hidden'):
+            lib.optional_bool({'discard_hidden': 'false'}, 'discard_hidden')
+
+    def test_rejects_the_integer_one(self):
+        with self.assertRaisesRegex(ValueError, 'all'):
+            lib.optional_bool({'all': 1}, 'all')
+
+
 class TestValidateRegion(unittest.TestCase):
     def test_accepts_a_region_entirely_within_bounds(self):
         region = {'x': 10, 'y': 10, 'width': 50, 'height': 50}
@@ -2007,7 +2030,7 @@ class TestUniqueName(unittest.TestCase):
 class TestLayerModes(unittest.TestCase):
     # gimp_layer op=set's blend-mode allow-list -- probed live (GIMP 3.2.6) and goldened via each
     # member's own .value_nick in lib.py's own LAYER_MODES comment.
-    def test_every_user_facing_name_from_the_plan_is_present(self):
+    def test_every_supported_blend_mode_name_is_present(self):
         expected = {
             'normal', 'multiply', 'screen', 'overlay', 'soft_light', 'hard_light', 'darken',
             'lighten', 'difference', 'exclusion', 'addition', 'subtract', 'divide', 'dodge',

@@ -205,6 +205,18 @@ def require_bool(args, name):
     return value
 
 
+def optional_bool(args, name, default=False):
+    """Like `require_bool`, but returns `default` when `name` is absent or explicitly null --
+    for an opt-in flag (e.g. `discard_hidden`, `all`) rather than one the caller must always
+    supply. Still rejects a non-boolean when the field IS present, the same `bool("false")`
+    trap `require_bool` guards against."""
+    if name not in args or args[name] is None:
+        return default
+    if not isinstance(args[name], bool):
+        raise ValueError('%s must be a boolean, got %r' % (name, args[name]))
+    return args[name]
+
+
 def validate_range(name, value, lo, hi):
     """Validate a float field is within [lo, hi]. Raises ValueError naming
     `name` (which the bridge's error classifier maps to `invalid_argument`)."""
