@@ -1346,10 +1346,11 @@ class TestSpatialScaleProps(unittest.TestCase):
 
 
 class TestGeometryTransformEffectParams(unittest.TestCase):
-    """The pure geometry math `ops.py`'s `_transform_effect_filters` applies for
-    gimp_transform_canvas (flip/rotate) and gimp_resize_image, scoped to the new effect filters
-    only (vignette/motion_blur/drop_shadow have direction/position params; black_white/add_noise/
-    lens_blur do not and must round-trip unchanged)."""
+    """The pure geometry math ops.py's `_snapshot_effect_transform`/`_apply_planned_effect_
+    transform` apply for gimp_transform_canvas (flip/rotate) and gimp_resize_image, scoped to the
+    new effect filters only (vignette/motion_blur/drop_shadow have direction/position params;
+    black_white/add_noise/lens_blur do not and must round-trip unchanged, except lens_blur's own
+    radius under resize, covered separately below)."""
 
     def test_wrap_angle_normalizes_into_the_validated_range(self):
         self.assertEqual(lib._wrap_angle_deg(0.0), 0.0)
@@ -1358,6 +1359,28 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
         self.assertEqual(lib._wrap_angle_deg(270.0), -90.0)
         self.assertEqual(lib._wrap_angle_deg(-270.0), 90.0)
         self.assertEqual(lib._wrap_angle_deg(360.0), 0.0)
+
+    def test_is_right_angle_degrees_accepts_every_multiple_of_90_either_sign(self):
+        for degrees in (0.0, 90.0, 180.0, 270.0, 360.0, -90.0, -180.0, -270.0, 450.0):
+            self.assertTrue(lib.is_right_angle_degrees(degrees), degrees)
+
+    def test_is_right_angle_degrees_rejects_everything_else(self):
+        for degrees in (1.0, 45.0, 89.0, 91.0, 15.0, -1.0, 179.99):
+            self.assertFalse(lib.is_right_angle_degrees(degrees), degrees)
+
+    def test_is_right_angle_degrees_tolerance(self):
+        self.assertTrue(lib.is_right_angle_degrees(90.0000001))
+        self.assertFalse(lib.is_right_angle_degrees(90.01))
+
+    def test_dims_after_right_angle_rotation_swaps_at_90_and_270(self):
+        self.assertEqual(lib._dims_after_right_angle_rotation(200, 100, 90.0), (100, 200))
+        self.assertEqual(lib._dims_after_right_angle_rotation(200, 100, 270.0), (100, 200))
+        self.assertEqual(lib._dims_after_right_angle_rotation(200, 100, -90.0), (100, 200))
+
+    def test_dims_after_right_angle_rotation_unchanged_at_0_and_180(self):
+        self.assertEqual(lib._dims_after_right_angle_rotation(200, 100, 0.0), (200, 100))
+        self.assertEqual(lib._dims_after_right_angle_rotation(200, 100, 180.0), (200, 100))
+        self.assertEqual(lib._dims_after_right_angle_rotation(200, 100, -180.0), (200, 100))
 
     def test_flip_horizontal_mirrors_vignette_center_x_only(self):
         params = {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 0.3, 'y': 0.7}
@@ -1378,8 +1401,10 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
         self.assertEqual(params['x'], 0.3)
 
     def test_flip_horizontal_mirrors_motion_blur_angle(self):
-        # angle=0 (horizontal streak) stays 0 under a horizontal flip -- a horizontal streak is
-        # its own mirror image left-right.
+        # angle=0 (a horizontal streak) becomes 180 under a horizontal flip, NOT 0 -- but still a
+        # purely horizontal streak either way: a motion blur's direction is symmetric mod 180
+        # degrees (blurring "toward 0" and "toward 180" render identically), so 180 is the
+        # correct new value even though the flip doesn't return the SAME number.
         self.assertEqual(
             lib.flip_effect_params('gegl:motion-blur-linear', {'length': 10.0, 'angle': 0.0}, 'horizontal')['angle'],
             180.0,
@@ -1421,11 +1446,12 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
         self.assertAlmostEqual(y, 1.0, places=6)
 
     def test_rotate_point_fraction_90_degrees_with_expand_swapping_dimensions(self):
-        # A 200x100 canvas rotated 90 degrees with expand becomes 100x200 -- a point at the
-        # original right-center edge (1.0, 0.5) -- the absolute point (200, 50) -- stays the SAME
-        # physical point, which in the new 100x200 canvas is (50, 100), i.e. fraction (0.5, 0.5)
-        # (dead center, since (200,50) was exactly `old_width` away from the old center (100,50)
-        # along +x, and rotating +x by 90 clockwise points straight down through the new center).
+        # A 200x100 extent rotated 90 degrees becomes 100x200. The point at the original
+        # right-center edge (1.0, 0.5) is the absolute point (200, 50) -- 100px along +x from the
+        # old center (100, 50), 0 along y. Rotating that (100, 0) offset 90 degrees clockwise
+        # gives (0, 100) relative to the NEW center (50, 100) of the 100x200 extent, i.e. absolute
+        # point (50, 200) -- fraction (0.5, 1.0): the bottom-center edge of the new extent, not
+        # its dead center.
         x, y = lib.rotate_point_fraction(1.0, 0.5, 90.0, 200, 100, 100, 200)
         self.assertAlmostEqual(x, 0.5, places=6)
         self.assertAlmostEqual(y, 1.0, places=6)
@@ -1435,26 +1461,46 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
         self.assertAlmostEqual(x, 0.25, places=6)
         self.assertAlmostEqual(y, 0.75, places=6)
 
-    def test_rotate_effect_params_vignette_uses_rotate_point_fraction(self):
+    def test_rotate_effect_params_vignette_uses_the_owning_layers_own_dimensions(self):
+        # Same-size layer (square, no swap): matches rotate_point_fraction directly.
         params = {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 1.0, 'y': 0.5}
-        result = lib.rotate_effect_params('gegl:vignette', params, 90.0, 200, 200, 200, 200)
+        result = lib.rotate_effect_params('gegl:vignette', params, 90.0, 200, 200)
+        self.assertAlmostEqual(result['x'], 0.5, places=6)
+        self.assertAlmostEqual(result['y'], 1.0, places=6)
+
+    def test_rotate_effect_params_vignette_uses_the_layers_own_extent_not_the_canvas(self):
+        # A 200x100 LAYER (not necessarily the whole canvas) rotated 90 degrees: its own extent
+        # swaps to 100x200 regardless of what the canvas does, and center_x/center_y are fractions
+        # of THAT layer's own extent -- see build_vignette_params. Same numbers as
+        # test_rotate_point_fraction_90_degrees_with_expand_swapping_dimensions above, but through
+        # the two-argument (layer_width, layer_height) signature rotate_effect_params exposes.
+        params = {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 1.0, 'y': 0.5}
+        result = lib.rotate_effect_params('gegl:vignette', params, 90.0, 200, 100)
         self.assertAlmostEqual(result['x'], 0.5, places=6)
         self.assertAlmostEqual(result['y'], 1.0, places=6)
 
     def test_rotate_effect_params_motion_blur_adds_degrees_to_angle(self):
         result = lib.rotate_effect_params(
-            'gegl:motion-blur-linear', {'length': 10.0, 'angle': 20.0}, 90.0, 200, 200, 200, 200
+            'gegl:motion-blur-linear', {'length': 10.0, 'angle': 20.0}, 90.0, 200, 200
         )
         self.assertAlmostEqual(result['angle'], 110.0, places=6)
         # length (an isotropic, non-directional magnitude) is untouched by rotation.
         self.assertEqual(result['length'], 10.0)
 
+    def test_rotate_effect_params_motion_blur_30_plus_90_is_120_not_60(self):
+        # A regression pin for the additive (not subtractive) convention: angle + degrees, never
+        # degrees - angle -- the latter would give 90 - 30 = 60, a real but wrong-signed answer
+        # this test exists specifically to rule out.
+        result = lib.rotate_effect_params(
+            'gegl:motion-blur-linear', {'length': 10.0, 'angle': 30.0}, 90.0, 200, 200
+        )
+        self.assertAlmostEqual(result['angle'], 120.0, places=6)
+
     def test_rotate_effect_params_drop_shadow_rotates_the_offset_vector(self):
         # An offset of (20, 0) -- straight right -- rotated 90 degrees clockwise becomes (0, 20)
         # -- straight down (matching the same (dx,dy) -> (-dy,dx)-at-90 convention op_rotate uses).
         result = lib.rotate_effect_params(
-            'gegl:dropshadow', {'x': 20.0, 'y': 0.0, 'radius': 5.0, 'opacity': 0.5}, 90.0,
-            200, 200, 200, 200,
+            'gegl:dropshadow', {'x': 20.0, 'y': 0.0, 'radius': 5.0, 'opacity': 0.5}, 90.0, 200, 200
         )
         self.assertAlmostEqual(result['x'], 0.0, places=6)
         self.assertAlmostEqual(result['y'], 20.0, places=6)
@@ -1465,14 +1511,44 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
             ('gegl:noise-rgb', {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 5}),
             ('gegl:focus-blur', {'blur-radius': 20.0, 'highlight-factor': 0.5}),
         ):
-            self.assertEqual(
-                lib.rotate_effect_params(operation, params, 37.0, 200, 200, 200, 200), params
-            )
+            self.assertEqual(lib.rotate_effect_params(operation, params, 90.0, 200, 200), params)
 
-    def test_resize_scales_motion_blur_length_isotropically(self):
+    def test_resize_scales_motion_blur_length_under_uniform_scale(self):
+        # Uniform scale (scale_x == scale_y): the anisotropic formula degenerates to plain
+        # isotropic scaling, angle unchanged, regardless of the blur's own direction.
         result = lib.resize_effect_params('gegl:motion-blur-linear', {'length': 10.0, 'angle': 5.0}, 2.0, 2.0)
         self.assertAlmostEqual(result['length'], 20.0, places=6)
-        self.assertEqual(result['angle'], 5.0)  # unaffected
+        self.assertAlmostEqual(result['angle'], 5.0, places=6)
+
+    def test_resize_scales_motion_blur_anisotropically_horizontal_and_vertical(self):
+        # A purely horizontal blur (angle=0) only "feels" the x-axis scale; a purely vertical one
+        # (angle=90) only feels the y-axis scale -- the two extremes of the anisotropic formula,
+        # each reducing to a simple single-axis scale.
+        horizontal = lib.resize_effect_params(
+            'gegl:motion-blur-linear', {'length': 10.0, 'angle': 0.0}, 3.0, 1.0
+        )
+        self.assertAlmostEqual(horizontal['length'], 30.0, places=6)
+        self.assertAlmostEqual(horizontal['angle'], 0.0, places=6)
+        vertical = lib.resize_effect_params(
+            'gegl:motion-blur-linear', {'length': 10.0, 'angle': 90.0}, 3.0, 1.0
+        )
+        self.assertAlmostEqual(vertical['length'], 10.0, places=6)
+        self.assertAlmostEqual(vertical['angle'], 90.0, places=6)
+
+    def test_resize_scales_motion_blur_anisotropically_at_an_oblique_angle(self):
+        # angle=45, scale_x=2, scale_y=0.5: direction vector (cos45, sin45) scales to
+        # (2*cos45, 0.5*sin45) -- length' = hypot(2*cos45, 0.5*sin45) * 10, angle' =
+        # atan2(0.5*sin45, 2*cos45). Computed independently here (not by re-deriving the same
+        # formula) to catch a transcription error in the implementation itself.
+        theta = math.radians(45.0)
+        vx, vy = 2.0 * math.cos(theta), 0.5 * math.sin(theta)
+        expected_length = 10.0 * math.hypot(vx, vy)
+        expected_angle = math.degrees(math.atan2(vy, vx))
+        result = lib.resize_effect_params(
+            'gegl:motion-blur-linear', {'length': 10.0, 'angle': 45.0}, 2.0, 0.5
+        )
+        self.assertAlmostEqual(result['length'], expected_length, places=6)
+        self.assertAlmostEqual(result['angle'], expected_angle, places=6)
 
     def test_resize_scales_lens_blur_radius_isotropically(self):
         result = lib.resize_effect_params(
@@ -1504,6 +1580,46 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
             ('gegl:noise-rgb', {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 5}),
         ):
             self.assertEqual(lib.resize_effect_params(operation, params, 2.0, 3.0), params)
+
+
+class TestValidateEffectTransform(unittest.TestCase):
+    """`validate_effect_transform` is the refuse-before-mutate gate `_snapshot_effect_transform`
+    calls for every planned param change -- it must accept anything within the SAME bounds
+    build_*_params enforces on create/re-edit, and refuse (naming the op, the effect, and the
+    field) anything outside them."""
+
+    def test_accepts_in_range_vignette_coordinates(self):
+        lib.validate_effect_transform('rotate', 'gegl:vignette', {'x': 0.0, 'y': 1.0})  # no raise
+
+    def test_refuses_out_of_range_motion_blur_length(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.validate_effect_transform(
+                'resize', 'gegl:motion-blur-linear', {'length': 1000.1, 'angle': 0.0}
+            )
+        message = str(ctx.exception)
+        self.assertIn('resize', message)
+        self.assertIn('motion_blur', message)
+        self.assertIn('length', message)
+
+    def test_refuses_out_of_range_lens_blur_radius(self):
+        with self.assertRaises(ValueError):
+            lib.validate_effect_transform(
+                'resize', 'gegl:focus-blur', {'blur-radius': 150.1, 'highlight-factor': 0.0}
+            )
+
+    def test_refuses_out_of_range_drop_shadow_offset(self):
+        with self.assertRaises(ValueError):
+            lib.validate_effect_transform(
+                'resize', 'gegl:dropshadow', {'x': 500.1, 'y': 0.0, 'radius': 5.0, 'opacity': 0.5}
+            )
+
+    def test_accepts_operations_with_no_bounds_table_entry(self):
+        lib.validate_effect_transform('flip', 'gegl:mono-mixer', {'red': 99.0})  # no raise
+
+    def test_ignores_fields_not_present_in_new_params(self):
+        # rotate_effect_params never touches motion_blur's `length` -- validate_effect_transform
+        # must not demand it be present to validate the fields that ARE there.
+        lib.validate_effect_transform('rotate', 'gegl:motion-blur-linear', {'angle': 45.0})
 
 
 class TestJsonSafe(unittest.TestCase):

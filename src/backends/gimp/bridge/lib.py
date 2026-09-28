@@ -798,7 +798,7 @@ def json_safe(value):
     get_rgba = getattr(value, 'get_rgba', None)
     if callable(get_rgba):
         try:
-            return list(get_rgba())
+            return [json_safe(c) for c in get_rgba()]
         except Exception:
             pass
     return str(value)
@@ -860,14 +860,30 @@ def classify_geometry_filters(filters, live_filters):
 # (angle), and drop_shadow (offset_x/offset_y, radius) have params whose MEANING is tied to a
 # direction or a position, which flip/rotate/resize can silently misalign relative to the
 # content unless the param itself is transformed the same way the pixels were. black_white and
-# add_noise are pure per-pixel operations (no direction or position at all) and lens_blur is a
-# symmetric radial blur (no direction) -- none of the three need a flip/rotate entry, and are
-# simply absent from those two tables below. Existing gimp_add_adjustment types (gaussian_blur,
-# sharpen, shadows_highlights) are NOT covered here -- a deliberate scope cut, not an oversight.
+# add_noise are pure per-pixel operations (no direction or position at all) -- neither needs a
+# flip/rotate entry, and both are simply absent from those two tables below. lens_blur is a
+# symmetric radial blur (no direction either) but DOES scale under resize (see
+# resize_effect_params). Existing gimp_add_adjustment types (gaussian_blur, sharpen,
+# shadows_highlights) are NOT covered here -- a deliberate scope cut, not an oversight.
 #
-# ops.py calls these AFTER the geometry transform itself, and only once `_refuse_if_masked_
-# filters` has already confirmed every live filter is unmasked and ledgered -- a masked or
-# unverifiable filter refuses the whole op before any of this runs.
+# ONLY exact cases are supported: flip (horizontal/vertical) for all three; rotate by an exact
+# right angle (0/90/180/270, mod 360) for all three; any uniform or anisotropic resize. Rotating
+# by anything else while one of these effects is present is REFUSED outright by ops.py's
+# `op_rotate` (see `is_right_angle_degrees`) rather than silently approximated -- vignette's own
+# param is a fraction of its LAYER's own extent (see build_vignette_params), and a layer's own
+# bounding box only has a well-defined "old vs new size" relationship at a right angle (swap at
+# 90/270, unchanged at 0/180); at an arbitrary angle a rotated rectangle's bounding box depends on
+# more than just the old width/height, so there is no single honest formula for the layer's own
+# new extent. Refusing is simpler and more honest than a formula that would be exact for two of
+# the three effects and wrong for the third.
+#
+# ops.py calls these BEFORE mutating the image at all (`_snapshot_effect_transform`): every
+# affected filter's new params are computed from a SNAPSHOT of the ledger and validated against
+# this bridge's own field ranges (`validate_effect_transform`) first, and the WHOLE geometry op is
+# refused up front if anything would land out of range -- only once every filter's new params are
+# known-valid does the geometry mutation itself run, followed by pushing the precomputed values
+# into the live GEGL config and the ledger. This also happens only once `_refuse_if_masked_
+# filters` has already confirmed every live filter is unmasked and ledgered.
 
 
 def _wrap_angle_deg(angle):
@@ -878,18 +894,38 @@ def _wrap_angle_deg(angle):
     return wrapped
 
 
+def is_right_angle_degrees(degrees, tolerance=1e-6):
+    """True when `degrees` is 0/90/180/270 (mod 360, either sign) within `tolerance` -- the only
+    rotations op_rotate allows while a position/direction-dependent effect (vignette, motion_blur,
+    drop_shadow) is present. See this section's own comment for why any other angle is refused
+    rather than approximated."""
+    normalized = degrees % 90.0
+    return normalized < tolerance or normalized > 90.0 - tolerance
+
+
+def _dims_after_right_angle_rotation(width, height, degrees):
+    """The new (width, height) of a rectangle rotated by an exact right angle about its own
+    center: 90/270 (mod 360) swap the two; 0/180 leave them as they were. Only ever called with a
+    `degrees` `is_right_angle_degrees` has already confirmed."""
+    normalized = degrees % 180.0
+    if abs(normalized - 90.0) < 1e-6:
+        return height, width
+    return width, height
+
+
 def rotate_point_fraction(x_frac, y_frac, degrees, old_width, old_height, new_width, new_height):
     """Rotate a point expressed as a FRACTION of a layer's own width/height (vignette's center_x/
     center_y) by `degrees`, using the exact same clockwise-positive convention `ops.py`'s
     `op_rotate` applies to layer/channel pixels via `Item.transform_rotate`, re-expressing the
-    result as a fraction of the possibly-different NEW canvas size (`expand` may have grown it).
+    result as a fraction of the possibly-different NEW extent (`rotate_effect_params` only ever
+    passes a right angle here, so old/new either match or swap -- see `is_right_angle_degrees`).
 
-    Exact for any angle, not just 90-degree multiples: rotating a rectangle around its own center
-    always leaves the new bounding box centered at that SAME physical point, so the old and new
-    canvas centers coincide regardless of whether `expand` changed the canvas dimensions -- the
-    old center (in old-canvas coordinates) and the new center (in new-canvas coordinates) name
-    the identical point in space, which is what lets this convert between the two coordinate
-    frames with no separate translation term."""
+    Exact for any angle, not just 90-degree multiples, though only right angles are ever passed
+    in: rotating a rectangle around its own center always leaves the new bounding box centered at
+    that SAME physical point, so the old and new centers coincide regardless of whether the
+    dimensions swapped -- the old center (in old-extent coordinates) and the new center (in
+    new-extent coordinates) name the identical point in space, which is what lets this convert
+    between the two coordinate frames with no separate translation term."""
     old_cx, old_cy = old_width / 2.0, old_height / 2.0
     new_cx, new_cy = new_width / 2.0, new_height / 2.0
     dx = x_frac * old_width - old_cx
@@ -929,15 +965,21 @@ def flip_effect_params(operation, params, orientation):
     return params
 
 
-def rotate_effect_params(operation, params, degrees, old_width, old_height, new_width, new_height):
-    """New params for a ledgered effect filter's `operation` after a rotate by `degrees` (any
-    angle, not just 90-degree multiples -- op_rotate's own clockwise-positive convention), so the
-    effect stays locked to the content. Operations with no direction/position param come back
-    unchanged (see `flip_effect_params`'s own doc comment)."""
+def rotate_effect_params(operation, params, degrees, layer_width, layer_height):
+    """New params for a ledgered effect filter's `operation` after a rotate by an exact right
+    angle (0/90/180/270 mod 360 -- op_rotate refuses any other angle while a filter this table
+    covers is present, see `is_right_angle_degrees`). `layer_width`/`layer_height` are the OWNING
+    LAYER's own PRE-rotation dimensions (not the canvas/image's): vignette's center_x/center_y are
+    a fraction of the LAYER's own extent (build_vignette_params), and a layer's own bounding box
+    swaps width/height under a 90/270 rotation independently of whether the canvas itself grows
+    (`expand`) to match. motion_blur and drop_shadow need no dimensions at all -- their params are
+    layer-agnostic at a right angle (see flip_effect_params's own doc comment for the angle/offset
+    conventions reused here)."""
     params = dict(params)
     if operation == 'gegl:vignette':
+        new_width, new_height = _dims_after_right_angle_rotation(layer_width, layer_height, degrees)
         params['x'], params['y'] = rotate_point_fraction(
-            params['x'], params['y'], degrees, old_width, old_height, new_width, new_height
+            params['x'], params['y'], degrees, layer_width, layer_height, new_width, new_height
         )
     elif operation == 'gegl:motion-blur-linear':
         params['angle'] = _wrap_angle_deg(params['angle'] + degrees)
@@ -952,18 +994,33 @@ def rotate_effect_params(operation, params, degrees, old_width, old_height, new_
 def resize_effect_params(operation, params, scale_x, scale_y):
     """New params for a ledgered effect filter's `operation` after a resize that scales width by
     `scale_x` and height by `scale_y` (independently -- gimp_resize_image's width+height form can
-    stretch aspect). motion_blur's `length`, lens_blur's `blur-radius`, and drop_shadow's `radius`
-    are ISOTROPIC (one scalar radius/length, no separate x/y component), scaled by the geometric
-    mean of scale_x/scale_y -- exact when the resize is uniform (scale_x == scale_y), and the
-    least-wrong single number when it isn't (a circular blur has no single exact radius under an
-    anisotropic stretch). drop_shadow's offset_x/offset_y scale along their own axis exactly.
-    vignette's radius/x/y are already proportional (a fraction of the layer's own, now-resized
-    extent) and need no change at all -- absent from this table on purpose. black_white and
-    add_noise have no absolute-pixel param either."""
+    stretch aspect).
+
+    motion_blur is a directional vector (length, angle), so an ANISOTROPIC resize (scale_x !=
+    scale_y) changes both: treating the blur direction as a unit vector (cos(angle), sin(angle))
+    in the same clockwise-positive, y-down convention flip_effect_params documents, its two
+    components scale independently by (scale_x, scale_y); the resulting vector's own length and
+    angle are the new length and angle -- length' = length * hypot(scale_x * cos(angle), scale_y *
+    sin(angle)), angle' = atan2(scale_y * sin(angle), scale_x * cos(angle)). Exact for any
+    scale_x/scale_y, and reduces to plain isotropic scaling (length * scale_x, angle unchanged)
+    when scale_x == scale_y, since hypot(s*cos,s*sin) == s and atan2(s*sin,s*cos) == atan2(sin,cos)
+    for any positive s.
+
+    lens_blur's `blur-radius` and drop_shadow's `radius` are ISOTROPIC (one scalar radius, no
+    direction), scaled by the geometric mean of scale_x/scale_y -- exact when the resize is
+    uniform, and the least-wrong single number when it isn't (a circular blur/shadow has no single
+    exact radius under an anisotropic stretch). drop_shadow's offset_x/offset_y scale along their
+    own axis exactly. vignette's radius/x/y are already proportional (a fraction of the layer's
+    own, now-resized extent) and need no change at all -- absent from this table on purpose.
+    black_white and add_noise have no absolute-pixel param either."""
     params = dict(params)
     isotropic_scale = math.sqrt(scale_x * scale_y)
     if operation == 'gegl:motion-blur-linear':
-        params['length'] = params['length'] * isotropic_scale
+        theta = math.radians(params['angle'])
+        vx = scale_x * math.cos(theta)
+        vy = scale_y * math.sin(theta)
+        params['length'] = params['length'] * math.hypot(vx, vy)
+        params['angle'] = _wrap_angle_deg(math.degrees(math.atan2(vy, vx)))
     elif operation == 'gegl:focus-blur':
         params['blur-radius'] = params['blur-radius'] * isotropic_scale
     elif operation == 'gegl:dropshadow':
@@ -971,6 +1028,39 @@ def resize_effect_params(operation, params, scale_x, scale_y):
         params['y'] = params['y'] * scale_y
         params['radius'] = params['radius'] * isotropic_scale
     return params
+
+
+# Bounds for the GEGL properties a geometry transform can touch, keyed by operation -- the SAME
+# ranges build_vignette_params/build_motion_blur_params/build_lens_blur_params/
+# build_drop_shadow_params validate on create/re-edit, so a value THIS bridge computes from a
+# flip/rotate/resize can never silently land somewhere those entry points would have refused (a
+# plain GObject property setter would otherwise just clamp it there without telling anyone).
+EFFECT_TRANSFORM_BOUNDS = {
+    'gegl:vignette': {'x': (0.0, 1.0), 'y': (0.0, 1.0)},
+    'gegl:motion-blur-linear': {'length': (0.0, 1000.0), 'angle': (-180.0, 180.0)},
+    'gegl:focus-blur': {'blur-radius': (0.0, 150.0)},
+    'gegl:dropshadow': {'x': (-500.0, 500.0), 'y': (-500.0, 500.0), 'radius': (0.0, 1500.0)},
+}
+
+
+def validate_effect_transform(op_name, operation, new_params):
+    """Refuse `op_name` (the geometry op about to run) outright if any of `new_params` -- already
+    computed for `operation` by flip_effect_params/rotate_effect_params/resize_effect_params --
+    would leave the range its own create/re-edit path enforces. Called BEFORE the geometry
+    mutation runs (ops.py's `_snapshot_effect_transform`), so a filter that would end up out of
+    range never gets a chance to silently clamp via GObject's own property setter instead of a
+    clear, actionable refusal -- and the geometry op never partially applies."""
+    for prop, (lo, hi) in EFFECT_TRANSFORM_BOUNDS.get(operation, {}).items():
+        if prop not in new_params:
+            continue
+        value = new_params[prop]
+        if not lo <= value <= hi:
+            type_ = OPERATION_TYPES.get(operation, operation)
+            raise ValueError(
+                "%s would leave the %s effect's %s at %.4g, outside its %s..%s range. Delete it "
+                'and re-add it after this geometry change, or bake it into the image first.'
+                % (op_name, type_, prop, value, lo, hi)
+            )
 
 
 def region_to_proxy_px(region, scale):
