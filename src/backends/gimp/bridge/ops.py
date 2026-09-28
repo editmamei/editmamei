@@ -548,11 +548,19 @@ def _append_masked(img, layer, f, mask):
     try:
         layer.append_filter(f)
         if f.get_id() not in [x.get_id() for x in layer.get_filters()]:
-            f.delete()
+            # The operation name is captured BEFORE delete() -- a deleted DrawableFilter is not
+            # guaranteed to answer get_operation_name() usefully afterward -- and delete() itself
+            # is wrapped so that if IT raises for some unrelated reason, that exception can never
+            # replace (mask) the actionable OpError below with a confusing, unrelated traceback.
+            operation_name = f.get_operation_name()
+            try:
+                f.delete()
+            except Exception:
+                pass
             raise lib.OpError(
                 'gimp_op_failed',
                 'GIMP refused to attach %s as a live filter (some GEGL operations with an '
-                'auxiliary input cannot be applied non-destructively)' % f.get_operation_name()
+                'auxiliary input cannot be applied non-destructively)' % operation_name
             )
     finally:
         if mask:
@@ -890,6 +898,14 @@ def op_filter(args):
 # whose ledger record names a mask, rather than silently rendering a masked edit in the wrong
 # place -- the same "refuse rather than silently corrupt" contract as `filter op=reorder`. crop
 # never refuses for this reason, since it verified correct.
+#
+# gimp_add_effect's own vignette/motion_blur/drop_shadow filters get a SEPARATE tracking
+# mechanism, below (`_snapshot_effect_transform`/`_apply_planned_effect_transform`), that keeps
+# their params locked to the content through flip/rotate(right angles only)/resize -- see lib.py's
+# "geometry transforms for direction/position-dependent EFFECT params" comment for the full
+# design. crop needs none of this: vignette's center is already a fraction of its LAYER's own
+# extent, so cropping the layer naturally re-centres it on the new, smaller frame -- intended
+# behaviour (the same way Lightroom's post-crop vignette re-centres), not a gap in tracking.
 
 def _live_filter_names(img):
     return {f.get_name() for layer in _all_layers(img) for f in layer.get_filters()}
@@ -936,44 +952,100 @@ def _refuse_if_masked_filters(img, op_name):
         )
     if masked:
         raise ValueError(
-            '%s would misalign the masked adjustment(s) %s: a filter\'s mask cannot move with '
-            'this transform. Rotate, flip or resize before adding masked adjustments, or delete '
+            '%s would misalign the masked filter(s) %s: a filter\'s mask cannot move with '
+            'this transform. Rotate, flip or resize before adding masked filters, or delete '
             'those filters first and re-create them afterwards. Crop is unaffected.'
             % (op_name, ', '.join(repr(n) for n in sorted(masked)))
         )
 
 
-def _transform_effect_filters(img, transform_fn):
-    """Apply `transform_fn(operation, params) -> new_params` to every ledgered filter's params,
-    pushing the result into BOTH the live GEGL config and the ledger record -- how
-    gimp_add_effect's direction/position-dependent effects (vignette, motion_blur, drop_shadow)
-    stay locked to the content through rotate/flip/resize instead of silently drifting relative
-    to it. Called by op_rotate/op_flip/op_resize AFTER the geometry transform itself, and only
-    once `_refuse_if_masked_filters` has already confirmed every live filter is unmasked and
-    ledgered (a masked or unverifiable filter refuses the whole op before this ever runs, so
-    every filter found here is already known-safe to touch). A filter `transform_fn` has nothing
-    to change for (black_white, add_noise, lens_blur's blur-radius on flip/rotate, and every
-    gimp_add_adjustment type -- out of scope for this table, see lib.py's own comment) comes back
-    with the SAME values (by `==`), which this skips without writing anything, so ledger writes
-    stay confined to filters that actually moved."""
-    filters, unknown = _ledger_get(img)
-    if not filters:
+# Operations whose params are position/direction-dependent under rotation -- an arbitrary
+# (non-right-angle) rotation is refused outright while any LIVE, ledgered filter using one of
+# these is present (see lib.py's own "ONLY exact cases are supported" comment for why).
+ROTATE_DEPENDENT_OPERATIONS = frozenset({'gegl:vignette', 'gegl:motion-blur-linear', 'gegl:dropshadow'})
+
+
+def _refuse_if_non_right_angle_with_tracked_effects(img, degrees, op_name):
+    if lib.is_right_angle_degrees(degrees):
         return
-    changed = False
+    filters, _unknown = _ledger_get(img)
+    live_names = _live_filter_names(img)
+    tracked = sorted(
+        name for name, rec in filters.items()
+        if name in live_names and rec.get('operation') in ROTATE_DEPENDENT_OPERATIONS
+    )
+    if tracked:
+        raise ValueError(
+            '%s cannot use an arbitrary angle (%.4g°) while effect filter(s) %s are present: '
+            'only an exact 0/90/180/270-degree rotation keeps them locked to the content. Rotate '
+            'at a right angle instead, or delete these filters first and re-add them afterwards.'
+            % (op_name, degrees, ', '.join(repr(n) for n in tracked))
+        )
+
+
+def _snapshot_effect_transform(img, op_name, transform_fn):
+    """Precompute every ledgered effect filter's new params from a SNAPSHOT of the current
+    ledger, validate each against this bridge's own field ranges, and raise -- refusing `op_name`
+    outright -- if anything would land out of range, ALL BEFORE anything is mutated. Working from
+    a snapshot (rather than re-reading `filters` mid-loop, which a naive loop could otherwise
+    transform twice over if two live filters were ever ledgered under the same name) is what makes
+    this safe to call before the geometry op has committed to anything.
+
+    `transform_fn(operation, params, layer)` is called once per live, ledgered filter still
+    present -- `layer` is that filter's OWNING layer, queried for its CURRENT (pre-mutation)
+    dimensions where the transform needs them (only rotate's vignette case does; flip and resize
+    ignore it). Returns {filter_name: (operation, new_params)} for every filter transform_fn
+    actually changed -- callers apply these with `_apply_planned_effect_transform` AFTER the
+    geometry mutation itself. A filter transform_fn has nothing to change for (black_white,
+    add_noise, and every gimp_add_adjustment type -- out of scope for this table, see lib.py's own
+    comment) comes back with the SAME values (by `==`) and is simply absent from the result."""
+    filters, _unknown = _ledger_get(img)
+    if not filters:
+        return {}
+    snapshot = {name: (rec['operation'], dict(rec['params'])) for name, rec in filters.items()}
+    planned = {}
     for layer in _all_layers(img):
         for f in layer.get_filters():
+            entry = snapshot.get(f.get_name())
+            if entry is None or entry[0] != f.get_operation_name():
+                continue
+            operation, params = entry
+            new_params = transform_fn(operation, params, layer)
+            if new_params == params:
+                continue
+            lib.validate_effect_transform(op_name, operation, new_params)
+            planned[f.get_name()] = (operation, new_params)
+    return planned
+
+
+def _apply_planned_effect_transform(img, planned):
+    """Push each planned (operation, new_params) -- already validated by
+    `_snapshot_effect_transform` -- into the live GEGL config and the ledger record. Called AFTER
+    the geometry mutation. A live update failure for one filter does not stop the others, and the
+    ledger is written with the INTENDED new params regardless: the geometry pixels have already
+    moved by this point, so leaving the ledger at the stale pre-transform value would just trade
+    one kind of drift (a misaligned render) for another (a stale record silently believed live)."""
+    if not planned:
+        return
+    filters, unknown = _ledger_get(img)
+    for layer in _all_layers(img):
+        for f in layer.get_filters():
+            entry = planned.get(f.get_name())
+            if entry is None:
+                continue
+            operation, new_params = entry
+            try:
+                SETTERS[operation](f.get_config(), new_params)
+                f.update()
+            except Exception as e:
+                sys.stderr.write(
+                    'geometry transform: live update failed for filter %r (%s); the ledger will '
+                    'still record the intended params: %s\n' % (f.get_name(), operation, e)
+                )
             rec = filters.get(f.get_name())
-            if not rec or rec['operation'] != f.get_operation_name():
-                continue
-            new_params = transform_fn(rec['operation'], rec['params'])
-            if new_params == rec['params']:
-                continue
-            SETTERS[rec['operation']](f.get_config(), new_params)
-            f.update()
-            rec['params'] = new_params
-            changed = True
-    if changed:
-        _ledger_put(img, filters, unknown)
+            if rec is not None:
+                rec['params'] = new_params
+    _ledger_put(img, filters, unknown)
 
 
 def op_crop(args):
@@ -1024,14 +1096,14 @@ def op_resize(args):
     else:
         raise ValueError('resize needs one of width, height, or long_edge')
     width, height = lib.validate_resize_dims(width, height)
+    scale_x, scale_y = width / float(w0), height / float(h0)
+    planned = _snapshot_effect_transform(
+        img, 'resize',
+        lambda operation, params, layer: lib.resize_effect_params(operation, params, scale_x, scale_y),
+    )
     Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     img.scale(width, height)
-    _transform_effect_filters(
-        img,
-        lambda operation, params: lib.resize_effect_params(
-            operation, params, width / float(w0), height / float(h0)
-        ),
-    )
+    _apply_planned_effect_transform(img, planned)
     _drop_proxies(img.get_id())
     return {'width': img.get_width(), 'height': img.get_height()}
 
@@ -1041,7 +1113,10 @@ def op_rotate(args):
     multiples, so every angle goes through `Item.transform_rotate` instead. `expand` resizes the
     canvas to the rotated layers' new bounds (`Image.resize_to_layers`); without it the canvas
     stays put and rotated content can fall outside it, same as a Photoshop free-transform without
-    "reveal all".
+    "reveal all". Any angle is accepted -- UNLESS a position/direction-dependent effect filter
+    (vignette, motion_blur, drop_shadow) is present, in which case only an exact 0/90/180/270
+    degrees is allowed (`_refuse_if_non_right_angle_with_tracked_effects`; see lib.py's own "ONLY
+    exact cases are supported" comment for why).
 
     `transform_rotate`'s second argument is `auto_center` -- confusingly, passing True means
     "IGNORE the center_x/center_y given and use this item's own bounds' center instead," not
@@ -1054,10 +1129,20 @@ def op_rotate(args):
     img = _image(args)
     _refuse_if_masked_filters(img, 'rotate')
     degrees = float(lib.require(args, 'degrees'))
+    expand = bool(args.get('expand', False))
+    _refuse_if_non_right_angle_with_tracked_effects(img, degrees, 'rotate')
+    # Every affected filter's new params are computed and range-validated from each owning
+    # layer's CURRENT (pre-rotation) dimensions before anything below mutates the image -- see
+    # `_snapshot_effect_transform`'s own doc comment.
+    planned = _snapshot_effect_transform(
+        img, 'rotate',
+        lambda operation, params, layer: lib.rotate_effect_params(
+            operation, params, degrees, layer.get_width(), layer.get_height()
+        ),
+    )
     # With a selection active, transform_rotate moves only the selected pixels and leaves a
     # floating selection behind (see op_open).
     Gimp.Selection.none(img)
-    expand = bool(args.get('expand', False))
     old_w, old_h = img.get_width(), img.get_height()
     cx, cy = old_w / 2.0, old_h / 2.0
     angle = math.radians(degrees)
@@ -1067,13 +1152,7 @@ def op_rotate(args):
         channel.transform_rotate(angle, False, cx, cy)
     if expand:
         img.resize_to_layers()
-    new_w, new_h = img.get_width(), img.get_height()
-    _transform_effect_filters(
-        img,
-        lambda operation, params: lib.rotate_effect_params(
-            operation, params, degrees, old_w, old_h, new_w, new_h
-        ),
-    )
+    _apply_planned_effect_transform(img, planned)
     _drop_proxies(img.get_id())
     return {'width': img.get_width(), 'height': img.get_height(), 'degrees': degrees}
 
@@ -1092,11 +1171,13 @@ def op_flip(args):
         raise ValueError('orientation must be one of %s' % sorted(_FLIP_ORIENTATIONS))
     img = _image(args)
     _refuse_if_masked_filters(img, 'flip')
+    planned = _snapshot_effect_transform(
+        img, 'flip',
+        lambda operation, params, layer: lib.flip_effect_params(operation, params, orientation),
+    )
     Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     img.flip(_FLIP_ORIENTATIONS[orientation])
-    _transform_effect_filters(
-        img, lambda operation, params: lib.flip_effect_params(operation, params, orientation)
-    )
+    _apply_planned_effect_transform(img, planned)
     _drop_proxies(img.get_id())
     return {'width': img.get_width(), 'height': img.get_height()}
 
