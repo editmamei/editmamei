@@ -562,10 +562,10 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       });
       expect(refused.isError).toBe(true);
       const text = (refused.content?.[0] as { text: string }).text;
-      // Names the OTHER layer carrying the duplicate, and advises fixing that one, not the
-      // ledgered copy on Background.
-      expect(text).toContain("'Shared' (also on layer 'Other')");
-      expect(text).toMatch(/rename or delete the FOREIGN duplicate/);
+      // The ledger is keyed by name, so it can't say which copy is Editmamei's: the message names
+      // every layer carrying the name and leaves the choice to the caller.
+      expect(text).toContain("'Shared' (on layer(s) 'Background', 'Other')");
+      expect(text).toMatch(/rename or delete whichever copy was not created by Editmamei/);
       expect(await snapshot(image)).toEqual(before);
     } finally {
       await callTool(tools, 'gimp_close_document', { image });
@@ -588,7 +588,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       const text = (refused.content?.[0] as { text: string }).text;
       expect(text).toContain("'OnlyOneOfMe'");
       expect(text).toMatch(/were not created by Editmamei/);
-      expect(text).not.toMatch(/shared with another live filter/);
+      expect(text).not.toMatch(/carried by more than one live filter/);
       expect(await snapshot(image)).toEqual(before);
     } finally {
       await callTool(tools, 'gimp_close_document', { image });
@@ -629,6 +629,8 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
         y: 5,
       });
       expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
+      const background = (await snapshot(image)).find((n) => n.name === 'Background');
+      expect(background?.offsets).toEqual({ x: 5, y: 5 });
     } finally {
       await callTool(tools, 'gimp_close_document', { image });
     }
@@ -886,7 +888,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
-  it('flatten succeeds on a VISIBLE group whose only content is HIDDEN, filling with the background color', async () => {
+  it('flatten succeeds on a VISIBLE group whose only content is HIDDEN', async () => {
     const bare = await backend.call<{ image: number }>('test_new_image', { base_type: 'rgb' });
     const image = bare.image;
     try {

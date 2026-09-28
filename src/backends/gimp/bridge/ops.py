@@ -2128,7 +2128,6 @@ def _refuse_if_masked_filters_on(img, op_name, layer):
     appears in `layer`'s own scope, so a masked filter on a completely unrelated layer never blocks
     this move."""
     scope = set(_layer_subtree(layer)) | set(_layer_ancestors(layer))
-    scope_ids = {l.get_id() for l in scope}
     scoped_names = {f.get_name() for l in scope for f in l.get_filters()}
     filters = _prune_stale_ledger_records(img)
     whole_image_live = [
@@ -2140,10 +2139,11 @@ def _refuse_if_masked_filters_on(img, op_name, layer):
     if unverifiable:
         # An in-scope name lands here for one of two different reasons, which need different
         # advice: no matching ledger record at all (a genuinely foreign filter -- delete IT), or a
-        # ledger record that DOES match but the same name is ALSO live on another filter somewhere
-        # else in the image (this copy is ours; the FOREIGN one elsewhere is what needs renaming or
-        # deleting). `name_counts` -- not `lib.classify_geometry_filters`'s own return, which
-        # doesn't distinguish the two -- is what tells them apart.
+        # name carried by more than one live filter in the image. The ledger is keyed by name, so
+        # in the second case it cannot say which copy is Editmamei's; the advice names every layer
+        # carrying the name and leaves the choice to the caller. `name_counts` -- not
+        # `lib.classify_geometry_filters`'s own return, which doesn't distinguish the two -- is what
+        # tells them apart.
         name_counts = {}
         for live_name, _operation in whole_image_live:
             name_counts[live_name] = name_counts.get(live_name, 0) + 1
@@ -2161,18 +2161,17 @@ def _refuse_if_masked_filters_on(img, op_name, layer):
         if duplicated:
             dup_descriptions = []
             for name in duplicated:
-                elsewhere = sorted({
+                carriers = sorted({
                     l.get_name() for l in _all_layers(img) for f in l.get_filters()
-                    if f.get_name() == name and l.get_id() not in scope_ids
+                    if f.get_name() == name
                 })
-                if len(elsewhere) == 1:
-                    dup_descriptions.append('%r (also on layer %r)' % (name, elsewhere[0]))
-                else:
-                    dup_descriptions.append('%r (also live elsewhere in the image)' % name)
+                dup_descriptions.append(
+                    '%r (on layer(s) %s)' % (name, ', '.join(repr(c) for c in carriers))
+                )
             reasons.append(
-                'the name(s) %s are shared with another live filter elsewhere in the image, so '
-                'the ledger cannot tell the two apart -- rename or delete the FOREIGN duplicate '
-                '(not this one), then retry'
+                'the name(s) %s are carried by more than one live filter, so which copy was '
+                'created by Editmamei cannot be told apart -- rename or delete whichever copy was '
+                'not created by Editmamei, then retry'
                 % ', '.join(dup_descriptions)
             )
         raise ValueError('%s cannot proceed: %s.' % (op_name, '; '.join(reasons)))
@@ -2956,7 +2955,7 @@ def op_canvas(args):
     # only then discovering the backdrop layer can't be created.
     if fill != 'transparent' and img.get_base_type() not in _LAYER_CAPABLE_BASE_TYPES:
         raise ValueError(
-            'gimp_canvas cannot add a %s backdrop layer to a %s image -- only RGB and grayscale '
+            'gimp_canvas cannot add a %s backdrop layer to an image of type %s -- only RGB and grayscale '
             'support a non-transparent fill; use fill=transparent instead'
             % (fill, img.get_base_type().value_nick)
         )
