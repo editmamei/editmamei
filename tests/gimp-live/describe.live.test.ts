@@ -223,10 +223,11 @@ describe.skipIf(!install)('gimp_inspect describe-by-id', () => {
         image,
         what: 'layers',
       });
-      const channelsOnly = await session.call<{ channels: ChannelCoverage[] }>('describe', {
-        image,
-        what: 'channels',
-      });
+      const channelsOnly = await session.call<{
+        channels: ChannelCoverage[];
+        truncated: boolean;
+        channels_skipped: number;
+      }>('describe', { image, what: 'channels' });
       expect(layersOnly).toEqual({
         layers: doc.layers,
         truncated: doc.truncated,
@@ -245,6 +246,48 @@ describe.skipIf(!install)('gimp_inspect describe-by-id', () => {
       expect(typeof channelsOnly.channels[0]!.selected_pixels).toBe('number');
       expect(doc.channels[0]).not.toHaveProperty('fraction');
       expect(doc.channels[0]).not.toHaveProperty('selected_pixels');
+      // The default deadline is never hit on a one-channel fixture.
+      expect(channelsOnly.truncated).toBe(false);
+      expect(channelsOnly.channels_skipped).toBe(0);
+    } finally {
+      await session.call('close', { image });
+    }
+  });
+
+  it("what='channels' stops after its own time budget, returning what it already read plus truncated/channels_skipped", async () => {
+    const opened = await session.call<{ image: number }>('open', { path: rampPath });
+    const image = opened.image;
+    try {
+      for (const name of ['A', 'B', 'C']) {
+        await session.call('create_mask', {
+          image,
+          type: 'rectangle',
+          x: 0,
+          y: 0,
+          width: 8,
+          height: 8,
+          name,
+        });
+      }
+      // test_set_channels_deadline (fixtures/test_ops.py) overrides the module-level
+      // CHANNELS_DESCRIBE_DEADLINE_S for the rest of this session; restored in `finally`.
+      const prev = await session.call<{ previous: number }>('test_set_channels_deadline', {
+        seconds: 0,
+      });
+      try {
+        const result = await session.call<{
+          channels: ChannelCoverage[];
+          truncated: boolean;
+          channels_skipped: number;
+        }>('describe', { image, what: 'channels' });
+        // A deadline of 0 still reads the first channel unconditionally before checking, so this
+        // never comes back with a completely empty list.
+        expect(result.channels).toHaveLength(1);
+        expect(result.truncated).toBe(true);
+        expect(result.channels_skipped).toBe(2);
+      } finally {
+        await session.call('test_set_channels_deadline', { seconds: prev.previous });
+      }
     } finally {
       await session.call('close', { image });
     }
@@ -334,11 +377,11 @@ describe.skipIf(!install)('gimp_inspect describe-by-id', () => {
     }
   });
 
-  it('_all_layers (the iterative rewrite) still visits top-of-stack-first, descending into each group before its next sibling', async () => {
+  it('_all_layers visits top-of-stack-first, descending into each group before its next sibling', async () => {
     // Same fixture and expected order as the max_nodes test above (its exact.layers walk), but
     // this hits _all_layers directly (test_all_layers_order, fixtures/test_ops.py) rather than
-    // _build_layer_tree -- the two are separate functions with previously-separate (recursive vs.
-    // now-both-iterative) implementations that need to keep agreeing on order independently.
+    // _build_layer_tree -- the two are separate functions that need to keep agreeing on order
+    // independently.
     const opened = await session.call<{ image: number }>('open', { path: rampPath });
     const image = opened.image;
     try {

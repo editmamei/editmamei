@@ -193,11 +193,20 @@ def op_test_build_layer_tree(args):
 
 
 def op_test_all_layers_order(args):
-    """The name of every layer `_all_layers` visits, in order -- proves the iterative rewrite
-    (explicit stack) still produces the same top-of-stack-first, pre-order-descend-into-groups
-    sequence the original recursive version did."""
+    """The name of every layer `_all_layers` visits, in order -- top-of-stack-first, descending
+    into each group before moving on to its next sibling."""
     img = _image(args)
     return {'names': [l.get_name() for l in _all_layers(img)]}
+
+
+def op_test_set_channels_deadline(args):
+    """Overrides `CHANNELS_DESCRIBE_DEADLINE_S` for the rest of this session, returning the
+    previous value so a test can restore it afterward -- lets a live test force `describe`'s
+    `channels` target to stop early without needing dozens of real named channels."""
+    global CHANNELS_DESCRIBE_DEADLINE_S
+    previous = CHANNELS_DESCRIBE_DEADLINE_S
+    CHANNELS_DESCRIBE_DEADLINE_S = float(lib.require(args, 'seconds'))
+    return {'previous': previous}
 
 
 OPS.update({
@@ -213,4 +222,5 @@ OPS.update({
     'test_add_text_layer': op_test_add_text_layer,
     'test_build_layer_tree': op_test_build_layer_tree,
     'test_all_layers_order': op_test_all_layers_order,
+    'test_set_channels_deadline': op_test_set_channels_deadline,
 })
