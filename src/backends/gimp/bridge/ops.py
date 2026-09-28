@@ -1145,7 +1145,11 @@ def _classify_geometry_filters(img):
     return lib.classify_geometry_filters(filters, live)
 
 
-def _refuse_if_masked_filters(img, op_name):
+def _refuse_if_masked_filters(img, op_name, before_hint='Rotate, flip or resize'):
+    """`before_hint` names the alternative ordering this op's own refusal message suggests --
+    'Rotate, flip or resize' for resize/rotate/flip, 'Extend the canvas' for `gimp_canvas` (see its
+    own call site) -- so the advice matches the op that actually refused, not just whichever ops
+    existed when this function was first written."""
     masked, unverifiable = _classify_geometry_filters(img)
     if unverifiable:
         raise ValueError(
@@ -1157,9 +1161,9 @@ def _refuse_if_masked_filters(img, op_name):
     if masked:
         raise ValueError(
             '%s would misalign the masked filter(s) %s: a filter\'s mask cannot move with '
-            'this transform. Rotate, flip or resize before adding masked filters, or delete '
+            'this transform. %s before adding masked filters, or delete '
             'those filters first and re-create them afterwards. Crop is unaffected.'
-            % (op_name, ', '.join(repr(n) for n in sorted(masked)))
+            % (op_name, ', '.join(repr(n) for n in sorted(masked)), before_hint)
         )
 
 
@@ -2191,15 +2195,21 @@ _LAYER_FILL_TYPES = {'white': Gimp.FillType.WHITE, 'transparent': Gimp.FillType.
 
 
 def _fill_new_layer(layer, fill):
+    # `Drawable.fill()` reports failure by returning False rather than raising (the same "calling
+    # error returns False" class `op_open`'s own `convert_precision` comment documents, verified
+    # live for this call too) -- checked here so a failed fill is never silently reported as
+    # success with the layer left at whatever undefined content `Layer.new` gave it.
     if fill == 'black':
         Gimp.context_push()
         try:
             Gimp.context_set_foreground(Gegl.Color.new('black'))
-            layer.fill(Gimp.FillType.FOREGROUND)
+            ok = layer.fill(Gimp.FillType.FOREGROUND)
         finally:
             Gimp.context_pop()
     else:
-        layer.fill(_LAYER_FILL_TYPES[fill])
+        ok = layer.fill(_LAYER_FILL_TYPES[fill])
+    if not ok:
+        raise lib.OpError('gimp_op_failed', 'GIMP could not fill the new layer with %s' % fill)
 
 
 def _op_layer_create(img, args):
@@ -2543,33 +2553,60 @@ def op_bake(args):
 #   - `Gimp.FillType` has no BLACK (see `_fill_new_layer`'s own comment); a hex fill goes through
 #     the same context-push/foreground/pop bracket.
 #   - `Gimp.file_load_layer(run_mode, image, file)` returns an UNATTACHED layer (an explicit
-#     `image.insert_layer` is still required) already converted to `image`'s own base type at
-#     LOAD time, before that insert -- verified both directions (a grayscale source loaded into
-#     an RGB target reports `rgb-image` even before insert; an RGB source into a grayscale target
-#     reports `gray-image` after). Loading into a HIGHER-precision (16/32-bit) target succeeds
-#     with no error either. Placing a file carrying its own metadata (EXIF/XMP) does not attach
-#     anything to the TARGET image's own metadata -- verified with a real GPS-bearing source.
-#     Given a MULTI-layer source (e.g. a `.xcf`), only ONE layer comes back -- GIMP's own choice,
-#     not a flattened composite of the whole file.
+#     `image.insert_layer` is still required -- verified live: the loaded layer is not a member of
+#     `image.get_layers()` until that call, even though `layer.get_image()` already answers
+#     non-None before it) already converted to `image`'s own base type at LOAD time, before that
+#     insert -- verified both directions (a grayscale source loaded into an RGB target reports
+#     `rgb-image` even before insert; an RGB source into a grayscale target reports `gray-image`
+#     after). Loading into a HIGHER-precision (16/32-bit) target succeeds with no error either.
+#     Placing a file carrying its own metadata (EXIF/XMP) does not attach anything to the TARGET
+#     image's own metadata -- verified with a real GPS-bearing source. Given a MULTI-layer source
+#     (e.g. a `.xcf`), only ONE layer comes back -- GIMP's own choice, not a flattened composite of
+#     the whole file -- and that ONE layer's own LIVE FILTERS come with it (verified live: a
+#     brightness-contrast filter on the source's layer is present on the loaded, still-unattached
+#     layer too, `Drawable.merge_filters()` bakes it there cleanly even before insert, and a
+#     SAME-NAMED filter already on the target's own, unrelated layer is provably untouched by the
+#     bake) -- `op_place_image` always bakes before inserting, so a placed layer is never a
+#     ledger-name-collision risk the way `gimp_layer op=duplicate` guards against for a copy.
+#   - Inserting a NEW layer changes the image's own SELECTED layer to it -- verified live (a layer
+#     explicitly selected beforehand is no longer selected once a different layer is inserted) --
+#     which is why a failure after `insert_layer` restores the pre-call selection explicitly rather
+#     than assuming discarding the newly-inserted layer alone leaves everything as it was.
 #   - `Item.scale(width, height, local_origin)` resizes just that one layer; called here while its
 #     offset is still whatever `file_load_layer` gave it (verified: local_origin's own effect on
 #     the resulting offset only matters when the pre-scale offset is non-zero), and the caller's
 #     `x`/`y` are applied afterward via the same absolute `set_offsets` `gimp_layer op=move` uses --
-#     so the requested position is always exact regardless of local_origin's own math.
+#     so the requested position is always exact regardless of local_origin's own math. Both
+#     `Drawable.scale()` and `Drawable.fill()` report failure by returning `False` rather than
+#     raising (the same class `op_open`'s own `convert_precision` comment documents) -- checked
+#     everywhere this file calls either, including the pre-existing `_fill_new_layer` shared with
+#     `gimp_layer op=create`.
 #   - `Gimp.Image.convert_rgb()` / `convert_grayscale()` exist; calling one when the image is
 #     ALREADY that base type is the same "calling error returns False, doesn't raise" class
 #     `op_open`'s own `convert_precision` comment documents, which is why `op_convert_image_mode`
 #     checks the current base type itself first rather than relying on that return value to tell
 #     the two cases apart.
+#   - `fill: transparent`'s "no fill layer" is only genuinely transparent in a LIVE, layered
+#     document (e.g. saved via `gimp_save_xcf`) -- verified live that both `Image.flatten()`
+#     (`gimp_layer op=flatten`) and `_composite`'s own flatten (every `gimp_export`) fill any
+#     transparent area with GIMP's ambient BACKGROUND context color (white, unmodified here) and
+#     drop alpha entirely, not with transparency. A PNG exported WITHOUT going through that flatten
+#     path (this bridge always does, via `_composite`) would keep the padding genuinely
+#     transparent, but that route is not one `gimp_export` takes -- the tool description says so.
 
 
 def op_create_document(args):
-    width, height = lib.validate_resize_dims(int(lib.require(args, 'width')), int(lib.require(args, 'height')))
-    fill = lib.validate_choice('fill', args.get('fill', 'white'), lib.LAYER_FILLS)
-    mode = lib.validate_choice('mode', args.get('mode', 'rgb'), lib.IMAGE_MODES)
     precision = args.get('precision')
     if precision is not None and precision not in ('16', '32'):
         raise ValueError("precision must be one of '16', '32'")
+    # The megapixel ceiling is precision-aware (`lib.DOCUMENT_MEGAPIXEL_CAP`) -- a 16/32-bit
+    # request costs 2x/4x the memory of the same pixel count at 8-bit, so it gets a
+    # correspondingly lower cap rather than the plain 8-bit-assuming `validate_resize_dims`.
+    width, height = lib.validate_document_dims(
+        int(lib.require(args, 'width')), int(lib.require(args, 'height')), precision or '8'
+    )
+    fill = lib.validate_choice('fill', args.get('fill', 'white'), lib.LAYER_FILLS)
+    mode = lib.validate_choice('mode', args.get('mode', 'rgb'), lib.IMAGE_MODES)
     name = args.get('name') or 'Background'
     base_type = Gimp.ImageBaseType.RGB if mode == 'rgb' else Gimp.ImageBaseType.GRAY
     img = Gimp.Image.new(width, height, base_type)
@@ -2592,13 +2629,29 @@ def op_create_document(args):
     return _describe(img)
 
 
+def _path_free_detail(detail):
+    """A GIMP- or Python-supplied error detail, made safe to surface -- DROPPED ENTIRELY (not
+    redacted in place) when it contains anything that looks like a filesystem path (a `/` or `\\`
+    separator) or a `file:` URI scheme. Unlike `_export_stripped`'s rewrite, which only ever has to
+    erase the ONE exact path spelling this bridge itself passed in, a detail string coming back
+    from GIMP or a raised Python exception could quote the caller's path in any number of
+    normalizations (forward slash, backslash, a `file://` URI, a different case) -- there is no
+    substitution list that could cover all of them, so this refuses to guess and drops the whole
+    detail instead. Returns '' (nothing to append) when unsafe or absent; otherwise ' (<detail>)',
+    ready to append directly to a message."""
+    if not detail or '/' in detail or '\\' in detail or 'file:' in detail:
+        return ''
+    return ' (%s)' % detail
+
+
 def op_place_image(args):
-    # Unlike `op_open`'s identical-looking file-not-found/raw-load messages (which do carry the
-    # full path -- an existing, separate gap this PR does not touch), every message here is built
-    # from `basename` only: `gimp_place_image` composites INTO an already-open document, so a
-    # failure here is more likely to be read alongside other paths/output already in play, and
-    # this bridge's own path-free discipline (see `_export_stripped`'s identical rewrite) applies
-    # to a newly-added op from the start rather than as a later fix.
+    # `requireAbsoluteGimpPath` (the tool layer) is unchanged by this discipline: it only
+    # validates and echoes back the CALLER'S OWN `file_path` value, the same as every other gimp_*
+    # path argument (including community-tier ones) -- it never adds a path the caller didn't
+    # already send. What changed here is this op's OWN messages: every one is built from
+    # `basename` only, and any further detail GIMP or Python supplies is passed through
+    # `_path_free_detail`, which drops it outright rather than trying to redact it, if it looks
+    # like it might carry a path of its own.
     img = _image(args)
     path = lib.require(args, 'path')
     basename = os.path.basename(path)
@@ -2618,30 +2671,29 @@ def op_place_image(args):
     # real exception, not just the exception case `op_open`'s own analogous try/except assumes is
     # the only failure shape.
     if loaded is None:
-        detail = load_error or 'no further detail'
-        for spelling in sorted({Gio.File.new_for_path(path).get_path() or path, path}, key=len, reverse=True):
-            detail = detail.replace(spelling, basename)
+        detail = _path_free_detail(load_error)
         if ext in RAW_EXTENSIONS:
             raise lib.OpError(
                 'gimp_unsupported_file',
                 'GIMP could not load %s as a layer (no raw loader by default); install a '
                 'raw-develop plug-in (darktable, RawTherapee, or ART) for GIMP, or develop it '
-                'externally first and place the resulting JPEG/TIFF. (%s)' % (basename, detail),
+                'externally first and place the resulting JPEG/TIFF.%s' % (basename, detail),
             )
-        raise lib.OpError('gimp_op_failed', 'could not load %s as a layer: %s' % (basename, detail))
-    parent = None
+        raise lib.OpError('gimp_op_failed', 'could not load %s as a layer%s' % (basename, detail))
+
+    # Everything below either fully succeeds or leaves `img` exactly as it was: every field is
+    # validated (and, for width/height, resolved against the loaded layer's OWN natural size)
+    # BEFORE `insert_layer` ever runs, and the SELECTED layer is restored on any failure --
+    # `insert_layer` changes the image's own selection as a side effect (verified live), even for
+    # an insert that is about to be undone.
+    original_selection = img.get_selected_layers()
+    baked_filters = []
     try:
-        default_name = os.path.splitext(os.path.basename(path))[0] or 'Layer'
-        name = _unique_layer_name(img, args.get('name') or default_name)
-        parent = _resolve_parent_group(img, args)
-        position = _validated_position(args)
-        loaded.set_name(name)
-        img.insert_layer(loaded, parent, position)
-        _assert_layer_attached(img, loaded, 'the placed layer')
+        w0, h0 = loaded.get_width(), loaded.get_height()
+        lib.validate_resize_dims(w0, h0)  # the DoS floor applies to the SOURCE file's own size too
 
         width, height = args.get('width'), args.get('height')
         if width is not None or height is not None:
-            w0, h0 = loaded.get_width(), loaded.get_height()
             if width is not None and height is not None:
                 width, height = int(width), int(height)
             elif width is not None:
@@ -2651,18 +2703,48 @@ def op_place_image(args):
                 height = int(height)
                 width = max(1, round(w0 * (height / float(h0))))
             width, height = lib.validate_resize_dims(width, height)
-            loaded.scale(width, height, False)
+        else:
+            width, height = w0, h0
 
         x, y = int(args.get('x', 0)), int(args.get('y', 0))
         _validated_move_offset(img, x, y)
+
+        default_name = os.path.splitext(basename)[0] or 'Layer'
+        name = _unique_layer_name(img, args.get('name') or default_name)
+        parent = _resolve_parent_group(img, args)
+        position = _validated_position(args)
+
+        # `file_load_layer` on a multi-layer `.xcf` source carries that ONE layer's own live
+        # filters onto the loaded (still unattached) layer -- verified live. Baked here, BEFORE
+        # insert, so the placed layer always lands as plain pixels: the ledger this bridge writes
+        # lives in the TARGET image's own parasite and is keyed by filter NAME, so an unbaked
+        # filter could silently collide with (and get overwritten by, or overwrite) an existing
+        # target filter that happens to share its name -- baking first means there is never a
+        # filter object left on the placed layer for that collision to happen to.
+        if loaded.get_filters():
+            baked_filters = [f.get_name() for f in loaded.get_filters()]
+            loaded.merge_filters()
+            if loaded.get_filters():
+                raise lib.OpError(
+                    'gimp_op_failed', "could not bake the placed layer's own live filter(s)"
+                )
+
+        loaded.set_name(name)
+        img.insert_layer(loaded, parent, position)
+        _assert_layer_attached(img, loaded, 'the placed layer')
+
+        if (width, height) != (w0, h0):
+            if not loaded.scale(width, height, False):
+                raise lib.OpError('gimp_op_failed', 'GIMP could not scale the placed layer')
         loaded.set_offsets(x, y)
     except Exception:
+        img.set_selected_layers(original_selection)
         _discard_layer(img, loaded)
         raise
     finally:
         _drop_proxies(img.get_id())
     ok, off_x, off_y = loaded.get_offsets()
-    return {
+    result = {
         'layer_id': loaded.get_id(),
         'name': loaded.get_name(),
         'width': loaded.get_width(),
@@ -2671,26 +2753,34 @@ def op_place_image(args):
         'y': off_y if ok else None,
         'parent_group': parent.get_id() if parent is not None else None,
     }
+    if baked_filters:
+        result['baked_filters'] = baked_filters
+    return result
 
 
 def _fill_canvas_layer(layer, fill):
-    if fill == 'transparent':
-        return  # never called for 'transparent' -- op_canvas skips the fill layer entirely
-    if fill == 'white':
-        layer.fill(Gimp.FillType.WHITE)
-        return
-    color = 'black' if fill == 'black' else fill  # fill is a '#rrggbb' hex string otherwise
+    if fill in lib.LAYER_FILLS:
+        _fill_new_layer(layer, fill)  # white/black -- reuses the same push/pop-context bracket
+        return                        # and the same fill()-return-value check ('transparent'
+                                       # never reaches here -- op_canvas skips the layer entirely)
+    # Otherwise `fill` is a validated '#rrggbb' hex string. On a GRAYSCALE image, filling with an
+    # RGB foreground color converts to that color's LUMINANCE (verified live: '#336699' -> gray
+    # level 98, matching neither the R, G, nor B channel alone but their weighted luminance) --
+    # the same automatic base-type coercion `_layer_type_for`'s own comment documents for a plain
+    # layer insert, applied here by GIMP's own fill implementation instead.
     Gimp.context_push()
     try:
-        Gimp.context_set_foreground(Gegl.Color.new(color))
-        layer.fill(Gimp.FillType.FOREGROUND)
+        Gimp.context_set_foreground(Gegl.Color.new(fill))
+        ok = layer.fill(Gimp.FillType.FOREGROUND)
     finally:
         Gimp.context_pop()
+    if not ok:
+        raise lib.OpError('gimp_op_failed', 'GIMP could not fill the canvas backdrop layer')
 
 
 def op_canvas(args):
     img = _image(args)
-    _refuse_if_masked_filters(img, 'canvas')
+    _refuse_if_masked_filters(img, 'canvas', before_hint='Extend the canvas')
     old_w, old_h = img.get_width(), img.get_height()
     new_w, new_h = int(lib.require(args, 'width')), int(lib.require(args, 'height'))
     if new_w < old_w or new_h < old_h:
@@ -2698,6 +2788,11 @@ def op_canvas(args):
             'gimp_canvas only extends the canvas: %dx%d is smaller than the current %dx%d in at '
             'least one dimension -- use gimp_crop_document to shrink it instead'
             % (new_w, new_h, old_w, old_h)
+        )
+    if new_w == old_w and new_h == old_h:
+        raise ValueError(
+            'gimp_canvas needs a target that grows at least one dimension -- %dx%d is the '
+            'current size already' % (old_w, old_h)
         )
     new_w, new_h = lib.validate_resize_dims(new_w, new_h)
     fill = lib.validate_canvas_fill(args.get('fill', 'transparent'))
@@ -2716,8 +2811,14 @@ def op_canvas(args):
             % (old_w, old_h, new_w, new_h, new_w - old_w, new_h - old_h)
         )
     Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
-    img.resize(new_w, new_h, offset_x, offset_y)
     try:
+        img.resize(new_w, new_h, offset_x, offset_y)
+        if (img.get_width(), img.get_height()) != (new_w, new_h):
+            raise lib.OpError(
+                'gimp_op_failed',
+                'GIMP did not resize the canvas to %dx%d (now %dx%d)'
+                % (new_w, new_h, img.get_width(), img.get_height()),
+            )
         if fill != 'transparent':
             name = _unique_layer_name(img, 'Canvas Fill')
             layer = Gimp.Layer.new(img, name, new_w, new_h, _layer_type_for(img), 100.0, Gimp.LayerMode.NORMAL)
@@ -2725,9 +2826,16 @@ def op_canvas(args):
                 img.insert_layer(layer, None, len(img.get_layers()))  # bottom of the top-level stack
                 _assert_layer_attached(img, layer, 'the canvas fill layer')
                 _fill_canvas_layer(layer, fill)
-            except Exception:
+            except Exception as e:
                 _discard_layer(img, layer)
-                raise
+                # B7: the canvas resize itself already committed and is not undone here (reversing
+                # it risks compounding one failure into two) -- the error says so plainly instead.
+                raise lib.OpError(
+                    'gimp_op_failed',
+                    'the canvas was extended to %dx%d, but the %s backdrop layer could not be '
+                    'added (%s) -- retry with fill=transparent to skip it, or add a backdrop '
+                    'layer manually' % (new_w, new_h, fill, e),
+                )
     finally:
         _drop_proxies(img.get_id())
     return {
@@ -2741,6 +2849,12 @@ def op_convert_image_mode(args):
     mode = lib.validate_choice('mode', args.get('mode'), lib.IMAGE_MODES)
     if img.get_base_type() == Gimp.ImageBaseType.INDEXED:
         raise ValueError('gimp_convert_image_mode does not support an indexed image as the source')
+    # The no-op check runs BEFORE the live-filter refusal: an image already in the requested mode
+    # has nothing for a color-dependent filter to be endangered by, so a live filter must never
+    # turn a true no-op into a spurious refusal.
+    target_type = Gimp.ImageBaseType.RGB if mode == 'rgb' else Gimp.ImageBaseType.GRAY
+    if img.get_base_type() == target_type:
+        return {'mode': mode, 'converted': False}
     live_filters = _live_filter_names(img)
     if live_filters:
         raise ValueError(
@@ -2749,9 +2863,6 @@ def op_convert_image_mode(args):
             "(gimp_bake) or delete it (gimp_filter op=delete), then convert."
             % ', '.join(repr(n) for n in sorted(live_filters))
         )
-    target_type = Gimp.ImageBaseType.RGB if mode == 'rgb' else Gimp.ImageBaseType.GRAY
-    if img.get_base_type() == target_type:
-        return {'mode': mode, 'converted': False}
     try:
         ok = img.convert_rgb() if mode == 'rgb' else img.convert_grayscale()
         if not ok:

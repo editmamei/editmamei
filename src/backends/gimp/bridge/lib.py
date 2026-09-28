@@ -262,6 +262,31 @@ def validate_resize_dims(width, height):
     return width, height
 
 
+# gimp_create_document's own megapixel ceiling, precision-aware: MAX_RESIZE_MEGAPIXELS (250) is
+# sized for 8-bit-per-channel content; a 16-bit image is 2 bytes/channel (half the pixel budget
+# for the same memory footprint, 125 MP) and a 32-bit float image is 4 bytes/channel (a quarter,
+# 60 MP -- rounded down from the exact 62.5 to a plain number). `create_document` is the one op
+# that picks its own bit depth up front (`open`/`resize`/etc. all work on whatever precision an
+# already-open image happens to be), so it is the one place this DoS floor needs to vary by
+# precision rather than assuming 8-bit throughout.
+DOCUMENT_MEGAPIXEL_CAP = {'8': MAX_RESIZE_MEGAPIXELS, '16': 125, '32': 60}
+
+
+def validate_document_dims(width, height, precision='8'):
+    """Like `validate_resize_dims`, but the megapixel ceiling depends on `precision` ('8', '16', or
+    '32') -- see `DOCUMENT_MEGAPIXEL_CAP`'s own comment for why create_document needs its own
+    variant instead of the plain 8-bit-assuming one."""
+    if width <= 0 or height <= 0:
+        raise ValueError('width and height must be positive')
+    if width > MAX_RESIZE_SIDE_PX or height > MAX_RESIZE_SIDE_PX:
+        raise ValueError('width and height must each be at most %d px' % MAX_RESIZE_SIDE_PX)
+    cap = DOCUMENT_MEGAPIXEL_CAP[precision]
+    megapixels = (width * height) / 1_000_000.0
+    if megapixels > cap:
+        raise ValueError('a %s-bit document must be at most %d MP' % (precision, cap))
+    return width, height
+
+
 def validate_feather_px(value):
     return validate_range('feather_px', value, 0.0, MAX_FEATHER_PX)
 
@@ -275,7 +300,7 @@ CANVAS_FILLS = LAYER_FILLS
 
 
 def validate_canvas_fill(value):
-    if value in CANVAS_FILLS or (isinstance(value, str) and _HEX_COLOR_RE.match(value)):
+    if value in CANVAS_FILLS or (isinstance(value, str) and _HEX_COLOR_RE.fullmatch(value)):
         return value
     raise ValueError(
         "fill must be one of %s, or a '#rrggbb' hex color, got %r" % (sorted(CANVAS_FILLS), value)
@@ -301,8 +326,16 @@ def canvas_anchor_offset(anchor, old_width, old_height, new_width, new_height):
     dimensions and passes the result straight to the bridge primitive."""
     if anchor not in _CANVAS_ANCHOR_FRACTIONS:
         raise ValueError('anchor must be one of %s' % sorted(_CANVAS_ANCHOR_FRACTIONS))
+    # Floor, not round: the growth is always >= 0 (gimp_canvas is extend-only), so floor is just
+    # `int()` truncation here -- picked over `round()` because Python's round() is round-half-to-
+    # EVEN (banker's rounding), which would silently flip which side of an odd split gets the
+    # extra pixel depending on whether that half-pixel count happens to be even or odd. floor()
+    # always gives the same, simpler rule: the leading edge (top/left) gets the smaller share.
     fx, fy = _CANVAS_ANCHOR_FRACTIONS[anchor]
-    return round((new_width - old_width) * fx), round((new_height - old_height) * fy)
+    return (
+        math.floor((new_width - old_width) * fx),
+        math.floor((new_height - old_height) * fy),
+    )
 
 
 def pct_to_unit(name, value, lo=-100.0, hi=100.0):
