@@ -2128,6 +2128,7 @@ def _refuse_if_masked_filters_on(img, op_name, layer):
     appears in `layer`'s own scope, so a masked filter on a completely unrelated layer never blocks
     this move."""
     scope = set(_layer_subtree(layer)) | set(_layer_ancestors(layer))
+    scope_ids = {l.get_id() for l in scope}
     scoped_names = {f.get_name() for l in scope for f in l.get_filters()}
     filters = _prune_stale_ledger_records(img)
     whole_image_live = [
@@ -2137,13 +2138,44 @@ def _refuse_if_masked_filters_on(img, op_name, layer):
     masked = sorted(set(n for n in masked if n in scoped_names))
     unverifiable = sorted(set(n for n in unverifiable if n in scoped_names))
     if unverifiable:
-        raise ValueError(
-            '%s cannot proceed: filter(s) %s on this layer, or a group containing it, were not '
-            'created by Editmamei (no matching ledger record for their name and operation), so '
-            'whether they are masked cannot be checked. Delete them first, or move the layer '
-            'before adding them.'
-            % (op_name, ', '.join(repr(n) for n in unverifiable))
-        )
+        # An in-scope name lands here for one of two different reasons, which need different
+        # advice: no matching ledger record at all (a genuinely foreign filter -- delete IT), or a
+        # ledger record that DOES match but the same name is ALSO live on another filter somewhere
+        # else in the image (this copy is ours; the FOREIGN one elsewhere is what needs renaming or
+        # deleting). `name_counts` -- not `lib.classify_geometry_filters`'s own return, which
+        # doesn't distinguish the two -- is what tells them apart.
+        name_counts = {}
+        for live_name, _operation in whole_image_live:
+            name_counts[live_name] = name_counts.get(live_name, 0) + 1
+        duplicated = sorted(n for n in unverifiable if name_counts[n] > 1)
+        unrecognized = sorted(n for n in unverifiable if name_counts[n] <= 1)
+        reasons = []
+        if unrecognized:
+            reasons.append(
+                'filter(s) %s on this layer, or a group containing it, were not created by '
+                'Editmamei (no matching ledger record for their name and operation), so whether '
+                'they are masked cannot be checked -- delete them first, or move the layer before '
+                'adding them'
+                % ', '.join(repr(n) for n in unrecognized)
+            )
+        if duplicated:
+            dup_descriptions = []
+            for name in duplicated:
+                elsewhere = sorted({
+                    l.get_name() for l in _all_layers(img) for f in l.get_filters()
+                    if f.get_name() == name and l.get_id() not in scope_ids
+                })
+                if len(elsewhere) == 1:
+                    dup_descriptions.append('%r (also on layer %r)' % (name, elsewhere[0]))
+                else:
+                    dup_descriptions.append('%r (also live elsewhere in the image)' % name)
+            reasons.append(
+                'the name(s) %s are shared with another live filter elsewhere in the image, so '
+                'the ledger cannot tell the two apart -- rename or delete the FOREIGN duplicate '
+                '(not this one), then retry'
+                % ', '.join(dup_descriptions)
+            )
+        raise ValueError('%s cannot proceed: %s.' % (op_name, '; '.join(reasons)))
     if masked:
         raise ValueError(
             '%s would misalign the masked adjustment(s) %s: a filter\'s mask does not travel with '
@@ -2257,19 +2289,28 @@ def _merge_down_target(siblings, idx):
     return None
 
 
+# Base types a NEW layer can be given a matching `Gimp.ImageType` for -- everywhere a fresh layer
+# might need to be added (gimp_layer op=create, a gimp_canvas fill backdrop) reads this SAME dict
+# rather than repeating the RGB/GRAY-only assumption independently, so the two call sites can
+# never drift apart on which base types qualify.
+_LAYER_CAPABLE_BASE_TYPES = {
+    Gimp.ImageBaseType.RGB: Gimp.ImageType.RGBA_IMAGE,
+    Gimp.ImageBaseType.GRAY: Gimp.ImageType.GRAYA_IMAGE,
+}
+
+
 def _layer_type_for(img):
     """The `Gimp.ImageType` a new layer should use so it matches `img`'s own color model instead
     of relying on GIMP's own silent coercion (verified live: an RGBA layer inserted into a
     grayscale image is quietly converted to GRAYA on insert -- this asks for the right type up
     front rather than lean on that)."""
     base = img.get_base_type()
-    if base == Gimp.ImageBaseType.RGB:
-        return Gimp.ImageType.RGBA_IMAGE
-    if base == Gimp.ImageBaseType.GRAY:
-        return Gimp.ImageType.GRAYA_IMAGE
-    raise ValueError(
-        'gimp_layer op=create does not support %s images -- only RGB and grayscale' % base.value_nick
-    )
+    layer_type = _LAYER_CAPABLE_BASE_TYPES.get(base)
+    if layer_type is None:
+        raise ValueError(
+            'gimp_layer op=create does not support %s images -- only RGB and grayscale' % base.value_nick
+        )
+    return layer_type
 
 
 # `Gimp.FillType` has no BLACK member (verified live: WHITE, TRANSPARENT, FOREGROUND, BACKGROUND,
@@ -2475,15 +2516,15 @@ def _op_layer_merge_down(img, args):
             'flatten to collapse the whole image'
         )
     # Verified live: GIMP's own merge_down silently fails (returns None) when the SOURCE layer's
-    # own visibility is off, regardless of the target -- checked explicitly, before anything else,
-    # so the refusal names the real reason instead of surfacing as a generic gimp_op_failed. An
-    # ancestor group being hidden does not trigger this: verified live, GIMP merges two VISIBLE
-    # siblings inside a hidden group without complaint, since the merge only ever touches the two
-    # layers directly involved.
+    # own visibility is off, regardless of the target -- checked explicitly, right after the group
+    # check above, so the refusal names the real reason instead of surfacing as a generic
+    # gimp_op_failed. An ancestor group being hidden does not trigger this: verified live, GIMP
+    # merges two VISIBLE siblings inside a hidden group without complaint, since the merge only
+    # ever touches the two layers directly involved.
     if not layer.get_visible():
         raise ValueError(
             'merge_down refuses on the HIDDEN layer %r -- GIMP cannot merge a hidden layer down. '
-            'Make it visible first, or use flatten (with discard_hidden: true) to drop it instead.'
+            'Make it visible first, or use gimp_layer op=delete to drop just that layer instead.'
             % layer.get_name()
         )
     parent = layer.get_parent()
@@ -2531,6 +2572,11 @@ def _op_layer_flatten(img, args):
             'even when its own visibility is on). Pass discard_hidden: true to proceed, or make '
             'them visible first.' % (len(hidden), ', '.join(repr(l.get_name()) for l in hidden))
         )
+    # Every LAYER hidden -- not just every leaf's content. A visible GROUP whose own content is
+    # all hidden (or which has no children at all) never trips this: the group itself is not
+    # hidden, and verified live, `Image.flatten()` handles that case fine on its own, producing a
+    # single background-colored layer rather than failing -- so nothing extra is needed here for
+    # it.
     if len(hidden) == len(all_layers):
         raise ValueError('cannot flatten: every layer is hidden, and flatten needs at least one visible layer')
     rasterized_text = any(l.is_text_layer() and _effectively_visible(l) for l in all_layers)
@@ -2905,13 +2951,14 @@ def op_canvas(args):
     new_w, new_h = lib.validate_resize_dims(new_w, new_h)
     fill = lib.validate_canvas_fill(args.get('fill', 'transparent'))
     # Checked before anything mutates: a non-transparent fill needs a backdrop layer, and
-    # `_layer_type_for` only supports RGB/GRAY -- refusing here keeps an indexed image's canvas
-    # untouched, rather than committing the resize and only then discovering the backdrop layer
-    # can't be created.
-    if fill != 'transparent' and img.get_base_type() == Gimp.ImageBaseType.INDEXED:
+    # `_LAYER_CAPABLE_BASE_TYPES` (the same allow-list `_layer_type_for` reads) only covers
+    # RGB/GRAY -- refusing here keeps the canvas untouched, rather than committing the resize and
+    # only then discovering the backdrop layer can't be created.
+    if fill != 'transparent' and img.get_base_type() not in _LAYER_CAPABLE_BASE_TYPES:
         raise ValueError(
-            'gimp_canvas cannot add a %s backdrop layer to an indexed image -- only RGB and '
-            'grayscale support a non-transparent fill; use fill=transparent instead' % fill
+            'gimp_canvas cannot add a %s backdrop layer to a %s image -- only RGB and grayscale '
+            'support a non-transparent fill; use fill=transparent instead'
+            % (fill, img.get_base_type().value_nick)
         )
     anchor = args.get('anchor')
     has_explicit_offset = 'offset_x' in args or 'offset_y' in args
