@@ -52,6 +52,7 @@ describe('geometry refusals name BOTH conditions (masked filters and filters Edi
   const places: Array<[string, string]> = [
     ['gimp_resize_image', description('gimp_resize_image')],
     ['gimp_transform_canvas', description('gimp_transform_canvas')],
+    ['gimp_canvas', description('gimp_canvas')],
     ['gimp_add_adjustment', description('gimp_add_adjustment')],
     ['gimp_add_adjustment mask', field('gimp_add_adjustment', 'mask')],
     ['gimp_create_mask', description('gimp_create_mask')],
@@ -503,5 +504,86 @@ describe('gimp_bake: bakes a masked filter correctly, never rasterizes text, cle
     expect(description('gimp_bake').replace(/\s+/g, ' ')).toMatch(
       /IRREVERSIBLE in this session: there is no undo/
     );
+  });
+});
+
+describe('gimp_create_document: returns the same shape gimp_open_document does', () => {
+  it('the tool description says so', () => {
+    expect(description('gimp_create_document').replace(/\s+/g, ' ')).toMatch(
+      /exact same shape gimp_open_document does/
+    );
+  });
+  it('is not from a file (that distinction is stated explicitly)', () => {
+    expect(description('gimp_create_document')).toMatch(/not from a file/);
+  });
+});
+
+describe('gimp_place_image: multi-layer sources, mode conversion, and no metadata leak', () => {
+  it('says a multi-layer source places only one layer, not a flattened composite', () => {
+    const text = description('gimp_place_image').replace(/\s+/g, ' ');
+    expect(text).toMatch(/only ONE of them is placed/);
+    expect(text).toMatch(/not a flattened composite/);
+  });
+  it('says a color-mode mismatch converts automatically rather than being refused', () => {
+    expect(description('gimp_place_image').replace(/\s+/g, ' ')).toMatch(
+      /converted automatically on load, never refused/
+    );
+  });
+  it('says x/y are an ABSOLUTE offset, matching gimp_layer op=move', () => {
+    expect(description('gimp_place_image').replace(/\s+/g, ' ')).toMatch(
+      /ABSOLUTE document-pixel offset \(not a delta\)/
+    );
+  });
+  it("says nothing from the source file's own metadata attaches, and no path appears in the result", () => {
+    const text = description('gimp_place_image').replace(/\s+/g, ' ');
+    expect(text).toMatch(/[Nn]othing from the source file's own metadata.*attaches/);
+    expect(text).toMatch(/no path.*appears in the result/);
+  });
+  it('says there is no undo in this session', () => {
+    expect(description('gimp_place_image').replace(/\s+/g, ' ')).toMatch(
+      /there is no undo in this session: gimp_checkpoint or gimp_save_xcf first when in doubt/
+    );
+  });
+});
+
+describe('gimp_canvas: extend-only, anchor xor explicit offsets', () => {
+  it('refuses to shrink, naming gimp_crop_document instead', () => {
+    const text = description('gimp_canvas').replace(/\s+/g, ' ');
+    expect(text).toMatch(/never shrink/);
+    expect(text).toMatch(/gimp_crop_document/);
+  });
+  it('anchor and offset_x/offset_y are described as mutually exclusive', () => {
+    const desc = description('gimp_canvas').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/give one or the other, not both/);
+    expect(field('gimp_canvas', 'anchor')).toMatch(/[Mm]utually exclusive with offset_x/);
+    expect(field('gimp_canvas', 'offset_x')).toMatch(/mutually exclusive with anchor/);
+  });
+  it("fill's transparent option says no fill layer is added at all", () => {
+    expect(field('gimp_canvas', 'fill').replace(/\s+/g, ' ')).toMatch(
+      /no fill layer is added at all/
+    );
+  });
+  it('is marked destructive and says there is no undo', () => {
+    expect(byName.get('gimp_canvas')!.annotations?.destructiveHint).toBe(true);
+    expect(description('gimp_canvas').replace(/\s+/g, ' ')).toMatch(
+      /IRREVERSIBLE in this session: there is no undo/
+    );
+  });
+});
+
+describe('gimp_convert_image_mode: indexed refused, no-op reported, refuses on any live filter', () => {
+  it('refuses an indexed source outright', () => {
+    expect(description('gimp_convert_image_mode')).toMatch(/indexed.*is refused outright/);
+  });
+  it('says converting to the current mode is a no-op reported as converted: false', () => {
+    expect(description('gimp_convert_image_mode').replace(/\s+/g, ' ')).toMatch(
+      /no-op when the image is already the requested mode \(reported as converted: false/
+    );
+  });
+  it('refuses while ANY live filter is present, naming both the bake and delete escapes', () => {
+    const text = description('gimp_convert_image_mode').replace(/\s+/g, ' ');
+    expect(text).toMatch(/REFUSES outright while the image has ANY live filter/);
+    expect(text).toMatch(/gimp_bake/);
+    expect(text).toMatch(/gimp_filter op=delete/);
   });
 });
