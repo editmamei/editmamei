@@ -271,12 +271,19 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // exporting it, and a timeout here would destroy the very work the save was protecting.
   gimp_save_xcf: 90_000,
   gimp_export: 90_000,
-  gimp_inspect: 15_000,
+  // `what='channels'` reads EVERY named channel's full pixel buffer (`_channel_coverage`,
+  // ops.py) -- the same per-channel cost `gimp_create_mask` budgets 20s for a single one of.
+  // Measured live (GIMP 3.2.6, ~24MP) at ~120ms/channel. `_channels_described` also applies its
+  // own internal deadline (`CHANNELS_DESCRIBE_DEADLINE_S`, ops.py) so a document with many named
+  // channels stops and reports what it already read rather than run this dispatch budget out;
+  // this entry is the outer safety margin on top of that, on a slower machine or a document large
+  // enough that even the capped `document`/`layers` tree walk takes real time.
+  gimp_inspect: 30_000,
   gimp_add_adjustment: 20_000,
   gimp_filter: 15_000,
-  // Creates or re-edits a filter, rendering it onto the preview proxy in the process -- the same
-  // shape of work gimp_add_adjustment does (hence the matching 20s budget), not gimp_filter's own
-  // list/set_visibility/delete (15s), which never render anything.
+  // Creates or re-edits a filter -- the same create/re-edit path, and the same 20s budget, as
+  // gimp_add_adjustment (not gimp_filter's own list/set_visibility/delete, 15s, which only manage
+  // the stack and never touch a filter's own config).
   gimp_add_effect: 20_000,
   gimp_crop_document: 20_000,
   gimp_resize_image: 45_000,

@@ -97,16 +97,21 @@ def _all_layers(img):
     included, then its children). `img.get_layers()` is top-level only, and `_layer` can resolve a
     layer nested inside a group, so every walk over the filter stack goes through this: a filter
     on a nested layer must be listed, mirrored onto the proxy, ledger-tracked, and seen by the
-    geometry refusal like any other."""
+    geometry refusal like any other.
+
+    Walked with an EXPLICIT stack, the same reasoning (and the same shape) as `_build_layer_tree`'s
+    own walk: a pathological chain of nested single-child groups would otherwise risk Python's OWN
+    recursion limit, not just some cap this function itself imposes (it imposes none -- every
+    caller here matters exactly because it doesn't). A group's children are pushed in REVERSE order
+    so popping (LIFO) still visits top-of-stack-first -- positional proxy mirroring and other
+    callers depend on that exact order, not just on the same set of layers."""
     out = []
-
-    def walk(items):
-        for item in items:
-            out.append(item)
-            if item.is_group():
-                walk(item.get_children())
-
-    walk(img.get_layers())
+    stack = list(reversed(img.get_layers()))
+    while stack:
+        item = stack.pop()
+        out.append(item)
+        if item.is_group():
+            stack.extend(reversed(item.get_children()))
     return out
 
 
@@ -980,7 +985,11 @@ def _build_layer_tree(top_layers, max_nodes=MAX_DESCRIBE_LAYER_NODES):
     walked with an EXPLICIT stack rather than one recursive call per nesting level -- a
     pathological chain of nested single-child groups would otherwise risk Python's OWN recursion
     limit, not just some output-size limit of this op's choosing. Capped at `max_nodes` total
-    nodes across the whole tree. Returns (nodes, truncated).
+    nodes across the whole tree. Returns (nodes, truncated, total_nodes) -- `total_nodes` is simply
+    the walk's own `seen` counter, so it costs nothing extra to report; it is what a truncated
+    response is actually counted from, distinct from `top_level_count` (the caller's own
+    `len(top_layers)`, always the TRUE top-level count even when the walk stopped before reaching
+    every top-level sibling).
 
     Each stack entry is (layer, parent_id); a group's children are pushed in REVERSE order so
     popping (LIFO) still visits them top-of-stack-first, the same order `_all_layers` already
@@ -1010,30 +1019,52 @@ def _build_layer_tree(top_layers, max_nodes=MAX_DESCRIBE_LAYER_NODES):
         if layer.is_group():
             for child in reversed(layer.get_children()):
                 stack.append((child, layer.get_id()))
-    return top, truncated
+    return top, truncated, seen
 
 
 def _channels_summary(img):
     """Every named channel on img, by id and name only -- `document`'s cheap channel listing.
-    Coverage (`_channel_coverage`) reads a channel's full pixel buffer (seconds of work per
-    channel at full resolution), so it is computed only for `what='channels'`
-    (`_channels_described`), never bundled into `document`'s broader, cheaper read."""
+    Coverage (`_channel_coverage`) reads a channel's full pixel buffer, so it is computed only for
+    `what='channels'` (`_channels_described`), never bundled into `document`'s broader, cheaper
+    read."""
     return [{'channel_id': ch.get_id(), 'name': ch.get_name()} for ch in img.get_channels()]
+
+
+# `_channels_described` checks this after every channel it reads, and stops once that many seconds
+# have passed, rather than run gimp_inspect's own dispatch budget out on a document with many named
+# channels (`operation-timeouts.ts`). A plain module global, not a function default, so a test
+# fixture can reassign it directly (`test_set_channels_deadline`, fixtures/test_ops.py) and force
+# the stop without needing dozens of real channels.
+CHANNELS_DESCRIBE_DEADLINE_S = 15.0
 
 
 def _channels_described(img):
     """Every named channel on img, with its coverage (`_channel_coverage`) -- the same stat
     `op_create_mask` returns for the one it just built. `what='channels'`-only; see
-    `_channels_summary`'s own docstring for why `document` doesn't compute this."""
+    `_channels_summary`'s own docstring for why `document` doesn't compute this.
+
+    Reads at least the first channel unconditionally, then checks `CHANNELS_DESCRIBE_DEADLINE_S`
+    after each one read: once elapsed time reaches it, stops and returns early. Returns
+    {'channels', 'truncated', 'channels_skipped'} -- `channels` is whatever was read before
+    stopping, `truncated` is whether any named channel was left unread, and `channels_skipped`
+    counts them."""
     w, h = img.get_width(), img.get_height()
+    channels = img.get_channels()
     out = []
-    for ch in img.get_channels():
+    start = time.time()
+    for ch in channels:
         selected, fraction = _channel_coverage(ch, w, h)
         out.append({
             'channel_id': ch.get_id(), 'name': ch.get_name(),
             'selected_pixels': selected, 'fraction': fraction,
         })
-    return out
+        if time.time() - start >= CHANNELS_DESCRIBE_DEADLINE_S:
+            break
+    return {
+        'channels': out,
+        'truncated': len(out) < len(channels),
+        'channels_skipped': len(channels) - len(out),
+    }
 
 
 def op_describe(args):
@@ -1043,9 +1074,13 @@ def op_describe(args):
     and a cheap by-id/name channel listing in one call; `layers` returns just the tree (capped and
     flagged, see `_build_layer_tree`/`MAX_DESCRIBE_LAYER_NODES`); `channels` returns the same
     channels WITH coverage (`_channels_described`), the one part `document` deliberately leaves
-    out since it reads full pixel buffers. `filter` reports one filter by id, in the exact shape
-    `op_list_filters` reports it in (`_filter_record`, via `_find_filter` so a filter_id from a
-    different or closed image is never mistaken for a match)."""
+    out since it reads full pixel buffers -- and stops after its own time budget on a document with
+    many named channels, returning whatever it already read (see `_channels_described`). `filter`
+    reports one filter by id, in the exact shape `op_list_filters` reports it in (`_filter_record`,
+    via `_find_filter` so a filter_id from a different or closed image is never mistaken for a
+    match). `document`/`layers` also report `top_level_count` (the image's real top-level layer
+    count, from `get_layers()` directly) and `total_nodes` (how many nodes THIS response carries)
+    alongside `truncated`."""
     what = args.get('what')
     if what not in DESCRIBE_TARGETS:
         raise ValueError('what must be one of %s' % ', '.join(DESCRIBE_TARGETS))
@@ -1056,12 +1091,19 @@ def op_describe(args):
         filters, _unknown = _ledger_get(img)
         return _filter_record(filters, layer, f)
     if what == 'layers':
-        layers, truncated = _build_layer_tree(img.get_layers())
-        return {'layers': layers, 'truncated': truncated}
+        top_layers = img.get_layers()
+        layers, truncated, total_nodes = _build_layer_tree(top_layers)
+        return {
+            'layers': layers,
+            'truncated': truncated,
+            'top_level_count': len(top_layers),
+            'total_nodes': total_nodes,
+        }
     if what == 'channels':
-        return {'channels': _channels_described(img)}
+        return _channels_described(img)
     ok, xres, yres = img.get_resolution()
-    layers, truncated = _build_layer_tree(img.get_layers())
+    top_layers = img.get_layers()
+    layers, truncated, total_nodes = _build_layer_tree(top_layers)
     return {
         'image': img.get_id(),
         'width': img.get_width(),
@@ -1071,6 +1113,8 @@ def op_describe(args):
         'resolution': {'x': xres, 'y': yres} if ok else {'x': None, 'y': None},
         'layers': layers,
         'truncated': truncated,
+        'top_level_count': len(top_layers),
+        'total_nodes': total_nodes,
         'channels': _channels_summary(img),
     }
 
@@ -1152,18 +1196,21 @@ def _refuse_if_masked_filters(img, op_name, before_hint='Rotate, flip or resize'
     existed when this function was first written."""
     masked, unverifiable = _classify_geometry_filters(img)
     if unverifiable:
+        # `sorted(set(...))`, not `sorted(...)`: classify_geometry_filters reports a duplicate
+        # live filter NAME once per occurrence (so a caller counting what it iterated still gets
+        # a consistent count), but the refusal message only needs to name it once.
         raise ValueError(
             '%s cannot proceed: filter(s) %s were not created by Editmamei (no matching ledger '
             'record for their name and operation), so whether they are masked cannot be checked. '
             'Delete them first, or make this geometry change before adding them.'
-            % (op_name, ', '.join(repr(n) for n in sorted(unverifiable)))
+            % (op_name, ', '.join(repr(n) for n in sorted(set(unverifiable))))
         )
     if masked:
         raise ValueError(
             '%s would misalign the masked filter(s) %s: a filter\'s mask cannot move with '
             'this transform. %s before adding masked filters, or delete '
             'those filters first and re-create them afterwards. Crop is unaffected.'
-            % (op_name, ', '.join(repr(n) for n in sorted(masked)), before_hint)
+            % (op_name, ', '.join(repr(n) for n in sorted(set(masked))), before_hint)
         )
 
 
@@ -1231,14 +1278,13 @@ def _apply_planned_effect_transform(img, planned):
     `_snapshot_effect_transform` -- into the live GEGL config and the ledger record. Called AFTER
     the geometry mutation.
 
-    A live update failure for one filter does not stop the others. Unlike an earlier version of
-    this function, the ledger is NOT left at the new (unapplied) params on failure: the ledger
-    must always match what actually renders, so this instead tries to restore the filter's OLD
-    params live (best effort -- if that ALSO fails, the filter is simply left wherever the failed
-    attempt left it) and keeps the ledger record at the OLD params either way. The filter's name is
-    collected and returned so the caller can report it (`effect_update_failures`) -- a silent
-    partial failure here would otherwise look identical to a filter the geometry op never touched
-    at all."""
+    A live update failure for one filter does not stop the others. The ledger must always match
+    what actually renders, so a failure never leaves the ledger record at the new (unapplied)
+    params: this instead tries to restore the filter's OLD params live (best effort -- if that
+    ALSO fails, the filter is simply left wherever the failed attempt left it) and keeps the ledger
+    record at the OLD params either way. The filter's name is collected and returned so the caller
+    can report it (`effect_update_failures`) -- a silent partial failure here would otherwise look
+    identical to a filter the geometry op never touched at all."""
     if not planned:
         return []
     failures = []
@@ -1786,7 +1832,14 @@ def _channel_coverage(ch, w, h):
     # reproduces the ramp exactly. Every mask/selection buffer read or write in this file uses
     # the primed, perceptual format for the same reason.
     data = ch.get_buffer().get(Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
-    selected = sum(1 for b in data if b >= 128)
+    # `bytes.translate(None, delete)` runs the byte-by-byte pass in C rather than the interpreter
+    # loop a `sum(1 for b in data if b >= 128)` generator pays per byte. `delete` names the bytes to
+    # DROP, so deleting every byte below 128 (0..127) leaves exactly the >=128 ones behind: len() of
+    # what's left IS the selected count directly, no subtraction needed. Same result as the
+    # generator, measured live (GIMP 3.2.6, ~24MP) at ~120ms/channel -- what keeps `describe`'s
+    # `channels` target, which reads this per NAMED channel rather than just one, fast enough to
+    # stay inside its own time budget (`_channels_described`'s `CHANNELS_DESCRIBE_DEADLINE_S`).
+    selected = len(data.translate(None, bytes(range(128))))
     return selected, round(selected / len(data), 4)
 
 

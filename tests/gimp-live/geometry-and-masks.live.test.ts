@@ -1481,6 +1481,62 @@ describe.skipIf(!install)('geometry and masks', () => {
     expect(maxAbsDiff(readPng(outA), readPng(outB))).toBeLessThanOrEqual(3);
   });
 
+  it('a gimp_add_adjustment filter (hue_saturation, a non-terminating internal value) is never planned by flip/rotate/resize at all', async () => {
+    // hue=10 is stored internally as 10/180 (0.05555555555555555, a non-terminating binary
+    // fraction): an untouched field must come back from flip/rotate/resize's own transform
+    // functions bit-identical to its input, or `_snapshot_effect_transform`'s `==` check plans a
+    // spurious update for it -- wrongly treating this ADJUSTMENT filter (not one of the three
+    // position/direction/size-dependent EFFECTS this tracking exists for) as "changed" by a
+    // transform that has nothing to do with it at all. Sabotaging gimp:hue-saturation's OWN
+    // setter (test_force_effect_update_failure) and confirming `effect_update_failures` stays
+    // EMPTY proves the filter was never even planned for an update in the first place -- if it
+    // had been, the poisoned setter would have fired and reported it.
+    const opened = await session.call<{ image: number }>('open', { path: rampPath });
+    try {
+      await session.call('adjust', { image: opened.image, type: 'hue_saturation', hue: 10 });
+      const flipped = await session.call<{ effect_update_failures?: string[] }>(
+        'test_force_effect_update_failure',
+        {
+          image: opened.image,
+          operation: 'gimp:hue-saturation',
+          geometry_op: 'flip',
+          orientation: 'horizontal',
+        }
+      );
+      expect(flipped.effect_update_failures).toBeUndefined();
+
+      // A second, different non-terminating value, and the other two geometry ops too.
+      const opened2 = await session.call<{ image: number }>('open', { path: rampPath });
+      try {
+        await session.call('adjust', { image: opened2.image, type: 'hue_saturation', hue: 100 });
+        const rotated = await session.call<{ effect_update_failures?: string[] }>(
+          'test_force_effect_update_failure',
+          {
+            image: opened2.image,
+            operation: 'gimp:hue-saturation',
+            geometry_op: 'rotate',
+            degrees: 90,
+          }
+        );
+        expect(rotated.effect_update_failures).toBeUndefined();
+        const resized = await session.call<{ effect_update_failures?: string[] }>(
+          'test_force_effect_update_failure',
+          {
+            image: opened2.image,
+            operation: 'gimp:hue-saturation',
+            geometry_op: 'resize',
+            long_edge: 64,
+          }
+        );
+        expect(resized.effect_update_failures).toBeUndefined();
+      } finally {
+        await session.call('close', { image: opened2.image });
+      }
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
   it('a live-update failure restores the filter to its OLD params (ledger matches what renders) and reports effect_update_failures', async () => {
     const flatPath = join(workDir, 'vignette-update-failure-flat.png');
     writeCheckerboard(flatPath, 200, 200, 999, 150, 150);
@@ -1538,7 +1594,18 @@ describe.skipIf(!install)('geometry and masks', () => {
         ['flip', () => session.call('flip', { image: opened.image, orientation: 'horizontal' })],
         ['resize', () => session.call('resize', { image: opened.image, long_edge: 64 })],
       ] as const) {
-        await expect(call(), label).rejects.toMatchObject({ code: 'invalid_argument' });
+        let error: unknown;
+        try {
+          await call();
+        } catch (e) {
+          error = e;
+        }
+        expect(error, label).toMatchObject({ code: 'invalid_argument' });
+        // The name is duplicated on the LIVE image, but the refusal message must still name it
+        // only ONCE, not once per occurrence.
+        const message = (error as Error).message;
+        const occurrences = message.split(created.name).length - 1;
+        expect(occurrences, `${label}: ${message}`).toBe(1);
       }
     } finally {
       await session.call('close', { image: opened.image });

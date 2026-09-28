@@ -86,7 +86,7 @@ SPATIAL_SCALE_PROPS = {
     'gegl:focus-blur': ('blur-radius',),
     'gegl:dropshadow': ('x', 'y', 'radius'),
     # gegl:vignette and gegl:mono-mixer are deliberately absent: vignette's radius/x/y are
-    # proportional (fractions of the image's own size, not absolute pixel lengths), and
+    # proportional (fractions of the LAYER's own size, not absolute pixel lengths), and
     # mono-mixer is a per-pixel channel-weight filter with no spatial extent at all.
 }
 
@@ -1096,15 +1096,22 @@ def _right_angle_cos_sin(degrees):
 _TRANSFORM_ROUND_NDIGITS = 9
 
 
-def _round_transform_params(params):
-    """`params` with every float value rounded to `_TRANSFORM_ROUND_NDIGITS` places -- the last
-    step of flip_effect_params/rotate_effect_params/resize_effect_params, so what
-    validate_effect_transform checks and what the ledger stores are the same clean number `list`
-    reports. Non-float values (mask, an int seed) pass through untouched."""
-    return {
-        key: (round(value, _TRANSFORM_ROUND_NDIGITS) if isinstance(value, float) else value)
-        for key, value in params.items()
-    }
+def _round_transform_value(value):
+    """A single transformed float, rounded to `_TRANSFORM_ROUND_NDIGITS` places. Applied ONLY to
+    the specific field(s) a flip_effect_params/rotate_effect_params/resize_effect_params branch
+    below actually computes -- never blanket-applied to a whole params dict. A value this module
+    never touches (every gimp_add_adjustment type's own fields, since none of them are in this
+    table; black_white/add_noise's fields; the other two effects' fields when only one of the
+    three is present) must come back bit-for-bit IDENTICAL to its input: `_snapshot_effect_
+    transform`'s own `new_params == params` check is what decides whether a filter needs
+    re-applying at all, and rounding a value that was never actually touched would manufacture a
+    spurious "this filter changed" for it -- re-setting, re-ledgering, and (if the live update ever
+    failed) wrongly reporting it in `effect_update_failures`, on every single flip/rotate/resize
+    regardless of what it actually did. hue_saturation's own `hue` (stored as degrees/180, a
+    non-terminating binary fraction for most degree values) is exactly the kind of value a
+    blanket, whole-dict round would perturb in its 9th-10th decimal place -- already enough for
+    `==` to call it "changed" even though nothing about it should have moved at all."""
+    return round(value, _TRANSFORM_ROUND_NDIGITS)
 
 
 def rotate_point_fraction(x_frac, y_frac, degrees, old_width, old_height, new_width, new_height):
@@ -1138,25 +1145,34 @@ def flip_effect_params(operation, params, orientation):
     left/top edge, increasing right/down); motion-blur-linear's `angle` is 0 = along +x
     (horizontal), 90 = along +y (vertical, i.e. downward), increasing CLOCKWISE -- the same sense
     `op_rotate` uses; dropshadow's `x`/`y` are plain pixel offsets (positive = right/down).
-    Operations with no direction-dependent param (black_white, add_noise, lens_blur) come back
-    with the SAME values (a fresh dict, not the same object) -- there is nothing to change."""
-    params = dict(params)
+    Operations with no direction-dependent param -- black_white, add_noise, lens_blur, and every
+    OTHER operation this table has no branch for at all (every gimp_add_adjustment type included)
+    -- come back as the EXACT SAME object, untouched: `_snapshot_effect_transform` compares the
+    result to the input by `==` to decide whether a filter needs re-applying at all, so this must
+    never manufacture a spurious difference (a stray rounding of a value it was never asked to
+    change) for a filter it has nothing to say about."""
     if operation == 'gegl:vignette':
+        params = dict(params)
         if orientation == 'horizontal':
-            params['x'] = 1.0 - params['x']
+            params['x'] = _round_transform_value(1.0 - params['x'])
         else:
-            params['y'] = 1.0 - params['y']
-    elif operation == 'gegl:motion-blur-linear':
+            params['y'] = _round_transform_value(1.0 - params['y'])
+        return params
+    if operation == 'gegl:motion-blur-linear':
+        params = dict(params)
         if orientation == 'horizontal':
-            params['angle'] = _wrap_angle_deg(180.0 - params['angle'])
+            params['angle'] = _round_transform_value(_wrap_angle_deg(180.0 - params['angle']))
         else:
-            params['angle'] = _wrap_angle_deg(-params['angle'])
-    elif operation == 'gegl:dropshadow':
+            params['angle'] = _round_transform_value(_wrap_angle_deg(-params['angle']))
+        return params
+    if operation == 'gegl:dropshadow':
+        params = dict(params)
         if orientation == 'horizontal':
-            params['x'] = -params['x']
+            params['x'] = _round_transform_value(-params['x'])
         else:
-            params['y'] = -params['y']
-    return _round_transform_params(params)
+            params['y'] = _round_transform_value(-params['y'])
+        return params
+    return params
 
 
 def rotate_effect_params(operation, params, degrees, layer_width, layer_height):
@@ -1168,25 +1184,32 @@ def rotate_effect_params(operation, params, degrees, layer_width, layer_height):
     swaps width/height under a 90/270 rotation independently of whether the canvas itself grows
     (`expand`) to match. motion_blur and drop_shadow need no dimensions at all -- their params are
     layer-agnostic at a right angle (see flip_effect_params's own doc comment for the angle/offset
-    conventions reused here). `degrees` is snapped to its exact canonical step (`_right_angle_k`)
-    before use everywhere below, including the plain addition for motion_blur's angle -- not just
-    where trig is involved -- so a tolerance-fuzzy `degrees` (e.g. 90.0000003) can never leak into
-    a stored value."""
-    params = dict(params)
-    canonical_degrees = _right_angle_k(degrees) * 90.0
+    conventions reused here, including why every OTHER operation -- every gimp_add_adjustment type
+    included -- comes back as the exact same object, untouched). `degrees` is snapped to its exact
+    canonical step (`_right_angle_k`) before use everywhere below, including the plain addition
+    for motion_blur's angle -- not just where trig is involved -- so a tolerance-fuzzy `degrees`
+    (e.g. 90.0000003) can never leak into a stored value."""
     if operation == 'gegl:vignette':
+        params = dict(params)
         new_width, new_height = _dims_after_right_angle_rotation(layer_width, layer_height, degrees)
-        params['x'], params['y'] = rotate_point_fraction(
+        x, y = rotate_point_fraction(
             params['x'], params['y'], degrees, layer_width, layer_height, new_width, new_height
         )
-    elif operation == 'gegl:motion-blur-linear':
-        params['angle'] = _wrap_angle_deg(params['angle'] + canonical_degrees)
-    elif operation == 'gegl:dropshadow':
+        params['x'], params['y'] = _round_transform_value(x), _round_transform_value(y)
+        return params
+    if operation == 'gegl:motion-blur-linear':
+        params = dict(params)
+        canonical_degrees = _right_angle_k(degrees) * 90.0
+        params['angle'] = _round_transform_value(_wrap_angle_deg(params['angle'] + canonical_degrees))
+        return params
+    if operation == 'gegl:dropshadow':
+        params = dict(params)
         cos_t, sin_t = _right_angle_cos_sin(degrees)
         dx, dy = params['x'], params['y']
-        params['x'] = dx * cos_t - dy * sin_t
-        params['y'] = dx * sin_t + dy * cos_t
-    return _round_transform_params(params)
+        params['x'] = _round_transform_value(dx * cos_t - dy * sin_t)
+        params['y'] = _round_transform_value(dx * sin_t + dy * cos_t)
+        return params
+    return params
 
 
 def resize_effect_params(operation, params, scale_x, scale_y):
@@ -1210,22 +1233,30 @@ def resize_effect_params(operation, params, scale_x, scale_y):
     exact radius under an anisotropic stretch). drop_shadow's offset_x/offset_y scale along their
     own axis exactly. vignette's radius/x/y are already proportional (a fraction of the layer's
     own, now-resized extent) and need no change at all -- absent from this table on purpose.
-    black_white and add_noise have no absolute-pixel param either."""
-    params = dict(params)
-    isotropic_scale = math.sqrt(scale_x * scale_y)
+    black_white and add_noise have no absolute-pixel param either, and every OTHER operation this
+    table has no branch for at all (every gimp_add_adjustment type included) comes back as the
+    exact same object, untouched -- see flip_effect_params's own doc comment for why that matters."""
     if operation == 'gegl:motion-blur-linear':
+        params = dict(params)
         theta = math.radians(params['angle'])
         vx = scale_x * math.cos(theta)
         vy = scale_y * math.sin(theta)
-        params['length'] = params['length'] * math.hypot(vx, vy)
-        params['angle'] = _wrap_angle_deg(math.degrees(math.atan2(vy, vx)))
-    elif operation == 'gegl:focus-blur':
-        params['blur-radius'] = params['blur-radius'] * isotropic_scale
-    elif operation == 'gegl:dropshadow':
-        params['x'] = params['x'] * scale_x
-        params['y'] = params['y'] * scale_y
-        params['radius'] = params['radius'] * isotropic_scale
-    return _round_transform_params(params)
+        params['length'] = _round_transform_value(params['length'] * math.hypot(vx, vy))
+        params['angle'] = _round_transform_value(_wrap_angle_deg(math.degrees(math.atan2(vy, vx))))
+        return params
+    if operation == 'gegl:focus-blur':
+        params = dict(params)
+        isotropic_scale = math.sqrt(scale_x * scale_y)
+        params['blur-radius'] = _round_transform_value(params['blur-radius'] * isotropic_scale)
+        return params
+    if operation == 'gegl:dropshadow':
+        params = dict(params)
+        isotropic_scale = math.sqrt(scale_x * scale_y)
+        params['x'] = _round_transform_value(params['x'] * scale_x)
+        params['y'] = _round_transform_value(params['y'] * scale_y)
+        params['radius'] = _round_transform_value(params['radius'] * isotropic_scale)
+        return params
+    return params
 
 
 # Bounds for the GEGL properties a geometry transform can touch, keyed by operation -- the SAME
@@ -1272,10 +1303,15 @@ def validate_effect_transform(op_name, operation, filter_name, new_params):
         value = new_params[prop]
         if not lo <= value <= hi:
             field = EFFECT_TRANSFORM_FIELD_NAMES.get((operation, prop), prop)
+            # "the %s field of filter %r" rather than "%r's %s" -- the latter puts repr()'s own
+            # closing quote directly against a literal possessive "'s", printing as a confusing
+            # doubled apostrophe ("'Motion Blur''s"). %.6g (not %.4g): enough significant figures
+            # that a value just barely out of range (1000.1 against a 1000.0 bound) still shows
+            # the ".1" that IS the reason for the refusal, instead of rounding it away to "1000".
             raise ValueError(
-                '%s would leave %r\'s %s at %.4g, outside its %s..%s range. Delete it '
-                '(gimp_filter op=delete) and re-add it after this geometry change.'
-                % (op_name, filter_name, field, value, lo, hi)
+                '%s would leave the %s field of filter %r at %.6g, outside its %s..%s range. '
+                'Delete it (gimp_filter op=delete) and re-add it after this geometry change.'
+                % (op_name, field, filter_name, value, lo, hi)
             )
 
 

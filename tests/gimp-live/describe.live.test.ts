@@ -63,12 +63,16 @@ interface DocumentDescribe {
   resolution: { x: number; y: number };
   layers: LayerNode[];
   truncated: boolean;
+  top_level_count: number;
+  total_nodes: number;
   channels: ChannelSummary[];
 }
 
 interface LayersDescribe {
   layers: LayerNode[];
   truncated: boolean;
+  top_level_count: number;
+  total_nodes: number;
 }
 
 interface FilterRecord {
@@ -180,6 +184,9 @@ describe.skipIf(!install)('gimp_inspect describe-by-id', () => {
       // 'selected_pixels'/'fraction' key here would mean the cost 'document' is meant to skip
       // leaked back in.
       expect(doc.truncated).toBe(false);
+      // 3 top-level (text, group, background) + 1 nested ('Nested', inside the group) = 4 total.
+      expect(doc.top_level_count).toBe(3);
+      expect(doc.total_nodes).toBe(4);
       expect(doc.channels).toHaveLength(1);
       expect(doc.channels[0]).toEqual({ channel_id: expect.any(Number), name: 'HalfMask' });
 
@@ -216,11 +223,17 @@ describe.skipIf(!install)('gimp_inspect describe-by-id', () => {
         image,
         what: 'layers',
       });
-      const channelsOnly = await session.call<{ channels: ChannelCoverage[] }>('describe', {
-        image,
-        what: 'channels',
+      const channelsOnly = await session.call<{
+        channels: ChannelCoverage[];
+        truncated: boolean;
+        channels_skipped: number;
+      }>('describe', { image, what: 'channels' });
+      expect(layersOnly).toEqual({
+        layers: doc.layers,
+        truncated: doc.truncated,
+        top_level_count: doc.top_level_count,
+        total_nodes: doc.total_nodes,
       });
-      expect(layersOnly).toEqual({ layers: doc.layers, truncated: doc.truncated });
 
       // Same channel (by id and name), but 'channels' carries coverage that 'document' left out.
       expect(channelsOnly.channels).toHaveLength(doc.channels.length);
@@ -233,6 +246,48 @@ describe.skipIf(!install)('gimp_inspect describe-by-id', () => {
       expect(typeof channelsOnly.channels[0]!.selected_pixels).toBe('number');
       expect(doc.channels[0]).not.toHaveProperty('fraction');
       expect(doc.channels[0]).not.toHaveProperty('selected_pixels');
+      // The default deadline is never hit on a one-channel fixture.
+      expect(channelsOnly.truncated).toBe(false);
+      expect(channelsOnly.channels_skipped).toBe(0);
+    } finally {
+      await session.call('close', { image });
+    }
+  });
+
+  it("what='channels' stops after its own time budget, returning what it already read plus truncated/channels_skipped", async () => {
+    const opened = await session.call<{ image: number }>('open', { path: rampPath });
+    const image = opened.image;
+    try {
+      for (const name of ['A', 'B', 'C']) {
+        await session.call('create_mask', {
+          image,
+          type: 'rectangle',
+          x: 0,
+          y: 0,
+          width: 8,
+          height: 8,
+          name,
+        });
+      }
+      // test_set_channels_deadline (fixtures/test_ops.py) overrides the module-level
+      // CHANNELS_DESCRIBE_DEADLINE_S for the rest of this session; restored in `finally`.
+      const prev = await session.call<{ previous: number }>('test_set_channels_deadline', {
+        seconds: 0,
+      });
+      try {
+        const result = await session.call<{
+          channels: ChannelCoverage[];
+          truncated: boolean;
+          channels_skipped: number;
+        }>('describe', { image, what: 'channels' });
+        // A deadline of 0 still reads the first channel unconditionally before checking, so this
+        // never comes back with a completely empty list.
+        expect(result.channels).toHaveLength(1);
+        expect(result.truncated).toBe(true);
+        expect(result.channels_skipped).toBe(2);
+      } finally {
+        await session.call('test_set_channels_deadline', { seconds: prev.previous });
+      }
     } finally {
       await session.call('close', { image });
     }
@@ -272,6 +327,67 @@ describe.skipIf(!install)('gimp_inspect describe-by-id', () => {
         filter_id: filter.filter_id,
       });
       expect(described).toMatchObject({ layer: 'Deepest', layer_id: deepestNode.layer_id });
+    } finally {
+      await session.call('close', { image });
+    }
+  });
+
+  it("_build_layer_tree's max_nodes cap truncates mid-tree (a group at the cutoff is left with missing children) and reports false when the cap exactly matches the tree size", async () => {
+    // Test-only probe (test_build_layer_tree, fixtures/test_ops.py): calls _build_layer_tree
+    // directly with a small max_nodes, so this doesn't need a 2000+-node fixture to exercise the
+    // real cap (MAX_DESCRIBE_LAYER_NODES) would hit. Reuses test_nest_groups' fixture (the same
+    // one the group-in-group test above builds): 5 nodes total -- top level 'Empty', 'Outer',
+    // 'Background', plus 'Inner' under 'Outer' and 'Deepest' under 'Inner'.
+    const opened = await session.call<{ image: number }>('open', { path: rampPath });
+    const image = opened.image;
+    try {
+      await session.call('test_nest_groups', { image });
+
+      // max_nodes=2: visited top-of-stack-first, 'Empty' is recorded first (it has no children of
+      // its own to push), then 'Outer' -- the cap is hit the instant 'Outer' itself is recorded,
+      // so 'Outer's real child ('Inner') was pushed onto the walk's stack but never popped, and
+      // 'Background' was never reached at all.
+      const capped = await session.call<{
+        layers: LayerNode[];
+        truncated: boolean;
+        total_nodes: number;
+      }>('test_build_layer_tree', { image, max_nodes: 2 });
+      expect(capped.truncated).toBe(true);
+      expect(capped.total_nodes).toBe(2);
+      expect(capped.layers.map((l) => l.name)).toEqual(['Empty', 'Outer']);
+      expect(capped.layers[1]).toMatchObject({ name: 'Outer', is_group: true, children: [] });
+
+      // max_nodes=5 is exactly the tree's own total node count: the walk's stack empties on its
+      // own before the cap is ever checked again, so nothing is missing and truncated is false.
+      const exact = await session.call<{
+        layers: LayerNode[];
+        truncated: boolean;
+        total_nodes: number;
+      }>('test_build_layer_tree', { image, max_nodes: 5 });
+      expect(exact.truncated).toBe(false);
+      expect(exact.total_nodes).toBe(5);
+      expect(exact.layers.map((l) => l.name)).toEqual(['Empty', 'Outer', 'Background']);
+      const outerNode = exact.layers[1]!;
+      expect(outerNode.children).toHaveLength(1);
+      expect(outerNode.children[0]).toMatchObject({ name: 'Inner' });
+      expect(outerNode.children[0]!.children).toHaveLength(1);
+      expect(outerNode.children[0]!.children[0]).toMatchObject({ name: 'Deepest' });
+    } finally {
+      await session.call('close', { image });
+    }
+  });
+
+  it('_all_layers visits top-of-stack-first, descending into each group before its next sibling', async () => {
+    // Same fixture and expected order as the max_nodes test above (its exact.layers walk), but
+    // this hits _all_layers directly (test_all_layers_order, fixtures/test_ops.py) rather than
+    // _build_layer_tree -- the two are separate functions that need to keep agreeing on order
+    // independently.
+    const opened = await session.call<{ image: number }>('open', { path: rampPath });
+    const image = opened.image;
+    try {
+      await session.call('test_nest_groups', { image });
+      const result = await session.call<{ names: string[] }>('test_all_layers_order', { image });
+      expect(result.names).toEqual(['Empty', 'Outer', 'Inner', 'Deepest', 'Background']);
     } finally {
       await session.call('close', { image });
     }

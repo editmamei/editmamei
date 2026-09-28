@@ -77,6 +77,32 @@ describe('createGimpGeometryTools', () => {
       expect(result.isError).toBe(true);
       expect((result.content?.[0] as { text: string }).text).toContain('masked adjustment');
     });
+
+    it('warns about effect_update_failures by telling the caller to delete and re-create — never to re-apply the transform', async () => {
+      const gimp = makeGimpBackend({
+        result: { width: 512, height: 512, effect_update_failures: ['Vignette'] },
+      });
+      const tools = createGimpGeometryTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_resize_image', { image: 1, long_edge: 512 });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toContain('Vignette');
+      expect(text).toContain('gimp_filter op=delete');
+      expect(text).not.toMatch(/re-apply the transform/);
+      expect(result.structuredContent).toMatchObject({ effect_update_failures: ['Vignette'] });
+    });
+
+    it('declares effect_update_failures (a plain array of strings) in the outputSchema', () => {
+      const gimp = makeGimpBackend();
+      const tools = createGimpGeometryTools(gimp.asBackend());
+      const tool = tools.find((t) => t.tool.name === 'gimp_resize_image')!;
+      const prop = (
+        tool.tool.outputSchema as unknown as {
+          properties: { effect_update_failures: { type: string; items: { type: string } } };
+        }
+      ).properties.effect_update_failures;
+      expect(prop.type).toBe('array');
+      expect(prop.items.type).toBe('string');
+    });
   });
 
   describe('gimp_transform_canvas', () => {
@@ -139,6 +165,35 @@ describe('createGimpGeometryTools', () => {
       const result = await callTool(tools, 'gimp_transform_canvas', { image: 1, op: 'skew' });
       expect(result.isError).toBe(true);
       expect(gimp.calls).toHaveLength(0);
+    });
+
+    it('warns about effect_update_failures by telling the caller to delete and re-create — never to re-apply the transform', async () => {
+      const gimp = makeGimpBackend({
+        result: { width: 900, height: 900, degrees: 90, effect_update_failures: ['Drop Shadow'] },
+      });
+      const tools = createGimpGeometryTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_transform_canvas', {
+        image: 1,
+        op: 'rotate',
+        degrees: 90,
+      });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toContain('Drop Shadow');
+      expect(text).toContain('gimp_filter op=delete');
+      expect(text).not.toMatch(/re-apply the transform/);
+    });
+
+    it('declares effect_update_failures (a plain array of strings) in the outputSchema', () => {
+      const gimp = makeGimpBackend();
+      const tools = createGimpGeometryTools(gimp.asBackend());
+      const tool = tools.find((t) => t.tool.name === 'gimp_transform_canvas')!;
+      const prop = (
+        tool.tool.outputSchema as unknown as {
+          properties: { effect_update_failures: { type: string; items: { type: string } } };
+        }
+      ).properties.effect_update_failures;
+      expect(prop.type).toBe('array');
+      expect(prop.items.type).toBe('string');
     });
   });
 });

@@ -1307,7 +1307,7 @@ class TestUserParams(unittest.TestCase):
     def test_every_generic_type_is_covered(self):
         self.assertEqual(set(USER_ARGS_BY_TYPE), set(lib.ADJUST_PARAM_BUILDERS))
         # USER_FIELDS is one shared dict covering BOTH families (gimp_add_adjustment's `adjust`
-        # types and gimp_filter's `apply` effects) -- `user_params` dispatches on `type_` alone,
+        # types and gimp_add_effect's `effect` types) -- `user_params` dispatches on `type_` alone,
         # with no notion of which bridge op a given type belongs to.
         self.assertEqual(
             set(lib.USER_FIELDS),
@@ -1456,6 +1456,41 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
     new effect filters only (vignette/motion_blur/drop_shadow have direction/position params;
     black_white/add_noise/lens_blur do not and must round-trip unchanged, except lens_blur's own
     radius under resize, covered separately below)."""
+
+    # ---- gimp_add_adjustment filters (and any other operation not in this table) must round-trip
+    # through flip/rotate/resize completely untouched: `_snapshot_effect_transform`'s own
+    # `new_params == params` check is what decides whether a filter needs a live re-apply and a
+    # ledger rewrite, so rounding an untouched value would wrongly trigger both on every single
+    # flip/rotate/resize regardless of what it actually did. hue_saturation's own `hue` (stored as
+    # degrees/180) is a real example of a value non-terminating enough in binary to shift in its
+    # 9th-10th decimal place under a naive whole-dict round, which is already enough for `==` to
+    # call it "changed".
+
+    def test_flip_leaves_hue_saturation_completely_untouched_at_10_over_180(self):
+        params = {'range': 'all', 'hue': lib.degrees_to_unit('hue', 10), 'saturation': 0.2, 'lightness': 0.0}
+        self.assertEqual(params['hue'], 10 / 180)  # the exact non-terminating value under test
+        result = lib.flip_effect_params('gimp:hue-saturation', params, 'horizontal')
+        self.assertEqual(result, params)
+        self.assertIs(result, params)  # not even a copy -- this operation has nothing to say here
+
+    def test_flip_leaves_hue_saturation_completely_untouched_at_a_second_non_terminating_value(self):
+        params = {'range': 'red', 'hue': lib.degrees_to_unit('hue', 100), 'saturation': 0.5, 'lightness': -0.2}
+        self.assertEqual(params['hue'], 100 / 180)
+        result = lib.flip_effect_params('gimp:hue-saturation', params, 'vertical')
+        self.assertEqual(result, params)
+        self.assertIs(result, params)
+
+    def test_rotate_leaves_hue_saturation_completely_untouched(self):
+        params = {'range': 'all', 'hue': lib.degrees_to_unit('hue', 10), 'saturation': 0.2, 'lightness': 0.0}
+        result = lib.rotate_effect_params('gimp:hue-saturation', params, 90.0, 200, 200)
+        self.assertEqual(result, params)
+        self.assertIs(result, params)
+
+    def test_resize_leaves_hue_saturation_completely_untouched(self):
+        params = {'range': 'all', 'hue': lib.degrees_to_unit('hue', 100), 'saturation': 0.2, 'lightness': 0.0}
+        result = lib.resize_effect_params('gimp:hue-saturation', params, 2.0, 3.0)
+        self.assertEqual(result, params)
+        self.assertIs(result, params)
 
     def test_wrap_angle_normalizes_into_the_validated_range(self):
         self.assertEqual(lib._wrap_angle_deg(0.0), 0.0)
@@ -1818,6 +1853,19 @@ class TestValidateEffectTransform(unittest.TestCase):
             )
         self.assertNotIn('bake', str(ctx.exception))
         self.assertIn('gimp_filter op=delete', str(ctx.exception))
+
+    def test_refusal_message_shows_enough_precision_and_never_doubles_the_apostrophe(self):
+        # The message must keep enough precision to show why the value is out of range (%.4g
+        # would print 1000.1 as "1000"), and must not put a possessive "'s" right after a repr'd
+        # name, which reads as a doubled apostrophe ("'Motion Blur''s").
+        with self.assertRaises(ValueError) as ctx:
+            lib.validate_effect_transform(
+                'resize', 'gegl:motion-blur-linear', 'Motion Blur',
+                {'length': 1000.1, 'angle': 0.0},
+            )
+        message = str(ctx.exception)
+        self.assertIn('1000.1', message)
+        self.assertNotIn("''s", message)
 
     def test_accepts_operations_with_no_bounds_table_entry(self):
         lib.validate_effect_transform('flip', 'gegl:mono-mixer', 'B&W', {'red': 99.0})  # no raise

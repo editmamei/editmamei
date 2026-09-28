@@ -7,16 +7,15 @@ import { pickSchemaDeclaredKeys } from './gimp-shared.js';
 /**
  * gimp_inspect — read-only state reader, the gimp_* twin of ps_inspect.
  *
- * `what: 'documents'` is unchanged from the original, `ping`-only version of this tool: every
- * open image's id, nothing else. The other four targets reach the bridge's `describe` op
- * (`ops.py`'s `op_describe`) for an already-open image's own structure:
+ * `what: 'documents'` answers from the bridge's `ping` op: ids only, nothing else. The other four
+ * targets reach the bridge's `describe` op (`ops.py`'s `op_describe`) for an already-open image's
+ * own structure:
  *   - `document` — dims/base_type/precision/resolution, the full layer tree, and every channel by
  *     id/name only (no coverage — see `channels` below for that).
  *   - `layers` — just the layer tree, when the rest of `document` isn't needed.
  *   - `channels` — every named channel WITH coverage (`selected_pixels`/`fraction`) — the one
  *     thing `document` deliberately leaves out, since coverage reads each channel's full pixel
- *     buffer (seconds of work per channel at full resolution); ask for this only when coverage
- *     itself is what's needed.
+ *     buffer; ask for this only when coverage itself is what's needed.
  *   - `filter` — one filter by `filter_id`, in the exact shape `gimp_filter` (op=list) reports it
  *     in — the cheap way to re-check one filter without listing the whole stack.
  * `image` is required for all four; `filter_id` is required for `filter` only. Both requirements
@@ -27,7 +26,16 @@ import { pickSchemaDeclaredKeys } from './gimp-shared.js';
  * can't tell two layers apart the way an id always can. Every node also flags `is_text_layer`.
  * `document`/`layers` cap the tree at 2000 nodes total (`ops.py`'s `MAX_DESCRIBE_LAYER_NODES`) and
  * report `truncated: true` if the cap was hit, rather than risk unbounded output on a
- * pathologically large or deep document.
+ * pathologically large or deep document — alongside `top_level_count` (the image's real top-level
+ * layer count, from the bridge's own `get_layers()`, true even when truncation cut the tree off
+ * early) and `total_nodes` (how many nodes this particular response carries).
+ *
+ * `channels` can itself run long on a document with many named channels (`_channel_coverage` reads
+ * a full pixel buffer per channel), so the bridge stops after its own internal time budget
+ * (`CHANNELS_DESCRIBE_DEADLINE_S`, ops.py) and returns the channels already read, `truncated:
+ * true`, and `channels_skipped` (how many named channels were never reached) — rather than risk
+ * gimp_inspect's own dispatch timeout, which would tree-kill the GIMP session and lose every open
+ * image's unsaved work.
  */
 
 const INSPECT_WHATS = ['documents', 'document', 'layers', 'channels', 'filter'] as const;
@@ -43,11 +51,15 @@ const inspectSchema: JsonSchemaObject = {
         "(id only). 'document' describes ONE open image by id: dims, base_type, precision, " +
         'resolution, its full layer tree, and its channels by id/name only (no coverage). ' +
         "'layers' returns just that image's layer tree; 'channels' returns its named channels " +
-        "WITH coverage (selected_pixels/fraction) — the cost 'document' skips. 'filter' returns " +
-        'one filter by `filter_id`, in the same shape gimp_filter (op=list) reports it in. Layer ' +
-        'tree nodes are addressed by `layer_id` (canonical — GIMP allows duplicate layer names) ' +
-        "and flag `is_text_layer`. 'document'/'layers' cap the tree at 2000 nodes total and " +
-        'report `truncated: true` if the cap was hit.',
+        "WITH coverage (selected_pixels/fraction) — the cost 'document' skips — reading each " +
+        "channel's full pixel buffer in turn; on a document with many named channels this can " +
+        'stop early, reporting `truncated: true` and `channels_skipped` (how many were never ' +
+        "read). 'filter' returns one filter by `filter_id`, in the same shape gimp_filter " +
+        '(op=list) reports it in. Layer tree nodes are addressed by `layer_id` (canonical — GIMP ' +
+        "allows duplicate layer names) and flag `is_text_layer`. 'document'/'layers' cap the tree " +
+        'at 2000 nodes total and report `truncated: true` if the cap was hit, alongside ' +
+        '`top_level_count` and `total_nodes`; if it times out the GIMP session restarts and ' +
+        'unsaved work is lost, so save (gimp_save_xcf) first.',
     },
     image: {
       type: 'integer',
@@ -81,17 +93,25 @@ function describeSummary(
   }
   if (what === 'layers') {
     const layers = (result.layers as unknown[] | undefined) ?? [];
-    return `${layers.length} top-level layer(s) on image ${args.image}${truncatedSuffix}.`;
+    // top_level_count is the image's REAL top-level count -- layers.length falls back to it only
+    // for a mocked/older result missing the field, but is itself just the (possibly truncated)
+    // list this response happens to carry.
+    const topLevelCount = (result.top_level_count as number | undefined) ?? layers.length;
+    return `${topLevelCount} top-level layer(s) on image ${args.image}${truncatedSuffix}.`;
   }
   if (what === 'channels') {
     const channels = (result.channels as unknown[] | undefined) ?? [];
-    return `${channels.length} channel(s) on image ${args.image}.`;
+    const skipped = result.channels_skipped as number | undefined;
+    const stoppedEarlySuffix =
+      result.truncated && skipped ? ` (stopped early, ${skipped} channel(s) skipped)` : '';
+    return `${channels.length} channel(s) on image ${args.image}${stoppedEarlySuffix}.`;
   }
   const layers = (result.layers as unknown[] | undefined) ?? [];
   const channels = (result.channels as unknown[] | undefined) ?? [];
+  const topLevelCount = (result.top_level_count as number | undefined) ?? layers.length;
   return (
     `Document ${result.image}: ${result.width}x${result.height} ${result.base_type as string} ` +
-    `${result.precision as string}, ${layers.length} top-level layer(s)${truncatedSuffix}, ` +
+    `${result.precision as string}, ${topLevelCount} top-level layer(s)${truncatedSuffix}, ` +
     `${channels.length} channel(s).`
   );
 }
@@ -145,11 +165,14 @@ export function createGimpInspectTools(gimp: GimpBackend): ToolDefinition[] {
           "currently open in this headless GIMP session by id. 'document' describes ONE open " +
           'image (dims, base_type, precision, resolution, full layer tree, channels by id/name ' +
           "only — no coverage); 'layers' returns just the tree; 'channels' returns the channels " +
-          "WITH coverage (selected_pixels/fraction), the cost 'document' skips. 'filter' " +
-          'describes one filter by filter_id, in the same shape gimp_filter (op=list) reports it ' +
-          'in. Layer tree nodes are addressed by `layer_id` (canonical — GIMP allows duplicate ' +
-          "layer names) and flag `is_text_layer`. 'document'/'layers' cap the tree at 2000 nodes " +
-          'total and report `truncated: true` if the cap was hit.',
+          "WITH coverage (selected_pixels/fraction), the cost 'document' skips, and can stop " +
+          'early on a document with many named channels (`truncated: true`, `channels_skipped`). ' +
+          "'filter' describes one filter by filter_id, in the same shape gimp_filter (op=list) " +
+          'reports it in. Layer tree nodes are addressed by `layer_id` (canonical — GIMP allows ' +
+          "duplicate layer names) and flag `is_text_layer`. 'document'/'layers' cap the tree at " +
+          '2000 nodes total and report `truncated: true` if the cap was hit, alongside ' +
+          '`top_level_count` and `total_nodes`; if it times out the GIMP session restarts and ' +
+          'unsaved work is lost, so save (gimp_save_xcf) first.',
         inputSchema: inspectSchema,
         outputSchema: {
           type: 'object',
@@ -166,11 +189,17 @@ export function createGimpInspectTools(gimp: GimpBackend): ToolDefinition[] {
             precision: { type: 'string' },
             resolution: {
               type: 'object',
-              properties: { x: { type: 'number' }, y: { type: 'number' } },
+              properties: {
+                x: { type: ['number', 'null'] },
+                y: { type: ['number', 'null'] },
+              },
             },
             layers: { type: 'array', items: { type: 'object' } },
             truncated: { type: 'boolean' },
+            top_level_count: { type: 'number' },
+            total_nodes: { type: 'number' },
             channels: { type: 'array', items: { type: 'object' } },
+            channels_skipped: { type: 'number' },
             filter_id: { type: 'number' },
             layer: { type: 'string' },
             layer_id: { type: 'number' },

@@ -4,9 +4,24 @@
  * behaviour it mirrors.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { gimpFactories } from '@editmamei/modules/gimp/index.ts';
 import { GIMP_OVERVIEW_MARKDOWN } from '@editmamei/tools/gimp-core-tools.ts';
 import { makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const OPS_PY_PATH = join(REPO_ROOT, 'src', 'backends', 'gimp', 'bridge', 'ops.py');
+
+/** The real `MAX_DESCRIBE_LAYER_NODES` value from ops.py -- the source of truth the "2000 nodes"
+ * claim below must track, read as text rather than hardcoded so the two can't silently drift. */
+function maxDescribeLayerNodes(): number {
+  const text = readFileSync(OPS_PY_PATH, 'utf8');
+  const match = /MAX_DESCRIBE_LAYER_NODES\s*=\s*(\d+)/.exec(text);
+  if (!match) throw new Error('MAX_DESCRIBE_LAYER_NODES not found in ops.py');
+  return Number(match[1]);
+}
 
 const tools = gimpFactories.flatMap((f) => f(makeGimpBackend().asBackend()));
 const byName = new Map(tools.map((t) => [t.tool.name, t.tool]));
@@ -134,6 +149,12 @@ describe('gimp_add_effect: allow-listed GEGL effect filters (dev-tier sibling of
     );
   });
 
+  it('points a plain blur request at gimp_add_adjustment type=gaussian_blur', () => {
+    expect(description('gimp_add_effect').replace(/\s+/g, ' ')).toMatch(
+      /gimp_add_adjustment type=gaussian_blur/
+    );
+  });
+
   it('vignette and drop_shadow say their color is black and not configurable yet', () => {
     expect(field('gimp_add_effect', 'center_y').replace(/\s+/g, ' ')).toMatch(
       /color is black and not configurable yet/
@@ -143,7 +164,7 @@ describe('gimp_add_effect: allow-listed GEGL effect filters (dev-tier sibling of
     );
   });
 
-  it('gimp_filter itself has no apply op (reverted to list/set_visibility/delete)', () => {
+  it('gimp_filter itself has no apply op — just list/set_visibility/delete', () => {
     const opEnum = (
       byName.get('gimp_filter')!.inputSchema as unknown as {
         properties: { op: { enum: string[] } };
@@ -263,6 +284,15 @@ describe('long full-resolution work warns that a timeout loses unsaved work', ()
       /if any call times out the GIMP session restarts and every unsaved open image and filter is lost/
     );
   });
+  it('gimp_inspect says it too (its channels target can itself run long)', () => {
+    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
+    for (const text of [whatText, descText]) {
+      expect(text).toMatch(
+        /if it times out the GIMP session restarts and unsaved work is lost, so save \(gimp_save_xcf\) first/
+      );
+    }
+  });
 });
 
 describe('raw handling matches op_open (the load is always tried first)', () => {
@@ -307,13 +337,23 @@ describe('gimp_checkpoint: disk-backed undo substitute', () => {
     expect(text).toMatch(/at most 5 checkpoints/);
     expect(text).toMatch(/REFUSES outright rather than silently evicting the oldest/);
   });
-  it("says checkpoint files are kept while the server runs and removed at exit, and a crashed server's leftovers are removed on the next checkpoint", () => {
+  it("says checkpoint files are kept while the server runs and removed at exit, and a crashed server's leftovers are cleaned up later once they're over an hour old", () => {
     const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
     expect(text).toMatch(
       /Checkpoint files are kept while this server runs and removed when it exits/
     );
     expect(text).toMatch(
-      /files left by a server that crashed are removed the next time a checkpoint is made/
+      /files left by a server that crashed or was killed are cleaned up by a later server, once they are more than an hour old, the next time a checkpoint is made/
+    );
+  });
+  it('states the total-checkpoint-store cap, across every image', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(/at most 20 checkpoints in total, across every image/);
+  });
+  it('says restore also returns base_type, precision, and layers, like gimp_open_document', () => {
+    const text = description('gimp_checkpoint').replace(/\s+/g, ' ');
+    expect(text).toMatch(
+      /returns the reopened image's base_type, precision, and layers, the same as gimp_open_document/
     );
   });
   it('qualifies "the old image id stops working" for when close fails', () => {
@@ -371,11 +411,14 @@ describe('gimp_inspect describe-by-id targets (document/layers/channels/filter)'
     );
   });
   // ops.py's MAX_DESCRIBE_LAYER_NODES caps the tree and reports `truncated: true` on the way out.
-  it('the what field and the tool description both state the 2000-node cap and truncated flag', () => {
+  // The node count is read from ops.py itself, not hardcoded, so a changed cap fails this test
+  // until the description is updated to match rather than silently drifting from the real value.
+  it('the what field and the tool description both state the node cap (matching MAX_DESCRIBE_LAYER_NODES) and truncated flag', () => {
+    const cap = maxDescribeLayerNodes();
     const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
     const descText = description('gimp_inspect').replace(/\s+/g, ' ');
     for (const text of [whatText, descText]) {
-      expect(text).toMatch(/2000 nodes/);
+      expect(text).toMatch(new RegExp(`${cap} nodes`));
       expect(text).toMatch(/truncated.*true/);
     }
   });
@@ -633,5 +676,36 @@ describe('gimp_convert_image_mode: indexed refused, no-op reported, refuses on a
     expect(description('gimp_convert_image_mode').replace(/\s+/g, ' ')).toMatch(
       /gimp_checkpoint or gimp_save_xcf first when in doubt/
     );
+  });
+});
+
+describe('gimp_inspect describe-by-id: top_level_count/total_nodes/channels_skipped', () => {
+  // ops.py's op_describe adds top_level_count (the image's real top-level layer count) and
+  // total_nodes (how many nodes this response carries) alongside truncated.
+  it('the what field and the tool description both mention top_level_count and total_nodes', () => {
+    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
+    for (const text of [whatText, descText]) {
+      expect(text).toMatch(/`?top_level_count`?/);
+      expect(text).toMatch(/`?total_nodes`?/);
+    }
+  });
+  // ops.py's _channels_described stops early on a document with many named channels and reports
+  // channels_skipped alongside truncated.
+  it('the what field and the tool description both mention channels_skipped', () => {
+    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
+    for (const text of [whatText, descText]) {
+      expect(text).toMatch(/`?channels_skipped`?/);
+    }
+  });
+});
+
+describe('gimp_filter op=list reports layer/layer_id alongside the rest of the record', () => {
+  // ops.py's _filter_record includes layer/layer_id (which layer a filter lives on, and its id) --
+  // the model needs both named in the description to know they're there.
+  it('the op field names layer and layer_id', () => {
+    const text = field('gimp_filter', 'op').replace(/\s+/g, ' ');
+    expect(text).toMatch(/`?layer`?\/`?layer_id`?/);
   });
 });
