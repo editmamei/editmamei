@@ -26,6 +26,7 @@ import {
   writeNoisyField,
   writeHardEdge,
   writeColorSwatches,
+  SWATCH_SIZE,
   maxAbsDiff,
   srgbToLinear,
   linearToSrgb,
@@ -42,7 +43,7 @@ const install: GimpInstall | null = await detectGimp();
 /** A PNG signature + chunk writer, RGBA (color type 6) -- support.ts's own `writePng` is RGB-only
  * (every existing gimp-live fixture is opaque), and drop_shadow is the first effect here that
  * needs a real transparent region to cast a shadow through. Kept local to this file rather than
- * added to the shared support.ts, since other Spiral 1 PRs touch that file concurrently. */
+ * added to the shared support.ts, since this is the only file that needs it. */
 function pngChunkLocal(type: string, data: Buffer): Buffer {
   const length = Buffer.alloc(4);
   length.writeUInt32BE(data.length, 0);
@@ -84,6 +85,46 @@ function writeRgbaSquare(
       raw[offset++] = fill[1];
       raw[offset++] = fill[2];
       raw[offset++] = inside ? 255 : 0;
+    }
+  }
+  const png = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunkLocal('IHDR', ihdr),
+    pngChunkLocal('IDAT', deflateSync(raw)),
+    pngChunkLocal('IEND', Buffer.alloc(0)),
+  ]);
+  writeFileSync(path, png);
+}
+
+/** width x height RGB (opaque, no alpha) PNG: a `fg` square centered at (cx,cy) on a `bg`
+ * background -- an isolated bright spot for lens_blur's `highlight_factor` (a bokeh-highlight
+ * boost only visible against a plain background, unlike the checkerboard/edge fixtures above). */
+function writeBrightSquare(
+  path: string,
+  width: number,
+  height: number,
+  cx: number,
+  cy: number,
+  size: number,
+  bg: number,
+  fg: number
+): void {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // color type: truecolor (RGB)
+  const half = size / 2;
+  const raw = Buffer.alloc(height * (1 + width * 3));
+  let offset = 0;
+  for (let y = 0; y < height; y++) {
+    raw[offset++] = 0; // per-scanline filter: None
+    for (let x = 0; x < width; x++) {
+      const inside = Math.abs(x - cx) < half && Math.abs(y - cy) < half;
+      const v = inside ? fg : bg;
+      raw[offset++] = v;
+      raw[offset++] = v;
+      raw[offset++] = v;
     }
   }
   const png = Buffer.concat([
@@ -290,6 +331,41 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
     }
   });
 
+  it('lens_blur highlight_factor: a bright bokeh halo reaches farther at highlight_factor=1 than at 0', async () => {
+    // gegl:focus-blur's own 'lens' mode: `highlight_factor` boosts bright pixels' contribution to
+    // the blur kernel, so a small bright spot's halo spreads farther at highlight_factor=1 than at
+    // 0 -- verified live during this cap's own sizing (build_lens_blur_params' own comment: "a
+    // bright spot's halo reaching ~3x farther out at highlight_factor 1 vs 0"). Sampling a point
+    // well outside the original bright square (where a plain blur's halo has mostly faded back to
+    // background) isolates that highlight-boost specifically, rather than re-proving the filter
+    // blurs at all (already covered by the edge-softening test above).
+    const dotPath = join(workDir, 'lens-highlight-dot.png');
+    writeBrightSquare(dotPath, 200, 200, 100, 100, 30, 20, 250);
+    const FAR_X = 155; // 40px outside the square's own right edge at x=115
+    async function renderWithHighlight(factor: number): Promise<number> {
+      const opened = await session.call<{ image: number }>('open', { path: dotPath });
+      try {
+        await session.call('effect', {
+          image: opened.image,
+          type: 'lens_blur',
+          radius: 60,
+          highlight_factor: factor,
+        });
+        const outPath = join(workDir, `lens-highlight-${factor}.png`);
+        await session.call('export', { image: opened.image, path: outPath });
+        return pixelAt(readPng(outPath), FAR_X, 100)[0];
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+    }
+    const withoutHighlight = await renderWithHighlight(0);
+    const withHighlight = await renderWithHighlight(1);
+    expect(
+      withHighlight,
+      `far-halo pixel: highlight_factor=0 -> ${withoutHighlight}, highlight_factor=1 -> ${withHighlight}`
+    ).toBeGreaterThan(withoutHighlight + 5);
+  });
+
   it('add_noise: increases variance on a flat field', async () => {
     const flatPath = join(workDir, 'noise-flat.png');
     writeCheckerboard(flatPath, 128, 128, 1, 128, 128); // a uniform 128-gray field
@@ -312,6 +388,52 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
       const varBefore = patchVariance(before, 16, 16, 96, 96);
       const varAfter = patchVariance(after, 16, 16, 96, 96);
       expect(varAfter).toBeGreaterThan(varBefore);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('add_noise: independent=False makes the grain monochrome (equal R/G/B deltas), not per-channel speckle', async () => {
+    const flatPath = join(workDir, 'noise-mono-flat.png');
+    writeCheckerboard(flatPath, 128, 128, 999, 128, 128); // a uniform 128-gray field (square bigger than the image)
+    const opened = await session.call<{ image: number }>('open', { path: flatPath });
+    try {
+      const beforePath = join(workDir, 'noise-mono-before.png');
+      await session.call('export', { image: opened.image, path: beforePath });
+      const before = readPng(beforePath);
+      await session.call('effect', {
+        image: opened.image,
+        type: 'add_noise',
+        noise_amount: 0.5,
+        seed: 7,
+      });
+      const afterPath = join(workDir, 'noise-mono-after.png');
+      await session.call('export', { image: opened.image, path: afterPath });
+      const after = readPng(afterPath);
+      // At EVERY sampled pixel, the R/G/B delta from the flat 128 baseline must be the SAME value
+      // on all three channels (monochrome grain) -- GEGL's own default (`independent=True`) would
+      // instead draw three separate random deltas per pixel, only coincidentally equal.
+      let sawNonZeroDelta = false;
+      for (const [x, y] of [
+        [10, 10],
+        [40, 70],
+        [90, 20],
+        [60, 100],
+        [15, 90],
+      ] as const) {
+        const [br, bg, bb] = pixelAt(before, x, y);
+        const [ar, ag, ab] = pixelAt(after, x, y);
+        const dr = ar - br;
+        const dg = ag - bg;
+        const db = ab - bb;
+        expect(dg, `x=${x},y=${y}: green delta`).toBe(dr);
+        expect(db, `x=${x},y=${y}: blue delta`).toBe(dr);
+        if (dr !== 0) sawNonZeroDelta = true;
+      }
+      expect(
+        sawNonZeroDelta,
+        'every sampled pixel had a zero delta -- noise_amount had no effect'
+      ).toBe(true);
     } finally {
       await session.call('close', { image: opened.image });
     }
@@ -452,7 +574,7 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
       'lens_blur',
       'radius',
       {},
-      40,
+      20, // kept well under the 150 cap even divided by SCALE (unscaled = 20 / 0.25 = 80)
       checkerPath,
       WIDTH,
       HEIGHT,
@@ -490,6 +612,30 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
     expect(unscaled, `unscaled mean abs diff ${unscaled}`).toBeGreaterThan(scaled * 4);
   });
 
+  it('drop_shadow proxy fidelity: offset_x is scaled onto the proxy in isolation (negative control: an unscaled offset is far off)', async () => {
+    // The radius test above already proves SPATIAL_SCALE_PROPS covers `radius`; this proves it
+    // covers the OFFSET fields (`x`/`y`, the GEGL properties `offset_x`/`offset_y` map to)
+    // separately, since a proxy render scaling one and not the other would still pass that test.
+    const WIDTH = 2048;
+    const HEIGHT = 2048;
+    const SCALE = 512 / WIDTH;
+    const shapePath = join(workDir, 'shadow-offsetx-shape.png');
+    writeRgbaSquare(shapePath, WIDTH, HEIGHT, 624, 624, 800, [128, 128, 128]);
+    const { scaled, unscaled } = await proxyFidelity(
+      'drop_shadow',
+      'offset_x',
+      { offset_y: 60, radius: 20, opacity: 1.0 },
+      80, // kept well under the 500 cap even divided by SCALE (unscaled = 80 / 0.25 = 320)
+      shapePath,
+      WIDTH,
+      HEIGHT,
+      SCALE,
+      'shadow-offsetx'
+    );
+    expect(scaled, `scaled mean abs diff ${scaled}`).toBeLessThan(6);
+    expect(unscaled, `unscaled mean abs diff ${unscaled}`).toBeGreaterThan(scaled * 4);
+  });
+
   // ---- append-guard: GIMP silently refusing to attach a filter must surface as a real error -----
   // gegl:lens-blur is the measured example (an 'aux'-pad op GIMP refuses to attach non-
   // destructively -- see lib.build_lens_blur_params' own comment) -- driven here through the REAL
@@ -508,13 +654,314 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
           props: { radius: 10.0 },
         })
       ).rejects.toMatchObject({ code: 'gimp_op_failed' });
+      // Both directions: the live filter stack is empty (nothing actually attached)...
       const listed = await session.call<{ filters: unknown[] }>('filter', {
         image: opened.image,
         op: 'list',
       });
       expect(listed.filters).toHaveLength(0);
+      // ...AND the ledger itself has no record either, checked DIRECTLY (not by re-deriving it
+      // from op=list, which would only prove the SAME thing twice) -- a phantom ledger record
+      // with no live filter behind it is exactly the "list still says 0 filters, but the next
+      // rotate/flip/resize refuses forever over a filter that isn't there" bug class
+      // `_prune_stale_ledger_records` exists for; this proves the record was never written in
+      // the first place, not merely pruned away by a later op.
+      const dumped = await session.call<{ names: string[] }>('test_ledger_dump', {
+        image: opened.image,
+      });
+      expect(dumped.names).toHaveLength(0);
     } finally {
       await session.call('close', { image: opened.image });
     }
+  });
+
+  // ---- _mirror_filters' own catch-and-skip path (the OTHER caller of _append_masked's guard) ----
+  // No real GEGL operation in this allow-list attaches on a full document yet refuses on its
+  // (same-sized-class) preview proxy specifically -- gegl:lens-blur above refuses identically
+  // everywhere, so it can never be live at all, on either image. `test_mirror_unattachable`
+  // (fixtures/test_ops.py) exercises the actual code path directly instead: it sabotages
+  // `_append_masked` for one NAMED filter only, then calls the real, unmodified `_proxy_render`.
+
+  it('_mirror_filters skips (and reports) a filter it cannot re-attach on the proxy, rather than failing the whole render', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    try {
+      const created = await session.call<{ filter_id: number; name: string }>('effect', {
+        image: opened.image,
+        type: 'vignette',
+        radius: 0.6,
+      });
+      const result = await session.call<{ unmirrored_filters: string[] }>(
+        'test_mirror_unattachable',
+        { image: opened.image, filter_name: created.name }
+      );
+      expect(result.unmirrored_filters).toEqual([created.name]);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('_mirror_filters skips an invisible filter entirely, without even attempting to re-attach it', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    try {
+      const created = await session.call<{ filter_id: number; name: string }>('effect', {
+        image: opened.image,
+        type: 'vignette',
+        radius: 0.6,
+      });
+      await session.call('filter', {
+        image: opened.image,
+        op: 'set_visibility',
+        filter_id: created.filter_id,
+        visible: false,
+      });
+      // Sabotaged by the SAME name -- if _mirror_filters attempted to re-attach it despite being
+      // invisible, it would show up in unmirrored_filters (the sabotage always fails that name).
+      // It must not even try.
+      const result = await session.call<{ unmirrored_filters: string[] }>(
+        'test_mirror_unattachable',
+        { image: opened.image, filter_name: created.name }
+      );
+      expect(result.unmirrored_filters).toEqual([]);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  // ---- op_effect's own re-edit/mask/type contracts, through the real bridge (Q1/Q3) -------------
+
+  it('re-editing a filter with the wrong type is refused, naming both types', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    try {
+      const created = await session.call<{ filter_id: number }>('effect', {
+        image: opened.image,
+        type: 'vignette',
+        radius: 0.6,
+      });
+      await expect(
+        session.call('effect', {
+          image: opened.image,
+          type: 'motion_blur',
+          filter_id: created.filter_id,
+          length: 10,
+        })
+      ).rejects.toMatchObject({ code: 'invalid_argument' });
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('a re-edit cannot add or change a mask -- it is fixed at creation', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    try {
+      const created = await session.call<{ filter_id: number }>('effect', {
+        image: opened.image,
+        type: 'vignette',
+        radius: 0.6,
+      });
+      await expect(
+        session.call('effect', {
+          image: opened.image,
+          type: 'vignette',
+          filter_id: created.filter_id,
+          mask: 'DoesNotExist',
+        })
+      ).rejects.toMatchObject({ code: 'invalid_argument' });
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('a partial re-edit keeps every field it did not mention (the merge contract), visible via list', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    try {
+      const created = await session.call<{ filter_id: number }>('effect', {
+        image: opened.image,
+        type: 'vignette',
+        radius: 1.2,
+        softness: 0.6,
+        gamma: 1.5,
+        center_x: 0.3,
+        center_y: 0.7,
+      });
+      await session.call('effect', {
+        image: opened.image,
+        type: 'vignette',
+        filter_id: created.filter_id,
+        radius: 0.4, // only this field mentioned
+      });
+      const listed = await session.call<{
+        filters: Array<{ filter_id: number; params: Record<string, unknown> }>;
+      }>('filter', { image: opened.image, op: 'list' });
+      const rec = listed.filters.find((f) => f.filter_id === created.filter_id)!;
+      expect(rec.params).toEqual({
+        radius: 0.4,
+        softness: 0.6,
+        gamma: 1.5,
+        center_x: 0.3,
+        center_y: 0.7,
+      });
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('a masked effect confines its change to exactly the mask (0px changed outside it)', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    try {
+      const beforePath = join(workDir, 'effect-mask-before.png');
+      await session.call('export', { image: opened.image, path: beforePath });
+      const before = readPng(beforePath);
+      await session.call('create_mask', {
+        image: opened.image,
+        type: 'rectangle',
+        x: 0,
+        y: 0,
+        width: SWATCH_SIZE,
+        height: SWATCH_SIZE,
+        name: 'FirstSwatchOnly',
+      });
+      await session.call('effect', {
+        image: opened.image,
+        type: 'black_white',
+        red_weight: 1,
+        green_weight: 1,
+        blue_weight: 1,
+        mask: 'FirstSwatchOnly',
+      });
+      const afterPath = join(workDir, 'effect-mask-after.png');
+      await session.call('export', { image: opened.image, path: afterPath });
+      const after = readPng(afterPath);
+      let changedOutside = 0;
+      for (let y = 0; y < after.height; y++) {
+        for (let x = SWATCH_SIZE; x < after.width; x++) {
+          const a = pixelAt(after, x, y);
+          const b = pixelAt(before, x, y);
+          if (a.some((c, i) => c !== b[i])) changedOutside++;
+        }
+      }
+      expect(changedOutside, 'pixels outside the mask that changed').toBe(0);
+      // Sanity: the mask itself DID do something (a real gray, R=G=B) inside its own rectangle --
+      // otherwise "0 changed outside" would trivially pass for a filter that changed nothing at all.
+      const [r, g, b] = pixelAt(after, 4, 4);
+      expect(r).toBe(g);
+      expect(g).toBe(b);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('re-editing a foreign (GUI-added, unledgered) gegl:vignette filter is refused, not silently accepted', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    try {
+      const foreign = await session.call<{ filter_id: number }>('test_add_foreign_filter', {
+        image: opened.image,
+        operation: 'gegl:vignette',
+        props: { radius: 1.0 },
+      });
+      await expect(
+        session.call('effect', {
+          image: opened.image,
+          type: 'vignette',
+          filter_id: foreign.filter_id,
+          radius: 0.5,
+        })
+      ).rejects.toMatchObject({ code: 'invalid_argument' });
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('an unknown effect type is refused at the bridge', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    try {
+      await expect(
+        session.call('effect', { image: opened.image, type: 'not_a_real_effect' })
+      ).rejects.toMatchObject({ code: 'invalid_argument' });
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('black_white preserve_luminosity rescales output to match the original brightness even with a non-unit weight sum', async () => {
+    const flatPath = join(workDir, 'bw-luminosity-flat.png');
+    writeCheckerboard(flatPath, 64, 64, 999, 128, 128); // a uniform 128-gray field
+    async function renderWith(preserve: boolean): Promise<number> {
+      const opened = await session.call<{ image: number }>('open', { path: flatPath });
+      try {
+        await session.call('effect', {
+          image: opened.image,
+          type: 'black_white',
+          red_weight: 0.1,
+          green_weight: 0.1,
+          blue_weight: 0.1, // sums to 0.3, far from the 1.0 preserve_luminosity has to compensate for
+          preserve_luminosity: preserve,
+        });
+        const outPath = join(workDir, `bw-luminosity-${preserve}.png`);
+        await session.call('export', { image: opened.image, path: outPath });
+        return pixelAt(readPng(outPath), 32, 32)[0];
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+    }
+    const withPreserve = await renderWith(true);
+    const withoutPreserve = await renderWith(false);
+    // preserve_luminosity=True rescales the result back toward the original 128; False leaves it
+    // darkened by the (0.3x) weighted sum -- verified live, see build_black_white_params' comment.
+    expect(
+      Math.abs(withPreserve - 128),
+      `with preserve -> ${withPreserve}, without -> ${withoutPreserve}`
+    ).toBeLessThan(Math.abs(withoutPreserve - 128));
+  });
+
+  it('black_white with all-zero weights renders black either way, with no divide-by-zero crash', async () => {
+    // GEGL's mono-mixer with weights summing to exactly 0 does NOT crash or produce NaN --
+    // verified live (see build_black_white_params' own comment) -- so this bridge adds no extra
+    // guard for it. This pins that finding against a real render rather than trusting the comment
+    // alone to stay true across a future GIMP/GEGL upgrade.
+    for (const preserve of [true, false]) {
+      const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+      try {
+        await session.call('effect', {
+          image: opened.image,
+          type: 'black_white',
+          red_weight: 0,
+          green_weight: 0,
+          blue_weight: 0,
+          preserve_luminosity: preserve,
+        });
+        const outPath = join(workDir, `bw-zero-sum-${preserve}.png`);
+        await session.call('export', { image: opened.image, path: outPath });
+        const [r, g, b] = pixelAt(readPng(outPath), 8, 8);
+        expect(r, `preserve_luminosity=${preserve}`).toBeLessThanOrEqual(2);
+        expect(g, `preserve_luminosity=${preserve}`).toBeLessThanOrEqual(2);
+        expect(b, `preserve_luminosity=${preserve}`).toBeLessThanOrEqual(2);
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+    }
+  });
+
+  it('add_noise: changing seed changes the render (not just re-rolling the same pattern deterministically)', async () => {
+    const flatPath = join(workDir, 'noise-seed-flat.png');
+    writeCheckerboard(flatPath, 64, 64, 999, 128, 128);
+    async function renderWithSeed(seed: number) {
+      const opened = await session.call<{ image: number }>('open', { path: flatPath });
+      try {
+        await session.call('effect', {
+          image: opened.image,
+          type: 'add_noise',
+          noise_amount: 0.5,
+          seed,
+        });
+        const outPath = join(workDir, `noise-seed-${seed}.png`);
+        await session.call('export', { image: opened.image, path: outPath });
+        return readPng(outPath);
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+    }
+    const a = await renderWithSeed(1);
+    const b = await renderWithSeed(2);
+    expect(maxAbsDiff(a, b)).toBeGreaterThan(0);
   });
 });

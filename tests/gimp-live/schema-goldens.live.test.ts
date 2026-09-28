@@ -91,8 +91,8 @@ describe.skipIf(!install)('GEGL/GIMP operation schema goldens', () => {
 
   // ---- gimp_add_effect's allow-listed GEGL effects (lib.EFFECT_OPERATIONS) --------------------
   // Deliberately excludes gegl:gaussian-blur (already golden'd above as the `adjust` type
-  // gaussian_blur) and gegl:c2g (measured live at ~35s for a full-res 24 MP export -- over the
-  // ~30s budget this PR was scoped to, so it was never allow-listed).
+  // gaussian_blur) and gegl:c2g: measured live at ~35s for a full-res 24 MP export, over the
+  // ~30s budget every effect here is held to, so it is not allow-listed.
 
   const effectOperations = [
     'gegl:vignette',

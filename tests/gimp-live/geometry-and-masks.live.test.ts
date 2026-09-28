@@ -21,6 +21,7 @@ import {
   pixelAt,
   writeGrayRamp,
   writeColorSwatches,
+  writeCheckerboard,
   SWATCHES,
   SWATCH_SIZE,
   readySession,
@@ -899,5 +900,201 @@ describe.skipIf(!install)('geometry and masks', () => {
     });
     expect(opened.width).toBe(SWATCHES.length * SWATCH_SIZE);
     await session.call('close', { image: opened.image });
+  });
+
+  // ---- gimp_add_effect's direction/position-dependent filters track flip/rotate/resize (B15) ----
+  // vignette (a center point), motion_blur (an angle), and drop_shadow (an offset vector) are all
+  // direction- or position-dependent -- flip/rotate/resize transform their ledgered params
+  // (lib.flip_effect_params/rotate_effect_params/resize_effect_params, unit-tested exhaustively at
+  // the pure-math level in test_lib.py) so the effect stays locked to the content instead of
+  // silently drifting relative to it as the canvas moves underneath it. These tests prove the
+  // WIRING (op_flip/op_rotate/op_resize's own call into `_transform_effect_filters`) against a real
+  // render: applying the effect BEFORE the transform must render the same as transforming a
+  // filter-free copy FIRST and then re-creating the identical effect directly at the position/
+  // angle/length the transform is expected to produce.
+
+  it('flip mirrors an off-centre vignette so it stays locked to the (otherwise flat) content', async () => {
+    const flatPath = join(workDir, 'vignette-flip-flat.png');
+    writeCheckerboard(flatPath, 200, 200, 999, 150, 150); // a uniform 150-gray field
+    // Path A: vignette, then flip.
+    const a = await session.call<{ image: number }>('open', { path: flatPath });
+    await session.call('effect', {
+      image: a.image,
+      type: 'vignette',
+      center_x: 0.2,
+      center_y: 0.5,
+      radius: 0.4,
+      softness: 0.3,
+    });
+    await session.call('flip', { image: a.image, orientation: 'horizontal' });
+    const outA = join(workDir, 'vignette-flip-a.png');
+    await session.call('export', { image: a.image, path: outA });
+    await session.call('close', { image: a.image });
+    // Path B: flip a filter-free copy first, then create the SAME vignette directly at the
+    // mirrored center (1 - center_x) -- what `flip_effect_params` computes for `gegl:vignette`.
+    const b = await session.call<{ image: number }>('open', { path: flatPath });
+    await session.call('flip', { image: b.image, orientation: 'horizontal' });
+    await session.call('effect', {
+      image: b.image,
+      type: 'vignette',
+      center_x: 0.8,
+      center_y: 0.5,
+      radius: 0.4,
+      softness: 0.3,
+    });
+    const outB = join(workDir, 'vignette-flip-b.png');
+    await session.call('export', { image: b.image, path: outB });
+    await session.call('close', { image: b.image });
+    expect(maxAbsDiff(readPng(outA), readPng(outB))).toBeLessThanOrEqual(1);
+  });
+
+  it('rotate 90 (square canvas) moves an off-centre vignette to the position rotate_point_fraction predicts', async () => {
+    // A square canvas so 90 degrees needs no `expand` (dimensions do not change) -- isolates the
+    // rotation itself from the separate old/new-dimension bookkeeping `expand` would add.
+    // rotate_point_fraction(0.2, 0.7, 90deg, 200, 200, 200, 200) = (0.3, 0.2) by the same formula
+    // lib.py's own function computes: old_cx=old_cy=100; dx=-60,dy=40; rx=-40,ry=-60; new
+    // center = (100-40, 100-60)/200 = (0.3, 0.2).
+    const flatPath = join(workDir, 'vignette-rotate90-flat.png');
+    writeCheckerboard(flatPath, 200, 200, 999, 150, 150);
+    const a = await session.call<{ image: number }>('open', { path: flatPath });
+    await session.call('effect', {
+      image: a.image,
+      type: 'vignette',
+      center_x: 0.2,
+      center_y: 0.7,
+      radius: 0.4,
+      softness: 0.3,
+    });
+    await session.call('rotate', { image: a.image, degrees: 90, expand: false });
+    const outA = join(workDir, 'vignette-rotate90-a.png');
+    await session.call('export', { image: a.image, path: outA });
+    await session.call('close', { image: a.image });
+    const b = await session.call<{ image: number }>('open', { path: flatPath });
+    await session.call('rotate', { image: b.image, degrees: 90, expand: false });
+    await session.call('effect', {
+      image: b.image,
+      type: 'vignette',
+      center_x: 0.3,
+      center_y: 0.2,
+      radius: 0.4,
+      softness: 0.3,
+    });
+    const outB = join(workDir, 'vignette-rotate90-b.png');
+    await session.call('export', { image: b.image, path: outB });
+    await session.call('close', { image: b.image });
+    expect(maxAbsDiff(readPng(outA), readPng(outB))).toBeLessThanOrEqual(3);
+  });
+
+  it('rotate 90 turns a horizontal motion blur into a vertical one, matching a directly-applied 90deg blur', async () => {
+    const stripesPath = join(workDir, 'motion-rotate90-stripes.png');
+    writeCheckerboard(stripesPath, 200, 200, 8, 60, 200);
+    // Path A: horizontal blur (angle 0), then rotate 90.
+    const a = await session.call<{ image: number }>('open', { path: stripesPath });
+    await session.call('effect', { image: a.image, type: 'motion_blur', length: 30, angle: 0 });
+    await session.call('rotate', { image: a.image, degrees: 90, expand: false });
+    const outA = join(workDir, 'motion-rotate90-a.png');
+    await session.call('export', { image: a.image, path: outA });
+    await session.call('close', { image: a.image });
+    // Path B: rotate 90 first (fresh), then blur directly at angle 90 (0 + 90, wrapped) --
+    // `rotate_effect_params`'s own transform for `gegl:motion-blur-linear`.
+    const b = await session.call<{ image: number }>('open', { path: stripesPath });
+    await session.call('rotate', { image: b.image, degrees: 90, expand: false });
+    await session.call('effect', { image: b.image, type: 'motion_blur', length: 30, angle: 90 });
+    const outB = join(workDir, 'motion-rotate90-b.png');
+    await session.call('export', { image: b.image, path: outB });
+    await session.call('close', { image: b.image });
+    // Path C (negative control): rotate 90 first, but blur at the WRONG (unrotated) angle 0 --
+    // proves angle actually matters for this fixture, so A~B matching isn't a fixture artifact.
+    const c = await session.call<{ image: number }>('open', { path: stripesPath });
+    await session.call('rotate', { image: c.image, degrees: 90, expand: false });
+    await session.call('effect', { image: c.image, type: 'motion_blur', length: 30, angle: 0 });
+    const outC = join(workDir, 'motion-rotate90-c.png');
+    await session.call('export', { image: c.image, path: outC });
+    await session.call('close', { image: c.image });
+
+    const meanAbsDiff = (p: ReturnType<typeof readPng>, q: ReturnType<typeof readPng>): number => {
+      let sum = 0;
+      for (let i = 0; i < p.data.length; i++) sum += Math.abs(p.data[i]! - q.data[i]!);
+      return sum / p.data.length;
+    };
+    const ab = meanAbsDiff(readPng(outA), readPng(outB));
+    const ac = meanAbsDiff(readPng(outA), readPng(outC));
+    expect(ab, `A vs B (correct angle) mean abs diff ${ab}`).toBeLessThan(6);
+    expect(ac, `A vs C (wrong angle) mean abs diff ${ac}`).toBeGreaterThan(ab * 3);
+  });
+
+  it("resize scales a motion blur's length isotropically, matching a directly-applied scaled-length blur", async () => {
+    const stripesPath = join(workDir, 'motion-resize-stripes.png');
+    writeCheckerboard(stripesPath, 400, 100, 8, 60, 200);
+    // Path A: blur at full res, then resize to half width (aspect-locked, so half height too).
+    const a = await session.call<{ image: number }>('open', { path: stripesPath });
+    await session.call('effect', { image: a.image, type: 'motion_blur', length: 40, angle: 0 });
+    await session.call('resize', { image: a.image, width: 200 });
+    const outA = join(workDir, 'motion-resize-a.png');
+    await session.call('export', { image: a.image, path: outA });
+    await session.call('close', { image: a.image });
+    // Path B: resize first (fresh), then blur directly at the scaled length (40 * 0.5 = 20) --
+    // `resize_effect_params`'s own isotropic scaling for `gegl:motion-blur-linear`.
+    const b = await session.call<{ image: number }>('open', { path: stripesPath });
+    await session.call('resize', { image: b.image, width: 200 });
+    await session.call('effect', { image: b.image, type: 'motion_blur', length: 20, angle: 0 });
+    const outB = join(workDir, 'motion-resize-b.png');
+    await session.call('export', { image: b.image, path: outB });
+    await session.call('close', { image: b.image });
+    // Path C (negative control): resize first, then blur at the UNSCALED length (40) -- proves
+    // scaling actually matters for this fixture.
+    const c = await session.call<{ image: number }>('open', { path: stripesPath });
+    await session.call('resize', { image: c.image, width: 200 });
+    await session.call('effect', { image: c.image, type: 'motion_blur', length: 40, angle: 0 });
+    const outC = join(workDir, 'motion-resize-c.png');
+    await session.call('export', { image: c.image, path: outC });
+    await session.call('close', { image: c.image });
+
+    const meanAbsDiff = (p: ReturnType<typeof readPng>, q: ReturnType<typeof readPng>): number => {
+      let sum = 0;
+      for (let i = 0; i < p.data.length; i++) sum += Math.abs(p.data[i]! - q.data[i]!);
+      return sum / p.data.length;
+    };
+    const ab = meanAbsDiff(readPng(outA), readPng(outB));
+    const ac = meanAbsDiff(readPng(outA), readPng(outC));
+    // Looser than the lossless flip/rotate90 comparisons above: resize is a real resample, and
+    // blur-then-downsample doesn't perfectly commute with downsample-then-blur even at the
+    // mathematically correct scaled length.
+    expect(ab, `A vs B (scaled length) mean abs diff ${ab}`).toBeLessThan(12);
+    expect(ac, `A vs C (unscaled length) mean abs diff ${ac}`).toBeGreaterThan(ab * 2);
+  });
+
+  it('rotate/flip/resize refuse when a MASKED effect (not just a masked adjustment) is present', async () => {
+    const rampWithMaskedVignette = async () => {
+      const opened = await session.call<{ image: number }>('open', { path: rampPath });
+      await session.call('create_mask', {
+        image: opened.image,
+        type: 'rectangle',
+        x: 0,
+        y: 0,
+        width: 128,
+        height: 32,
+        name: 'VignetteMask',
+      });
+      await session.call('effect', {
+        image: opened.image,
+        type: 'vignette',
+        radius: 0.6,
+        mask: 'VignetteMask',
+      });
+      return opened.image;
+    };
+    for (const [label, call] of [
+      ['rotate', (image: number) => session.call('rotate', { image, degrees: 15, expand: true })],
+      ['flip', (image: number) => session.call('flip', { image, orientation: 'horizontal' })],
+      ['resize', (image: number) => session.call('resize', { image, long_edge: 64 })],
+    ] as const) {
+      const image = await rampWithMaskedVignette();
+      try {
+        await expect(call(image), label).rejects.toMatchObject({ code: 'invalid_argument' });
+      } finally {
+        await session.call('close', { image });
+      }
+    }
   });
 });
