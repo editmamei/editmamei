@@ -131,7 +131,14 @@ def op_test_apply_raw_effect(args):
     through an arbitrary GEGL operation with a trivial passthrough setter -- for proving
     `_append_masked`'s attach-failure guard actually fires from the production create path, not
     just when called directly. `operation` names any GEGL op (bypassing lib.EFFECT_OPERATIONS'
-    allow-list entirely); `props` are raw GEGL property names -> values, set verbatim."""
+    allow-list entirely); `props` are raw GEGL property names -> values, set verbatim.
+
+    Temporarily registers `_raw_setter` in the SHARED module-level `SETTERS` dict (the real
+    ops.py's own dispatch table `_apply_filter`/`_mirror_filters` read for every filter, real
+    effects included) and restores whatever was there before in a `finally` -- either the real
+    setter, if `operation` is one of the allow-listed ones, or nothing at all, so a probe against
+    a real operation name can never leave a throwaway passthrough setter permanently shadowing
+    it for the rest of the session."""
     img = _image(args)
     operation = lib.require(args, 'operation')
     props = dict(args.get('props') or {})
@@ -140,8 +147,58 @@ def op_test_apply_raw_effect(args):
         for key, value in params.items():
             cfg.set_property(key, value)
 
+    previous_setter = SETTERS.get(operation)
     SETTERS[operation] = _raw_setter
-    return _apply_filter(img, args, operation, props, 'Test Raw Effect')
+    try:
+        return _apply_filter(img, args, operation, props, 'Test Raw Effect')
+    finally:
+        if previous_setter is None:
+            SETTERS.pop(operation, None)
+        else:
+            SETTERS[operation] = previous_setter
+
+
+def op_test_mirror_unattachable(args):
+    """Exercises `_mirror_filters`' catch-and-skip path for an attach refusal directly, rather
+    than relying on a real GEGL operation that behaves this way: no operation in the allow-list
+    naturally attaches on the source image (proving it can be live at all) yet fails to
+    re-attach on the proxy duplicate specifically (gegl:lens-blur, the one operation that DOES
+    refuse to attach, refuses identically everywhere, so it can never be live on the source
+    either -- see build_lens_blur_params' own comment). Instead, this temporarily replaces the
+    module-level `_append_masked` with a stub that raises `gimp_op_failed` for one named filter
+    and delegates to the real function for every other one, calls the real (unmodified)
+    `_proxy_render`, and restores the original `_append_masked` in a `finally` regardless of
+    outcome. `filter_name` names the ledgered filter to sabotage; `max_px` defaults to 1024."""
+    img = _image(args)
+    target_name = lib.require(args, 'filter_name')
+    max_px = int(args.get('max_px', 1024))
+
+    real_append_masked = globals()['_append_masked']
+
+    def _poisoned_append_masked(dst_img, layer, f, mask):
+        if f.get_name() == target_name:
+            f.delete()
+            raise lib.OpError('gimp_op_failed', 'poisoned for test: %s' % target_name)
+        return real_append_masked(dst_img, layer, f, mask)
+
+    globals()['_append_masked'] = _poisoned_append_masked
+    try:
+        dup, unmirrored = _proxy_render(img, max_px)
+        dup.delete()
+        return {'unmirrored_filters': unmirrored}
+    finally:
+        globals()['_append_masked'] = real_append_masked
+
+
+def op_test_ledger_dump(args):
+    """The editmamei-filters ledger's own filter names, read directly via `_ledger_get` -- NOT
+    through `op_list_filters`, which also reports "readback" (foreign, unledgered) filters found
+    by walking the layer's live filter stack. A test proving "no phantom filter was ledgered"
+    needs to see the ledger's OWN contents specifically: `op_list_filters` reporting zero filters
+    is also what a bare `layer.get_filters()` returning empty would produce, which doesn't by
+    itself rule out a stray ledger record for a filter that no longer exists."""
+    filters, _unknown = _ledger_get(_image(args))
+    return {'names': sorted(filters.keys())}
 
 
 OPS.update({
@@ -154,4 +211,6 @@ OPS.update({
     'test_wrap_in_group': op_test_wrap_in_group,
     'test_add_foreign_filter': op_test_add_foreign_filter,
     'test_apply_raw_effect': op_test_apply_raw_effect,
+    'test_mirror_unattachable': op_test_mirror_unattachable,
+    'test_ledger_dump': op_test_ledger_dump,
 })
