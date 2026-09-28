@@ -6,6 +6,7 @@
 # ops.py and lib.py) since it never runs in a shipped install.
 
 import json
+import math
 import os
 import tempfile
 import unittest
@@ -778,7 +779,7 @@ class TestEffectParamBuilders(unittest.TestCase):
 
     def test_build_lens_blur_params_rejects_out_of_range(self):
         with self.assertRaises(ValueError):
-            lib.build_lens_blur_params({'radius': 1501}, _effect_create_defaults('lens_blur'))
+            lib.build_lens_blur_params({'radius': 151}, _effect_create_defaults('lens_blur'))
 
     def test_build_add_noise_params_defaults(self):
         params = lib.build_add_noise_params({}, _effect_create_defaults('add_noise'))
@@ -1300,6 +1301,209 @@ class TestEffectUserParams(unittest.TestCase):
                 )
                 for key in lib.user_params(filter_type, gegl):
                     self.assertNotIn('-', key)
+
+    def test_operation_types_covers_effect_operations_too(self):
+        # OPERATION_TYPES is one shared map (ADJUST_OPERATIONS' inverse merged with
+        # EFFECT_OPERATIONS' own) -- op_list_filters looks a foreign/legacy record's operation up
+        # there regardless of which tool created it.
+        for type_, operation in lib.EFFECT_OPERATIONS.items():
+            self.assertEqual(lib.OPERATION_TYPES[operation], type_)
+
+
+class TestSpatialScaleProps(unittest.TestCase):
+    """Pins which EFFECT_OPERATIONS entries are (and are NOT) in SPATIAL_SCALE_PROPS -- the
+    allow-list `_mirror_filters` scales by the proxy factor. A silent removal here would make a
+    spatial effect's radius/length render wrong on the preview without any test noticing; a
+    silent addition would scale a property that was never meant to be scaled."""
+
+    def test_motion_blur_length_is_spatial(self):
+        self.assertEqual(lib.SPATIAL_SCALE_PROPS['gegl:motion-blur-linear'], ('length',))
+
+    def test_lens_blur_blur_radius_is_spatial(self):
+        self.assertEqual(lib.SPATIAL_SCALE_PROPS['gegl:focus-blur'], ('blur-radius',))
+
+    def test_drop_shadow_x_y_radius_are_spatial(self):
+        self.assertEqual(lib.SPATIAL_SCALE_PROPS['gegl:dropshadow'], ('x', 'y', 'radius'))
+
+    def test_vignette_and_mono_mixer_are_deliberately_absent(self):
+        # vignette is proportional (not absolute pixels); mono-mixer is a per-pixel channel-weight
+        # filter with no spatial extent at all -- neither needs proxy scaling.
+        self.assertNotIn('gegl:vignette', lib.SPATIAL_SCALE_PROPS)
+        self.assertNotIn('gegl:mono-mixer', lib.SPATIAL_SCALE_PROPS)
+
+    def test_every_effect_operation_is_accounted_for(self):
+        # Every EFFECT_OPERATIONS value is EITHER in SPATIAL_SCALE_PROPS (has an absolute-pixel
+        # property that needs proxy scaling) OR explicitly known to be proportional/per-pixel --
+        # closes off the silent-drift case where a new effect is added and nobody decides which
+        # bucket it belongs in.
+        proportional_or_per_pixel = {'gegl:vignette', 'gegl:mono-mixer', 'gegl:noise-rgb'}
+        for operation in lib.EFFECT_OPERATIONS.values():
+            self.assertTrue(
+                operation in lib.SPATIAL_SCALE_PROPS or operation in proportional_or_per_pixel,
+                'operation=%s is in neither SPATIAL_SCALE_PROPS nor the known-proportional set '
+                '-- decide which it is and update this test' % operation,
+            )
+
+
+class TestGeometryTransformEffectParams(unittest.TestCase):
+    """The pure geometry math `ops.py`'s `_transform_effect_filters` applies for
+    gimp_transform_canvas (flip/rotate) and gimp_resize_image, scoped to the new effect filters
+    only (vignette/motion_blur/drop_shadow have direction/position params; black_white/add_noise/
+    lens_blur do not and must round-trip unchanged)."""
+
+    def test_wrap_angle_normalizes_into_the_validated_range(self):
+        self.assertEqual(lib._wrap_angle_deg(0.0), 0.0)
+        self.assertEqual(lib._wrap_angle_deg(180.0), 180.0)
+        self.assertEqual(lib._wrap_angle_deg(-180.0), 180.0)
+        self.assertEqual(lib._wrap_angle_deg(270.0), -90.0)
+        self.assertEqual(lib._wrap_angle_deg(-270.0), 90.0)
+        self.assertEqual(lib._wrap_angle_deg(360.0), 0.0)
+
+    def test_flip_horizontal_mirrors_vignette_center_x_only(self):
+        params = {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 0.3, 'y': 0.7}
+        result = lib.flip_effect_params('gegl:vignette', params, 'horizontal')
+        self.assertEqual(result['x'], 0.7)
+        self.assertEqual(result['y'], 0.7)  # unchanged
+        self.assertEqual(result['radius'], 1.2)  # unchanged
+
+    def test_flip_vertical_mirrors_vignette_center_y_only(self):
+        params = {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 0.3, 'y': 0.7}
+        result = lib.flip_effect_params('gegl:vignette', params, 'vertical')
+        self.assertEqual(result['x'], 0.3)  # unchanged
+        self.assertAlmostEqual(result['y'], 0.3, places=9)
+
+    def test_flip_does_not_mutate_the_input_params(self):
+        params = {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 0.3, 'y': 0.7}
+        lib.flip_effect_params('gegl:vignette', params, 'horizontal')
+        self.assertEqual(params['x'], 0.3)
+
+    def test_flip_horizontal_mirrors_motion_blur_angle(self):
+        # angle=0 (horizontal streak) stays 0 under a horizontal flip -- a horizontal streak is
+        # its own mirror image left-right.
+        self.assertEqual(
+            lib.flip_effect_params('gegl:motion-blur-linear', {'length': 10.0, 'angle': 0.0}, 'horizontal')['angle'],
+            180.0,
+        )
+        self.assertAlmostEqual(
+            lib.flip_effect_params('gegl:motion-blur-linear', {'length': 10.0, 'angle': 30.0}, 'horizontal')['angle'],
+            150.0,
+        )
+
+    def test_flip_vertical_mirrors_motion_blur_angle(self):
+        self.assertAlmostEqual(
+            lib.flip_effect_params('gegl:motion-blur-linear', {'length': 10.0, 'angle': 30.0}, 'vertical')['angle'],
+            -30.0,
+        )
+
+    def test_flip_mirrors_drop_shadow_offset(self):
+        params = {'x': 20.0, 'y': 15.0, 'radius': 5.0, 'opacity': 0.5}
+        h = lib.flip_effect_params('gegl:dropshadow', params, 'horizontal')
+        self.assertEqual(h['x'], -20.0)
+        self.assertEqual(h['y'], 15.0)
+        v = lib.flip_effect_params('gegl:dropshadow', params, 'vertical')
+        self.assertEqual(v['x'], 20.0)
+        self.assertEqual(v['y'], -15.0)
+
+    def test_flip_leaves_non_directional_effects_unchanged(self):
+        for operation, params in (
+            ('gegl:mono-mixer', {'red': 0.3, 'green': 0.3, 'blue': 0.3, 'preserve-luminosity': False}),
+            ('gegl:noise-rgb', {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 5}),
+            ('gegl:focus-blur', {'blur-radius': 20.0, 'highlight-factor': 0.5}),
+        ):
+            self.assertEqual(lib.flip_effect_params(operation, params, 'horizontal'), params)
+            self.assertEqual(lib.flip_effect_params(operation, params, 'vertical'), params)
+
+    def test_rotate_point_fraction_90_degrees_same_canvas_size(self):
+        # A point at the right-center edge (1.0, 0.5) of a square canvas, rotated 90 degrees
+        # clockwise (op_rotate's own convention), lands at the bottom-center edge (0.5, 1.0).
+        x, y = lib.rotate_point_fraction(1.0, 0.5, 90.0, 200, 200, 200, 200)
+        self.assertAlmostEqual(x, 0.5, places=6)
+        self.assertAlmostEqual(y, 1.0, places=6)
+
+    def test_rotate_point_fraction_90_degrees_with_expand_swapping_dimensions(self):
+        # A 200x100 canvas rotated 90 degrees with expand becomes 100x200 -- a point at the
+        # original right-center edge (1.0, 0.5) -- the absolute point (200, 50) -- stays the SAME
+        # physical point, which in the new 100x200 canvas is (50, 100), i.e. fraction (0.5, 0.5)
+        # (dead center, since (200,50) was exactly `old_width` away from the old center (100,50)
+        # along +x, and rotating +x by 90 clockwise points straight down through the new center).
+        x, y = lib.rotate_point_fraction(1.0, 0.5, 90.0, 200, 100, 100, 200)
+        self.assertAlmostEqual(x, 0.5, places=6)
+        self.assertAlmostEqual(y, 1.0, places=6)
+
+    def test_rotate_point_fraction_360_is_identity(self):
+        x, y = lib.rotate_point_fraction(0.25, 0.75, 360.0, 300, 200, 300, 200)
+        self.assertAlmostEqual(x, 0.25, places=6)
+        self.assertAlmostEqual(y, 0.75, places=6)
+
+    def test_rotate_effect_params_vignette_uses_rotate_point_fraction(self):
+        params = {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 1.0, 'y': 0.5}
+        result = lib.rotate_effect_params('gegl:vignette', params, 90.0, 200, 200, 200, 200)
+        self.assertAlmostEqual(result['x'], 0.5, places=6)
+        self.assertAlmostEqual(result['y'], 1.0, places=6)
+
+    def test_rotate_effect_params_motion_blur_adds_degrees_to_angle(self):
+        result = lib.rotate_effect_params(
+            'gegl:motion-blur-linear', {'length': 10.0, 'angle': 20.0}, 90.0, 200, 200, 200, 200
+        )
+        self.assertAlmostEqual(result['angle'], 110.0, places=6)
+        # length (an isotropic, non-directional magnitude) is untouched by rotation.
+        self.assertEqual(result['length'], 10.0)
+
+    def test_rotate_effect_params_drop_shadow_rotates_the_offset_vector(self):
+        # An offset of (20, 0) -- straight right -- rotated 90 degrees clockwise becomes (0, 20)
+        # -- straight down (matching the same (dx,dy) -> (-dy,dx)-at-90 convention op_rotate uses).
+        result = lib.rotate_effect_params(
+            'gegl:dropshadow', {'x': 20.0, 'y': 0.0, 'radius': 5.0, 'opacity': 0.5}, 90.0,
+            200, 200, 200, 200,
+        )
+        self.assertAlmostEqual(result['x'], 0.0, places=6)
+        self.assertAlmostEqual(result['y'], 20.0, places=6)
+
+    def test_rotate_leaves_non_directional_effects_unchanged(self):
+        for operation, params in (
+            ('gegl:mono-mixer', {'red': 0.3, 'green': 0.3, 'blue': 0.3, 'preserve-luminosity': False}),
+            ('gegl:noise-rgb', {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 5}),
+            ('gegl:focus-blur', {'blur-radius': 20.0, 'highlight-factor': 0.5}),
+        ):
+            self.assertEqual(
+                lib.rotate_effect_params(operation, params, 37.0, 200, 200, 200, 200), params
+            )
+
+    def test_resize_scales_motion_blur_length_isotropically(self):
+        result = lib.resize_effect_params('gegl:motion-blur-linear', {'length': 10.0, 'angle': 5.0}, 2.0, 2.0)
+        self.assertAlmostEqual(result['length'], 20.0, places=6)
+        self.assertEqual(result['angle'], 5.0)  # unaffected
+
+    def test_resize_scales_lens_blur_radius_isotropically(self):
+        result = lib.resize_effect_params(
+            'gegl:focus-blur', {'blur-radius': 20.0, 'highlight-factor': 0.5}, 3.0, 3.0
+        )
+        self.assertAlmostEqual(result['blur-radius'], 60.0, places=6)
+
+    def test_resize_scales_drop_shadow_offsets_per_axis_and_radius_isotropically(self):
+        result = lib.resize_effect_params(
+            'gegl:dropshadow', {'x': 10.0, 'y': 20.0, 'radius': 5.0, 'opacity': 0.5}, 2.0, 4.0
+        )
+        self.assertAlmostEqual(result['x'], 20.0, places=6)
+        self.assertAlmostEqual(result['y'], 80.0, places=6)
+        # radius uses the geometric mean of the two axis scales (sqrt(2*4) = sqrt(8)).
+        self.assertAlmostEqual(result['radius'], 5.0 * math.sqrt(8.0), places=6)
+
+    def test_resize_uniform_scale_is_exact_for_drop_shadow_radius(self):
+        result = lib.resize_effect_params(
+            'gegl:dropshadow', {'x': 10.0, 'y': 10.0, 'radius': 5.0, 'opacity': 0.5}, 2.0, 2.0
+        )
+        self.assertAlmostEqual(result['radius'], 10.0, places=6)
+
+    def test_resize_leaves_vignette_black_white_add_noise_unchanged(self):
+        # Proportional (vignette) or purely per-pixel (black_white, add_noise) -- none of these
+        # have an absolute-pixel property, so a resize must not touch any of them at all.
+        for operation, params in (
+            ('gegl:vignette', {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 0.5, 'y': 0.5}),
+            ('gegl:mono-mixer', {'red': 0.3, 'green': 0.3, 'blue': 0.3, 'preserve-luminosity': False}),
+            ('gegl:noise-rgb', {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 5}),
+        ):
+            self.assertEqual(lib.resize_effect_params(operation, params, 2.0, 3.0), params)
 
 
 class TestJsonSafe(unittest.TestCase):

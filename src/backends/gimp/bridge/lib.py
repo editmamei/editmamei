@@ -71,9 +71,6 @@ ADJUST_OPERATIONS = {
     'gaussian_blur': 'gegl:gaussian-blur',
 }
 
-# The inverse of ADJUST_OPERATIONS, for a ledger record written without a `type` field.
-OPERATION_TYPES = {operation: type_ for type_, operation in ADJUST_OPERATIONS.items()}
-
 # Length-typed GEGL properties that must be multiplied by the preview proxy's scale factor
 # when a filter is mirrored onto it (see ops.py's `_mirror_filters`) -- an explicit allow-list
 # per operation, not a heuristic (e.g. "any property named radius"), since a wrong guess here
@@ -466,8 +463,8 @@ ADJUST_CREATE_DEFAULTS = {
 # regardless of which tool created the filter).
 #
 # Deliberately excludes gegl:gaussian-blur (already ADJUST_OPERATIONS' `gaussian_blur`, see
-# gimp-adjustment-tools.ts) and gegl:c2g (measured live at ~35s for a full-res 24 MP export --
-# over the ~30s budget the owner set for this PR, so it does not ship here; see PR 2's report).
+# gimp-adjustment-tools.ts) and gegl:c2g: c2g excluded, ~35s full-res export at 24 MP (measured
+# live), over the ~30s budget -- does not ship here.
 EFFECT_OPERATIONS = {
     'vignette': 'gegl:vignette',
     'black_white': 'gegl:mono-mixer',
@@ -480,6 +477,12 @@ EFFECT_OPERATIONS = {
     'drop_shadow': 'gegl:dropshadow',
 }
 
+# The inverse of ADJUST_OPERATIONS and EFFECT_OPERATIONS together, for a ledger record written
+# without a `type` field -- one shared map, since `op_list_filters` looks a record's operation up
+# here regardless of which tool (gimp_add_adjustment or gimp_add_effect) created it.
+OPERATION_TYPES = {operation: type_ for type_, operation in ADJUST_OPERATIONS.items()}
+OPERATION_TYPES.update({operation: type_ for type_, operation in EFFECT_OPERATIONS.items()})
+
 # Every validate_range/validate_int_range call below uses `val`, not `v`, as its lambda's
 # parameter name -- deliberately, so it is NOT matched by gimp-adjustment-tools.test.ts's own
 # `parseLibPyBounds` regex (which requires the literal substring ", v,"). That regex scans this
@@ -489,10 +492,15 @@ EFFECT_OPERATIONS = {
 
 
 def build_vignette_params(args, defaults):
-    # Proportional/scale-invariant (radius is a fraction of the image's own half-diagonal, x/y a
-    # fraction of width/height): unlike the spatial effects below, nothing here needs a
-    # SPATIAL_SCALE_PROPS entry -- the same value renders correctly on the preview proxy as at
-    # full resolution.
+    # Proportional/scale-invariant, relative to the LAYER's own extent (the drawable this filter
+    # attaches to, not the document canvas -- every GEGL op here runs per-drawable): x/y are a
+    # fraction of width/height. `radius`'s own reference measured live as NOT a single clean
+    # formula (e.g. a plain half-diagonal or half-width) across every aspect ratio tried -- rather
+    # than assert a specific geometric claim this bridge can't fully verify, the description
+    # instead states the one thing confirmed true and load-bearing for SPATIAL_SCALE_PROPS: it is
+    # relative, not absolute pixels, so the same value looks visually equivalent at any
+    # resolution. Unlike the spatial effects below, nothing here needs a SPATIAL_SCALE_PROPS entry
+    # -- the same value renders correctly on the preview proxy as at full resolution.
     return {
         'radius': resolve_field(
             args, 'radius', defaults, 'radius', lambda val: validate_range('radius', val, 0.0, 3.0)
@@ -514,6 +522,12 @@ def build_vignette_params(args, defaults):
 
 
 def build_black_white_params(args, defaults):
+    # `preserve_luminosity`: when True, GEGL rescales the weighted sum so the output matches the
+    # ORIGINAL pixel's brightness even when the three weights don't sum to 1 -- verified live, a
+    # flat 128-gray input stays 128 with weights (0.1, 0.1, 0.1) and preserve=True, but comes back
+    # darker (measured 0x48) with the same weights and preserve=False. Weights summing to exactly
+    # 0 (e.g. 0,0,0) do NOT divide by zero or produce NaN either way -- verified live, GEGL returns
+    # plain black -- so no extra guard is needed here for that case.
     return {
         'red': resolve_field(
             args, 'red_weight', defaults, 'red',
@@ -527,8 +541,14 @@ def build_black_white_params(args, defaults):
             args, 'blue_weight', defaults, 'blue',
             lambda val: validate_range('blue_weight', val, -5.0, 5.0),
         ),
-        'preserve-luminosity': resolve_field(
-            args, 'preserve_luminosity', defaults, 'preserve-luminosity', bool
+        # require_bool, not a bare `bool()` cast (bool("false") is True in Python -- any
+        # non-empty string is truthy) -- resolve_field's own convert callback only ever sees the
+        # raw VALUE, not (args, name), so the merge-not-reset fallback is inlined here instead of
+        # going through resolve_field for this one field.
+        'preserve-luminosity': (
+            require_bool(args, 'preserve_luminosity')
+            if 'preserve_luminosity' in args
+            else defaults['preserve-luminosity']
         ),
     }
 
@@ -548,16 +568,26 @@ def build_lens_blur_params(args, defaults):
     # gegl:lens-blur (GIMP 3.2's GEGL does ship it) turned out unusable here -- verified live,
     # `gimp-drawable-append-filter` refuses it outright ("effects with an 'aux' pad cannot be
     # applied non-destructively"), so every call would silently attach nothing (no exception, no
-    # ledger record, filter count staying 0). gegl:focus-blur is the plan's own documented
-    # fallback and DOES attach; its blur amount property is named `blur-radius`, not `radius`
-    # (the external field name here stays `radius` regardless -- see EFFECT_CREATE_DEFAULTS).
-    # gegl:focus-blur's OWN `radius` property (an unrelated, same-named property sizing an
-    # in-focus zone that never blurs) is forced to 0 in ops.py's `_set_lens_blur` -- not part of
-    # this dict, not user-configurable -- so the effect is a uniform blur, not a tilt-shift one.
+    # ledger record, filter count staying 0). gegl:focus-blur DOES attach; its blur amount
+    # property is named `blur-radius`, not `radius` (the external field name here stays `radius`
+    # regardless -- see EFFECT_CREATE_DEFAULTS). Two more properties are forced in ops.py's
+    # `_set_lens_blur`, not part of this dict and not user-configurable:
+    #  - `radius` (an unrelated, same-named property sizing an in-focus zone that never blurs) is
+    #    forced to 0, so the effect is a uniform blur, not a tilt-shift one.
+    #  - `blur-type` is forced to 'lens' (its own default is 'gaussian', which would make this a
+    #    second, redundant gaussian_blur and leave `highlight_factor` inert -- verified live:
+    #    'lens' mode produces a real bokeh highlight boost, a bright spot's halo reaching ~3x
+    #    farther out at highlight_factor 1 vs 0, and 'lens' mode DOES attach as a non-destructive
+    #    filter despite being the more elaborate mode -- the 'aux'-pad restriction that sank
+    #    gegl:lens-blur does not apply inside this meta-operation).
+    # `blur-radius`'s cap is lowered from the union's 1500 to 150: 'lens' mode measured live as
+    # much more expensive than a separable blur (~35s for a full-res 24 MP export at radius 300,
+    # ~17s at 150), so the cap keeps the worst case comfortably under the ~30s budget every
+    # effect here is held to.
     return {
         'blur-radius': resolve_field(
             args, 'radius', defaults, 'blur-radius',
-            lambda val: validate_range('radius', val, 0.0, 1500.0),
+            lambda val: validate_range('radius', val, 0.0, 150.0),
         ),
         'highlight-factor': resolve_field(
             args, 'highlight_factor', defaults, 'highlight-factor',
@@ -616,7 +646,7 @@ EFFECT_PARAM_BUILDERS = {
 }
 
 # Creation-time defaults, already in GEGL-property units -- probed live via `describe_operation`
-# against GIMP 3.2.6's real GEGL pspecs (see PR 2's report for the raw probe output).
+# against GIMP 3.2.6's real GEGL pspecs.
 EFFECT_CREATE_DEFAULTS = {
     'vignette': {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 0.5, 'y': 0.5},
     'black_white': {'red': 0.333, 'green': 0.333, 'blue': 0.333, 'preserve-luminosity': False},
@@ -747,8 +777,9 @@ def user_params(type_, params):
 
 def json_safe(value):
     """A readback property value made JSON-serialisable: plain JSON scalars pass through, lists
-    and dicts are walked, and anything else (a Gegl.Color, a path object, bytes) becomes its
-    str(). One foreign filter with such a property must not fail `list` for the whole image."""
+    and dicts are walked, a GeglColor becomes its [r, g, b, a] (see below), and anything else (a
+    path object, bytes) becomes its str(). One foreign filter with such a property must not fail
+    `list` for the whole image."""
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)  # JSON has no NaN/Infinity; Node's JSON.parse rejects them
     if value is None or isinstance(value, (bool, int, float, str)):
@@ -757,6 +788,19 @@ def json_safe(value):
         return [json_safe(v) for v in value]
     if isinstance(value, dict):
         return {str(k): json_safe(v) for k, v in value.items()}
+    # lib.py is gi-free (no `import gi`/`Gegl`), so a GeglColor can only be recognized by duck
+    # type, not `isinstance` -- the same reproducibility problem `op_describe_operation`'s own
+    # GeglColor handling exists to fix (a bare str() embeds a live object pointer address that
+    # differs every run, e.g. a foreign vignette/dropshadow filter's `color` property read back
+    # through `op_list_filters`), solved the same way: `get_rgba()` is the stable, meaningful
+    # summary. Any other object that merely happens to expose a zero-arg `get_rgba()` would be
+    # vanishingly unlikely and still degrades safely to a 4-number list.
+    get_rgba = getattr(value, 'get_rgba', None)
+    if callable(get_rgba):
+        try:
+            return list(get_rgba())
+        except Exception:
+            pass
     return str(value)
 
 # The only operations `describe_operation` will probe -- an allow-list, not "any GEGL/GIMP
@@ -808,6 +852,125 @@ def classify_geometry_filters(filters, live_filters):
         else:
             unverifiable.append(name)
     return masked, unverifiable
+
+
+# ---- geometry transforms for direction/position-dependent EFFECT params ---------------------
+#
+# Scoped to gimp_add_effect's new effects only: vignette (center_x/center_y), motion_blur
+# (angle), and drop_shadow (offset_x/offset_y, radius) have params whose MEANING is tied to a
+# direction or a position, which flip/rotate/resize can silently misalign relative to the
+# content unless the param itself is transformed the same way the pixels were. black_white and
+# add_noise are pure per-pixel operations (no direction or position at all) and lens_blur is a
+# symmetric radial blur (no direction) -- none of the three need a flip/rotate entry, and are
+# simply absent from those two tables below. Existing gimp_add_adjustment types (gaussian_blur,
+# sharpen, shadows_highlights) are NOT covered here -- a deliberate scope cut, not an oversight.
+#
+# ops.py calls these AFTER the geometry transform itself, and only once `_refuse_if_masked_
+# filters` has already confirmed every live filter is unmasked and ledgered -- a masked or
+# unverifiable filter refuses the whole op before any of this runs.
+
+
+def _wrap_angle_deg(angle):
+    """Wrap to the (-180, 180] range validate_range enforces for every `angle` field here."""
+    wrapped = ((angle + 180.0) % 360.0) - 180.0
+    if wrapped <= -180.0:
+        wrapped += 360.0
+    return wrapped
+
+
+def rotate_point_fraction(x_frac, y_frac, degrees, old_width, old_height, new_width, new_height):
+    """Rotate a point expressed as a FRACTION of a layer's own width/height (vignette's center_x/
+    center_y) by `degrees`, using the exact same clockwise-positive convention `ops.py`'s
+    `op_rotate` applies to layer/channel pixels via `Item.transform_rotate`, re-expressing the
+    result as a fraction of the possibly-different NEW canvas size (`expand` may have grown it).
+
+    Exact for any angle, not just 90-degree multiples: rotating a rectangle around its own center
+    always leaves the new bounding box centered at that SAME physical point, so the old and new
+    canvas centers coincide regardless of whether `expand` changed the canvas dimensions -- the
+    old center (in old-canvas coordinates) and the new center (in new-canvas coordinates) name
+    the identical point in space, which is what lets this convert between the two coordinate
+    frames with no separate translation term."""
+    old_cx, old_cy = old_width / 2.0, old_height / 2.0
+    new_cx, new_cy = new_width / 2.0, new_height / 2.0
+    dx = x_frac * old_width - old_cx
+    dy = y_frac * old_height - old_cy
+    theta = math.radians(degrees)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    rx = dx * cos_t - dy * sin_t
+    ry = dx * sin_t + dy * cos_t
+    return (new_cx + rx) / new_width, (new_cy + ry) / new_height
+
+
+def flip_effect_params(operation, params, orientation):
+    """New params for a ledgered effect filter's `operation` after a flip along `orientation`
+    ('horizontal' or 'vertical'), so the effect stays locked to the content instead of the raw
+    pixel grid. Verified live: vignette's `x`/`y` are plain image-pixel-convention fractions (0 =
+    left/top edge, increasing right/down); motion-blur-linear's `angle` is 0 = along +x
+    (horizontal), 90 = along +y (vertical, i.e. downward), increasing CLOCKWISE -- the same sense
+    `op_rotate` uses; dropshadow's `x`/`y` are plain pixel offsets (positive = right/down).
+    Operations with no direction-dependent param (black_white, add_noise, lens_blur) come back
+    with the SAME values (a fresh dict, not the same object) -- there is nothing to change."""
+    params = dict(params)
+    if operation == 'gegl:vignette':
+        if orientation == 'horizontal':
+            params['x'] = 1.0 - params['x']
+        else:
+            params['y'] = 1.0 - params['y']
+    elif operation == 'gegl:motion-blur-linear':
+        if orientation == 'horizontal':
+            params['angle'] = _wrap_angle_deg(180.0 - params['angle'])
+        else:
+            params['angle'] = _wrap_angle_deg(-params['angle'])
+    elif operation == 'gegl:dropshadow':
+        if orientation == 'horizontal':
+            params['x'] = -params['x']
+        else:
+            params['y'] = -params['y']
+    return params
+
+
+def rotate_effect_params(operation, params, degrees, old_width, old_height, new_width, new_height):
+    """New params for a ledgered effect filter's `operation` after a rotate by `degrees` (any
+    angle, not just 90-degree multiples -- op_rotate's own clockwise-positive convention), so the
+    effect stays locked to the content. Operations with no direction/position param come back
+    unchanged (see `flip_effect_params`'s own doc comment)."""
+    params = dict(params)
+    if operation == 'gegl:vignette':
+        params['x'], params['y'] = rotate_point_fraction(
+            params['x'], params['y'], degrees, old_width, old_height, new_width, new_height
+        )
+    elif operation == 'gegl:motion-blur-linear':
+        params['angle'] = _wrap_angle_deg(params['angle'] + degrees)
+    elif operation == 'gegl:dropshadow':
+        theta = math.radians(degrees)
+        dx, dy = params['x'], params['y']
+        params['x'] = dx * math.cos(theta) - dy * math.sin(theta)
+        params['y'] = dx * math.sin(theta) + dy * math.cos(theta)
+    return params
+
+
+def resize_effect_params(operation, params, scale_x, scale_y):
+    """New params for a ledgered effect filter's `operation` after a resize that scales width by
+    `scale_x` and height by `scale_y` (independently -- gimp_resize_image's width+height form can
+    stretch aspect). motion_blur's `length`, lens_blur's `blur-radius`, and drop_shadow's `radius`
+    are ISOTROPIC (one scalar radius/length, no separate x/y component), scaled by the geometric
+    mean of scale_x/scale_y -- exact when the resize is uniform (scale_x == scale_y), and the
+    least-wrong single number when it isn't (a circular blur has no single exact radius under an
+    anisotropic stretch). drop_shadow's offset_x/offset_y scale along their own axis exactly.
+    vignette's radius/x/y are already proportional (a fraction of the layer's own, now-resized
+    extent) and need no change at all -- absent from this table on purpose. black_white and
+    add_noise have no absolute-pixel param either."""
+    params = dict(params)
+    isotropic_scale = math.sqrt(scale_x * scale_y)
+    if operation == 'gegl:motion-blur-linear':
+        params['length'] = params['length'] * isotropic_scale
+    elif operation == 'gegl:focus-blur':
+        params['blur-radius'] = params['blur-radius'] * isotropic_scale
+    elif operation == 'gegl:dropshadow':
+        params['x'] = params['x'] * scale_x
+        params['y'] = params['y'] * scale_y
+        params['radius'] = params['radius'] * isotropic_scale
+    return params
 
 
 def region_to_proxy_px(region, scale):
