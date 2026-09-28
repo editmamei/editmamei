@@ -281,6 +281,10 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   gimp_inspect: 30_000,
   gimp_add_adjustment: 20_000,
   gimp_filter: 15_000,
+  // Creates or re-edits a filter -- the same create/re-edit path, and the same 20s budget, as
+  // gimp_add_adjustment (not gimp_filter's own list/set_visibility/delete, 15s, which only manage
+  // the stack and never touch a filter's own config).
+  gimp_add_effect: 20_000,
   gimp_crop_document: 20_000,
   gimp_resize_image: 45_000,
   gimp_transform_canvas: 60_000,
@@ -290,6 +294,14 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // is the recommended final check before export.
   gimp_get_histogram: 90_000,
   gimp_compare: 45_000,
+  // op=create dispatches the same `export` op gimp_save_xcf does (to an
+  // internal path instead of a caller-supplied one) — matched to
+  // gimp_save_xcf/gimp_export's own budget for the same reason: a timeout
+  // here tree-kills the very session the checkpoint exists to protect
+  // against. op=restore's open+close pair is comparatively cheap, and
+  // list/delete touch no bridge op at all, but the tool shares one timeout
+  // across whichever op a call makes.
+  gimp_checkpoint: 90_000,
 };
 
 /**
