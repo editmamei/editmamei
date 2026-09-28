@@ -99,8 +99,9 @@ const effectSchema: JsonSchemaObject = {
       minimum: 0,
       maximum: 1500,
       description:
-        'vignette: how far the darkened corners reach in, 0..3, proportional to the image (not ' +
-        'absolute pixels — the same value looks visually equivalent at any resolution). Default ' +
+        'vignette: how far the darkened corners reach in, 0..3, relative to the LAYER (not ' +
+        'absolute pixels — the same value looks visually equivalent at any resolution, and ' +
+        'consistent with center_x/center_y below). Default ' +
         '(when creating): 1.2. lens_blur: blur radius in pixels at full resolution, 0..150 ' +
         '(default 25 when creating) — capped much lower than the other two effects here (measured ' +
         'live: expensive at full resolution). drop_shadow: blur radius in pixels at full ' +
@@ -303,8 +304,9 @@ export function createGimpEffectTools(gimp: GimpBackend): ToolDefinition[] {
           'angle/offset fields are updated automatically, and gimp_filter op=list reflects the ' +
           'new values afterward) — rotating by any OTHER angle is refused while one of these ' +
           'three is present, rather than letting it drift out of alignment. lens_blur is a ' +
-          'uniform soft-focus blur, not a depth-of-field falloff. Check the stack afterward with ' +
-          'gimp_filter (op=list).',
+          'uniform soft-focus blur, not a depth-of-field falloff. For a plain blur with no bokeh ' +
+          'highlight boost, use gimp_add_adjustment type=gaussian_blur instead. Check the stack ' +
+          'afterward with gimp_filter (op=list).',
         inputSchema: effectSchema,
         outputSchema: {
           type: 'object',
