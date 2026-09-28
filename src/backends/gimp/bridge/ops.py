@@ -69,16 +69,21 @@ def _all_layers(img):
     included, then its children). `img.get_layers()` is top-level only, and `_layer` can resolve a
     layer nested inside a group, so every walk over the filter stack goes through this: a filter
     on a nested layer must be listed, mirrored onto the proxy, ledger-tracked, and seen by the
-    geometry refusal like any other."""
+    geometry refusal like any other.
+
+    Walked with an EXPLICIT stack, the same reasoning (and the same shape) as `_build_layer_tree`'s
+    own walk: a pathological chain of nested single-child groups would otherwise risk Python's OWN
+    recursion limit, not just some cap this function itself imposes (it imposes none -- every
+    caller here matters exactly because it doesn't). A group's children are pushed in REVERSE order
+    so popping (LIFO) still visits top-of-stack-first -- positional proxy mirroring and other
+    callers depend on that exact order, not just on the same set of layers."""
     out = []
-
-    def walk(items):
-        for item in items:
-            out.append(item)
-            if item.is_group():
-                walk(item.get_children())
-
-    walk(img.get_layers())
+    stack = list(reversed(img.get_layers()))
+    while stack:
+        item = stack.pop()
+        out.append(item)
+        if item.is_group():
+            stack.extend(reversed(item.get_children()))
     return out
 
 
@@ -770,35 +775,41 @@ def op_adjust(args):
     return _apply_filter(img, args, operation, params, default_name, type_=type_)
 
 
+def _filter_record(filters, layer, f):
+    """One filter's `op_list_filters`-shaped record: `filters` is the ledger's own {name: {...}}
+    map (`_ledger_get`'s first return value). Bridge-applied filters report the ledger record
+    (`source: editmamei`) with `params` in the adjust tool's own field names and units
+    (`lib.user_params`), so a listed value can be passed straight back on a re-edit. Anything else
+    reports libgimp's readback (`source: readback`): raw GEGL property names and units, lossy for
+    per-channel curves, with any value JSON can't carry (a Gegl.Color, say) stringified. Shared by
+    `op_list_filters` (every filter on the image) and `op_describe`'s `what='filter'` (one, by id)."""
+    rec = filters.get(f.get_name())
+    if rec and rec['operation'] == f.get_operation_name():
+        source = 'editmamei'
+        type_ = rec.get('type') or lib.OPERATION_TYPES.get(rec['operation'])
+        mask = rec['params'].get('mask')
+        params = lib.user_params(type_, rec['params'])
+    else:
+        cfg, params, source, type_, mask = f.get_config(), {}, 'readback', None, None
+        for p in cfg.list_properties():
+            v = cfg.get_property(p.name)
+            if isinstance(v, Gimp.Curve):
+                v = _curve_points(v)
+            elif hasattr(v, 'value_nick'):
+                v = v.value_nick
+            params[p.name] = lib.json_safe(v)
+    return {'layer': layer.get_name(), 'layer_id': layer.get_id(), 'filter_id': f.get_id(),
+            'name': f.get_name(), 'operation': f.get_operation_name(), 'type': type_,
+            'visible': f.get_visible(), 'source': source, 'mask': mask, 'params': params}
+
+
 def op_list_filters(args):
-    """Bridge-applied filters report the ledger record (`source: editmamei`) with `params` in the
-    adjust tool's own field names and units (`lib.user_params`), so a listed value can be passed
-    straight back on a re-edit. Anything else reports libgimp's readback (`source: readback`):
-    raw GEGL property names and units, lossy for per-channel curves, with any value JSON can't
-    carry (a Gegl.Color, say) stringified."""
     img = _image(args)
     filters, _unknown = _ledger_get(img)
     out = []
     for layer in _all_layers(img):
         for f in layer.get_filters():
-            rec = filters.get(f.get_name())
-            if rec and rec['operation'] == f.get_operation_name():
-                source = 'editmamei'
-                type_ = rec.get('type') or lib.OPERATION_TYPES.get(rec['operation'])
-                mask = rec['params'].get('mask')
-                params = lib.user_params(type_, rec['params'])
-            else:
-                cfg, params, source, type_, mask = f.get_config(), {}, 'readback', None, None
-                for p in cfg.list_properties():
-                    v = cfg.get_property(p.name)
-                    if isinstance(v, Gimp.Curve):
-                        v = _curve_points(v)
-                    elif hasattr(v, 'value_nick'):
-                        v = v.value_nick
-                    params[p.name] = lib.json_safe(v)
-            out.append({'layer': layer.get_name(), 'filter_id': f.get_id(), 'name': f.get_name(),
-                        'operation': f.get_operation_name(), 'type': type_, 'visible': f.get_visible(),
-                        'source': source, 'mask': mask, 'params': params})
+            out.append(_filter_record(filters, layer, f))
     return {'filters': out}
 
 
@@ -869,6 +880,180 @@ def op_filter(args):
             'filters in this beta -- delete and re-create in the desired order instead'
         )
     raise ValueError('op must be one of list, set_visibility, delete (got %r)' % fop)
+
+
+DESCRIBE_TARGETS = ('document', 'layers', 'channels', 'filter')
+
+# A hard cap on how many layer-tree nodes `describe`'s `document`/`layers` targets will build,
+# counting every node in the WHOLE tree (top-level and every descendant), not just top-level --
+# an output-size bound, and it is what makes `_build_layer_tree`'s walk itself safe: it stops
+# outright once this many nodes have been visited, so neither a very wide document (many layers)
+# nor a very deep one (many nested groups) can produce unbounded output. `truncated: true` in the
+# result says the cap was hit; a group visited right at the cut-off may be missing some of its own
+# children, since the walk simply stops rather than finishing that group first.
+MAX_DESCRIBE_LAYER_NODES = 2000
+
+
+def _layer_node_shallow(layer):
+    """One layer's own fields for a describe-by-id layer tree node, with `children` left as an
+    empty list -- `_build_layer_tree` fills it in as it walks. Id is canonical (unlike `_layer`'s
+    name-based lookup, which can't tell two same-named layers apart -- GIMP allows duplicate
+    names). `get_offsets()` returns (ok, x, y); `ok` is False only in a genuinely invalid-item
+    case that shouldn't arise for a layer this walk just visited via `get_layers()`/
+    `get_children()`, but is still checked rather than trusted blindly -- offsets fall back to
+    null rather than reporting a wrong position."""
+    ok, off_x, off_y = layer.get_offsets()
+    return {
+        'layer_id': layer.get_id(),
+        'name': layer.get_name(),
+        'opacity': layer.get_opacity(),
+        'mode': layer.get_mode().value_nick,
+        'visible': layer.get_visible(),
+        'offsets': {'x': off_x, 'y': off_y} if ok else {'x': None, 'y': None},
+        'has_alpha': layer.has_alpha(),
+        'is_group': layer.is_group(),
+        'is_text_layer': layer.is_text_layer(),
+        'children': [],
+    }
+
+
+def _build_layer_tree(top_layers, max_nodes=MAX_DESCRIBE_LAYER_NODES):
+    """The nested layer tree for `top_layers` (an image's own `get_layers()`, top of stack first),
+    walked with an EXPLICIT stack rather than one recursive call per nesting level -- a
+    pathological chain of nested single-child groups would otherwise risk Python's OWN recursion
+    limit, not just some output-size limit of this op's choosing. Capped at `max_nodes` total
+    nodes across the whole tree. Returns (nodes, truncated, total_nodes) -- `total_nodes` is simply
+    the walk's own `seen` counter, so it costs nothing extra to report; it is what a truncated
+    response is actually counted from, distinct from `top_level_count` (the caller's own
+    `len(top_layers)`, always the TRUE top-level count even when the walk stopped before reaching
+    every top-level sibling).
+
+    Each stack entry is (layer, parent_id); a group's children are pushed in REVERSE order so
+    popping (LIFO) still visits them top-of-stack-first, the same order `_all_layers` already
+    relies on elsewhere. A layer's own node dict is built and recorded (`by_id`) the moment it is
+    popped, and immediately appended into its parent's `children` list (or the top-level list) --
+    safe because a layer is always popped strictly after its own parent (the parent's children
+    are only ever pushed once the parent itself has already been popped and recorded), so the
+    parent's node dict is guaranteed to already exist. This one pass is enough; no separate
+    bottom-up assembly pass is needed."""
+    truncated = False
+    top = []
+    by_id = {}
+    stack = [(layer, None) for layer in reversed(top_layers)]
+    seen = 0
+    while stack:
+        if seen >= max_nodes:
+            truncated = True
+            break
+        layer, parent_id = stack.pop()
+        seen += 1
+        node = _layer_node_shallow(layer)
+        by_id[layer.get_id()] = node
+        if parent_id is None:
+            top.append(node)
+        else:
+            by_id[parent_id]['children'].append(node)
+        if layer.is_group():
+            for child in reversed(layer.get_children()):
+                stack.append((child, layer.get_id()))
+    return top, truncated, seen
+
+
+def _channels_summary(img):
+    """Every named channel on img, by id and name only -- `document`'s cheap channel listing.
+    Coverage (`_channel_coverage`) reads a channel's full pixel buffer, so it is computed only for
+    `what='channels'` (`_channels_described`), never bundled into `document`'s broader, cheaper
+    read."""
+    return [{'channel_id': ch.get_id(), 'name': ch.get_name()} for ch in img.get_channels()]
+
+
+# `_channels_described` checks this after every channel it reads, and stops once that many seconds
+# have passed, rather than run gimp_inspect's own dispatch budget out on a document with many named
+# channels (`operation-timeouts.ts`). A plain module global, not a function default, so a test
+# fixture can reassign it directly (`test_set_channels_deadline`, fixtures/test_ops.py) and force
+# the stop without needing dozens of real channels.
+CHANNELS_DESCRIBE_DEADLINE_S = 15.0
+
+
+def _channels_described(img):
+    """Every named channel on img, with its coverage (`_channel_coverage`) -- the same stat
+    `op_create_mask` returns for the one it just built. `what='channels'`-only; see
+    `_channels_summary`'s own docstring for why `document` doesn't compute this.
+
+    Reads at least the first channel unconditionally, then checks `CHANNELS_DESCRIBE_DEADLINE_S`
+    after each one read: once elapsed time reaches it, stops and returns early. Returns
+    {'channels', 'truncated', 'channels_skipped'} -- `channels` is whatever was read before
+    stopping, `truncated` is whether any named channel was left unread, and `channels_skipped`
+    counts them."""
+    w, h = img.get_width(), img.get_height()
+    channels = img.get_channels()
+    out = []
+    start = time.time()
+    for ch in channels:
+        selected, fraction = _channel_coverage(ch, w, h)
+        out.append({
+            'channel_id': ch.get_id(), 'name': ch.get_name(),
+            'selected_pixels': selected, 'fraction': fraction,
+        })
+        if time.time() - start >= CHANNELS_DESCRIBE_DEADLINE_S:
+            break
+    return {
+        'channels': out,
+        'truncated': len(out) < len(channels),
+        'channels_skipped': len(channels) - len(out),
+    }
+
+
+def op_describe(args):
+    """`gimp_inspect`'s describe-by-id bridge op: `what` in document | layers | channels | filter
+    (`documents` -- every open image's id -- stays on `op_ping`, unchanged; the tool layer never
+    routes it here). `document` bundles dims/base_type/precision/resolution with the layer tree
+    and a cheap by-id/name channel listing in one call; `layers` returns just the tree (capped and
+    flagged, see `_build_layer_tree`/`MAX_DESCRIBE_LAYER_NODES`); `channels` returns the same
+    channels WITH coverage (`_channels_described`), the one part `document` deliberately leaves
+    out since it reads full pixel buffers -- and stops after its own time budget on a document with
+    many named channels, returning whatever it already read (see `_channels_described`). `filter`
+    reports one filter by id, in the exact shape `op_list_filters` reports it in (`_filter_record`,
+    via `_find_filter` so a filter_id from a different or closed image is never mistaken for a
+    match). `document`/`layers` also report `top_level_count` (the image's real top-level layer
+    count, from `get_layers()` directly) and `total_nodes` (how many nodes THIS response carries)
+    alongside `truncated`."""
+    what = args.get('what')
+    if what not in DESCRIBE_TARGETS:
+        raise ValueError('what must be one of %s' % ', '.join(DESCRIBE_TARGETS))
+    img = _image(args)
+    if what == 'filter':
+        filter_id = int(lib.require(args, 'filter_id'))
+        layer, f = _find_filter(img, filter_id)
+        filters, _unknown = _ledger_get(img)
+        return _filter_record(filters, layer, f)
+    if what == 'layers':
+        top_layers = img.get_layers()
+        layers, truncated, total_nodes = _build_layer_tree(top_layers)
+        return {
+            'layers': layers,
+            'truncated': truncated,
+            'top_level_count': len(top_layers),
+            'total_nodes': total_nodes,
+        }
+    if what == 'channels':
+        return _channels_described(img)
+    ok, xres, yres = img.get_resolution()
+    top_layers = img.get_layers()
+    layers, truncated, total_nodes = _build_layer_tree(top_layers)
+    return {
+        'image': img.get_id(),
+        'width': img.get_width(),
+        'height': img.get_height(),
+        'base_type': img.get_base_type().value_nick,
+        'precision': img.get_precision().value_nick,
+        'resolution': {'x': xres, 'y': yres} if ok else {'x': None, 'y': None},
+        'layers': layers,
+        'truncated': truncated,
+        'top_level_count': len(top_layers),
+        'total_nodes': total_nodes,
+        'channels': _channels_summary(img),
+    }
 
 
 # ---- geometry -----------------------------------------------------------------------------
@@ -1580,7 +1765,14 @@ def _channel_coverage(ch, w, h):
     # reproduces the ramp exactly. Every mask/selection buffer read or write in this file uses
     # the primed, perceptual format for the same reason.
     data = ch.get_buffer().get(Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
-    selected = sum(1 for b in data if b >= 128)
+    # `bytes.translate(None, delete)` runs the byte-by-byte pass in C rather than the interpreter
+    # loop a `sum(1 for b in data if b >= 128)` generator pays per byte. `delete` names the bytes to
+    # DROP, so deleting every byte below 128 (0..127) leaves exactly the >=128 ones behind: len() of
+    # what's left IS the selected count directly, no subtraction needed. Same result as the
+    # generator, measured live (GIMP 3.2.6, ~24MP) at ~120ms/channel -- what keeps `describe`'s
+    # `channels` target, which reads this per NAMED channel rather than just one, fast enough to
+    # stay inside its own time budget (`_channels_described`'s `CHANNELS_DESCRIBE_DEADLINE_S`).
+    selected = len(data.translate(None, bytes(range(128))))
     return selected, round(selected / len(data), 4)
 
 
@@ -1762,7 +1954,7 @@ def op_close(args):
 
 OPS = {
     'ping': op_ping, 'open': op_open, 'curves': op_curves, 'levels': op_levels,
-    'adjust': op_adjust, 'filter': op_filter, 'effect': op_effect,
+    'adjust': op_adjust, 'filter': op_filter, 'effect': op_effect, 'describe': op_describe,
     'list_filters': op_list_filters, 'preview': op_preview, 'histogram': op_histogram,
     'compare': op_compare, 'export': op_export, 'close': op_close,
     'crop': op_crop, 'resize': op_resize, 'rotate': op_rotate, 'flip': op_flip,

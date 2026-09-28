@@ -9,6 +9,7 @@
 # ops.py finds its sibling lib.py through EM_GIMP_OPS, so that is repointed before the exec.
 
 import os
+import time
 
 _here = os.path.dirname(os.path.abspath(os.environ['EM_GIMP_OPS']))
 _real_ops = os.path.normpath(
@@ -124,6 +125,88 @@ def op_test_proxy_filter_count(args):
     img = _image(args)
     proxy = _proxy(img, lib.validate_max_px(int(args.get('max_px', 1024))))
     return {'filters': sum(len(layer.get_filters()) for layer in _all_layers(proxy))}
+
+
+def _pick_a_font():
+    """`Gimp.context_get_font()`, falling back to the first of `Gimp.fonts_get_list('')` (both
+    verified live) -- observed live that the context font can read None under concurrent load (a
+    fresh gimp-console still building its font cache while several others start at once), so a
+    single reliance on the context alone is flaky. Retries briefly (the font list itself can still
+    be loading, not just the context default) before giving up."""
+    font = Gimp.context_get_font()
+    if font is not None:
+        return font
+    for _ in range(20):
+        fonts = Gimp.fonts_get_list('')
+        if fonts:
+            return fonts[0]
+        time.sleep(0.25)
+    return None
+
+
+def op_test_add_text_layer(args):
+    """Insert a real text layer at the top of the stack -- what `describe`'s `is_text_layer` flag
+    is meant to catch, exercised against the real thing rather than only a plain pixel layer
+    (which always reads False). `Gimp.TextLayer.new` needs a `Gimp.Font`, not a font name string
+    (verified live) -- `_pick_a_font` supplies one, retrying past a transient None rather than
+    failing this whole fixture on it."""
+    img = _image(args)
+    font = _pick_a_font()
+    if font is None:
+        raise ValueError(
+            'no font available to build the text-layer fixture (GIMP font list empty or never '
+            'became ready)'
+        )
+    layer = Gimp.TextLayer.new(img, args.get('text', 'Hi'), font, 24, Gimp.Unit.pixel())
+    img.insert_layer(layer, None, 0)
+    return {'layer_id': layer.get_id(), 'name': layer.get_name()}
+
+
+def op_test_nest_groups(args):
+    """Two levels of group nesting plus a separate empty group -- deep/edge-case structure for
+    `describe`'s layer tree: 'Outer' (group) > 'Inner' (group) > 'Deepest' (a copy of the base
+    layer), and a sibling 'Empty' group with no children at all."""
+    img = _image(args)
+    base = img.get_layers()[0]
+    outer = Gimp.GroupLayer.new(img, 'Outer')
+    img.insert_layer(outer, None, 0)
+    inner = Gimp.GroupLayer.new(img, 'Inner')
+    img.insert_layer(inner, outer, 0)
+    deepest = Gimp.Layer.new_from_drawable(base, img)
+    deepest.set_name('Deepest')
+    img.insert_layer(deepest, inner, 0)
+    empty = Gimp.GroupLayer.new(img, 'Empty')
+    img.insert_layer(empty, None, 0)
+    _drop_proxies(img.get_id())
+    return {'layers': [l.get_name() for l in _all_layers(img)]}
+
+
+def op_test_build_layer_tree(args):
+    """Direct probe of `_build_layer_tree`'s own `max_nodes` cap, bypassing `describe`'s fixed
+    MAX_DESCRIBE_LAYER_NODES (2000) -- lets a live test exercise truncation behaviour (the cutoff
+    itself, a group left with missing children, and the exactly-full-tree case) against a small
+    fixture instead of needing a 2000+-node one."""
+    img = _image(args)
+    max_nodes = int(lib.require(args, 'max_nodes'))
+    layers, truncated, total_nodes = _build_layer_tree(img.get_layers(), max_nodes=max_nodes)
+    return {'layers': layers, 'truncated': truncated, 'total_nodes': total_nodes}
+
+
+def op_test_all_layers_order(args):
+    """The name of every layer `_all_layers` visits, in order -- top-of-stack-first, descending
+    into each group before moving on to its next sibling."""
+    img = _image(args)
+    return {'names': [l.get_name() for l in _all_layers(img)]}
+
+
+def op_test_set_channels_deadline(args):
+    """Overrides `CHANNELS_DESCRIBE_DEADLINE_S` for the rest of this session, returning the
+    previous value so a test can restore it afterward -- lets a live test force `describe`'s
+    `channels` target to stop early without needing dozens of real named channels."""
+    global CHANNELS_DESCRIBE_DEADLINE_S
+    previous = CHANNELS_DESCRIBE_DEADLINE_S
+    CHANNELS_DESCRIBE_DEADLINE_S = float(lib.require(args, 'seconds'))
+    return {'previous': previous}
 
 
 def op_test_apply_raw_effect(args):
@@ -256,12 +339,17 @@ def op_test_ledger_dump(args):
 OPS.update({
     'test_proxy_filter_count': op_test_proxy_filter_count,
     'test_metadata_tag': op_test_metadata_tag,
+    'test_nest_groups': op_test_nest_groups,
     'select_mask': op_test_select_mask,
     'export_mask': op_test_export_mask,
     'test_select_rect': op_test_select_rect,
     'test_selection_empty': op_test_selection_empty,
     'test_wrap_in_group': op_test_wrap_in_group,
     'test_add_foreign_filter': op_test_add_foreign_filter,
+    'test_add_text_layer': op_test_add_text_layer,
+    'test_build_layer_tree': op_test_build_layer_tree,
+    'test_all_layers_order': op_test_all_layers_order,
+    'test_set_channels_deadline': op_test_set_channels_deadline,
     'test_apply_raw_effect': op_test_apply_raw_effect,
     'test_mirror_unattachable': op_test_mirror_unattachable,
     'test_force_effect_update_failure': op_test_force_effect_update_failure,

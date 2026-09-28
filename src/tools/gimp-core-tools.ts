@@ -10,9 +10,9 @@ import { GimpError } from '../backends/gimp/errors.js';
  * takes (`server.ts`'s buildLicenseAdvisoryNote comment): it is the discovery
  * primitive, and a failed connection is content the caller needs, not an
  * exception to unwind. It answers with whatever the bridge's own `ping` op
- * gives it (`ops.py`'s `op_ping`), which reports open image IDS only — the
- * bridge has no per-image describe op, so an image's name and size come from
- * `gimp_open_document`'s own result at open time.
+ * gives it (`ops.py`'s `op_ping`), which reports open image IDS only — for an
+ * already-open image's own name/size/layers, see `gimp_inspect`
+ * (`what: 'document'`), which reaches the bridge's `describe` op instead.
  */
 
 /**

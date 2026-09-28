@@ -4,9 +4,24 @@
  * behaviour it mirrors.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { gimpFactories } from '@editmamei/modules/gimp/index.ts';
 import { GIMP_OVERVIEW_MARKDOWN } from '@editmamei/tools/gimp-core-tools.ts';
 import { makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const OPS_PY_PATH = join(REPO_ROOT, 'src', 'backends', 'gimp', 'bridge', 'ops.py');
+
+/** The real `MAX_DESCRIBE_LAYER_NODES` value from ops.py -- the source of truth the "2000 nodes"
+ * claim below must track, read as text rather than hardcoded so the two can't silently drift. */
+function maxDescribeLayerNodes(): number {
+  const text = readFileSync(OPS_PY_PATH, 'utf8');
+  const match = /MAX_DESCRIBE_LAYER_NODES\s*=\s*(\d+)/.exec(text);
+  if (!match) throw new Error('MAX_DESCRIBE_LAYER_NODES not found in ops.py');
+  return Number(match[1]);
+}
 
 const tools = gimpFactories.flatMap((f) => f(makeGimpBackend().asBackend()));
 const byName = new Map(tools.map((t) => [t.tool.name, t.tool]));
@@ -268,6 +283,15 @@ describe('long full-resolution work warns that a timeout loses unsaved work', ()
       /if any call times out the GIMP session restarts and every unsaved open image and filter is lost/
     );
   });
+  it('gimp_inspect says it too (its channels target can itself run long)', () => {
+    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
+    for (const text of [whatText, descText]) {
+      expect(text).toMatch(
+        /if it times out the GIMP session restarts and unsaved work is lost, so save \(gimp_save_xcf\) first/
+      );
+    }
+  });
 });
 
 describe('raw handling matches op_open (the load is always tried first)', () => {
@@ -356,5 +380,83 @@ describe('open clears a selection saved in the file (op_open)', () => {
     expect(overviewSection('.xcf vs export').replace(/\s+/g, ' ')).toMatch(
       /Opening a file clears any selection saved in it/
     );
+  });
+});
+
+describe('gimp_inspect describe-by-id targets (document/layers/channels/filter)', () => {
+  // ops.py op_describe's layer tree addresses by layer_id, not name -- duplicate layer names
+  // are legal in GIMP, so only the id is a reliable handle.
+  it('the what field says layer tree nodes are addressed by layer_id, and flag is_text_layer', () => {
+    const text = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    expect(text).toMatch(/addressed by `?layer_id`?/);
+    expect(text).toMatch(/is_text_layer/);
+  });
+  it('the tool description repeats the same two facts', () => {
+    const text = description('gimp_inspect').replace(/\s+/g, ' ');
+    expect(text).toMatch(/addressed by `?layer_id`?/);
+    expect(text).toMatch(/is_text_layer/);
+  });
+  it('image says it is required for every what except documents', () => {
+    expect(field('gimp_inspect', 'image').replace(/\s+/g, ' ')).toMatch(
+      /Required for every `?what`? except 'documents'/
+    );
+  });
+  it("filter_id says it is required for what='filter'", () => {
+    expect(field('gimp_inspect', 'filter_id')).toMatch(/Required for what='filter'/);
+  });
+  it("what='filter' says it reuses gimp_filter op=list's own shape", () => {
+    expect(field('gimp_inspect', 'what').replace(/\s+/g, ' ')).toMatch(
+      /same shape gimp_filter \(op=list\) reports it in/
+    );
+  });
+  // ops.py's MAX_DESCRIBE_LAYER_NODES caps the tree and reports `truncated: true` on the way out.
+  // The node count is read from ops.py itself, not hardcoded, so a changed cap fails this test
+  // until the description is updated to match rather than silently drifting from the real value.
+  it('the what field and the tool description both state the node cap (matching MAX_DESCRIBE_LAYER_NODES) and truncated flag', () => {
+    const cap = maxDescribeLayerNodes();
+    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
+    for (const text of [whatText, descText]) {
+      expect(text).toMatch(new RegExp(`${cap} nodes`));
+      expect(text).toMatch(/truncated.*true/);
+    }
+  });
+  // ops.py's _channels_summary (document) vs _channels_described (channels): coverage reads a
+  // full pixel buffer per channel, so `document` deliberately skips it.
+  it("document's channel listing is id/name only; channels carries coverage instead", () => {
+    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    expect(whatText).toMatch(/id\/name only \(no coverage\)/);
+    expect(whatText).toMatch(/coverage \(selected_pixels\/fraction\)/);
+    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
+    expect(descText).toMatch(/no coverage/);
+    expect(descText).toMatch(/coverage \(selected_pixels\/fraction\)/);
+  });
+  // ops.py's op_describe adds top_level_count (the image's real top-level layer count) and
+  // total_nodes (how many nodes this response carries) alongside truncated.
+  it('the what field and the tool description both mention top_level_count and total_nodes', () => {
+    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
+    for (const text of [whatText, descText]) {
+      expect(text).toMatch(/`?top_level_count`?/);
+      expect(text).toMatch(/`?total_nodes`?/);
+    }
+  });
+  // ops.py's _channels_described stops early on a document with many named channels and reports
+  // channels_skipped alongside truncated.
+  it('the what field and the tool description both mention channels_skipped', () => {
+    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
+    for (const text of [whatText, descText]) {
+      expect(text).toMatch(/`?channels_skipped`?/);
+    }
+  });
+});
+
+describe('gimp_filter op=list reports layer/layer_id alongside the rest of the record', () => {
+  // ops.py's _filter_record includes layer/layer_id (which layer a filter lives on, and its id) --
+  // the model needs both named in the description to know they're there.
+  it('the op field names layer and layer_id', () => {
+    const text = field('gimp_filter', 'op').replace(/\s+/g, ' ');
+    expect(text).toMatch(/`?layer`?\/`?layer_id`?/);
   });
 });
