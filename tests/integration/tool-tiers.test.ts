@@ -12,7 +12,7 @@ import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
  * Registers BOTH the ps_* and gimp_* surfaces for the universe-enumeration
  * tests below — a plain `new EditmameiServer()` only ever registers ps_*
  * (the no-`editors`-option default), which leaves every gimp_* tool
- * unregistered and makes its 16 TOOL_TIERS rows look orphaned or
+ * unregistered and makes its 17 TOOL_TIERS rows look orphaned or
  * unclassifiable, when the real gap is that this construction never asked
  * for gimp_* at all. The install is a fake, plausible-looking path — nothing
  * spawns at registration time, `GimpBackend` only starts a session lazily on
