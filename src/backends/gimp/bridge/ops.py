@@ -103,9 +103,16 @@ def _existing_filter(img, args, operation):
         for f in layer.get_filters():
             if f.get_id() == filter_id:
                 if f.get_operation_name() != operation:
-                    raise ValueError(
-                        'filter %s is %s, not %s' % (filter_id, f.get_operation_name(), operation)
-                    )
+                    # Phrased with the tool's own `type` names (lib.OPERATION_TYPES, the merged
+                    # adjust+effect inverse), not the raw GEGL op strings -- a caller sent
+                    # `type: 'motion_blur'` or similar, not `gegl:motion-blur-linear`, so the
+                    # refusal should name what they actually typed. Falls back to the raw
+                    # operation name for anything not in that table (there is none today, but a
+                    # future op added to one table and not the other must not raise here instead
+                    # of just showing an unmapped name).
+                    actual = lib.OPERATION_TYPES.get(f.get_operation_name(), f.get_operation_name())
+                    expected = lib.OPERATION_TYPES.get(operation, operation)
+                    raise ValueError('filter %s is %s, not %s' % (filter_id, actual, expected))
                 return f
     raise ValueError('no filter with id %s on image %s' % (filter_id, img.get_id()))
 
@@ -178,13 +185,27 @@ def _mirror_filters(src_img, dst_img):
     minimum, so without this clamp a small enough proxy would render as if the property were
     never scaled down at all. This is an approximation (see `op_preview`'s `proxy` flag) -- exact
     for everything else, since every other property here is scale-invariant (a hue shift, a
-    level, a percentage)."""
+    level, a percentage).
+
+    Invisible filters (toggled off via `filter op=set_visibility`) are skipped entirely, without
+    even attempting to re-create them -- they contribute nothing to the render either way. A
+    filter GIMP refuses to attach non-destructively (`_append_masked`'s own guard, the same
+    silent-failure class it exists to catch) is likewise skipped here rather than raised: unlike
+    `_apply_filter`'s CREATE path, where that refusal must be a hard error (nothing has been
+    ledgered yet, so failing loudly is free), a proxy render already renders every OTHER live
+    filter and is allowed to approximate by leaving one out rather than failing the whole preview/
+    histogram/compare call. Returns the list of filter names that could not be mirrored (empty
+    when every visible filter mirrored cleanly), which callers surface as `unmirrored_filters` in
+    their own result."""
     filters, _unknown = _ledger_get(src_img)
     src_w = src_img.get_width()
     scale = (dst_img.get_width() / src_w) if src_w else 1.0
+    unmirrored = []
     # dst is a duplicate of src (see `_proxy`), so both walks yield the same layers in the same order.
     for src, dst in zip(_all_layers(src_img), _all_layers(dst_img)):
         for f in reversed(src.get_filters()):  # get_filters() is top-first
+            if not f.get_visible():
+                continue
             g = Gimp.DrawableFilter.new(dst, f.get_operation_name(), f.get_name())
             src_cfg, dst_cfg = f.get_config(), g.get_config()
             for p in src_cfg.list_properties():
@@ -210,8 +231,13 @@ def _mirror_filters(src_img, dst_img):
                     dst_cfg.set_property(prop_name, scaled)
             g.set_opacity(f.get_opacity())
             g.set_blend_mode(f.get_blend_mode())
-            _append_masked(dst_img, dst, g, mask)
-            g.set_visible(f.get_visible())
+            try:
+                _append_masked(dst_img, dst, g, mask)
+            except lib.OpError:
+                unmirrored.append(f.get_name())
+                continue
+            g.set_visible(True)
+    return unmirrored
 
 
 def _drop_proxies(image_id):
@@ -420,19 +446,30 @@ def _set_motion_blur(cfg, params):
 def _set_lens_blur(cfg, params):
     # gegl:focus-blur, not gegl:lens-blur -- see lib.build_lens_blur_params' own comment.
     #
-    # gegl:focus-blur's OWN `radius` property (distinct from the `blur-radius` this tool exposes
-    # as its user-facing `radius` field) sizes a circular IN-FOCUS zone that stays perfectly sharp
-    # regardless of `blur-radius` -- verified live: at its own default (0.75), the center ~75% of
-    # the image never blurs at all no matter how large `blur-radius` is, which is a tilt-shift/
-    # depth-of-field effect, not the uniform "lens blur" this tool advertises. Hardcoded to 0 here
-    # (not part of `params`, not merge-tracked, not user-configurable) so the blur applies
-    # uniformly across the whole layer instead.
+    # Two properties are forced here, not part of `params` and not user-configurable:
+    #  - `radius` (distinct from `blur-radius`) sizes a circular IN-FOCUS zone that stays
+    #    perfectly sharp regardless of `blur-radius` -- verified live: at its own default (0.75),
+    #    the center ~75% of the image never blurs at all, which is a tilt-shift/depth-of-field
+    #    effect, not the uniform "lens blur" this tool advertises. Forced to 0 so the blur applies
+    #    uniformly across the whole layer instead.
+    #  - `blur-type` defaults to 'gaussian', which would make this a second, redundant
+    #    gaussian_blur and leave `highlight_factor` inert. Forced to 'lens' -- verified live, that
+    #    mode DOES attach as a non-destructive filter (the 'aux'-pad restriction that sank
+    #    gegl:lens-blur does not apply inside this meta-operation) and produces a real bokeh
+    #    highlight boost.
     cfg.set_property('radius', 0.0)
+    cfg.set_property('blur-type', 'lens')
     cfg.set_property('blur-radius', params['blur-radius'])
     cfg.set_property('highlight-factor', params['highlight-factor'])
 
 
 def _set_add_noise(cfg, params):
+    # `independent=False`: what "add grain" means to a photographer is monochrome noise (the
+    # same random value added to R, G, and B at a given pixel, like real film grain or sensor
+    # noise's luminance component) -- GEGL's own default (`independent=True`) instead draws THREE
+    # separate random values per pixel, one per channel, which reads as colour speckle/confetti
+    # rather than grain. Not part of `params`, not user-configurable.
+    cfg.set_property('independent', False)
     cfg.set_property('red', params['red'])
     cfg.set_property('green', params['green'])
     cfg.set_property('blue', params['blue'])
@@ -441,6 +478,10 @@ def _set_add_noise(cfg, params):
 
 
 def _set_drop_shadow(cfg, params):
+    # The rendered shadow is clipped to the layer's own bounds -- verified live, a large
+    # offset/radius does not grow the layer or canvas (measured at the schema maxima and in
+    # combination: no size change), it just gets cut off at the edge like any other
+    # DrawableFilter here, so no separate cap against "ballooning" is needed.
     cfg.set_property('x', params['x'])
     cfg.set_property('y', params['y'])
     cfg.set_property('radius', params['radius'])
@@ -495,7 +536,11 @@ def _append_masked(img, layer, f, mask):
     own id still perfectly valid. Left unchecked, the caller (`_apply_filter`) would ledger a
     phantom filter: `filter_id` returned as if it worked, the image silently rendering with no
     effect at all. Raised here, before `_apply_filter` ever writes the ledger record, so a
-    refused attach never gets persisted as one."""
+    refused attach never gets persisted as one -- `_mirror_filters` (the other caller) catches
+    this same exception instead of letting it propagate, since a proxy render is allowed to skip
+    a filter it can't mirror rather than fail outright (see its own doc comment). `f.delete()`
+    runs before raising either way, so a refused filter that never actually attached to anything
+    doesn't linger as an orphaned DrawableFilter object."""
     if mask:
         img.select_item(Gimp.ChannelOps.REPLACE, _channel_by_name(img, mask))
     else:
@@ -503,6 +548,7 @@ def _append_masked(img, layer, f, mask):
     try:
         layer.append_filter(f)
         if f.get_id() not in [x.get_id() for x in layer.get_filters()]:
+            f.delete()
             raise lib.OpError(
                 'gimp_op_failed',
                 'GIMP refused to attach %s as a live filter (some GEGL operations with an '
@@ -762,14 +808,13 @@ def _find_filter(img, filter_id):
 def op_effect(args):
     """`gimp_add_effect`: create (or, with `filter_id`, re-edit in place) one of the allow-listed
     GEGL effect filters (`lib.EFFECT_OPERATIONS`) -- the same merge/mask/ledger machinery
-    `op_adjust` uses, parameterized on `type` instead of `type`'s own ADJUST_* tables
-    (`lib.EFFECT_PARAM_BUILDERS`/`EFFECT_CREATE_DEFAULTS`, the parallel tables to ADJUST_*).
-    Dispatched through the shared `_apply_filter`, so the ledger, mask confinement,
+    `op_adjust` uses, but reading its own `type` against the EFFECT_* tables
+    (`lib.EFFECT_PARAM_BUILDERS`/`EFFECT_CREATE_DEFAULTS`) rather than `op_adjust`'s ADJUST_*
+    ones. Dispatched through the shared `_apply_filter`, so the ledger, mask confinement,
     merge-on-re-edit, geometry refusals and proxy mirroring all come free, unchanged.
-    gimp_add_effect is its own tool (tier 'dev') rather than an op on gimp_filter, per the
-    house rule that new capability ships at 'dev' until the owner promotes it -- a new op on
-    gimp_filter (already 'community') would have bypassed that gate, since tool-tiers.ts
-    classifies per TOOL, not per op."""
+    gimp_add_effect is its own tool (tier 'dev'), a sibling of gimp_add_adjustment, rather than a
+    new op on gimp_filter (already 'community') -- tool-tiers.ts classifies per TOOL, not per op,
+    so a new op on an already-shipping tool would have skipped the tier gate entirely."""
     effect_type = args.get('type')
     builder = lib.EFFECT_PARAM_BUILDERS.get(effect_type)
     if builder is None:
@@ -898,6 +943,39 @@ def _refuse_if_masked_filters(img, op_name):
         )
 
 
+def _transform_effect_filters(img, transform_fn):
+    """Apply `transform_fn(operation, params) -> new_params` to every ledgered filter's params,
+    pushing the result into BOTH the live GEGL config and the ledger record -- how
+    gimp_add_effect's direction/position-dependent effects (vignette, motion_blur, drop_shadow)
+    stay locked to the content through rotate/flip/resize instead of silently drifting relative
+    to it. Called by op_rotate/op_flip/op_resize AFTER the geometry transform itself, and only
+    once `_refuse_if_masked_filters` has already confirmed every live filter is unmasked and
+    ledgered (a masked or unverifiable filter refuses the whole op before this ever runs, so
+    every filter found here is already known-safe to touch). A filter `transform_fn` has nothing
+    to change for (black_white, add_noise, lens_blur's blur-radius on flip/rotate, and every
+    gimp_add_adjustment type -- out of scope for this table, see lib.py's own comment) comes back
+    with the SAME values (by `==`), which this skips without writing anything, so ledger writes
+    stay confined to filters that actually moved."""
+    filters, unknown = _ledger_get(img)
+    if not filters:
+        return
+    changed = False
+    for layer in _all_layers(img):
+        for f in layer.get_filters():
+            rec = filters.get(f.get_name())
+            if not rec or rec['operation'] != f.get_operation_name():
+                continue
+            new_params = transform_fn(rec['operation'], rec['params'])
+            if new_params == rec['params']:
+                continue
+            SETTERS[rec['operation']](f.get_config(), new_params)
+            f.update()
+            rec['params'] = new_params
+            changed = True
+    if changed:
+        _ledger_put(img, filters, unknown)
+
+
 def op_crop(args):
     img = _image(args)
     left, top = int(lib.require(args, 'left')), int(lib.require(args, 'top'))
@@ -948,6 +1026,12 @@ def op_resize(args):
     width, height = lib.validate_resize_dims(width, height)
     Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     img.scale(width, height)
+    _transform_effect_filters(
+        img,
+        lambda operation, params: lib.resize_effect_params(
+            operation, params, width / float(w0), height / float(h0)
+        ),
+    )
     _drop_proxies(img.get_id())
     return {'width': img.get_width(), 'height': img.get_height()}
 
@@ -974,7 +1058,8 @@ def op_rotate(args):
     # floating selection behind (see op_open).
     Gimp.Selection.none(img)
     expand = bool(args.get('expand', False))
-    cx, cy = img.get_width() / 2.0, img.get_height() / 2.0
+    old_w, old_h = img.get_width(), img.get_height()
+    cx, cy = old_w / 2.0, old_h / 2.0
     angle = math.radians(degrees)
     for layer in img.get_layers():
         layer.transform_rotate(angle, False, cx, cy)
@@ -982,6 +1067,13 @@ def op_rotate(args):
         channel.transform_rotate(angle, False, cx, cy)
     if expand:
         img.resize_to_layers()
+    new_w, new_h = img.get_width(), img.get_height()
+    _transform_effect_filters(
+        img,
+        lambda operation, params: lib.rotate_effect_params(
+            operation, params, degrees, old_w, old_h, new_w, new_h
+        ),
+    )
     _drop_proxies(img.get_id())
     return {'width': img.get_width(), 'height': img.get_height(), 'degrees': degrees}
 
@@ -1002,21 +1094,26 @@ def op_flip(args):
     _refuse_if_masked_filters(img, 'flip')
     Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     img.flip(_FLIP_ORIENTATIONS[orientation])
+    _transform_effect_filters(
+        img, lambda operation, params: lib.flip_effect_params(operation, params, orientation)
+    )
     _drop_proxies(img.get_id())
     return {'width': img.get_width(), 'height': img.get_height()}
 
 
 def _proxy_render(img, max_px):
     """A flattened, downscaled render of img with its live filters: the proxy plus mirrored
-    filters. Caller deletes it."""
+    filters. Caller deletes it. Returns (dup, unmirrored_filters) -- the second element is
+    `_mirror_filters`'s own return value, surfaced by every caller's result as
+    `unmirrored_filters`."""
     dup = _proxy(img, max_px).duplicate()
     try:
-        _mirror_filters(img, dup)
+        unmirrored = _mirror_filters(img, dup)
         dup.flatten()
     except Exception:
         dup.delete()
         raise
-    return dup
+    return dup, unmirrored
 
 
 def _region_full_res(img, region):
@@ -1071,11 +1168,11 @@ def op_preview(args):
                     'proxy': False}
         finally:
             dup.delete()
-    dup = _proxy_render(img, max_px)
+    dup, unmirrored = _proxy_render(img, max_px)
     try:
         _export_stripped(dup, out_path)
         return {'path': out_path, 'width': dup.get_width(), 'height': dup.get_height(),
-                'proxy': True}
+                'proxy': True, 'unmirrored_filters': unmirrored}
     finally:
         dup.delete()
 
@@ -1114,7 +1211,7 @@ def op_histogram(args):
         scale = min(1.0, 1024.0 / max(img_w, img.get_height())) if img_w else 1.0
         px, py, pw, ph = lib.region_to_proxy_px(region, scale)
         if pw >= lib.MIN_PROXY_REGION_PX and ph >= lib.MIN_PROXY_REGION_PX:
-            dup = _proxy_render(img, 1024)
+            dup, unmirrored = _proxy_render(img, 1024)
             try:
                 px = min(px, max(0, dup.get_width() - 1))
                 py = min(py, max(0, dup.get_height() - 1))
@@ -1125,22 +1222,27 @@ def op_histogram(args):
                 w, h, out = _channel_stats_from(dup, layer, channels)
             finally:
                 dup.delete()
-            return {'exact': False, 'width': w, 'height': h, 'pixels': w * h, 'channels': out}
+            return {'exact': False, 'width': w, 'height': h, 'pixels': w * h, 'channels': out,
+                    'unmirrored_filters': unmirrored}
         region = dict(region)  # fall through to the full-res path below
         exact = True
 
+    unmirrored = []
     if region:
         dup, layer = _region_full_res(img, region)
     elif exact:
         dup, layer = _composite(img)
     else:
-        dup = _proxy_render(img, 1024)
+        dup, unmirrored = _proxy_render(img, 1024)
         layer = dup.get_layers()[0]
     try:
         w, h, out = _channel_stats_from(dup, layer, channels)
     finally:
         dup.delete()
-    return {'exact': exact, 'width': w, 'height': h, 'pixels': w * h, 'channels': out}
+    result = {'exact': exact, 'width': w, 'height': h, 'pixels': w * h, 'channels': out}
+    if not region and not exact:
+        result['unmirrored_filters'] = unmirrored
+    return result
 
 
 def op_compare(args):
@@ -1169,7 +1271,7 @@ def op_compare(args):
         after = None
         try:
             base = _proxy(img, max_px).duplicate()
-            after = _proxy_render(img, max_px)
+            after, unmirrored = _proxy_render(img, max_px)
             if region:
                 img_w = img.get_width()
                 scale = min(1.0, float(max_px) / max(img_w, img.get_height())) if img_w else 1.0
@@ -1189,7 +1291,8 @@ def op_compare(args):
                 deltas[ch] = {
                     k: round(a[k] - b[k], 3) for k in ('mean', 'median', 'p1', 'p5', 'p95', 'p99')
                 }
-            result = {'before': before_stats, 'after': after_stats, 'delta': deltas, 'proxy': True}
+            result = {'before': before_stats, 'after': after_stats, 'delta': deltas, 'proxy': True,
+                      'unmirrored_filters': unmirrored}
             before_path, after_path = args.get('before_path'), args.get('after_path')
             if before_path:
                 _export_stripped(base, before_path)
