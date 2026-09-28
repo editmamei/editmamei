@@ -127,17 +127,20 @@ const effectSchema: JsonSchemaObject = {
       minimum: 0,
       maximum: 1,
       description:
-        'vignette only. Vignette center, as a fraction of image width (0 = left edge, 1 = right ' +
-        'edge). Default (when creating): 0.5.',
+        "vignette only. Vignette center, as a fraction of the LAYER's own width (not the whole " +
+        'canvas — 0 = left edge, 1 = right edge). Default (when creating): 0.5. Cropping ' +
+        're-centres the vignette on the new, smaller frame (the same fraction now means a ' +
+        'different point) — the intended behaviour, like a post-crop vignette in Lightroom, not ' +
+        'something to correct for.',
     },
     center_y: {
       type: 'number',
       minimum: 0,
       maximum: 1,
       description:
-        'vignette only. Vignette center, as a fraction of image height (0 = top edge, 1 = bottom ' +
-        'edge). Default (when creating): 0.5. The vignette color is black and not configurable ' +
-        'yet.',
+        "vignette only. Vignette center, as a fraction of the LAYER's own height (not the whole " +
+        'canvas — 0 = top edge, 1 = bottom edge). Default (when creating): 0.5. The vignette ' +
+        'color is black and not configurable yet.',
     },
     // ---- black_white ----
     red_weight: {
@@ -178,7 +181,8 @@ const effectSchema: JsonSchemaObject = {
       minimum: -180,
       maximum: 180,
       description:
-        'motion_blur only. Direction of the streak, in degrees. Default (when creating): 0.',
+        'motion_blur only. Direction of the streak, in degrees: 0 is horizontal, positive angles ' +
+        'rotate clockwise (90 is vertical). Default (when creating): 0.',
     },
     // ---- lens_blur ----
     highlight_factor: {
@@ -294,8 +298,13 @@ export function createGimpEffectTools(gimp: GimpBackend): ToolDefinition[] {
           'NEW filter — fixed at creation, cannot change on a re-edit. ORDER MATTERS: straighten ' +
           '/ flip / resize the canvas first, then crop, THEN add any masked effect — rotate, ' +
           'flip, and resize all refuse outright once a masked filter exists, or any filter not ' +
-          'created by Editmamei. lens_blur is a uniform soft-focus blur, not a depth-of-field ' +
-          'falloff. Check the stack afterward with gimp_filter (op=list).',
+          'created by Editmamei. vignette, motion_blur, and drop_shadow stay locked to the ' +
+          'content through flip, resize, and an exact 90/180/270-degree rotate (their center/' +
+          'angle/offset fields are updated automatically, and gimp_filter op=list reflects the ' +
+          'new values afterward) — rotating by any OTHER angle is refused while one of these ' +
+          'three is present, rather than letting it drift out of alignment. lens_blur is a ' +
+          'uniform soft-focus blur, not a depth-of-field falloff. Check the stack afterward with ' +
+          'gimp_filter (op=list).',
         inputSchema: effectSchema,
         outputSchema: {
           type: 'object',
