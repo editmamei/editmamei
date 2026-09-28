@@ -1,6 +1,6 @@
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
-import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
+import { validateArgs, type JsonSchemaObject, type JsonSchemaProperty } from '../utils/validate.js';
 import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers.js';
 import { GIMP_IMAGE_PROP, runGimpTool, pickSchemaDeclaredKeys } from './gimp-shared.js';
 
@@ -61,6 +61,26 @@ const resizeSchema: JsonSchemaObject = {
   required: ['image'],
 };
 
+/** Names of position/direction-dependent effect filters whose geometry-tracking update failed
+ * partway through this rotate/flip/resize (bridge/ops.py's `_apply_planned_effect_transform`): a
+ * live GEGL config update raised, so that filter's OLD params were restored (best effort) and
+ * kept in the ledger instead of the new ones -- present only when non-empty. Described generically
+ * (not naming a tool by name) since the leak guard scans every community tool's own schema text
+ * for a dev/none-tier tool name — describing this in terms of WHICHEVER tool made the filter,
+ * rather than the one that currently does, means this text never needs to change if that changes.
+ * A plain array of strings, not a nullable/oneOf type: `runGimpTool`/`gimpTransformCanvas` simply
+ * omit the key from the result when there is nothing to report, rather than encoding "empty" as a
+ * schema-level null variant. */
+const EFFECT_UPDATE_FAILURES_PROP: JsonSchemaProperty = {
+  type: 'array',
+  items: { type: 'string' },
+  description:
+    'Names of effect filters (position/direction-dependent ones, tracked through geometry ' +
+    'changes) whose position/angle/offset could not be updated for this transform (a live update ' +
+    'failure) -- they were restored to their OLD values instead, both in the render and in ' +
+    "gimp_filter's own ledger. Omitted when every filter updated cleanly.",
+};
+
 const transformCanvasSchema: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -92,6 +112,20 @@ const transformCanvasSchema: JsonSchemaObject = {
   required: ['image', 'op'],
 };
 
+/** Appended to a rotate/flip/resize result's text when the bridge reports `effect_update_failures`
+ * -- a live GEGL update that failed partway through applying the geometry transform to one of
+ * gimp_add_effect's filters. The filter's OWN params were restored (bridge/ops.py's
+ * `_apply_planned_effect_transform`), so the render and the ledger both still match its OLD
+ * position/angle/offset -- it just didn't move with the rest of the image. */
+function effectUpdateFailuresNote(failures: string[] | undefined): string {
+  if (!failures || failures.length === 0) return '';
+  return (
+    ` WARNING: ${failures.join(', ')} could not be updated for this transform and ` +
+    `${failures.length === 1 ? 'was' : 'were'} left at its old position/angle/offset instead -- ` +
+    're-add it (or re-apply the transform) if it needs to track the content.'
+  );
+}
+
 async function gimpTransformCanvas(
   gimp: GimpBackend,
   rawArgs: Record<string, unknown>
@@ -106,14 +140,17 @@ async function gimpTransformCanvas(
     if (op !== 'rotate' && op !== 'flip') {
       return unknownDiscriminator('op', op, ['rotate', 'flip']);
     }
-    const result = await gimp.call<{ width: number; height: number; degrees?: number }>(
-      op,
-      pickSchemaDeclaredKeys(transformCanvasSchema, args)
-    );
+    const result = await gimp.call<{
+      width: number;
+      height: number;
+      degrees?: number;
+      effect_update_failures?: string[];
+    }>(op, pickSchemaDeclaredKeys(transformCanvasSchema, args));
     const text =
-      op === 'rotate'
+      (op === 'rotate'
         ? `Rotated ${result.degrees}°. New canvas ${result.width}x${result.height}.`
-        : `Flipped ${args.orientation as string}. Canvas ${result.width}x${result.height}.`;
+        : `Flipped ${args.orientation as string}. Canvas ${result.width}x${result.height}.`) +
+      effectUpdateFailuresNote(result.effect_update_failures);
     return {
       content: [{ type: 'text' as const, text }],
       structuredContent: result as unknown as Record<string, unknown>,
@@ -176,7 +213,11 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
         inputSchema: resizeSchema,
         outputSchema: {
           type: 'object',
-          properties: { width: { type: 'number' }, height: { type: 'number' } },
+          properties: {
+            width: { type: 'number' },
+            height: { type: 'number' },
+            effect_update_failures: EFFECT_UPDATE_FAILURES_PROP,
+          },
         },
         annotations: {
           title: 'Resize GIMP Image',
@@ -194,8 +235,15 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
           op: 'resize',
           errorPrefix: 'Error resizing GIMP image',
           successText: (result) => {
-            const r = result as { width: number; height: number };
-            return `Resized to ${r.width}x${r.height}.`;
+            const r = result as {
+              width: number;
+              height: number;
+              effect_update_failures?: string[];
+            };
+            return (
+              `Resized to ${r.width}x${r.height}.` +
+              effectUpdateFailuresNote(r.effect_update_failures)
+            );
           },
         }),
     },
@@ -211,8 +259,8 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
           'one geometry op that is always safe afterward). A rotate to anything other than an ' +
           'exact 0/90/180/270 degrees is also refused while a position/direction-dependent ' +
           'filter is present, since only a right angle keeps such a filter locked to the content ' +
-          '— rotate at a right angle instead, or delete/bake that filter first. Rotating a very ' +
-          'large image can take tens of seconds; ' +
+          '— rotate at a right angle instead, or delete it (gimp_filter op=delete) and re-add it ' +
+          'afterwards. Rotating a very large image can take tens of seconds; ' +
           'if it times out, the GIMP session restarts and any unsaved work — filters, masks, and ' +
           'any other open image — is lost, so save (gimp_save_xcf) before rotating a large canvas.',
         inputSchema: transformCanvasSchema,
@@ -222,6 +270,7 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
             width: { type: 'number' },
             height: { type: 'number' },
             degrees: { type: 'number' },
+            effect_update_failures: EFFECT_UPDATE_FAILURES_PROP,
           },
         },
         annotations: {
