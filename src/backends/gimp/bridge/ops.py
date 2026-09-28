@@ -73,11 +73,10 @@ def _all_layers(img):
 
     Walked with an EXPLICIT stack, the same reasoning (and the same shape) as `_build_layer_tree`'s
     own walk: a pathological chain of nested single-child groups would otherwise risk Python's OWN
-    recursion limit through a recursive version of this function, not just some cap this function
-    itself imposes (it imposes none -- every caller here matters exactly because it doesn't). A
-    group's children are pushed in REVERSE order so popping (LIFO) still visits top-of-stack-first,
-    which keeps this in the same order a prior recursive version produced -- positional proxy
-    mirroring and other callers depend on that order, not just on the same set of layers."""
+    recursion limit, not just some cap this function itself imposes (it imposes none -- every
+    caller here matters exactly because it doesn't). A group's children are pushed in REVERSE order
+    so popping (LIFO) still visits top-of-stack-first -- positional proxy mirroring and other
+    callers depend on that exact order, not just on the same set of layers."""
     out = []
     stack = list(reversed(img.get_layers()))
     while stack:
@@ -809,25 +808,47 @@ def _build_layer_tree(top_layers, max_nodes=MAX_DESCRIBE_LAYER_NODES):
 
 def _channels_summary(img):
     """Every named channel on img, by id and name only -- `document`'s cheap channel listing.
-    Coverage (`_channel_coverage`) reads a channel's full pixel buffer (seconds of work per
-    channel at full resolution), so it is computed only for `what='channels'`
-    (`_channels_described`), never bundled into `document`'s broader, cheaper read."""
+    Coverage (`_channel_coverage`) reads a channel's full pixel buffer, so it is computed only for
+    `what='channels'` (`_channels_described`), never bundled into `document`'s broader, cheaper
+    read."""
     return [{'channel_id': ch.get_id(), 'name': ch.get_name()} for ch in img.get_channels()]
+
+
+# `_channels_described` checks this after every channel it reads, and stops once that many seconds
+# have passed, rather than run gimp_inspect's own dispatch budget out on a document with many named
+# channels (`operation-timeouts.ts`). A plain module global, not a function default, so a test
+# fixture can reassign it directly (`test_set_channels_deadline`, fixtures/test_ops.py) and force
+# the stop without needing dozens of real channels.
+CHANNELS_DESCRIBE_DEADLINE_S = 15.0
 
 
 def _channels_described(img):
     """Every named channel on img, with its coverage (`_channel_coverage`) -- the same stat
     `op_create_mask` returns for the one it just built. `what='channels'`-only; see
-    `_channels_summary`'s own docstring for why `document` doesn't compute this."""
+    `_channels_summary`'s own docstring for why `document` doesn't compute this.
+
+    Reads at least the first channel unconditionally, then checks `CHANNELS_DESCRIBE_DEADLINE_S`
+    after each one read: once elapsed time reaches it, stops and returns early. Returns
+    {'channels', 'truncated', 'channels_skipped'} -- `channels` is whatever was read before
+    stopping, `truncated` is whether any named channel was left unread, and `channels_skipped`
+    counts them."""
     w, h = img.get_width(), img.get_height()
+    channels = img.get_channels()
     out = []
-    for ch in img.get_channels():
+    start = time.time()
+    for ch in channels:
         selected, fraction = _channel_coverage(ch, w, h)
         out.append({
             'channel_id': ch.get_id(), 'name': ch.get_name(),
             'selected_pixels': selected, 'fraction': fraction,
         })
-    return out
+        if time.time() - start >= CHANNELS_DESCRIBE_DEADLINE_S:
+            break
+    return {
+        'channels': out,
+        'truncated': len(out) < len(channels),
+        'channels_skipped': len(channels) - len(out),
+    }
 
 
 def op_describe(args):
@@ -837,13 +858,13 @@ def op_describe(args):
     and a cheap by-id/name channel listing in one call; `layers` returns just the tree (capped and
     flagged, see `_build_layer_tree`/`MAX_DESCRIBE_LAYER_NODES`); `channels` returns the same
     channels WITH coverage (`_channels_described`), the one part `document` deliberately leaves
-    out since it reads full pixel buffers. `filter` reports one filter by id, in the exact shape
-    `op_list_filters` reports it in (`_filter_record`, via `_find_filter` so a filter_id from a
-    different or closed image is never mistaken for a match). `document`/`layers` also report
-    `top_level_count` (the image's real top-level layer count, from `get_layers()` directly -- true
-    even when `truncated` cut the tree off before every top-level sibling was reached) and
-    `total_nodes` (how many nodes THIS response actually carries) alongside `truncated`, so a
-    truncated response says exactly how much is missing rather than just that something is."""
+    out since it reads full pixel buffers -- and stops after its own time budget on a document with
+    many named channels, returning whatever it already read (see `_channels_described`). `filter`
+    reports one filter by id, in the exact shape `op_list_filters` reports it in (`_filter_record`,
+    via `_find_filter` so a filter_id from a different or closed image is never mistaken for a
+    match). `document`/`layers` also report `top_level_count` (the image's real top-level layer
+    count, from `get_layers()` directly) and `total_nodes` (how many nodes THIS response carries)
+    alongside `truncated`."""
     what = args.get('what')
     if what not in DESCRIBE_TARGETS:
         raise ValueError('what must be one of %s' % ', '.join(DESCRIBE_TARGETS))
@@ -863,7 +884,7 @@ def op_describe(args):
             'total_nodes': total_nodes,
         }
     if what == 'channels':
-        return {'channels': _channels_described(img)}
+        return _channels_described(img)
     ok, xres, yres = img.get_resolution()
     top_layers = img.get_layers()
     layers, truncated, total_nodes = _build_layer_tree(top_layers)
@@ -1430,17 +1451,12 @@ def _channel_coverage(ch, w, h):
     # the primed, perceptual format for the same reason.
     data = ch.get_buffer().get(Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
     # `bytes.translate(None, delete)` runs the byte-by-byte pass in C rather than the interpreter
-    # loop a `sum(1 for b in data if b >= 128)` generator pays per byte -- `delete` names the bytes
-    # to DROP, so deleting every byte below 128 (0..127) leaves exactly the >=128 ones behind, and
-    # len() of what's left IS the selected count directly (no subtraction -- an earlier draft of
-    # this line computed `len(data) - len(...)` instead, which silently counts the UNselected bytes
-    # on anything but a coincidentally symmetric 50/50 buffer; caught live by
-    # geometry-and-masks.live.test.ts's ellipse-coverage and mask-replacement assertions, both of
-    # which use asymmetric coverage). Same result as the generator (verified live, GIMP 3.2.6:
-    # identical selected-pixel counts across rectangle, ellipse, and gradient masks), but this is
-    # what keeps `describe`'s `channels` target -- which reads this per NAMED channel, not just one
-    # -- inside gimp_inspect's timeout budget (`operation-timeouts.ts`) on a document with several
-    # masks.
+    # loop a `sum(1 for b in data if b >= 128)` generator pays per byte. `delete` names the bytes to
+    # DROP, so deleting every byte below 128 (0..127) leaves exactly the >=128 ones behind: len() of
+    # what's left IS the selected count directly, no subtraction needed. Same result as the
+    # generator, measured live (GIMP 3.2.6, ~24MP) at ~120ms/channel -- what keeps `describe`'s
+    # `channels` target, which reads this per NAMED channel rather than just one, fast enough to
+    # stay inside its own time budget (`_channels_described`'s `CHANNELS_DESCRIBE_DEADLINE_S`).
     selected = len(data.translate(None, bytes(range(128))))
     return selected, round(selected / len(data), 4)
 

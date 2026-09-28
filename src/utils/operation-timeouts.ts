@@ -273,12 +273,11 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   gimp_export: 90_000,
   // `what='channels'` reads EVERY named channel's full pixel buffer (`_channel_coverage`,
   // ops.py) -- the same per-channel cost `gimp_create_mask` budgets 20s for a single one of.
-  // Measured live (GIMP 3.2.6, ~24MP, 3 masks) at ~120ms/channel after the `_channel_coverage`
-  // speed fix (bytes.translate in C instead of a Python-level generator, which measured
-  // ~640ms/channel and was the actual timeout-kill risk this budget now has headroom for).
-  // There's no cap on how many named channels a document can carry (unlike the layer tree's
-  // 2000-node cap), so this covers several dozen channels on a slower machine before a timeout
-  // would tree-kill GIMP and lose every open image's unsaved work.
+  // Measured live (GIMP 3.2.6, ~24MP) at ~120ms/channel. `_channels_described` also applies its
+  // own internal deadline (`CHANNELS_DESCRIBE_DEADLINE_S`, ops.py) so a document with many named
+  // channels stops and reports what it already read rather than run this dispatch budget out;
+  // this entry is the outer safety margin on top of that, on a slower machine or a document large
+  // enough that even the capped `document`/`layers` tree walk takes real time.
   gimp_inspect: 30_000,
   gimp_add_adjustment: 20_000,
   gimp_filter: 15_000,
