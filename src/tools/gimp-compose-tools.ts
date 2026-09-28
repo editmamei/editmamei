@@ -259,13 +259,9 @@ const canvasSchema: JsonSchemaObject = {
     },
     fill: {
       type: 'string',
-      // No `enum` here on purpose: standard JSON Schema requires a value to satisfy BOTH `enum`
-      // and `pattern` when both are declared on one property, and this field's open-ended hex
-      // form can't be reduced to a fixed word list -- expressed as one `pattern` alone instead,
-      // with the exact words it accepts spelled out in the description below for a client or
-      // model reading the schema (an `enum` + `pattern` pair here would reject every hex value
-      // outright — the same "client can't parse this schema" failure mode a non-standard `oneOf`
-      // outputSchema caused elsewhere in this codebase).
+      // One `pattern`, no `enum`: standard JSON Schema requires a value to satisfy BOTH when both
+      // are declared, so an enum of the words would reject every hex value. The description spells
+      // out the accepted words for a client or model reading the schema.
       pattern: '^(white|black|transparent|#[0-9a-fA-F]{6})$',
       default: 'transparent',
       description:

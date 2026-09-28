@@ -41,14 +41,11 @@ export interface JsonSchemaProperty {
   // the LLM; the validator does not enforce them, handlers do).
   minItems?: number;
   maxItems?: number;
-  // A regex a string value must satisfy — for an open-ended field an `enum` can't express (e.g.
-  // gimp_canvas's `fill`, a fixed word list PLUS an arbitrary '#rrggbb' hex color: expressed as
-  // `pattern` ALONE, `'^(white|black|transparent|#[0-9a-fA-F]{6})$'`, never `enum` + `pattern`
-  // together). Standard JSON Schema semantics: when both `enum` and `pattern` are declared on the
-  // same property, a value must satisfy BOTH, not either — this is advisory to MCP clients and
-  // models too (they read the same schema), and a non-standard "either" reading has already once
-  // silently broken a client elsewhere in this codebase (a `oneOf` outputSchema). See
-  // `coerceAndCheck`.
+  // A regex a string value must satisfy, for an open-ended field an `enum` can't express (e.g. a
+  // word list plus an arbitrary '#rrggbb' hex color, written as one `pattern`). Standard JSON
+  // Schema semantics apply: when both `enum` and `pattern` are declared, a value must satisfy BOTH.
+  // MCP clients and models read the same schema, so a non-standard reading would disagree with
+  // them. See `coerceAndCheck`.
   pattern?: string;
 }
 
