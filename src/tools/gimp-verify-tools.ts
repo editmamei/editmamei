@@ -405,10 +405,10 @@ export function createGimpVerifyTools(
               type: 'array',
               items: { type: 'string' },
               description:
-                'Names of live filters GIMP refused to re-attach on this proxy render (an ' +
-                "'aux'-pad operation, e.g. lens_blur) — missing from this render entirely, not " +
-                'just approximated. Empty on a normal render, and always absent on a ' +
-                'full-resolution region render (proxy: false), which never mirrors filters at all.',
+                'Names of live filters GIMP refused to re-attach non-destructively on this proxy ' +
+                'render — missing from this render entirely, not just approximated. Empty on a ' +
+                'normal render, and always absent on a full-resolution region render ' +
+                '(proxy: false), which never mirrors filters at all.',
             },
           },
         },
@@ -466,7 +466,11 @@ export function createGimpVerifyTools(
               items: { type: 'string' },
               description:
                 'Names of live filters GIMP refused to re-attach on this proxy render — absent ' +
-                'from these stats entirely. Only present on the non-exact, whole-image path.',
+                'from these stats entirely. Present whenever histogram actually used the ' +
+                '(mirrored) preview proxy: the default whole-image path, OR a `region` large ' +
+                'enough to be sampled from the proxy rather than falling back to a full-' +
+                'resolution crop. Absent when exact: true, or when a region is too small and ' +
+                'falls back to that full-resolution crop — neither path mirrors filters at all.',
             },
           },
         },
