@@ -18,6 +18,7 @@ import { createGimpCoreTools } from '../../tools/gimp-core-tools.js';
 import { createGimpDocumentTools } from '../../tools/gimp-document-tools.js';
 import { createGimpInspectTools } from '../../tools/gimp-inspect-tools.js';
 import { createGimpAdjustmentTools } from '../../tools/gimp-adjustment-tools.js';
+import { createGimpEffectTools } from '../../tools/gimp-effect-tools.js';
 import { createGimpFilterTools } from '../../tools/gimp-filter-tools.js';
 import { createGimpGeometryTools } from '../../tools/gimp-geometry-tools.js';
 import { createGimpMaskTools } from '../../tools/gimp-mask-tools.js';
@@ -32,6 +33,7 @@ export const gimpFactories = [
   createGimpDocumentTools,
   createGimpInspectTools,
   createGimpAdjustmentTools,
+  createGimpEffectTools,
   createGimpFilterTools,
   createGimpGeometryTools,
   createGimpMaskTools,

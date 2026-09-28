@@ -256,6 +256,45 @@ export function writeHardEdge(path: string, width: number, height: number): void
   });
 }
 
+/** width x height RGBA PNG: an opaque `fill` square from (sx,sy) to (sx+size,sy+size), fully
+ * transparent (alpha 0) everywhere else -- a real alpha edge for drop_shadow to cast a shadow
+ * from, unlike every other fixture here (opaque RGB, no alpha channel at all). Shared by any file
+ * that needs a drop_shadow fixture (effect-filters.live.test.ts, geometry-and-masks.live.test.ts). */
+export function writeRgbaSquare(
+  path: string,
+  width: number,
+  height: number,
+  sx: number,
+  sy: number,
+  size: number,
+  fill: [number, number, number]
+): void {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // color type: truecolor with alpha (RGBA)
+  const raw = Buffer.alloc(height * (1 + width * 4));
+  let offset = 0;
+  for (let y = 0; y < height; y++) {
+    raw[offset++] = 0; // per-scanline filter: None
+    for (let x = 0; x < width; x++) {
+      const inside = x >= sx && x < sx + size && y >= sy && y < sy + size;
+      raw[offset++] = fill[0];
+      raw[offset++] = fill[1];
+      raw[offset++] = fill[2];
+      raw[offset++] = inside ? 255 : 0;
+    }
+  }
+  const png = Buffer.concat([
+    PNG_SIGNATURE,
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+  writeFileSync(path, png);
+}
+
 /** A tiny indexed-color (palette, PNG color type 3) PNG -- GIMP loads this as `base_type:
  * 'indexed'`, and verified live that `Image.convert_precision` fails outright for that base type
  * (a real GIMP-side "must not be of type 'indexed'" error, returned as a plain `False` rather than

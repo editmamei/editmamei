@@ -357,7 +357,13 @@ describe.skipIf(!install)('foreign and nested document state', () => {
       const listed = await session.call<Listed>('filter', { image: opened.image, op: 'list' });
       const overlay = listed.filters.find((f) => f.name === 'GUI Overlay');
       expect(overlay).toMatchObject({ source: 'readback' });
-      expect(typeof overlay!.params.value).toBe('string');
+      // A GeglColor becomes its stable [r, g, b, a] (lib.json_safe), not a bare str() that would
+      // embed a live object's memory address and differ every run.
+      expect(overlay!.params.value).toEqual(expect.any(Array));
+      expect((overlay!.params.value as number[]).length).toBe(4);
+      for (const channel of overlay!.params.value as number[]) {
+        expect(typeof channel).toBe('number');
+      }
     } finally {
       await session.call('close', { image: opened.image });
     }

@@ -376,5 +376,339 @@
       "maximum": null,
       "default": true
     }
+  ],
+  "gegl:vignette": [
+    {
+      "name": "shape",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "circle"
+    },
+    {
+      "name": "color",
+      "type": "GeglColor",
+      "minimum": null,
+      "maximum": null,
+      "default": [0, 0, 0, 1]
+    },
+    {
+      "name": "radius",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1.7976931348623157e+308,
+      "default": 1.2
+    },
+    {
+      "name": "softness",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.8
+    },
+    {
+      "name": "gamma",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1.7976931348623157e+308,
+      "default": 2
+    },
+    {
+      "name": "proportion",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 1
+    },
+    {
+      "name": "squeeze",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "x",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0.5
+    },
+    {
+      "name": "y",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0.5
+    },
+    {
+      "name": "rotation",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 360,
+      "default": 0
+    }
+  ],
+  "gegl:mono-mixer": [
+    {
+      "name": "preserve-luminosity",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": false
+    },
+    {
+      "name": "red",
+      "type": "gdouble",
+      "minimum": -5,
+      "maximum": 5,
+      "default": 0.333
+    },
+    {
+      "name": "green",
+      "type": "gdouble",
+      "minimum": -5,
+      "maximum": 5,
+      "default": 0.333
+    },
+    {
+      "name": "blue",
+      "type": "gdouble",
+      "minimum": -5,
+      "maximum": 5,
+      "default": 0.333
+    }
+  ],
+  "gegl:motion-blur-linear": [
+    {
+      "name": "length",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1000,
+      "default": 10
+    },
+    {
+      "name": "angle",
+      "type": "gdouble",
+      "minimum": -180,
+      "maximum": 180,
+      "default": 0
+    }
+  ],
+  "gegl:focus-blur": [
+    {
+      "name": "blur-type",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "gaussian"
+    },
+    {
+      "name": "blur-radius",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1500,
+      "default": 25
+    },
+    {
+      "name": "highlight-factor",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "highlight-threshold-low",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0
+    },
+    {
+      "name": "highlight-threshold-high",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 1
+    },
+    {
+      "name": "shape",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "circle"
+    },
+    {
+      "name": "x",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0.5
+    },
+    {
+      "name": "y",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0.5
+    },
+    {
+      "name": "radius",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0.75
+    },
+    {
+      "name": "focus",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.25
+    },
+    {
+      "name": "midpoint",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.5
+    },
+    {
+      "name": "aspect-ratio",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "rotation",
+      "type": "gdouble",
+      "minimum": -180,
+      "maximum": 180,
+      "default": 0
+    },
+    {
+      "name": "high-quality",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": false
+    }
+  ],
+  "gegl:noise-rgb": [
+    {
+      "name": "correlated",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": false
+    },
+    {
+      "name": "independent",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": true
+    },
+    {
+      "name": "linear",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": true
+    },
+    {
+      "name": "gaussian",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": true
+    },
+    {
+      "name": "red",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.2
+    },
+    {
+      "name": "green",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.2
+    },
+    {
+      "name": "blue",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.2
+    },
+    {
+      "name": "alpha",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "seed",
+      "type": "guint",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "default": 0
+    }
+  ],
+  "gegl:dropshadow": [
+    {
+      "name": "x",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 20
+    },
+    {
+      "name": "y",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 20
+    },
+    {
+      "name": "radius",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1.7976931348623157e+308,
+      "default": 10
+    },
+    {
+      "name": "grow-shape",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "circle"
+    },
+    {
+      "name": "grow-radius",
+      "type": "gdouble",
+      "minimum": -100,
+      "maximum": 100,
+      "default": 0
+    },
+    {
+      "name": "color",
+      "type": "GeglColor",
+      "minimum": null,
+      "maximum": null,
+      "default": [0, 0, 0, 1]
+    },
+    {
+      "name": "opacity",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.5
+    }
   ]
 }
