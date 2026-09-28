@@ -1769,11 +1769,9 @@ class TestValidateEffectTransform(unittest.TestCase):
         self.assertIn('gimp_filter op=delete', str(ctx.exception))
 
     def test_refusal_message_shows_enough_precision_and_never_doubles_the_apostrophe(self):
-        # %.4g would print 1000.1 as "1000" (4 significant figures), losing the ".1" that IS the
-        # reason for the refusal -- %.6g keeps it. And "%r's %s" (repr's own closing quote
-        # directly against a literal possessive "'s") used to print as "'Motion Blur''s", a
-        # confusing doubled apostrophe; the current phrasing ("the %s field of filter %r") has no
-        # possessive next to the quote at all.
+        # The message must keep enough precision to show why the value is out of range (%.4g
+        # would print 1000.1 as "1000"), and must not put a possessive "'s" right after a repr'd
+        # name, which reads as a doubled apostrophe ("'Motion Blur''s").
         with self.assertRaises(ValueError) as ctx:
             lib.validate_effect_transform(
                 'resize', 'gegl:motion-blur-linear', 'Motion Blur',
