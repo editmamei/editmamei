@@ -133,6 +133,12 @@ describe('gimp_add_effect: allow-listed GEGL effect filters (dev-tier sibling of
     );
   });
 
+  it('points a plain blur request at gimp_add_adjustment type=gaussian_blur', () => {
+    expect(description('gimp_add_effect').replace(/\s+/g, ' ')).toMatch(
+      /gimp_add_adjustment type=gaussian_blur/
+    );
+  });
+
   it('vignette and drop_shadow say their color is black and not configurable yet', () => {
     expect(field('gimp_add_effect', 'center_y').replace(/\s+/g, ' ')).toMatch(
       /color is black and not configurable yet/
@@ -142,7 +148,7 @@ describe('gimp_add_effect: allow-listed GEGL effect filters (dev-tier sibling of
     );
   });
 
-  it('gimp_filter itself has no apply op (reverted to list/set_visibility/delete)', () => {
+  it('gimp_filter itself has no apply op — just list/set_visibility/delete', () => {
     const opEnum = (
       byName.get('gimp_filter')!.inputSchema as unknown as {
         properties: { op: { enum: string[] } };

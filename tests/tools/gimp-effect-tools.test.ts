@@ -124,8 +124,8 @@ describe('createGimpEffectTools', () => {
 // Python; this suite can't import it directly). Fails the moment either side's numeric bound
 // changes without the other following. Mirrors tests/tools/gimp-adjustment-tools.test.ts's own
 // drift test, but scoped to lib.py's EFFECT_* tables (`val`-named lambda params, deliberately
-// NOT `v` — see gimp-effect-tools.ts's own file doc comment for why that keeps the two files'
-// regex scans from cross-contaminating each other).
+// NOT `v` — see lib.py's own comment, right above build_vignette_params (the start of its EFFECT
+// builders), for why that keeps the two files' regex scans from cross-contaminating each other).
 // ---------------------------------------------------------------------------
 
 const LIB_PY = readFileSync(join(REPO_ROOT, 'src', 'backends', 'gimp', 'bridge', 'lib.py'), 'utf8');
@@ -210,12 +210,17 @@ describe('gimp_add_effect schema bounds match bridge/lib.py exactly (or its docu
     expect([...schemaTypes].sort()).toEqual([...libTypes].sort());
   });
 
-  it('"preserve_luminosity" is a boolean schema field with no numeric bound — build_black_white_params converts it with a bare bool(), not validate_range', () => {
+  it('"preserve_luminosity" is a boolean schema field with no numeric bound — build_black_white_params validates it with require_bool, not a bare bool()', () => {
     const prop = EFFECT_SCHEMA_FOR_TESTS.properties?.preserve_luminosity;
     expect(prop?.type).toBe('boolean');
     expect(prop?.minimum).toBeUndefined();
     expect(prop?.maximum).toBeUndefined();
-    expect(LIB_PY).toMatch(/'preserve_luminosity',\s*defaults,\s*'preserve-luminosity',\s*bool/);
+    // Scoped to EFFECT_BUILDERS_SRC, not the whole file: build_color_balance_params (a gimp_add_
+    // adjustment builder, unrelated to this schema) has its OWN 'preserve_luminosity' field via
+    // `resolve_field(args, 'preserve_luminosity', defaults, 'preserve-luminosity', bool)` — an
+    // unscoped search would match THAT instead, passing regardless of what black_white's own
+    // builder actually does.
+    expect(EFFECT_BUILDERS_SRC).toMatch(/require_bool\(args,\s*'preserve_luminosity'\)/);
   });
 
   // The reverse direction of the per-field loop above (which proves every lib.py-validated field
