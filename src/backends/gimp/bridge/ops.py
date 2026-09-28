@@ -179,8 +179,8 @@ def _composite(img):
 # scaled.
 #
 # The cache is correct ONLY because every op that changes pixels, layer structure, canvas size, or
-# image mode ends with `_drop_proxies(img.get_id())` -- not just the non-destructive-filter ops
-# this comment used to describe (when every op here only ever touched pixels via a live filter).
+# image mode ends with `_drop_proxies(img.get_id())`, not only the ops that add or edit a live
+# filter.
 # Layer create/create_group/delete/duplicate/move/reorder/set (opacity/mode/visible), merge_down,
 # flatten, and bake all change the document's real pixels or its layer tree, so a proxy built
 # before any of them would render stale content -- or worse, `_mirror_filters` zips the proxy's own
