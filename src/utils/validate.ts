@@ -41,6 +41,10 @@ export interface JsonSchemaProperty {
   // the LLM; the validator does not enforce them, handlers do).
   minItems?: number;
   maxItems?: number;
+  // A regex a string value must satisfy — for an open-ended field an `enum` can't express (e.g.
+  // gimp_canvas's `fill`, a fixed word list PLUS an arbitrary '#rrggbb' hex color). When `enum` is
+  // ALSO given, a value matching either one is accepted (not both required) — see `coerceAndCheck`.
+  pattern?: string;
 }
 
 export interface JsonSchemaObject {
@@ -124,9 +128,15 @@ function coerceAndCheck(key: string, value: unknown, schema: JsonSchemaProperty)
       if (typeof value !== 'string') {
         throw new ValidationError(`Expected string for "${key}", got ${typeof value}`);
       }
-      if (schema.enum && !schema.enum.includes(value as never)) {
+      const matchesPattern = schema.pattern !== undefined && new RegExp(schema.pattern).test(value);
+      if (schema.enum && !schema.enum.includes(value as never) && !matchesPattern) {
         throw new ValidationError(
           `Invalid value for "${key}": ${JSON.stringify(value)}. Allowed: ${schema.enum.join(', ')}`
+        );
+      }
+      if (!schema.enum && schema.pattern !== undefined && !matchesPattern) {
+        throw new ValidationError(
+          `Invalid value for "${key}": ${JSON.stringify(value)} does not match the required pattern`
         );
       }
       return value;
