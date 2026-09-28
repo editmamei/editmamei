@@ -972,6 +972,36 @@ class TestValidateResizeDims(unittest.TestCase):
             lib.validate_resize_dims(0, 100)
 
 
+class TestValidateDocumentDims(unittest.TestCase):
+    def test_defaults_to_the_8_bit_cap(self):
+        self.assertEqual(lib.validate_document_dims(1920, 1080), (1920, 1080))
+        self.assertEqual(lib.DOCUMENT_MEGAPIXEL_CAP['8'], lib.MAX_RESIZE_MEGAPIXELS)
+
+    def test_16_bit_cap_is_half_the_8_bit_cap(self):
+        self.assertEqual(lib.DOCUMENT_MEGAPIXEL_CAP['16'], 125)
+        over_16 = int((125 * 1_000_000) ** 0.5) + 100
+        with self.assertRaises(ValueError):
+            lib.validate_document_dims(over_16, over_16, '16')
+        # The identical dims stay under the 8-bit cap -- the ceiling is precision-specific, not an
+        # absolute size limit.
+        lib.validate_document_dims(over_16, over_16, '8')
+
+    def test_32_bit_cap_is_a_quarter_of_the_8_bit_cap(self):
+        self.assertEqual(lib.DOCUMENT_MEGAPIXEL_CAP['32'], 60)
+        over_32 = int((60 * 1_000_000) ** 0.5) + 100
+        with self.assertRaises(ValueError):
+            lib.validate_document_dims(over_32, over_32, '32')
+        lib.validate_document_dims(over_32, over_32, '16')
+
+    def test_rejects_a_side_over_the_shared_per_side_cap_regardless_of_precision(self):
+        with self.assertRaises(ValueError):
+            lib.validate_document_dims(lib.MAX_RESIZE_SIDE_PX + 1, 100, '32')
+
+    def test_rejects_non_positive(self):
+        with self.assertRaises(ValueError):
+            lib.validate_document_dims(0, 100)
+
+
 class TestValidateCanvasFill(unittest.TestCase):
     def test_accepts_every_layer_fill(self):
         for value in lib.LAYER_FILLS:
@@ -982,7 +1012,7 @@ class TestValidateCanvasFill(unittest.TestCase):
         self.assertEqual(lib.validate_canvas_fill('#FFFFFF'), '#FFFFFF')
 
     def test_rejects_a_malformed_hex_color(self):
-        for bad in ('#369', '336699', '#gggggg', '#3366990', ''):
+        for bad in ('#369', '336699', '#gggggg', '#3366990', '', '#336699\n', ' #336699'):
             with self.assertRaises(ValueError):
                 lib.validate_canvas_fill(bad)
 
@@ -1001,10 +1031,12 @@ class TestCanvasAnchorOffset(unittest.TestCase):
     def test_center_splits_the_growth_evenly(self):
         self.assertEqual(lib.canvas_anchor_offset('center', 100, 50, 200, 150), (50, 50))
 
-    def test_center_rounds_an_odd_split(self):
-        # 201 - 100 = 101, an odd amount of growth -- round() picks the nearer integer (round-half
-        # -to-even at the exact .5 case, Python's own `round` behavior, not re-implemented here).
-        self.assertEqual(lib.canvas_anchor_offset('center', 100, 100, 201, 100), (round(50.5), 0))
+    def test_center_floors_an_odd_split(self):
+        # 100 -> 203 is 103px of growth; center's 0.5 fraction gives exactly 51.5 -- floor() picks
+        # 51 (round() would pick 52 here, since Python's round() is round-half-TO-EVEN: 52 is the
+        # nearer even integer to 51.5) -- pinned as a literal so a future round()/floor() swap
+        # would be caught by an exact-value regression, not just the general property test below.
+        self.assertEqual(lib.canvas_anchor_offset('center', 100, 100, 203, 100), (51, 0))
 
     def test_every_named_anchor_keeps_old_content_within_the_new_canvas(self):
         for anchor in lib.CANVAS_ANCHORS:

@@ -91,6 +91,33 @@ describe('validateArgs', () => {
       expect(validateArgs(schema, { x: 'a' })).toEqual({ x: 'a' });
       expect(() => validateArgs(schema, { x: 'c' })).toThrow(/Allowed: a, b/);
     });
+
+    it('enforces a pattern alone (no enum)', () => {
+      const schema: JsonSchemaObject = {
+        type: 'object',
+        properties: { x: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$' } },
+      };
+      expect(validateArgs(schema, { x: '#336699' })).toEqual({ x: '#336699' });
+      expect(() => validateArgs(schema, { x: 'red' })).toThrow(/required pattern/);
+    });
+
+    it('accepts a value matching EITHER the enum or the pattern, not requiring both', () => {
+      const schema: JsonSchemaObject = {
+        type: 'object',
+        properties: {
+          x: {
+            type: 'string',
+            enum: ['white', 'black', 'transparent'],
+            pattern: '^#[0-9a-fA-F]{6}$',
+          },
+        },
+      };
+      expect(validateArgs(schema, { x: 'white' })).toEqual({ x: 'white' });
+      expect(validateArgs(schema, { x: '#336699' })).toEqual({ x: '#336699' });
+      expect(() => validateArgs(schema, { x: 'red' })).toThrow(
+        /Allowed: white, black, transparent/
+      );
+    });
   });
 
   describe('number coercion', () => {
