@@ -150,6 +150,46 @@ describe('gimp_add_effect: allow-listed GEGL effect filters (dev-tier sibling of
     ).properties.op.enum;
     expect(opEnum).toEqual(['list', 'set_visibility', 'delete']);
   });
+
+  it('lens_blur states its own much lower cap (150, not the union bound)', () => {
+    expect(field('gimp_add_effect', 'radius').replace(/\s+/g, ' ')).toMatch(
+      /lens_blur: blur radius in pixels at full resolution, 0\.\.150/
+    );
+  });
+
+  it('drop_shadow says it is clipped to the layer bounds, not grown', () => {
+    expect(field('gimp_add_effect', 'radius').replace(/\s+/g, ' ')).toMatch(
+      /clipped to the layer bounds rather than growing it/
+    );
+  });
+
+  it('vignette/motion_blur/drop_shadow stay locked to content through flip/rotate/resize, and op=list reflects it', () => {
+    const text = description('gimp_add_effect').replace(/\s+/g, ' ');
+    expect(text).toMatch(/stay locked to the content through flip, resize, and an exact/);
+    expect(text).toMatch(/90\/180\/270-degree rotate/);
+    expect(text).toMatch(/gimp_filter op=list reflects the new values afterward/);
+    expect(text).toMatch(/rotating by any OTHER angle is refused/);
+  });
+
+  it('center_x/center_y say they are fractions of the LAYER, and that crop re-centres the vignette', () => {
+    const centerX = field('gimp_add_effect', 'center_x').replace(/\s+/g, ' ');
+    const centerY = field('gimp_add_effect', 'center_y').replace(/\s+/g, ' ');
+    expect(centerX).toMatch(/fraction of the LAYER's own width/);
+    expect(centerY).toMatch(/fraction of the LAYER's own height/);
+    expect(centerX).toMatch(/Cropping re-centres the vignette/);
+  });
+
+  it('motion_blur angle states its own convention (0 horizontal, positive clockwise)', () => {
+    expect(field('gimp_add_effect', 'angle').replace(/\s+/g, ' ')).toMatch(
+      /0 is horizontal, positive angles rotate clockwise/
+    );
+  });
+
+  it('gimp_transform_canvas describes the arbitrary-angle refusal generically, without naming a dev-tier tool', () => {
+    const text = description('gimp_transform_canvas').replace(/\s+/g, ' ');
+    expect(text).toMatch(/refused while a position\/direction-dependent filter is present/);
+    expect(text).not.toContain('gimp_add_effect');
+  });
 });
 
 describe('gimp_add_adjustment scope: one layer, one range', () => {

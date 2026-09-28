@@ -144,6 +144,58 @@ describe('createGimpVerifyTools', () => {
         /send_previews_to_llm is false/
       );
     });
+
+    it('warns (singular) about one unmirrored filter, and says nothing when there are none', async () => {
+      const gimp = makeGimpBackendWithRealPaths({
+        result: { width: 16, height: 16, proxy: true, unmirrored_filters: ['Vignette'] },
+      });
+      const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_preview', { image: 1 });
+      const text = (result.content?.at(-1) as { text: string }).text;
+      expect(text).toContain('WARNING');
+      expect(text).toContain('Vignette');
+      expect(text).toMatch(/\bis\b missing/);
+      expect(text).not.toMatch(/\bare\b missing/);
+      expect(result.structuredContent).toMatchObject({ unmirrored_filters: ['Vignette'] });
+
+      const clean = makeGimpBackendWithRealPaths({
+        result: { width: 16, height: 16, proxy: true, unmirrored_filters: [] },
+      });
+      const cleanTools = createGimpVerifyTools(clean.asBackend(), { previewsAllowed: allow });
+      const cleanResult = await callTool(cleanTools, 'gimp_get_preview', { image: 1 });
+      expect((cleanResult.content?.at(-1) as { text: string }).text).not.toContain('WARNING');
+    });
+
+    it('warns (plural) about more than one unmirrored filter', async () => {
+      const gimp = makeGimpBackendWithRealPaths({
+        result: {
+          width: 16,
+          height: 16,
+          proxy: true,
+          unmirrored_filters: ['Vignette', 'Motion Blur'],
+        },
+      });
+      const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_preview', { image: 1 });
+      const text = (result.content?.at(-1) as { text: string }).text;
+      expect(text).toContain('Vignette');
+      expect(text).toContain('Motion Blur');
+      expect(text).toMatch(/\bare\b missing/);
+      expect(text).not.toMatch(/\bis\b missing/);
+    });
+
+    it('declares unmirrored_filters (an array of strings) in the outputSchema', () => {
+      const gimp = makeGimpBackend();
+      const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: allow });
+      const tool = tools.find((t) => t.tool.name === 'gimp_get_preview')!;
+      const prop = (
+        tool.tool.outputSchema as unknown as {
+          properties: { unmirrored_filters: { type: string; items: { type: string } } };
+        }
+      ).properties.unmirrored_filters;
+      expect(prop.type).toBe('array');
+      expect(prop.items.type).toBe('string');
+    });
   });
 
   describe('gimp_get_histogram', () => {
@@ -215,6 +267,33 @@ describe('createGimpVerifyTools', () => {
       ).properties.channels.additionalProperties.properties.bins;
       expect(channelSchema.minItems).toBe(HISTOGRAM_BIN_COUNT);
       expect(channelSchema.maxItems).toBe(HISTOGRAM_BIN_COUNT);
+    });
+
+    it('warns about unmirrored filters, and declares the field in the outputSchema', async () => {
+      const gimp = makeGimpBackend({
+        result: {
+          exact: false,
+          width: 16,
+          height: 16,
+          pixels: 256,
+          channels: { luminance: { mean: 1, median: 1, p1: 0, p5: 0, p95: 2, p99: 2 } },
+          unmirrored_filters: ['Vignette'],
+        },
+      });
+      const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_histogram', { image: 1 });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toContain('WARNING');
+      expect(text).toContain('Vignette');
+      expect(result.structuredContent).toMatchObject({ unmirrored_filters: ['Vignette'] });
+      const tool = tools.find((t) => t.tool.name === 'gimp_get_histogram')!;
+      const prop = (
+        tool.tool.outputSchema as unknown as {
+          properties: { unmirrored_filters: { type: string; items: { type: string } } };
+        }
+      ).properties.unmirrored_filters;
+      expect(prop.type).toBe('array');
+      expect(prop.items.type).toBe('string');
     });
   });
 
@@ -388,6 +467,32 @@ describe('createGimpVerifyTools', () => {
       const result = await callTool(tools, 'gimp_compare', { image: 1, mode: 'nonsense' });
       expect(result.isError).toBe(true);
       expect(gimp.calls).toHaveLength(0);
+    });
+
+    it('before_after warns about unmirrored filters, and declares the field in the outputSchema', async () => {
+      const gimp = makeGimpBackend({
+        result: {
+          before: { luminance: { mean: 100 } },
+          after: { luminance: { mean: 120 } },
+          delta: { luminance: { mean: 20 } },
+          proxy: true,
+          unmirrored_filters: ['Vignette'],
+        },
+      });
+      const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_compare', { image: 1, mode: 'before_after' });
+      const text = (result.content?.at(-1) as { text: string }).text;
+      expect(text).toContain('WARNING');
+      expect(text).toContain('Vignette');
+      expect(result.structuredContent).toMatchObject({ unmirrored_filters: ['Vignette'] });
+      const tool = tools.find((t) => t.tool.name === 'gimp_compare')!;
+      const prop = (
+        tool.tool.outputSchema as unknown as {
+          properties: { unmirrored_filters: { type: string; items: { type: string } } };
+        }
+      ).properties.unmirrored_filters;
+      expect(prop.type).toBe('array');
+      expect(prop.items.type).toBe('string');
     });
   });
 });
