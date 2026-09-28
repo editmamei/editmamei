@@ -247,4 +247,23 @@ describe('gimp_inspect describe-by-id targets (document/layers/channels/filter)'
     expect(descText).toMatch(/no coverage/);
     expect(descText).toMatch(/coverage \(selected_pixels\/fraction\)/);
   });
+  // ops.py's op_describe adds top_level_count/total_nodes alongside truncated, so a truncated
+  // response is actionable instead of just a bare yes/no.
+  it('the what field and the tool description both mention top_level_count and total_nodes', () => {
+    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
+    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
+    for (const text of [whatText, descText]) {
+      expect(text).toMatch(/`?top_level_count`?/);
+      expect(text).toMatch(/`?total_nodes`?/);
+    }
+  });
+});
+
+describe('gimp_filter op=list reports layer/layer_id alongside the rest of the record', () => {
+  // ops.py's _filter_record includes layer/layer_id (which layer a filter lives on, and its id) --
+  // the model needs both named in the description to know they're there.
+  it('the op field names layer and layer_id', () => {
+    const text = field('gimp_filter', 'op').replace(/\s+/g, ' ');
+    expect(text).toMatch(/`?layer`?\/`?layer_id`?/);
+  });
 });

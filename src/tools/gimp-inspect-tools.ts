@@ -7,9 +7,9 @@ import { pickSchemaDeclaredKeys } from './gimp-shared.js';
 /**
  * gimp_inspect — read-only state reader, the gimp_* twin of ps_inspect.
  *
- * `what: 'documents'` is unchanged from the original, `ping`-only version of this tool: every
- * open image's id, nothing else. The other four targets reach the bridge's `describe` op
- * (`ops.py`'s `op_describe`) for an already-open image's own structure:
+ * `what: 'documents'` answers from the bridge's `ping` op: ids only, nothing else. The other four
+ * targets reach the bridge's `describe` op (`ops.py`'s `op_describe`) for an already-open image's
+ * own structure:
  *   - `document` — dims/base_type/precision/resolution, the full layer tree, and every channel by
  *     id/name only (no coverage — see `channels` below for that).
  *   - `layers` — just the layer tree, when the rest of `document` isn't needed.
@@ -27,7 +27,10 @@ import { pickSchemaDeclaredKeys } from './gimp-shared.js';
  * can't tell two layers apart the way an id always can. Every node also flags `is_text_layer`.
  * `document`/`layers` cap the tree at 2000 nodes total (`ops.py`'s `MAX_DESCRIBE_LAYER_NODES`) and
  * report `truncated: true` if the cap was hit, rather than risk unbounded output on a
- * pathologically large or deep document.
+ * pathologically large or deep document — alongside `top_level_count` (the image's real top-level
+ * layer count, true even when truncation cut the tree off early) and `total_nodes` (how many nodes
+ * this particular response actually carries), so a truncated response says how much is missing,
+ * not just that something is.
  */
 
 const INSPECT_WHATS = ['documents', 'document', 'layers', 'channels', 'filter'] as const;
@@ -47,7 +50,9 @@ const inspectSchema: JsonSchemaObject = {
         'one filter by `filter_id`, in the same shape gimp_filter (op=list) reports it in. Layer ' +
         'tree nodes are addressed by `layer_id` (canonical — GIMP allows duplicate layer names) ' +
         "and flag `is_text_layer`. 'document'/'layers' cap the tree at 2000 nodes total and " +
-        'report `truncated: true` if the cap was hit.',
+        'report `truncated: true` if the cap was hit, alongside `top_level_count` (the real ' +
+        'top-level layer count, true even when truncated) and `total_nodes` (how many nodes this ' +
+        'response actually carries) so a truncated response is actionable.',
     },
     image: {
       type: 'integer',
@@ -81,7 +86,11 @@ function describeSummary(
   }
   if (what === 'layers') {
     const layers = (result.layers as unknown[] | undefined) ?? [];
-    return `${layers.length} top-level layer(s) on image ${args.image}${truncatedSuffix}.`;
+    // top_level_count is the image's REAL top-level count -- layers.length falls back to it only
+    // for a mocked/older result missing the field, but is itself just the (possibly truncated)
+    // list this response happens to carry.
+    const topLevelCount = (result.top_level_count as number | undefined) ?? layers.length;
+    return `${topLevelCount} top-level layer(s) on image ${args.image}${truncatedSuffix}.`;
   }
   if (what === 'channels') {
     const channels = (result.channels as unknown[] | undefined) ?? [];
@@ -89,9 +98,10 @@ function describeSummary(
   }
   const layers = (result.layers as unknown[] | undefined) ?? [];
   const channels = (result.channels as unknown[] | undefined) ?? [];
+  const topLevelCount = (result.top_level_count as number | undefined) ?? layers.length;
   return (
     `Document ${result.image}: ${result.width}x${result.height} ${result.base_type as string} ` +
-    `${result.precision as string}, ${layers.length} top-level layer(s)${truncatedSuffix}, ` +
+    `${result.precision as string}, ${topLevelCount} top-level layer(s)${truncatedSuffix}, ` +
     `${channels.length} channel(s).`
   );
 }
@@ -149,7 +159,9 @@ export function createGimpInspectTools(gimp: GimpBackend): ToolDefinition[] {
           'describes one filter by filter_id, in the same shape gimp_filter (op=list) reports it ' +
           'in. Layer tree nodes are addressed by `layer_id` (canonical — GIMP allows duplicate ' +
           "layer names) and flag `is_text_layer`. 'document'/'layers' cap the tree at 2000 nodes " +
-          'total and report `truncated: true` if the cap was hit.',
+          'total and report `truncated: true` if the cap was hit, alongside `top_level_count` ' +
+          '(the real top-level layer count, true even when truncated) and `total_nodes` (how many ' +
+          'nodes this response actually carries).',
         inputSchema: inspectSchema,
         outputSchema: {
           type: 'object',
@@ -166,10 +178,15 @@ export function createGimpInspectTools(gimp: GimpBackend): ToolDefinition[] {
             precision: { type: 'string' },
             resolution: {
               type: 'object',
-              properties: { x: { type: 'number' }, y: { type: 'number' } },
+              properties: {
+                x: { type: ['number', 'null'] },
+                y: { type: ['number', 'null'] },
+              },
             },
             layers: { type: 'array', items: { type: 'object' } },
             truncated: { type: 'boolean' },
+            top_level_count: { type: 'number' },
+            total_nodes: { type: 'number' },
             channels: { type: 'array', items: { type: 'object' } },
             filter_id: { type: 'number' },
             layer: { type: 'string' },

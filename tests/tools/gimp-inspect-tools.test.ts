@@ -56,6 +56,8 @@ describe('createGimpInspectTools', () => {
       resolution: { x: 72, y: 72 },
       layers: layerTree,
       truncated: false,
+      top_level_count: 1,
+      total_nodes: 1,
       // 'document' channels are id/name only -- no coverage (that's what='channels'' job).
       channels: [{ channel_id: 9, name: 'HalfMask' }],
     };
@@ -81,12 +83,39 @@ describe('createGimpInspectTools', () => {
         resolution: { x: 72, y: 72 },
         layers: [],
         truncated: true,
+        top_level_count: 0,
+        total_nodes: 0,
         channels: [],
       },
     });
     const tools = createGimpInspectTools(gimp.asBackend());
     const result = await callTool(tools, 'gimp_inspect', { what: 'document', image: 5 });
     expect((result.content?.[0] as { text: string }).text).toContain('(truncated at the node cap)');
+  });
+
+  it("what='document' summary reports top_level_count, not just the (possibly truncated) layers array's own length", async () => {
+    // A truncated tree can still carry a handful of top-level nodes while top_level_count says
+    // the real total is much larger -- the summary must say the real count, not len(layers).
+    const gimp = makeGimpBackend({
+      result: {
+        image: 5,
+        width: 1,
+        height: 1,
+        base_type: 'rgb',
+        precision: 'u8-non-linear',
+        resolution: { x: 72, y: 72 },
+        layers: [{ layer_id: 1, name: 'A' }],
+        truncated: true,
+        top_level_count: 50,
+        total_nodes: 2000,
+        channels: [],
+      },
+    });
+    const tools = createGimpInspectTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_inspect', { what: 'document', image: 5 });
+    expect((result.content?.[0] as { text: string }).text).toContain(
+      '50 top-level layer(s) (truncated at the node cap)'
+    );
   });
 
   it("what='layers' dispatches describe with image, passes truncated through, and reports the top-level layer count", async () => {
@@ -96,6 +125,8 @@ describe('createGimpInspectTools', () => {
         { layer_id: 2, name: 'B' },
       ],
       truncated: true,
+      top_level_count: 2,
+      total_nodes: 2,
     };
     const gimp = makeGimpBackend({ result: layersResult });
     const tools = createGimpInspectTools(gimp.asBackend());
@@ -105,6 +136,22 @@ describe('createGimpInspectTools', () => {
       '2 top-level layer(s) on image 5 (truncated at the node cap).'
     );
     expect(result.structuredContent).toEqual({ what: 'layers', ...layersResult });
+  });
+
+  it("what='layers' summary reports top_level_count over the truncated layers array's own length", async () => {
+    const gimp = makeGimpBackend({
+      result: {
+        layers: [{ layer_id: 1, name: 'A' }],
+        truncated: true,
+        top_level_count: 50,
+        total_nodes: 2000,
+      },
+    });
+    const tools = createGimpInspectTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_inspect', { what: 'layers', image: 5 });
+    expect((result.content?.[0] as { text: string }).text).toBe(
+      '50 top-level layer(s) on image 5 (truncated at the node cap).'
+    );
   });
 
   it("what='channels' dispatches describe with image and reports the channel count, with coverage in structuredContent", async () => {

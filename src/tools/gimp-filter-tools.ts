@@ -24,7 +24,8 @@ const filterSchema: JsonSchemaObject = {
       enum: ['list', 'set_visibility', 'delete'],
       description:
         "'list' returns every filter on the image (including filters on layers inside groups), " +
-        'top of stack first, with id/name/operation/visible/mask/source and params. source ' +
+        'top of stack first, with layer/layer_id (which layer the filter lives on, and that ' +
+        "layer's id), id/name/operation/visible/mask/source and params. source " +
         '"editmamei" = exact ledger record, with params in gimp_add_adjustment\'s own field names ' +
         'and units, so they can be passed straight back on a re-edit. source "readback" = a filter ' +
         "Editmamei did not create; its params are GIMP's raw GEGL property names and units (not " +
