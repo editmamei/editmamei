@@ -61,24 +61,28 @@ const resizeSchema: JsonSchemaObject = {
   required: ['image'],
 };
 
-/** Names of position/direction-dependent effect filters whose geometry-tracking update failed
- * partway through this rotate/flip/resize (bridge/ops.py's `_apply_planned_effect_transform`): a
- * live GEGL config update raised, so that filter's OLD params were restored (best effort) and
- * kept in the ledger instead of the new ones -- present only when non-empty. Described generically
- * (not naming a tool by name) since the leak guard scans every community tool's own schema text
- * for a dev/none-tier tool name — describing this in terms of WHICHEVER tool made the filter,
- * rather than the one that currently does, means this text never needs to change if that changes.
- * A plain array of strings, not a nullable/oneOf type: `runGimpTool`/`gimpTransformCanvas` simply
+/** Names of effect filters whose geometry-tracking update failed partway through this
+ * rotate/flip/resize (bridge/ops.py's `_apply_planned_effect_transform`): a live GEGL config
+ * update raised, so that filter's OLD params were restored (best effort) and kept in the ledger
+ * instead of the new ones -- present only when non-empty. Covers BOTH kinds of tracked filter:
+ * position/direction-dependent ones under flip/rotate/resize (a center, an angle, an offset
+ * vector), and size-dependent ones under resize alone (a blur radius scaled by the resize
+ * factor) — both go through the same failure-and-restore path. Described generically (not naming
+ * a tool by name) since the leak guard scans every community tool's own schema text for a
+ * dev/none-tier tool name — describing this in terms of WHICHEVER tool made the filter, rather
+ * than the one that currently does, means this text never needs to change if that changes. A
+ * plain array of strings, not a nullable/oneOf type: `runGimpTool`/`gimpTransformCanvas` simply
  * omit the key from the result when there is nothing to report, rather than encoding "empty" as a
  * schema-level null variant. */
 const EFFECT_UPDATE_FAILURES_PROP: JsonSchemaProperty = {
   type: 'array',
   items: { type: 'string' },
   description:
-    'Names of effect filters (position/direction-dependent ones, tracked through geometry ' +
-    'changes) whose position/angle/offset could not be updated for this transform (a live update ' +
-    'failure) -- they were restored to their OLD values instead, both in the render and in ' +
-    "gimp_filter's own ledger. Omitted when every filter updated cleanly.",
+    'Names of effect filters (position/direction/size-dependent ones tracked through geometry ' +
+    'changes — a center, an angle, an offset, or a size-dependent blur radius under resize) ' +
+    'whose own params could not be updated for this transform (a live update failure) -- they ' +
+    "were restored to their OLD values instead, both in the render and in gimp_filter's own " +
+    'ledger. Omitted when every filter updated cleanly.',
 };
 
 const transformCanvasSchema: JsonSchemaObject = {
@@ -121,8 +125,10 @@ function effectUpdateFailuresNote(failures: string[] | undefined): string {
   if (!failures || failures.length === 0) return '';
   return (
     ` WARNING: ${failures.join(', ')} could not be updated for this transform and ` +
-    `${failures.length === 1 ? 'was' : 'were'} left at its old position/angle/offset instead -- ` +
-    're-add it (or re-apply the transform) if it needs to track the content.'
+    `${failures.length === 1 ? 'was' : 'were'} left at its old position/angle/offset/size ` +
+    'instead -- delete it (gimp_filter op=delete) and re-create it if it needs to track the ' +
+    'content (re-applying THIS SAME transform again would move it a second time, misaligning ' +
+    'it the other way).'
   );
 }
 
