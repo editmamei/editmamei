@@ -6,17 +6,21 @@
  *
  * Verified-live assumptions this file pins as regression tests (see `bridge/ops.py`'s own
  * "layer management" section comment for the full probe record):
- *  - `layer.copy()` copies a layer's live filters under the SAME names, and `DrawableFilter.
- *    set_name` does not exist on this GIMP build, so `duplicate` refuses outright when the source
- *    carries an Editmamei filter.
+ *  - `layer.copy()` copies a layer's live filters under the SAME names, so `duplicate` refuses
+ *    outright when the source (or, for a group, any descendant) carries an Editmamei filter.
  *  - `Item.set_offsets` is an ABSOLUTE move that does not carry a masked filter's confinement with
  *    it — `move` refuses under the same conditions gimp_transform_canvas already does.
+ *  - `Image.merge_down` merges into the first VISIBLE layer below (a hidden one in between is
+ *    skipped, not merged) and refuses on a group target or no visible target at all.
  *  - `Image.merge_down` / `Image.flatten` both bake every live filter they touch into real pixels
- *    first, masked ones included, correctly confined.
+ *    first, masked ones included, correctly confined; flatten discards every hidden layer outright
+ *    and refuses by default rather than doing that silently.
  *  - `Drawable.merge_filters()` (gimp_bake) bakes a masked filter into a layer's own pixels
- *    exactly, without merging it into anything else.
+ *    exactly, without merging it into anything else, and never rasterizes a text layer.
  *  - Every structural op drops the preview-proxy cache (the rewritten invariant at the top of
  *    `ops.py`'s PROXIES comment) — the "structural-op proxy matrix" below pins it directly.
+ *  - Every refusal below leaves the document provably unchanged (its full layer tree, offsets
+ *    included, compared before/after).
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -61,6 +65,11 @@ it('GIMP must actually be detected when EDITMAMEI_REQUIRE_GIMP=1 (layers)', () =
 interface LayerNode {
   layer_id: number;
   name: string;
+  opacity: number;
+  mode: string;
+  visible: boolean;
+  offsets: { x: number | null; y: number | null };
+  has_alpha: boolean;
   is_group: boolean;
   is_text_layer: boolean;
   children: LayerNode[];
@@ -79,7 +88,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
 
   beforeAll(async () => {
     workDir = mkdtempSync(join(tmpdir(), 'em-gimp-layers-'));
-    // opsPyPath: TEST_OPS_PY -- adds test_add_text_layer / test_proxy_filter_count, used below.
+    // opsPyPath: TEST_OPS_PY -- adds test_add_text_layer, used below.
     backend = new GimpBackend(install, {
       sessionOptions: { rootDir: join(workDir, 'session-root'), opsPyPath: TEST_OPS_PY },
     });
@@ -117,6 +126,12 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     const result = await callTool(tools, 'gimp_inspect', { what: 'layers', image });
     expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
     return structuredOf(result).layers as LayerNode[];
+  }
+
+  /** Full layer tree (ids, names, offsets, opacity/mode/visible, nesting) -- used to prove a
+   * refused op left the document provably untouched, not just that it returned isError. */
+  async function snapshot(image: number): Promise<LayerNode[]> {
+    return layerTree(image);
   }
 
   it('create/create_group/reorder build nested groups that gimp_inspect what=layers agrees with', async () => {
@@ -185,7 +200,9 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
-  it('reorder refuses to nest a group inside itself or one of its own descendants', async () => {
+  // ---- Q4: refusals leave the document provably unchanged -----------------------------------
+
+  it('reorder refuses to nest a group inside itself, or inside its own DESCENDANT, leaving the tree unchanged', async () => {
     const image = await openRamp();
     try {
       const outer = await callTool(tools, 'gimp_layer', {
@@ -194,6 +211,21 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
         name: 'SelfOuter',
       });
       const outerId = structuredOf(outer).layer_id as number;
+      const inner = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create_group',
+        name: 'SelfInner',
+      });
+      const innerId = structuredOf(inner).layer_id as number;
+      const nestIn = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'reorder',
+        layer_id: innerId,
+        parent_group: outerId,
+      });
+      expect(nestIn.isError, JSON.stringify(nestIn.content)).toBeFalsy();
+
+      const before = await snapshot(image);
       const intoSelf = await callTool(tools, 'gimp_layer', {
         image,
         op: 'reorder',
@@ -201,6 +233,193 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
         parent_group: outerId,
       });
       expect(intoSelf.isError).toBe(true);
+      const intoDescendant = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'reorder',
+        layer_id: outerId,
+        parent_group: innerId,
+      });
+      expect(intoDescendant.isError).toBe(true);
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('duplicate refuses when the layer carries an Editmamei filter, and image is unchanged', async () => {
+    const image = await openRamp();
+    try {
+      const adjust = await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'curves',
+        points: [
+          [0, 0],
+          [255, 255],
+        ],
+      });
+      expect(adjust.isError, JSON.stringify(adjust.content)).toBeFalsy();
+
+      const before = await snapshot(image);
+      const dup = await callTool(tools, 'gimp_layer', { image, op: 'duplicate' });
+      expect(dup.isError).toBe(true);
+      const text = (dup.content?.[0] as { text: string }).text;
+      expect(text).toContain('DrawableFilter.set_name');
+      expect(text).toContain('Editmamei filter');
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('duplicate refuses a GROUP whose DESCENDANT (not itself) carries a filter, and image is unchanged', async () => {
+    const image = await openRamp();
+    try {
+      const group = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create_group',
+        name: 'DupGroup',
+      });
+      const groupId = structuredOf(group).layer_id as number;
+      const child = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'DupChild',
+        parent_group: groupId,
+      });
+      const childId = structuredOf(child).layer_id as number;
+      const adjust = await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'curves',
+        layer_id: childId,
+        points: [
+          [0, 5],
+          [255, 250],
+        ],
+      });
+      expect(adjust.isError, JSON.stringify(adjust.content)).toBeFalsy();
+
+      const before = await snapshot(image);
+      const dup = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'duplicate',
+        layer_id: groupId,
+      });
+      expect(dup.isError).toBe(true);
+      expect((dup.content?.[0] as { text: string }).text).toContain('Editmamei filter');
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('a layer_id from a DIFFERENT open image is refused, and neither image changes', async () => {
+    const imageA = await openRamp();
+    const imageB = await openRamp();
+    try {
+      const layerB = await callTool(tools, 'gimp_layer', {
+        image: imageB,
+        op: 'create',
+        name: 'FromB',
+      });
+      const layerBId = structuredOf(layerB).layer_id as number;
+
+      const beforeA = await snapshot(imageA);
+      const beforeB = await snapshot(imageB);
+      const crossed = await callTool(tools, 'gimp_layer', {
+        image: imageA,
+        op: 'set',
+        layer_id: layerBId,
+        opacity: 40,
+      });
+      expect(crossed.isError).toBe(true);
+      expect(await snapshot(imageA)).toEqual(beforeA);
+      expect(await snapshot(imageB)).toEqual(beforeB);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image: imageA });
+      await callTool(tools, 'gimp_close_document', { image: imageB });
+    }
+  });
+
+  it('a parent_group that is not a group is refused, and image is unchanged', async () => {
+    const image = await openRamp();
+    try {
+      const plain = await callTool(tools, 'gimp_layer', { image, op: 'create', name: 'NotAGroup' });
+      const plainId = structuredOf(plain).layer_id as number;
+      const target = await callTool(tools, 'gimp_layer', { image, op: 'create', name: 'Target' });
+      const targetId = structuredOf(target).layer_id as number;
+
+      const before = await snapshot(image);
+      const result = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'reorder',
+        layer_id: plainId,
+        parent_group: targetId,
+      });
+      expect(result.isError).toBe(true);
+      expect((result.content?.[0] as { text: string }).text).toContain('not a group layer');
+      expect(await snapshot(image)).toEqual(before);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('merge_down refuses a GROUP target and refuses the LAST (bottommost) layer, image unchanged either way', async () => {
+    const image = await openRamp();
+    try {
+      await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create_group',
+        name: 'MergeTargetGroup',
+      });
+      const top = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'MergeOntoGroup',
+      });
+      const topId = structuredOf(top).layer_id as number;
+
+      const beforeGroupCase = await snapshot(image);
+      const ontoGroup = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'merge_down',
+        layer_id: topId,
+      });
+      expect(ontoGroup.isError).toBe(true);
+      expect((ontoGroup.content?.[0] as { text: string }).text).toContain(
+        'cannot merge a layer into a group'
+      );
+      expect(await snapshot(image)).toEqual(beforeGroupCase);
+
+      // Now the bottommost layer of the image (Background, from the ramp fixture) has nothing
+      // below it at all.
+      const beforeBottomCase = await snapshot(image);
+      const onBottom = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'merge_down',
+        layer: 'Background',
+      });
+      expect(onBottom.isError).toBe(true);
+      expect((onBottom.content?.[0] as { text: string }).text).toContain('no VISIBLE layer below');
+      expect(await snapshot(image)).toEqual(beforeBottomCase);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('bake refuses a group target directly, and image is unchanged', async () => {
+    const image = await openRamp();
+    try {
+      const group = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create_group',
+        name: 'BakeTargetGroup',
+      });
+      const groupId = structuredOf(group).layer_id as number;
+      const before = await snapshot(image);
+      const baked = await callTool(tools, 'gimp_bake', { image, layer_id: groupId });
+      expect(baked.isError).toBe(true);
+      expect((baked.content?.[0] as { text: string }).text).toContain('is a group');
+      expect(await snapshot(image)).toEqual(before);
     } finally {
       await callTool(tools, 'gimp_close_document', { image });
     }
@@ -228,30 +447,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
-  it('duplicate refuses when the layer carries an Editmamei filter, naming DrawableFilter.set_name', async () => {
-    const image = await openRamp();
-    try {
-      const adjust = await callTool(tools, 'gimp_add_adjustment', {
-        image,
-        type: 'curves',
-        points: [
-          [0, 0],
-          [255, 255],
-        ],
-      });
-      expect(adjust.isError, JSON.stringify(adjust.content)).toBeFalsy();
-
-      const dup = await callTool(tools, 'gimp_layer', { image, op: 'duplicate' });
-      expect(dup.isError).toBe(true);
-      const text = (dup.content?.[0] as { text: string }).text;
-      expect(text).toContain('DrawableFilter.set_name');
-      expect(text).toContain('Editmamei filter');
-    } finally {
-      await callTool(tools, 'gimp_close_document', { image });
-    }
-  });
-
-  it('move refuses when the layer carries a masked filter; baking clears the refusal', async () => {
+  it('move refuses when the layer carries a masked filter (image unchanged); baking clears the refusal', async () => {
     const image = await openRamp();
     try {
       const unmaskedMove = await callTool(tools, 'gimp_layer', {
@@ -277,9 +473,11 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
         brightness: -40,
         mask: 'MoveMask',
       });
+      const before = await snapshot(image);
       const refused = await callTool(tools, 'gimp_layer', { image, op: 'move', x: 5, y: 5 });
       expect(refused.isError).toBe(true);
       expect((refused.content?.[0] as { text: string }).text).toContain('masked adjustment');
+      expect(await snapshot(image)).toEqual(before);
 
       const baked = await callTool(tools, 'gimp_bake', { image });
       expect(baked.isError, JSON.stringify(baked.content)).toBeFalsy();
@@ -351,7 +549,79 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
-  it('flatten collapses to one layer, drops alpha, rasterizes a text layer, and prunes the ledger', async () => {
+  it('merge_down skips a HIDDEN layer in between and merges into the first VISIBLE layer below (B6)', async () => {
+    const image = await openRamp();
+    try {
+      const hidden = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'HiddenMiddle',
+        fill: 'black',
+      });
+      const hiddenId = structuredOf(hidden).layer_id as number;
+      await callTool(tools, 'gimp_layer', { image, op: 'set', layer_id: hiddenId, visible: false });
+      const top = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'TopForSkip',
+        fill: 'white',
+      });
+      const topId = structuredOf(top).layer_id as number;
+
+      const merged = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'merge_down',
+        layer_id: topId,
+      });
+      expect(merged.isError, JSON.stringify(merged.content)).toBeFalsy();
+      // Merged into Background (the first VISIBLE layer below TopForSkip), not HiddenMiddle.
+      expect(structuredOf(merged).name).toBe('Background');
+
+      const tree = await layerTree(image);
+      // HiddenMiddle survives, untouched, still hidden -- it was skipped, not merged or removed.
+      const survivor = tree.find((n) => n.layer_id === hiddenId);
+      expect(survivor).toMatchObject({ name: 'HiddenMiddle', visible: false });
+      expect(tree.some((n) => n.layer_id === topId)).toBe(false);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('flatten refuses by default when a layer is hidden, and discard_hidden: true proceeds and reports it (B7)', async () => {
+    const image = await openRamp();
+    try {
+      const hidden = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'FlattenHidden',
+      });
+      const hiddenId = structuredOf(hidden).layer_id as number;
+      await callTool(tools, 'gimp_layer', { image, op: 'set', layer_id: hiddenId, visible: false });
+
+      const before = await snapshot(image);
+      const refused = await callTool(tools, 'gimp_layer', { image, op: 'flatten' });
+      expect(refused.isError).toBe(true);
+      expect((refused.content?.[0] as { text: string }).text).toContain('FlattenHidden');
+      expect(await snapshot(image)).toEqual(before);
+
+      const flattened = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'flatten',
+        discard_hidden: true,
+      });
+      expect(flattened.isError, JSON.stringify(flattened.content)).toBeFalsy();
+      const discarded = structuredOf(flattened).discarded_hidden_layers as Array<{
+        layer_id: number;
+        name: string;
+      }>;
+      expect(discarded).toEqual([{ layer_id: hiddenId, name: 'FlattenHidden' }]);
+      expect(await layerTree(image)).toHaveLength(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('flatten collapses to one layer, drops alpha, rasterizes a VISIBLE text layer, and prunes the ledger', async () => {
     const image = await openRamp();
     try {
       await callTool(tools, 'gimp_add_adjustment', { image, type: 'saturation', scale: 0.5 });
@@ -365,6 +635,148 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       expect(tree).toHaveLength(1);
       const listAfter = await callTool(tools, 'gimp_filter', { image, op: 'list' });
       expect(structuredOf(listAfter).filters).toEqual([]);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  // ---- Q3: a text layer carrying a live filter, through merge_down and through flatten ---------
+
+  it('a text layer carrying a live filter merges down correctly: baked, rasterized, ledger clean (Q3)', async () => {
+    const image = await openRamp();
+    try {
+      const text = await backend.call<{ layer_id: number; name: string }>('test_add_text_layer', {
+        image,
+        text: 'Q3',
+      });
+      const adjust = await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'curves',
+        layer_id: text.layer_id,
+        points: [
+          [0, 30],
+          [255, 220],
+        ],
+      });
+      expect(adjust.isError, JSON.stringify(adjust.content)).toBeFalsy();
+
+      const merged = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'merge_down',
+        layer_id: text.layer_id,
+      });
+      expect(merged.isError, JSON.stringify(merged.content)).toBeFalsy();
+      expect(structuredOf(merged).rasterized_text).toBe(true);
+
+      const tree = await layerTree(image);
+      expect(tree.some((n) => n.is_text_layer)).toBe(false);
+      const listAfter = await callTool(tools, 'gimp_filter', { image, op: 'list' });
+      expect(structuredOf(listAfter).filters).toEqual([]);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('a text layer carrying a live filter flattens correctly: baked, rasterized, ledger clean (Q3)', async () => {
+    const image = await openRamp();
+    try {
+      const text = await backend.call<{ layer_id: number; name: string }>('test_add_text_layer', {
+        image,
+        text: 'Q3b',
+      });
+      const adjust = await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'curves',
+        layer_id: text.layer_id,
+        points: [
+          [0, 30],
+          [255, 220],
+        ],
+      });
+      expect(adjust.isError, JSON.stringify(adjust.content)).toBeFalsy();
+
+      const flat = await callTool(tools, 'gimp_layer', { image, op: 'flatten' });
+      expect(flat.isError, JSON.stringify(flat.content)).toBeFalsy();
+      expect(structuredOf(flat).rasterized_text).toBe(true);
+
+      const tree = await layerTree(image);
+      expect(tree).toHaveLength(1);
+      expect(tree[0]!.is_text_layer).toBe(false);
+      const listAfter = await callTool(tools, 'gimp_filter', { image, op: 'list' });
+      expect(structuredOf(listAfter).filters).toEqual([]);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  // ---- Q2: deleting a non-empty group prunes exactly its own descendants' ledger records --------
+
+  it("delete on a non-empty group prunes exactly its descendants' ledger records; a sibling filter survives (Q2)", async () => {
+    const image = await openRamp();
+    try {
+      const group = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create_group',
+        name: 'DeleteGroup',
+      });
+      const groupId = structuredOf(group).layer_id as number;
+      const child = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'DeleteChild',
+        parent_group: groupId,
+      });
+      const childId = structuredOf(child).layer_id as number;
+      const inGroupAdjust = await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'curves',
+        layer_id: childId,
+        points: [
+          [0, 10],
+          [255, 245],
+        ],
+      });
+      expect(inGroupAdjust.isError, JSON.stringify(inGroupAdjust.content)).toBeFalsy();
+      const inGroupFilterName = structuredOf(inGroupAdjust).name as string;
+
+      // A sibling filter, OUTSIDE the group, must survive the group's deletion untouched. Named
+      // explicitly by layer: creating DeleteChild left IT selected, not Background, and
+      // gimp_add_adjustment defaults to the selected layer when none is named.
+      const siblingAdjust = await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'saturation',
+        scale: 0.7,
+        layer: 'Background',
+      });
+      expect(siblingAdjust.isError, JSON.stringify(siblingAdjust.content)).toBeFalsy();
+      const siblingFilterName = structuredOf(siblingAdjust).name as string;
+
+      const deleted = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'delete',
+        layer_id: groupId,
+      });
+      expect(deleted.isError, JSON.stringify(deleted.content)).toBeFalsy();
+
+      const tree = await layerTree(image);
+      expect(tree.some((n) => n.layer_id === groupId)).toBe(false);
+
+      const listAfter = await callTool(tools, 'gimp_filter', { image, op: 'list' });
+      const namesAfter = (structuredOf(listAfter).filters as Array<{ name: string }>).map(
+        (f) => f.name
+      );
+      expect(namesAfter).not.toContain(inGroupFilterName);
+      expect(namesAfter).toContain(siblingFilterName);
+
+      // The surviving sibling filter still renders correctly after the group's deletion: the
+      // preview (proxy) agrees exactly with a full-resolution export, proving the proxy was
+      // rebuilt rather than left stale from before the delete.
+      const afterPath = join(workDir, 'delete-group-after.png');
+      await callTool(tools, 'gimp_export', { image, file_path: afterPath });
+      const after = readPng(afterPath);
+      const previewPath = join(workDir, 'delete-group-preview.png');
+      await backend.call('preview', { image, max_px: 512, out_path: previewPath });
+      expect(maxAbsDiff(readPng(previewPath), after)).toBeLessThanOrEqual(1);
     } finally {
       await callTool(tools, 'gimp_close_document', { image });
     }
@@ -448,27 +860,60 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
-  // ---- the structural-op proxy matrix -----------------------------------------------------------
-  // Every gimp_layer sub-op except select, and gimp_bake, must drop the preview-proxy cache (the
-  // rewritten ops.py PROXIES invariant). Same "warm the proxy, change something, compare a preview
-  // against a full-resolution export" pattern geometry-and-masks.live.test.ts already uses for
-  // crop/rotate/flip/resize -- duplicated rather than imported, per that file's own convention.
+  it('bake all: true reports a group that carries its own filter under skipped_groups_with_filters (B9)', async () => {
+    const image = await openRamp();
+    try {
+      const group = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create_group',
+        name: 'FilterCarryingGroup',
+      });
+      const groupId = structuredOf(group).layer_id as number;
+      const onGroup = await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'curves',
+        layer: 'FilterCarryingGroup',
+        points: [
+          [0, 0],
+          [255, 255],
+        ],
+      });
+      expect(onGroup.isError, JSON.stringify(onGroup.content)).toBeFalsy();
 
+      const bakedAll = await callTool(tools, 'gimp_bake', { image, all: true });
+      expect(bakedAll.isError, JSON.stringify(bakedAll.content)).toBeFalsy();
+      const skipped = structuredOf(bakedAll).skipped_groups_with_filters as Array<{
+        layer_id: number;
+        name: string;
+      }>;
+      expect(skipped).toEqual([{ layer_id: groupId, name: 'FilterCarryingGroup' }]);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  // ---- Q1/Q6: the structural-op proxy matrix -----------------------------------------------
+  //
+  // Every gimp_layer sub-op except select, and gimp_bake, must drop the preview-proxy cache (the
+  // rewritten ops.py PROXIES invariant). Each case below does its own SETUP first, warms the
+  // proxy AFTER that setup is in place, then performs ONLY the one op under test -- so a preview
+  // taken right after warming already reflects the full pre-op state, and any staleness the op
+  // itself should have invalidated is what the after-op comparison actually exercises. Content is
+  // chosen so a stale (un-rebuilt) proxy would visibly mismatch a fresh full-resolution export,
+  // not just differ by rounding.
+  //
   // gimp_get_preview (the TOOL) always renders JPEG -- fine for a human to look at, but lossy and
   // undecodable by this suite's PNG-only reader, so the proxy-vs-export comparison itself goes
   // straight through `backend.call('preview'/'export', ...)` with an explicit `.png` out_path,
   // the same route geometry-and-masks.live.test.ts's own `previewVsExport` uses. The STRUCTURAL
-  // CHANGE under test still goes through the real gimp_layer/gimp_bake TOOLS below.
-  async function openSwatchesWithWarmProxy(): Promise<number> {
-    const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
-    const image = structuredOf(opened).image as number;
-    await callTool(tools, 'gimp_add_adjustment', { image, type: 'saturation', scale: 0.5 });
+  // CHANGE under test still goes through the real gimp_layer/gimp_bake TOOLS.
+
+  async function warmProxy(image: number): Promise<void> {
     await backend.call('preview', {
       image,
       max_px: 512,
       out_path: join(workDir, `warm-${image}.png`),
     });
-    return image;
   }
 
   async function previewVsExport(image: number, tag: string): Promise<number> {
@@ -479,108 +924,319 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     return maxAbsDiff(readPng(previewPath), readPng(exportPath));
   }
 
-  const STRUCTURAL_CHANGES: Array<[string, (image: number) => Promise<ToolResult>]> = [
-    [
-      'layer create',
-      (image) => callTool(tools, 'gimp_layer', { image, op: 'create', name: 'Extra' }),
-    ],
-    [
-      'layer create_group',
-      (image) => callTool(tools, 'gimp_layer', { image, op: 'create_group', name: 'ExtraGroup' }),
-    ],
-    [
-      'layer set (opacity)',
-      (image) => callTool(tools, 'gimp_layer', { image, op: 'set', opacity: 60 }),
-    ],
-    ['layer move', (image) => callTool(tools, 'gimp_layer', { image, op: 'move', x: 4, y: 4 })],
-    [
-      'layer duplicate + delete',
-      async (image) => {
-        const created = await callTool(tools, 'gimp_layer', { image, op: 'create', name: 'ToDup' });
-        const id = structuredOf(created).layer_id as number;
-        const dup = await callTool(tools, 'gimp_layer', { image, op: 'duplicate', layer_id: id });
-        return callTool(tools, 'gimp_layer', {
-          image,
-          op: 'delete',
-          layer_id: structuredOf(dup).layer_id as number,
-        });
-      },
-    ],
-    [
-      'layer reorder',
-      async (image) => {
-        const created = await callTool(tools, 'gimp_layer', {
-          image,
-          op: 'create',
-          name: 'ToReorder',
-        });
-        const group = await callTool(tools, 'gimp_layer', {
-          image,
-          op: 'create_group',
-          name: 'ReorderGroup',
-        });
-        return callTool(tools, 'gimp_layer', {
-          image,
-          op: 'reorder',
-          layer_id: structuredOf(created).layer_id as number,
-          parent_group: structuredOf(group).layer_id as number,
-        });
-      },
-    ],
-    [
-      'layer merge_down',
-      async (image) => {
-        const created = await callTool(tools, 'gimp_layer', {
-          image,
-          op: 'create',
-          name: 'ToMerge',
-        });
-        return callTool(tools, 'gimp_layer', {
-          image,
-          op: 'merge_down',
-          layer_id: structuredOf(created).layer_id as number,
-        });
-      },
-    ],
-    [
-      'bake',
-      async (image) => {
-        await callTool(tools, 'gimp_create_mask', {
-          image,
-          type: 'rectangle',
-          x: 0,
-          y: 0,
-          width: 16,
-          height: 16,
-          name: 'ProxyBakeMask',
-        });
-        await callTool(tools, 'gimp_add_adjustment', {
-          image,
-          type: 'brightness_contrast',
-          brightness: 20,
-          mask: 'ProxyBakeMask',
-        });
-        return callTool(tools, 'gimp_bake', { image });
-      },
-    ],
-    ['layer flatten', (image) => callTool(tools, 'gimp_layer', { image, op: 'flatten' })],
-  ];
+  it('proxy matrix: a count-preserving REORDER that swaps two layers carrying DIFFERENT filters does not mis-attach either filter', async () => {
+    const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
+    const image = structuredOf(opened).image as number;
+    try {
+      // Setup FIRST: two opaque, full-canvas layers with markedly different content -- if a stale
+      // proxy kept the PRE-swap arrangement, the composite would visibly show the wrong one on top.
+      const swapTop = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'SwapTop',
+        fill: 'white',
+      });
+      const swapTopId = structuredOf(swapTop).layer_id as number;
+      await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'brightness_contrast',
+        brightness: -70,
+        layer_id: swapTopId,
+      });
+      const swapBottom = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'SwapBottom',
+        fill: 'black',
+      });
+      const swapBottomId = structuredOf(swapBottom).layer_id as number;
+      await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'brightness_contrast',
+        brightness: 70,
+        layer_id: swapBottomId,
+      });
 
-  it.each(STRUCTURAL_CHANGES)(
-    'after %s, the preview matches a full-resolution export (the proxy was rebuilt)',
-    async (label, change) => {
-      const image = await openSwatchesWithWarmProxy();
-      const tag = label.replace(/\W+/g, '-');
-      try {
-        expect(await previewVsExport(image, `${tag}-before`)).toBeLessThanOrEqual(1);
-        const result = await change(image);
-        expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
-        expect(await previewVsExport(image, `${tag}-after`)).toBeLessThanOrEqual(1);
-      } finally {
-        await callTool(tools, 'gimp_close_document', { image });
-      }
+      await warmProxy(image);
+      expect(await previewVsExport(image, 'reorder-swap-before')).toBeLessThanOrEqual(1);
+
+      // ONLY the swap: bring SwapBottom above SwapTop, same top-level, same layer COUNT.
+      const swapped = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'reorder',
+        layer_id: swapBottomId,
+        position: 0,
+      });
+      expect(swapped.isError, JSON.stringify(swapped.content)).toBeFalsy();
+
+      expect(await previewVsExport(image, 'reorder-swap-after')).toBeLessThanOrEqual(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
     }
-  );
+  });
+
+  it('proxy matrix: a count-preserving BAKE rebuilds the proxy', async () => {
+    const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
+    const image = structuredOf(opened).image as number;
+    try {
+      await callTool(tools, 'gimp_create_mask', {
+        image,
+        type: 'rectangle',
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        name: 'ProxyBakeMask',
+      });
+      await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'brightness_contrast',
+        brightness: 40,
+        mask: 'ProxyBakeMask',
+      });
+      await warmProxy(image);
+      expect(await previewVsExport(image, 'bake-before')).toBeLessThanOrEqual(1);
+
+      const baked = await callTool(tools, 'gimp_bake', { image });
+      expect(baked.isError, JSON.stringify(baked.content)).toBeFalsy();
+
+      expect(await previewVsExport(image, 'bake-after')).toBeLessThanOrEqual(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('proxy matrix: MERGE_DOWN rebuilds the proxy', async () => {
+    const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
+    const image = structuredOf(opened).image as number;
+    try {
+      const extra = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'ProxyMergeExtra',
+        fill: 'white',
+      });
+      const extraId = structuredOf(extra).layer_id as number;
+      await callTool(tools, 'gimp_add_adjustment', {
+        image,
+        type: 'brightness_contrast',
+        brightness: -30,
+        layer_id: extraId,
+      });
+      await warmProxy(image);
+      expect(await previewVsExport(image, 'merge-proxy-before')).toBeLessThanOrEqual(1);
+
+      const merged = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'merge_down',
+        layer_id: extraId,
+      });
+      expect(merged.isError, JSON.stringify(merged.content)).toBeFalsy();
+
+      expect(await previewVsExport(image, 'merge-proxy-after')).toBeLessThanOrEqual(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('proxy matrix: DUPLICATE rebuilds the proxy', async () => {
+    const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
+    const image = structuredOf(opened).image as number;
+    try {
+      const created = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'ProxyDupTarget',
+        fill: 'white',
+      });
+      const id = structuredOf(created).layer_id as number;
+      await warmProxy(image);
+      expect(await previewVsExport(image, 'dup-proxy-before')).toBeLessThanOrEqual(1);
+
+      const dup = await callTool(tools, 'gimp_layer', { image, op: 'duplicate', layer_id: id });
+      expect(dup.isError, JSON.stringify(dup.content)).toBeFalsy();
+
+      expect(await previewVsExport(image, 'dup-proxy-after')).toBeLessThanOrEqual(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('proxy matrix: DELETE rebuilds the proxy', async () => {
+    const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
+    const image = structuredOf(opened).image as number;
+    try {
+      const created = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'ProxyDeleteTarget',
+        fill: 'black',
+      });
+      const id = structuredOf(created).layer_id as number;
+      await warmProxy(image);
+      expect(await previewVsExport(image, 'delete-proxy-before')).toBeLessThanOrEqual(1);
+
+      const deleted = await callTool(tools, 'gimp_layer', { image, op: 'delete', layer_id: id });
+      expect(deleted.isError, JSON.stringify(deleted.content)).toBeFalsy();
+
+      expect(await previewVsExport(image, 'delete-proxy-after')).toBeLessThanOrEqual(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('proxy matrix: SET visible rebuilds the proxy', async () => {
+    const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
+    const image = structuredOf(opened).image as number;
+    try {
+      const created = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'ProxySetVisible',
+        fill: 'white',
+      });
+      const id = structuredOf(created).layer_id as number;
+      await warmProxy(image);
+      expect(await previewVsExport(image, 'set-visible-before')).toBeLessThanOrEqual(1);
+
+      const hidden = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'set',
+        layer_id: id,
+        visible: false,
+      });
+      expect(hidden.isError, JSON.stringify(hidden.content)).toBeFalsy();
+
+      expect(await previewVsExport(image, 'set-visible-after')).toBeLessThanOrEqual(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('proxy matrix: SET mode rebuilds the proxy', async () => {
+    const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
+    const image = structuredOf(opened).image as number;
+    try {
+      const created = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'ProxySetMode',
+        fill: 'white',
+      });
+      const id = structuredOf(created).layer_id as number;
+      await callTool(tools, 'gimp_layer', { image, op: 'set', layer_id: id, opacity: 60 });
+      await warmProxy(image);
+      expect(await previewVsExport(image, 'set-mode-before')).toBeLessThanOrEqual(1);
+
+      const modeChanged = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'set',
+        layer_id: id,
+        mode: 'multiply',
+      });
+      expect(modeChanged.isError, JSON.stringify(modeChanged.content)).toBeFalsy();
+
+      expect(await previewVsExport(image, 'set-mode-after')).toBeLessThanOrEqual(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('proxy matrix: SET name rebuilds the proxy (the internal structure-shape guard would otherwise fire)', async () => {
+    const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
+    const image = structuredOf(opened).image as number;
+    try {
+      const created = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'ProxySetName',
+      });
+      const id = structuredOf(created).layer_id as number;
+      await warmProxy(image);
+      expect(await previewVsExport(image, 'set-name-before')).toBeLessThanOrEqual(1);
+
+      const renamed = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'set',
+        layer_id: id,
+        name: 'ProxySetNameRenamed',
+      });
+      expect(renamed.isError, JSON.stringify(renamed.content)).toBeFalsy();
+
+      // A stale proxy here would fail LOUDLY (ops.py's _mirror_filters structure-shape guard
+      // compares (name, is_group) at every position) rather than silently mismatch pixels -- this
+      // call rejecting at all is itself the failure mode this test exists to catch.
+      expect(await previewVsExport(image, 'set-name-after')).toBeLessThanOrEqual(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('proxy matrix: CREATE, CREATE_GROUP, MOVE, and REORDER-into-a-group each rebuild the proxy', async () => {
+    const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
+    const image = structuredOf(opened).image as number;
+    try {
+      await callTool(tools, 'gimp_add_adjustment', { image, type: 'saturation', scale: 0.5 });
+      await warmProxy(image);
+      expect(await previewVsExport(image, 'create-before')).toBeLessThanOrEqual(1);
+
+      const created = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: 'MatrixExtra',
+      });
+      expect(created.isError, JSON.stringify(created.content)).toBeFalsy();
+      expect(await previewVsExport(image, 'create-after')).toBeLessThanOrEqual(1);
+
+      const group = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create_group',
+        name: 'MatrixGroup',
+      });
+      expect(group.isError, JSON.stringify(group.content)).toBeFalsy();
+      expect(await previewVsExport(image, 'create-group-after')).toBeLessThanOrEqual(1);
+
+      const extraId = structuredOf(created).layer_id as number;
+      const moved = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'move',
+        layer_id: extraId,
+        x: 4,
+        y: 4,
+      });
+      expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
+      expect(await previewVsExport(image, 'move-after')).toBeLessThanOrEqual(1);
+
+      const groupId = structuredOf(group).layer_id as number;
+      const reordered = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'reorder',
+        layer_id: extraId,
+        parent_group: groupId,
+      });
+      expect(reordered.isError, JSON.stringify(reordered.content)).toBeFalsy();
+      expect(await previewVsExport(image, 'reorder-after')).toBeLessThanOrEqual(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
+
+  it('proxy matrix: FLATTEN rebuilds the proxy', async () => {
+    const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
+    const image = structuredOf(opened).image as number;
+    try {
+      await callTool(tools, 'gimp_add_adjustment', { image, type: 'saturation', scale: 0.5 });
+      await warmProxy(image);
+      expect(await previewVsExport(image, 'flatten-proxy-before')).toBeLessThanOrEqual(1);
+
+      const flattened = await callTool(tools, 'gimp_layer', { image, op: 'flatten' });
+      expect(flattened.isError, JSON.stringify(flattened.content)).toBeFalsy();
+
+      expect(await previewVsExport(image, 'flatten-proxy-after')).toBeLessThanOrEqual(1);
+    } finally {
+      await callTool(tools, 'gimp_close_document', { image });
+    }
+  });
 
   it('checkpoint -> flatten -> restore brings the layer structure and its live filter back', async () => {
     const image = await openRamp();
