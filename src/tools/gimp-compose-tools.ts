@@ -15,14 +15,21 @@ import { GIMP_IMAGE_PROP, runGimpTool, pickSchemaDeclaredKeys } from './gimp-sha
  *    TARGET image's own base type (RGB/grayscale) before it is even inserted, in both directions
  *    — a mismatch there is handled, not refused. Placing a file that carries its own metadata
  *    (EXIF/XMP) does not attach anything to the target image's own metadata. A MULTI-layer source
- *    (e.g. a `.xcf`) hands back only ONE layer — GIMP's own choice, not a flattened composite.
+ *    (e.g. a `.xcf`) hands back only ONE layer — GIMP's own choice, not a flattened composite —
+ *    and that layer's own live filters come with it, baked into its pixels before it is ever
+ *    inserted (reported as `baked_filters`), never placed live.
  *  - `gimp_canvas`'s extend reuses the same underlying canvas-resize primitive `gimp_crop_document`
  *    wraps for the shrink direction; it repositions every existing layer by the growth offset
  *    without touching that layer's own pixels or size — exactly the "layer moves, a filter's fixed
  *    mask confinement does not" case `gimp_resize_image`/`gimp_transform_canvas` already refuse
  *    on, so `gimp_canvas` refuses under the same conditions. An effect filter (vignette and
  *    friends) keys off the LAYER's own unchanged extent, never the canvas, so it needs no such
- *    refusal or tracking.
+ *    refusal or tracking. `fill: transparent`'s "no fill layer" is only genuinely transparent in a
+ *    live, layered document — both `gimp_export` and `gimp_layer op=flatten` flatten first, which
+ *    fills it with GIMP's background color (white) instead.
+ *  - Inserting a layer changes the image's own SELECTED layer as a side effect, and both
+ *    `Drawable.scale()`/`Drawable.fill()` report failure by returning `False` rather than raising
+ *    — the bridge ops below account for both.
  */
 
 const createDocumentSchema: JsonSchemaObject = {
@@ -47,7 +54,10 @@ const createDocumentSchema: JsonSchemaObject = {
       enum: ['16', '32'],
       description:
         "Promote bit depth at creation, same as gimp_open_document's own `precision` — use this " +
-        'ahead of an aggressive tone move to avoid visible banding. Omit for ordinary 8-bit.',
+        'ahead of an aggressive tone move to avoid visible banding. Omit for ordinary 8-bit. The ' +
+        'megapixel cap this tool enforces scales down with bit depth (a 16-bit request costs 2x ' +
+        'the memory of the same pixel count at 8-bit, 32-bit float 4x): 250 MP at 8-bit, 125 MP ' +
+        'at 16-bit, 60 MP at 32-bit — the same per-side 30000px limit applies at every depth.',
     },
     name: {
       type: 'string',
@@ -103,9 +113,12 @@ const placeImageSchema: JsonSchemaObject = {
         'Absolute path to an image file to load as a new layer — same format support and raw-file ' +
         "handling as gimp_open_document's own `file_path`. If the file has multiple layers (e.g. a " +
         "`.xcf`), only ONE of them is placed — GIMP's own choice, not a flattened composite of the " +
-        'whole file — flatten or export a single layer first if the full composite is wanted. A ' +
-        "mismatch between the file's own color mode (RGB/grayscale) and this image's is converted " +
-        'automatically, not refused.',
+        'whole file — flatten or export a single layer first if the full composite is wanted. If ' +
+        'that one layer itself carries live, re-editable filters, they are baked into its pixels ' +
+        'before placing (reported as baked_filters) rather than placed live, so they can never ' +
+        'collide with a filter of the same name already on the target. A mismatch between the ' +
+        "file's own color mode (RGB/grayscale) and this image's is converted automatically, not " +
+        'refused.',
     },
     x: {
       type: 'integer',
@@ -158,6 +171,7 @@ interface PlaceImageResult {
   x: number | null;
   y: number | null;
   parent_group: number | null;
+  baked_filters?: string[];
 }
 
 async function gimpPlaceImage(
@@ -171,13 +185,18 @@ async function gimpPlaceImage(
     delete bridgeArgs.file_path;
     bridgeArgs.path = filePath;
     const result = await gimp.call<PlaceImageResult>('place_image', bridgeArgs);
+    const bakedNote =
+      result.baked_filters && result.baked_filters.length > 0
+        ? ` Its own live filter(s) (${result.baked_filters.join(', ')}) were baked into its ` +
+          'pixels before placing.'
+        : '';
     return {
       content: [
         {
           type: 'text' as const,
           text:
             `Placed ${basename(filePath)} as layer ${result.layer_id} ("${result.name}") at ` +
-            `(${result.x}, ${result.y}), ${result.width}x${result.height}.`,
+            `(${result.x}, ${result.y}), ${result.width}x${result.height}.${bakedNote}`,
         },
       ],
       structuredContent: result as unknown as Record<string, unknown>,
@@ -206,12 +225,15 @@ const canvasSchema: JsonSchemaObject = {
     width: {
       type: 'integer',
       minimum: 1,
-      description: 'New canvas width, in pixels. Must be at least the current width.',
+      description:
+        'New canvas width, in pixels. Must be at least the current width, and at least one of ' +
+        'width/height must actually be LARGER than the current size (both equal to the current ' +
+        'size is refused — there is nothing to extend).',
     },
     height: {
       type: 'integer',
       minimum: 1,
-      description: 'New canvas height, in pixels. Must be at least the current height.',
+      description: 'New canvas height, in pixels. Must be at least the current height. See width.',
     },
     anchor: {
       type: 'string',
@@ -237,11 +259,20 @@ const canvasSchema: JsonSchemaObject = {
     },
     fill: {
       type: 'string',
+      enum: ['white', 'black', 'transparent'],
+      pattern: '^#[0-9a-fA-F]{6}$',
       default: 'transparent',
       description:
-        "The newly added area's content: 'white', 'black', 'transparent' (no fill layer is added " +
-        "at all), or a '#rrggbb' hex color. Painted onto a new, full-canvas layer inserted at the " +
-        'BOTTOM of the stack — every existing layer is untouched.',
+        "'white', 'black', a '#rrggbb' hex color, or 'transparent' (default — no fill layer is " +
+        'added at all; see the note on gimp_export/flatten below). Any other choice is painted onto a ' +
+        'new, full-canvas layer inserted at the BOTTOM of the whole stack — a solid backdrop ' +
+        'behind every existing layer, not just the newly added area, so it also shows through any ' +
+        'pre-existing transparency in those layers. On a GRAYSCALE image a hex color renders as ' +
+        'its LUMINANCE (a weighted gray, not one channel picked out). transparent: genuinely ' +
+        'transparent only in a live, layered document (e.g. saved via gimp_save_xcf) — ' +
+        'gimp_export and gimp_layer op=flatten both flatten first, which fills any transparent ' +
+        "area with GIMP's ambient background color (white, unchanged by this tool) and drops " +
+        'alpha, not with transparency.',
     },
   },
   required: ['image', 'width', 'height'],
@@ -342,10 +373,12 @@ export function createGimpComposeTools(gimp: GimpBackend): ToolDefinition[] {
           'own is converted automatically on load, never refused. x/y place the layer at an ' +
           'ABSOLUTE document-pixel offset (not a delta), default (0, 0); width/height optionally ' +
           "scale it first (one alone keeps the source's own aspect ratio). name/parent_group/" +
-          "position work exactly like gimp_layer op=create. Nothing from the source file's own " +
-          'metadata (EXIF/XMP) attaches to this image, and no path — just the placed layer — ' +
-          'appears in the result; there is no undo in this session: gimp_checkpoint or ' +
-          'gimp_save_xcf first when in doubt.',
+          "position work exactly like gimp_layer op=create. A source layer's OWN live filters " +
+          '(e.g. from a filtered `.xcf`) are baked into its pixels before placing, never placed ' +
+          "live (reported as baked_filters). Nothing from the source file's own metadata " +
+          '(EXIF/XMP) attaches to this image, and no path — just the placed layer — appears in ' +
+          'the result; there is no undo in this session: gimp_checkpoint or gimp_save_xcf first ' +
+          'when in doubt.',
         inputSchema: placeImageSchema,
         outputSchema: {
           type: 'object',
@@ -357,6 +390,13 @@ export function createGimpComposeTools(gimp: GimpBackend): ToolDefinition[] {
             x: { type: ['number', 'null'] },
             y: { type: ['number', 'null'] },
             parent_group: { type: ['number', 'null'] },
+            baked_filters: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                "Names of the placed layer's own live filters that were baked into its pixels " +
+                'before placing. Omitted when the source layer had none.',
+            },
           },
         },
         annotations: {
@@ -375,19 +415,20 @@ export function createGimpComposeTools(gimp: GimpBackend): ToolDefinition[] {
         description:
           'Headless GIMP: extend the canvas — grow it and reposition the existing content within ' +
           'the larger frame, never shrink (use gimp_crop_document for that; REFUSED outright when ' +
-          'either dimension would be smaller than the current one). Choose where the existing ' +
-          "content lands with `anchor` (a 3x3 grid, default 'center') or explicit offset_x/" +
-          'offset_y; give one or the other, not both. `fill` sets what the newly added area shows: ' +
-          "white, black, a '#rrggbb' hex color, or transparent (default) which adds no fill layer " +
-          'at all — an existing layer without alpha shows the new area as transparent when the ' +
-          'image is later flattened or exported. IRREVERSIBLE in this session: there is no undo, ' +
-          'so gimp_save_xcf first when in doubt. REFUSES outright when the image has a masked ' +
-          'filter, or any filter not created by Editmamei (for example one added in the GIMP GUI) ' +
-          "— extend the canvas before adding any masked filter, not after: a filter's mask does " +
-          'not travel with the layer it confines when the canvas repositions it, the same physics ' +
-          'gimp_resize_image and gimp_transform_canvas already refuse on. An unmasked effect ' +
-          "filter (vignette and friends) is unaffected — its own params key off the LAYER's own " +
-          'unchanged extent, never the canvas.',
+          'either dimension would be smaller than the current one, and REFUSED when neither ' +
+          'dimension actually grows). Choose where the existing content lands with `anchor` (a ' +
+          "3x3 grid, default 'center') or explicit offset_x/offset_y; give one or the other, not " +
+          'both. `fill` sets a solid backdrop layer under the WHOLE canvas — white, black, a ' +
+          "'#rrggbb' hex color (rendered as luminance on a grayscale image), or transparent " +
+          '(default, adds no backdrop layer at all — see its own field description for what that ' +
+          'means at export/flatten time). IRREVERSIBLE in this session: there is no undo, so ' +
+          'gimp_checkpoint or gimp_save_xcf first when in doubt. REFUSES outright when the image ' +
+          'has a masked filter, or any filter not created by Editmamei (for example one added in ' +
+          'the GIMP GUI) — extend the canvas before adding any masked filter, not after: a ' +
+          "filter's mask does not travel with the layer it confines when the canvas repositions " +
+          'it, the same physics gimp_resize_image and gimp_transform_canvas already refuse on. An ' +
+          'unmasked effect filter (vignette and friends) is unaffected — its own params key off ' +
+          "the LAYER's own unchanged extent, never the canvas.",
         inputSchema: canvasSchema,
         outputSchema: {
           type: 'object',
@@ -416,11 +457,13 @@ export function createGimpComposeTools(gimp: GimpBackend): ToolDefinition[] {
           'image is refused outright as a source. Converting to grayscale permanently discards ' +
           'color; converting an already-grayscale image to rgb does not restore it. A no-op when ' +
           'the image is already the requested mode (reported as converted: false, nothing else ' +
-          'changes). REFUSES outright while the image has ANY live filter — a color-dependent ' +
-          'filter (curves on the red channel, hue_saturation, a vignette color, ...) could change ' +
-          'meaning across the mode change. Bake it first (gimp_bake) or delete it (gimp_filter ' +
-          'op=delete), then convert. IRREVERSIBLE in this session: there is no undo, so ' +
-          'gimp_save_xcf first when in doubt.',
+          'changes — checked BEFORE the live-filter refusal below, so a no-op call never fails ' +
+          'just because a filter happens to be present). Otherwise REFUSES outright while the ' +
+          'image has ANY live filter — a color-dependent filter (curves on the red channel, ' +
+          'hue_saturation, a vignette color, ...) could change meaning across the mode change. ' +
+          'Bake it first (gimp_bake) or delete it (gimp_filter op=delete), then convert. ' +
+          'IRREVERSIBLE in this session: there is no undo, so gimp_checkpoint or gimp_save_xcf ' +
+          'first when in doubt.',
         inputSchema: convertImageModeSchema,
         outputSchema: {
           type: 'object',
