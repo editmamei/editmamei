@@ -164,6 +164,11 @@ def validate_layer_mode(value):
 # explicitly rather than trusting whatever `Gimp.Layer.new` leaves behind.
 LAYER_FILLS = ('white', 'black', 'transparent')
 
+# gimp_create_document / gimp_convert_image_mode's base-type choices -- indexed is deliberately
+# absent (gimp_create_document has nothing to build a palette from, and gimp_convert_image_mode
+# refuses an indexed source outright; see ops.py's own comments on both).
+IMAGE_MODES = ('rgb', 'grayscale')
+
 # Formats `_export_stripped` (ops.py) will write; every export/preview/compare raster save goes
 # through it, and it refuses any other extension outright rather than falling back to a bare,
 # metadata-unaware save.
@@ -259,6 +264,45 @@ def validate_resize_dims(width, height):
 
 def validate_feather_px(value):
     return validate_range('feather_px', value, 0.0, MAX_FEATHER_PX)
+
+
+_HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+# gimp_canvas's fill choices: the same white/black/transparent LAYER_FILLS a new layer gets, plus
+# a #rrggbb hex color the fixed enum can't express -- validated by regex here since it's an open
+# set, not a membership check like every other choice validator in this file.
+CANVAS_FILLS = LAYER_FILLS
+
+
+def validate_canvas_fill(value):
+    if value in CANVAS_FILLS or (isinstance(value, str) and _HEX_COLOR_RE.match(value)):
+        return value
+    raise ValueError(
+        "fill must be one of %s, or a '#rrggbb' hex color, got %r" % (sorted(CANVAS_FILLS), value)
+    )
+
+
+# gimp_canvas's anchor grid -> the fraction of the GROWTH (new size minus old size) that lands
+# BEFORE the existing content on each axis. 0.0 pins that edge (no padding there); 1.0 puts all
+# the padding there instead; 0.5 splits it evenly. Keyed by the full 3x3 grid a Photoshop-style
+# "Canvas Size" anchor picker offers.
+_CANVAS_ANCHOR_FRACTIONS = {
+    'top_left': (0.0, 0.0), 'top_center': (0.5, 0.0), 'top_right': (1.0, 0.0),
+    'middle_left': (0.0, 0.5), 'center': (0.5, 0.5), 'middle_right': (1.0, 0.5),
+    'bottom_left': (0.0, 1.0), 'bottom_center': (0.5, 1.0), 'bottom_right': (1.0, 1.0),
+}
+CANVAS_ANCHORS = tuple(_CANVAS_ANCHOR_FRACTIONS)
+
+
+def canvas_anchor_offset(anchor, old_width, old_height, new_width, new_height):
+    """(offset_x, offset_y) for `Image.resize(new_width, new_height, offset_x, offset_y)` that
+    places the EXISTING old_width x old_height content at `anchor` within the new, larger canvas.
+    Pure arithmetic (gi-free) -- ops.py's `op_canvas` supplies the live image's own before/after
+    dimensions and passes the result straight to the bridge primitive."""
+    if anchor not in _CANVAS_ANCHOR_FRACTIONS:
+        raise ValueError('anchor must be one of %s' % sorted(_CANVAS_ANCHOR_FRACTIONS))
+    fx, fy = _CANVAS_ANCHOR_FRACTIONS[anchor]
+    return round((new_width - old_width) * fx), round((new_height - old_height) * fy)
 
 
 def pct_to_unit(name, value, lo=-100.0, hi=100.0):

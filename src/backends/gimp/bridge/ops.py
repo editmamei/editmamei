@@ -182,7 +182,9 @@ def _composite(img):
 # layer list against the live document's POSITIONALLY, so a structural drift between them (a layer
 # added, removed, or reordered on one side but not the other) would mis-attach a filter to the
 # wrong layer rather than merely rendering an out-of-date preview; see that function's own guard.
-# `select` is the one layer op that changes neither pixels nor structure and is deliberately exempt.
+# `create_document`/`place_image` (new layer tree), `canvas` (canvas size), and
+# `convert_image_mode` (base type) all fall under the same rule. `select` is the one layer op that
+# changes neither pixels nor structure and is deliberately exempt.
 PROXIES = {}
 
 
@@ -2519,6 +2521,246 @@ def op_bake(args):
     return {'layer_id': layer.get_id(), 'name': layer.get_name(), 'baked': baked}
 
 
+# ---- document composition (gimp_create_document / gimp_place_image / gimp_canvas /
+# gimp_convert_image_mode) -----------------------------------------------------------------
+#
+# Verified live (GIMP 3.2.6):
+#   - `Gimp.Image.resize(width, height, offx, offy)` is the canvas-resize primitive `op_crop`'s
+#     own `Image.crop` already wraps for the shrink direction; called directly here for the grow
+#     direction it also supports. It repositions every existing layer by ADDING (offx, offy) to
+#     that layer's own current offset -- layer CONTENT and size are untouched, only where it sits
+#     in the (now larger) canvas moves.
+#   - That repositioning is exactly the "layer moves, its own pixels don't" case
+#     `_refuse_if_masked_filters`'s own comment already documents for rotate/flip/resize: a masked
+#     filter's confinement is a fixed snapshot that does NOT travel with a moving layer (verified
+#     live with a rectangle-masked brightness-contrast filter on the right half of a layer --
+#     after growing the canvas on the left, the darkened region stayed at the OLD absolute pixel
+#     positions, not the layer's new ones) -- `gimp_canvas` therefore refuses under the same
+#     conditions `resize`/`rotate`/`flip` do. An UNMASKED effect filter (vignette, motion_blur,
+#     drop_shadow) is unaffected: its own params key off the LAYER's own unchanged extent, never
+#     the image/canvas, so no transform-tracking table entry is needed here the way rotate/resize
+#     need one for those.
+#   - `Gimp.FillType` has no BLACK (see `_fill_new_layer`'s own comment); a hex fill goes through
+#     the same context-push/foreground/pop bracket.
+#   - `Gimp.file_load_layer(run_mode, image, file)` returns an UNATTACHED layer (an explicit
+#     `image.insert_layer` is still required) already converted to `image`'s own base type at
+#     LOAD time, before that insert -- verified both directions (a grayscale source loaded into
+#     an RGB target reports `rgb-image` even before insert; an RGB source into a grayscale target
+#     reports `gray-image` after). Loading into a HIGHER-precision (16/32-bit) target succeeds
+#     with no error either. Placing a file carrying its own metadata (EXIF/XMP) does not attach
+#     anything to the TARGET image's own metadata -- verified with a real GPS-bearing source.
+#     Given a MULTI-layer source (e.g. a `.xcf`), only ONE layer comes back -- GIMP's own choice,
+#     not a flattened composite of the whole file.
+#   - `Item.scale(width, height, local_origin)` resizes just that one layer; called here while its
+#     offset is still whatever `file_load_layer` gave it (verified: local_origin's own effect on
+#     the resulting offset only matters when the pre-scale offset is non-zero), and the caller's
+#     `x`/`y` are applied afterward via the same absolute `set_offsets` `gimp_layer op=move` uses --
+#     so the requested position is always exact regardless of local_origin's own math.
+#   - `Gimp.Image.convert_rgb()` / `convert_grayscale()` exist; calling one when the image is
+#     ALREADY that base type is the same "calling error returns False, doesn't raise" class
+#     `op_open`'s own `convert_precision` comment documents, which is why `op_convert_image_mode`
+#     checks the current base type itself first rather than relying on that return value to tell
+#     the two cases apart.
+
+
+def op_create_document(args):
+    width, height = lib.validate_resize_dims(int(lib.require(args, 'width')), int(lib.require(args, 'height')))
+    fill = lib.validate_choice('fill', args.get('fill', 'white'), lib.LAYER_FILLS)
+    mode = lib.validate_choice('mode', args.get('mode', 'rgb'), lib.IMAGE_MODES)
+    precision = args.get('precision')
+    if precision is not None and precision not in ('16', '32'):
+        raise ValueError("precision must be one of '16', '32'")
+    name = args.get('name') or 'Background'
+    base_type = Gimp.ImageBaseType.RGB if mode == 'rgb' else Gimp.ImageBaseType.GRAY
+    img = Gimp.Image.new(width, height, base_type)
+    try:
+        if precision is not None:
+            if not img.convert_precision(_PRECISION_ENUM[precision]):
+                raise lib.OpError(
+                    'gimp_op_failed',
+                    'precision promotion to %r failed for a new %s image' % (precision, mode),
+                )
+        layer = Gimp.Layer.new(img, name, width, height, _layer_type_for(img), 100.0, Gimp.LayerMode.NORMAL)
+        img.insert_layer(layer, None, 0)
+        _assert_layer_attached(img, layer, 'the background layer')
+        _fill_new_layer(layer, fill)
+        Gimp.Selection.none(img)
+        _proxy(img, 1024)  # see op_open: build the default preview proxy up front too
+    except Exception:
+        img.delete()
+        raise
+    return _describe(img)
+
+
+def op_place_image(args):
+    # Unlike `op_open`'s identical-looking file-not-found/raw-load messages (which do carry the
+    # full path -- an existing, separate gap this PR does not touch), every message here is built
+    # from `basename` only: `gimp_place_image` composites INTO an already-open document, so a
+    # failure here is more likely to be read alongside other paths/output already in play, and
+    # this bridge's own path-free discipline (see `_export_stripped`'s identical rewrite) applies
+    # to a newly-added op from the start rather than as a later fix.
+    img = _image(args)
+    path = lib.require(args, 'path')
+    basename = os.path.basename(path)
+    if not os.path.exists(path):
+        raise FileNotFoundError('no file named %s to place' % basename)
+    ext = os.path.splitext(path)[1].lower()
+    load_error = None
+    try:
+        loaded = Gimp.file_load_layer(Gimp.RunMode.NONINTERACTIVE, img, Gio.File.new_for_path(path))
+    except Exception as e:
+        loaded = None
+        load_error = str(e)
+    # A failed load does not always raise: verified live, an unreadable raw-extension file with no
+    # loader plug-in installed makes `file_load_layer` return `None` outright (the same "returned
+    # normally having silently done nothing" class `_assert_layer_attached`'s own comment names),
+    # not raise -- so the raw/no-loader reframing below has to cover BOTH `loaded is None` and a
+    # real exception, not just the exception case `op_open`'s own analogous try/except assumes is
+    # the only failure shape.
+    if loaded is None:
+        detail = load_error or 'no further detail'
+        for spelling in sorted({Gio.File.new_for_path(path).get_path() or path, path}, key=len, reverse=True):
+            detail = detail.replace(spelling, basename)
+        if ext in RAW_EXTENSIONS:
+            raise lib.OpError(
+                'gimp_unsupported_file',
+                'GIMP could not load %s as a layer (no raw loader by default); install a '
+                'raw-develop plug-in (darktable, RawTherapee, or ART) for GIMP, or develop it '
+                'externally first and place the resulting JPEG/TIFF. (%s)' % (basename, detail),
+            )
+        raise lib.OpError('gimp_op_failed', 'could not load %s as a layer: %s' % (basename, detail))
+    parent = None
+    try:
+        default_name = os.path.splitext(os.path.basename(path))[0] or 'Layer'
+        name = _unique_layer_name(img, args.get('name') or default_name)
+        parent = _resolve_parent_group(img, args)
+        position = _validated_position(args)
+        loaded.set_name(name)
+        img.insert_layer(loaded, parent, position)
+        _assert_layer_attached(img, loaded, 'the placed layer')
+
+        width, height = args.get('width'), args.get('height')
+        if width is not None or height is not None:
+            w0, h0 = loaded.get_width(), loaded.get_height()
+            if width is not None and height is not None:
+                width, height = int(width), int(height)
+            elif width is not None:
+                width = int(width)
+                height = max(1, round(h0 * (width / float(w0))))
+            else:
+                height = int(height)
+                width = max(1, round(w0 * (height / float(h0))))
+            width, height = lib.validate_resize_dims(width, height)
+            loaded.scale(width, height, False)
+
+        x, y = int(args.get('x', 0)), int(args.get('y', 0))
+        _validated_move_offset(img, x, y)
+        loaded.set_offsets(x, y)
+    except Exception:
+        _discard_layer(img, loaded)
+        raise
+    finally:
+        _drop_proxies(img.get_id())
+    ok, off_x, off_y = loaded.get_offsets()
+    return {
+        'layer_id': loaded.get_id(),
+        'name': loaded.get_name(),
+        'width': loaded.get_width(),
+        'height': loaded.get_height(),
+        'x': off_x if ok else None,
+        'y': off_y if ok else None,
+        'parent_group': parent.get_id() if parent is not None else None,
+    }
+
+
+def _fill_canvas_layer(layer, fill):
+    if fill == 'transparent':
+        return  # never called for 'transparent' -- op_canvas skips the fill layer entirely
+    if fill == 'white':
+        layer.fill(Gimp.FillType.WHITE)
+        return
+    color = 'black' if fill == 'black' else fill  # fill is a '#rrggbb' hex string otherwise
+    Gimp.context_push()
+    try:
+        Gimp.context_set_foreground(Gegl.Color.new(color))
+        layer.fill(Gimp.FillType.FOREGROUND)
+    finally:
+        Gimp.context_pop()
+
+
+def op_canvas(args):
+    img = _image(args)
+    _refuse_if_masked_filters(img, 'canvas')
+    old_w, old_h = img.get_width(), img.get_height()
+    new_w, new_h = int(lib.require(args, 'width')), int(lib.require(args, 'height'))
+    if new_w < old_w or new_h < old_h:
+        raise ValueError(
+            'gimp_canvas only extends the canvas: %dx%d is smaller than the current %dx%d in at '
+            'least one dimension -- use gimp_crop_document to shrink it instead'
+            % (new_w, new_h, old_w, old_h)
+        )
+    new_w, new_h = lib.validate_resize_dims(new_w, new_h)
+    fill = lib.validate_canvas_fill(args.get('fill', 'transparent'))
+    anchor = args.get('anchor')
+    has_explicit_offset = 'offset_x' in args or 'offset_y' in args
+    if has_explicit_offset and anchor is not None:
+        raise ValueError('give either anchor or offset_x/offset_y, not both')
+    if has_explicit_offset:
+        offset_x, offset_y = int(lib.require(args, 'offset_x')), int(lib.require(args, 'offset_y'))
+    else:
+        offset_x, offset_y = lib.canvas_anchor_offset(anchor or 'center', old_w, old_h, new_w, new_h)
+    if not (0 <= offset_x <= new_w - old_w) or not (0 <= offset_y <= new_h - old_h):
+        raise ValueError(
+            'offset_x/offset_y must keep the existing %dx%d content fully within the new %dx%d '
+            'canvas: 0..%d for offset_x, 0..%d for offset_y'
+            % (old_w, old_h, new_w, new_h, new_w - old_w, new_h - old_h)
+        )
+    Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
+    img.resize(new_w, new_h, offset_x, offset_y)
+    try:
+        if fill != 'transparent':
+            name = _unique_layer_name(img, 'Canvas Fill')
+            layer = Gimp.Layer.new(img, name, new_w, new_h, _layer_type_for(img), 100.0, Gimp.LayerMode.NORMAL)
+            try:
+                img.insert_layer(layer, None, len(img.get_layers()))  # bottom of the top-level stack
+                _assert_layer_attached(img, layer, 'the canvas fill layer')
+                _fill_canvas_layer(layer, fill)
+            except Exception:
+                _discard_layer(img, layer)
+                raise
+    finally:
+        _drop_proxies(img.get_id())
+    return {
+        'width': img.get_width(), 'height': img.get_height(),
+        'offset_x': offset_x, 'offset_y': offset_y,
+    }
+
+
+def op_convert_image_mode(args):
+    img = _image(args)
+    mode = lib.validate_choice('mode', args.get('mode'), lib.IMAGE_MODES)
+    if img.get_base_type() == Gimp.ImageBaseType.INDEXED:
+        raise ValueError('gimp_convert_image_mode does not support an indexed image as the source')
+    live_filters = _live_filter_names(img)
+    if live_filters:
+        raise ValueError(
+            'gimp_convert_image_mode refuses while any live filter is present (%s): a '
+            'color-dependent filter could change meaning across a mode change. Bake it first '
+            "(gimp_bake) or delete it (gimp_filter op=delete), then convert."
+            % ', '.join(repr(n) for n in sorted(live_filters))
+        )
+    target_type = Gimp.ImageBaseType.RGB if mode == 'rgb' else Gimp.ImageBaseType.GRAY
+    if img.get_base_type() == target_type:
+        return {'mode': mode, 'converted': False}
+    try:
+        ok = img.convert_rgb() if mode == 'rgb' else img.convert_grayscale()
+        if not ok:
+            raise lib.OpError('gimp_op_failed', 'GIMP could not convert this image to %s' % mode)
+    finally:
+        _drop_proxies(img.get_id())
+    return {'mode': mode, 'converted': True}
+
+
 def op_select_none(args):
     Gimp.Selection.none(_image(args))
     return {'selection': 'none'}
@@ -2539,6 +2781,8 @@ OPS = {
     'crop': op_crop, 'resize': op_resize, 'rotate': op_rotate, 'flip': op_flip,
     'create_mask': op_create_mask, 'describe_operation': op_describe_operation,
     'select_none': op_select_none, 'layer': op_layer, 'bake': op_bake,
+    'create_document': op_create_document, 'place_image': op_place_image,
+    'canvas': op_canvas, 'convert_image_mode': op_convert_image_mode,
 }
 
 
