@@ -341,6 +341,11 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // Live text layers (create/set_content/set_font/set_color/set_alignment), the GIMP twin of ps_text.
   gimp_text: 'dev',
   gimp_convert_image_mode: 'community',
+  // Selections and masks: build a selection channel, refine it, and attach it as a layer mask.
+  gimp_select: 'dev',
+  gimp_modify_mask: 'dev',
+  gimp_layer_mask: 'dev',
+  gimp_get_mask_preview: 'dev',
 };
 
 /**

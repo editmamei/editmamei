@@ -3466,6 +3466,312 @@ def op_select_none(args):
     return {'selection': 'none'}
 
 
+# ---------- selection spike (gimp_select / gimp_modify_mask / gimp_layer_mask / masks) ----------
+
+_CHANNEL_OPS = {
+    'replace': Gimp.ChannelOps.REPLACE, 'add': Gimp.ChannelOps.ADD,
+    'subtract': Gimp.ChannelOps.SUBTRACT, 'intersect': Gimp.ChannelOps.INTERSECT,
+}
+
+
+def _selection_to_channel(img, name):
+    """Copy the active selection into a (replaced) named channel, clear the selection, and return
+    the op result every mask op reports."""
+    w, h = img.get_width(), img.get_height()
+    rect = Gegl.Rectangle.new(0, 0, w, h)
+    data = img.get_selection().get_buffer().get(rect, 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
+    ch = _replace_named_channel(img, name, w, h)
+    buf = ch.get_buffer()
+    buf.set(rect, "Y' u8", data)
+    buf.flush()
+    ch.update(0, 0, w, h)
+    Gimp.Selection.none(img)
+    _drop_proxies(img.get_id())
+    selected, fraction = _channel_coverage(ch, w, h)
+    return {'channel': name, 'selected_pixels': selected, 'fraction': fraction}
+
+
+def _find_channel(img, name):
+    for ch in img.get_channels():
+        if ch.get_name() == name:
+            return ch
+    return None
+
+
+def _refuse_mask_in_use(img, name):
+    if _mask_name_in_use(img, name):
+        raise ValueError('mask %r is already used by an existing filter; use a different name' % name)
+
+
+def _color_arg(img, drawable, args):
+    color = args.get('color')
+    if color:
+        return Gegl.Color.new(str(color))
+    if args.get('x') is None or args.get('y') is None:
+        raise ValueError('color_range needs `color` (e.g. "#c0392b") or a sample point x, y')
+    return drawable.get_pixel(int(args['x']), int(args['y']))
+
+
+def op_select(args):
+    img = _image(args)
+    mode = lib.require(args, 'mode')
+    name = args.get('name', 'Selection')
+    combine = args.get('combine', 'replace')
+    if combine not in _CHANNEL_OPS:
+        raise ValueError('combine must be one of %s' % sorted(_CHANNEL_OPS))
+    _refuse_mask_in_use(img, name)
+    op = _CHANNEL_OPS[combine]
+    existing = _find_channel(img, name)
+    Gimp.Selection.none(img)
+    if combine != 'replace':
+        if existing is None:
+            raise ValueError('combine=%s needs an existing channel named %r' % (combine, name))
+        img.select_item(Gimp.ChannelOps.REPLACE, existing)
+    Gimp.context_push()
+    try:
+        Gimp.context_set_feather(False)
+        Gimp.context_set_antialias(True)
+        Gimp.context_set_sample_threshold(float(args.get('threshold', 15)) / 255.0)
+        Gimp.context_set_sample_merged(bool(args.get('sample_merged', True)))
+        Gimp.context_set_sample_criterion(Gimp.SelectCriterion.COMPOSITE)
+        if mode == 'all':
+            img.select_rectangle(op, 0, 0, img.get_width(), img.get_height())
+        elif mode in ('rectangle', 'ellipse'):
+            x, y = float(lib.require(args, 'x')), float(lib.require(args, 'y'))
+            ww, hh = float(lib.require(args, 'width')), float(lib.require(args, 'height'))
+            (img.select_rectangle if mode == 'rectangle' else img.select_ellipse)(op, x, y, ww, hh)
+        elif mode == 'polygon':
+            pts = lib.require(args, 'points')
+            if not isinstance(pts, list) or len(pts) < 3:
+                raise ValueError('points must be a list of at least 3 [x, y] pairs')
+            segs = []
+            for p in pts:
+                segs.extend([float(p[0]), float(p[1])])
+            img.select_polygon(op, segs)
+        elif mode == 'color_range':
+            drawable = _layer(img, args)
+            img.select_color(op, drawable, _color_arg(img, drawable, args))
+        elif mode == 'magic_wand':
+            drawable = _layer(img, args)
+            img.select_contiguous_color(op, drawable, float(lib.require(args, 'x')),
+                                        float(lib.require(args, 'y')))
+        elif mode == 'alpha':
+            img.select_item(op, _layer(img, args))
+        elif mode == 'channel':
+            src = _find_channel(img, lib.require(args, 'source'))
+            if src is None:
+                raise ValueError('no channel named %r' % args['source'])
+            img.select_item(op, src)
+        else:
+            raise ValueError('unknown mode %r' % mode)
+    finally:
+        Gimp.context_pop()
+    if args.get('invert'):
+        Gimp.Selection.invert(img)
+    feather = float(args.get('feather_px', 0))
+    if feather > 0:
+        Gimp.Selection.feather(img, feather)
+    return _selection_to_channel(img, name)
+
+
+def op_modify_mask(args):
+    img = _image(args)
+    name = lib.require(args, 'channel')
+    out = args.get('output') or name
+    _refuse_mask_in_use(img, out)
+    ch = _find_channel(img, name)
+    if ch is None:
+        raise ValueError('no channel named %r' % name)
+    how = lib.require(args, 'op')
+    px = float(args.get('px', 0))
+    img.select_item(Gimp.ChannelOps.REPLACE, ch)
+    if how == 'expand':
+        Gimp.Selection.grow(img, int(px))
+    elif how == 'contract':
+        Gimp.Selection.shrink(img, int(px))
+    elif how == 'border':
+        Gimp.Selection.border(img, int(px))
+    elif how == 'feather':
+        Gimp.Selection.feather(img, px)
+    elif how == 'invert':
+        Gimp.Selection.invert(img)
+    elif how == 'harden':
+        Gimp.Selection.sharpen(img)
+    elif how == 'smooth':
+        # Round off jaggies: feather, then re-threshold at 50%.
+        Gimp.Selection.feather(img, max(px, 1.0))
+        Gimp.Selection.sharpen(img)
+    else:
+        Gimp.Selection.none(img)
+        raise ValueError('unknown op %r' % how)
+    return _selection_to_channel(img, out)
+
+
+def op_layer_mask(args):
+    img = _image(args)
+    layer = _layer(img, args)
+    how = lib.require(args, 'op')
+    mask = layer.get_mask()
+    if how == 'create':
+        if mask is not None:
+            layer.remove_mask(Gimp.MaskApplyMode.DISCARD)
+        source = args.get('source', 'channel')
+        if source == 'channel':
+            ch = _find_channel(img, lib.require(args, 'channel'))
+            if ch is None:
+                raise ValueError('no channel named %r' % args['channel'])
+            img.select_item(Gimp.ChannelOps.REPLACE, ch)
+            new = layer.create_mask(Gimp.AddMaskType.SELECTION)
+            Gimp.Selection.none(img)
+        else:
+            kinds = {'white': Gimp.AddMaskType.WHITE, 'black': Gimp.AddMaskType.BLACK,
+                     'alpha': Gimp.AddMaskType.ALPHA, 'grayscale': Gimp.AddMaskType.COPY}
+            if source not in kinds:
+                raise ValueError('source must be channel, white, black, alpha or grayscale')
+            new = layer.create_mask(kinds[source])
+        layer.add_mask(new)
+        if args.get('invert'):
+            new.invert(False)
+    elif mask is None:
+        raise ValueError('layer %r has no mask' % layer.get_name())
+    elif how == 'delete':
+        layer.remove_mask(Gimp.MaskApplyMode.DISCARD)
+    elif how == 'apply':
+        layer.remove_mask(Gimp.MaskApplyMode.APPLY)
+    elif how == 'invert':
+        mask.invert(False)
+    else:
+        raise ValueError('unknown op %r' % how)
+    _drop_proxies(img.get_id())
+    return {'layer': layer.get_name(), 'layer_id': layer.get_id(), 'op': how,
+            'has_mask': layer.get_mask() is not None}
+
+
+def _gray_bytes_image(data, w, h):
+    tmp = Gimp.Image.new(w, h, Gimp.ImageBaseType.GRAY)
+    lay = Gimp.Layer.new(tmp, 'm', w, h, Gimp.ImageType.GRAY_IMAGE, 100.0, Gimp.LayerMode.NORMAL)
+    tmp.insert_layer(lay, None, 0)
+    buf = lay.get_buffer()
+    buf.set(Gegl.Rectangle.new(0, 0, w, h), "Y' u8", data)
+    buf.flush()
+    return tmp, lay
+
+
+def op_mask_preview(args):
+    img = _image(args)
+    ch = _find_channel(img, lib.require(args, 'channel'))
+    if ch is None:
+        raise ValueError('no channel named %r' % args['channel'])
+    out_path = lib.require(args, 'out_path')
+    max_px = lib.validate_max_px(int(args.get('max_px', 1024)))
+    w, h = img.get_width(), img.get_height()
+    data = ch.get_buffer().get(Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
+    tmp, lay = _gray_bytes_image(data, w, h)
+    try:
+        _scale_to_max(tmp, max_px)
+        dw, dh = tmp.get_width(), tmp.get_height()
+        if args.get('style', 'overlay') == 'mask':
+            _export_stripped(tmp, out_path)
+            return {'path': out_path, 'width': dw, 'height': dh}
+        small = lay.get_buffer().get(Gegl.Rectangle.new(0, 0, dw, dh), 1.0, "Y' u8",
+                                     Gegl.AbyssPolicy.NONE)
+    finally:
+        tmp.delete()
+    dup, _unmirrored = _proxy_render(img, max_px)
+    try:
+        if dup.get_base_type() != Gimp.ImageBaseType.RGB:
+            dup.convert_rgb()
+        if (dup.get_width(), dup.get_height()) != (dw, dh):
+            dup.scale(dw, dh)
+        red = Gimp.Layer.new(dup, 'overlay', dw, dh, Gimp.ImageType.RGBA_IMAGE, 50.0,
+                             Gimp.LayerMode.NORMAL)
+        dup.insert_layer(red, None, 0)
+        Gimp.context_push()
+        try:
+            Gimp.context_set_foreground(Gegl.Color.new('red'))
+            red.fill(Gimp.FillType.FOREGROUND)
+        finally:
+            Gimp.context_pop()
+        m = red.create_mask(Gimp.AddMaskType.WHITE)
+        red.add_mask(m)
+        mb = m.get_buffer()
+        # Quick Mask style: red covers what is NOT selected.
+        mb.set(Gegl.Rectangle.new(0, 0, dw, dh), "Y' u8", small.translate(bytes(range(255, -1, -1))))
+        mb.flush()
+        dup.flatten()
+        _export_stripped(dup, out_path)
+        return {'path': out_path, 'width': dw, 'height': dh}
+    finally:
+        dup.delete()
+
+
+def op_load_mask(args):
+    """A grey mask image (PNG/JPEG, white = selected) -> a named channel. With a layer, the mask
+    is taken to cover that layer's own bounds (e.g. a mask computed from `render_layer`)."""
+    img = _image(args)
+    name = args.get('name', 'Mask')
+    _refuse_mask_in_use(img, name)
+    path = lib.require(args, 'path')
+    w, h = img.get_width(), img.get_height()
+    if args.get('layer') or args.get('layer_id') is not None:
+        layer = _layer(img, args)
+        _ok, ox, oy = layer.get_offsets()
+        tw, th = layer.get_width(), layer.get_height()
+    else:
+        ox = oy = 0
+        tw, th = w, h
+    src = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(path))
+    try:
+        if src.get_base_type() != Gimp.ImageBaseType.GRAY:
+            src.convert_grayscale()
+        if (src.get_width(), src.get_height()) != (tw, th):
+            src.scale(tw, th)
+        flat = src.flatten()
+        data = flat.get_buffer().get(Gegl.Rectangle.new(0, 0, tw, th), 1.0, "Y' u8",
+                                     Gegl.AbyssPolicy.NONE)
+    finally:
+        src.delete()
+    ch = _replace_named_channel(img, name, w, h)
+    x0, y0, x1, y1 = max(0, ox), max(0, oy), min(w, ox + tw), min(h, oy + th)
+    if x1 > x0 and y1 > y0:
+        if (ox, oy, tw, th) == (0, 0, w, h):
+            sub = data
+        else:
+            sub = b''.join(data[(y - oy) * tw + (x0 - ox):(y - oy) * tw + (x1 - ox)]
+                           for y in range(y0, y1))
+        buf = ch.get_buffer()
+        buf.set(Gegl.Rectangle.new(x0, y0, x1 - x0, y1 - y0), "Y' u8", sub)
+        buf.flush()
+        ch.update(0, 0, w, h)
+    Gimp.Selection.none(img)
+    _drop_proxies(img.get_id())
+    selected, fraction = _channel_coverage(ch, w, h)
+    return {'channel': name, 'selected_pixels': selected, 'fraction': fraction}
+
+
+def op_render_layer(args):
+    """One layer's own pixels (not the composite), downscaled, to out_path -- the input for a mask
+    that should follow that layer. Returns the layer's bounds in document pixels."""
+    img = _image(args)
+    layer = _layer(img, args)
+    out_path = lib.require(args, 'out_path')
+    max_px = lib.validate_max_px(int(args.get('max_px', 2048)))
+    lw, lh = layer.get_width(), layer.get_height()
+    _ok, ox, oy = layer.get_offsets()
+    tmp = Gimp.Image.new(lw, lh, Gimp.ImageBaseType.RGB)
+    try:
+        nl = Gimp.Layer.new_from_drawable(layer, tmp)
+        tmp.insert_layer(nl, None, 0)
+        nl.set_offsets(0, 0)
+        _scale_to_max(tmp, max_px)
+        tmp.flatten()
+        _export_stripped(tmp, out_path)
+        return {'path': out_path, 'width': tmp.get_width(), 'height': tmp.get_height(),
+                'layer_id': layer.get_id(), 'bounds': {'x': ox, 'y': oy, 'width': lw, 'height': lh}}
+    finally:
+        tmp.delete()
+
+
 def op_close(args):
     img = _image(args)
     _drop_proxies(img.get_id())
@@ -3484,6 +3790,8 @@ OPS = {
     'create_document': op_create_document, 'place_image': op_place_image,
     'canvas': op_canvas, 'convert_image_mode': op_convert_image_mode,
     'text': op_text, 'fonts': op_fonts,
+    'select': op_select, 'modify_mask': op_modify_mask, 'layer_mask': op_layer_mask,
+    'mask_preview': op_mask_preview, 'load_mask': op_load_mask, 'render_layer': op_render_layer,
 }
 
 

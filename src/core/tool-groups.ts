@@ -323,6 +323,10 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   gimp_canvas: 'document',
   gimp_text: 'layers',
   gimp_convert_image_mode: 'document',
+  gimp_select: 'masks',
+  gimp_modify_mask: 'masks',
+  gimp_layer_mask: 'masks',
+  gimp_get_mask_preview: 'masks',
 };
 
 /**
