@@ -130,6 +130,18 @@ describe('createGimpEffectTools', () => {
 
 const LIB_PY = readFileSync(join(REPO_ROOT, 'src', 'backends', 'gimp', 'bridge', 'lib.py'), 'utf8');
 
+/** Just the `build_*_params` function bodies (from `build_vignette_params` through the end of
+ * `build_drop_shadow_params`, right before the `EFFECT_PARAM_BUILDERS = {` dict that follows
+ * them) -- not the whole file. The `val`-vs-`v` naming trick already keeps this decoupled from
+ * gimp-adjustment-tools.test.ts's own drift test, but scoping the SOURCE TEXT itself too means an
+ * unrelated future function elsewhere in lib.py that happens to also use `val` (the geometry
+ * transform helpers below EFFECT_PARAM_BUILDERS, say) can never silently fold a bound into this
+ * table's own drift check either. */
+const EFFECT_BUILDERS_SRC = LIB_PY.slice(
+  LIB_PY.indexOf('def build_vignette_params'),
+  LIB_PY.indexOf('EFFECT_PARAM_BUILDERS = {')
+);
+
 interface Bound {
   lo: number;
   hi: number;
@@ -158,7 +170,7 @@ function parseEffectLibPyBounds(src: string): Map<string, Bound[]> {
   return out;
 }
 
-const LIB_BOUNDS = parseEffectLibPyBounds(LIB_PY);
+const LIB_BOUNDS = parseEffectLibPyBounds(EFFECT_BUILDERS_SRC);
 
 // Anti-vacuity floor -- if the regex above ever stops matching (a lib.py refactor changes the
 // call shape), every assertion below would pass on an empty map. 10 is comfortably below the 15
