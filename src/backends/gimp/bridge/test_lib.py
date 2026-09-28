@@ -1372,12 +1372,13 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
     radius under resize, covered separately below)."""
 
     # ---- gimp_add_adjustment filters (and any other operation not in this table) must round-trip
-    # through flip/rotate/resize completely untouched -- an earlier version of this code rounded
-    # the WHOLE returned params dict unconditionally, which perturbed a non-terminating value (like
-    # hue_saturation's own `hue`, stored as degrees/180) in its 9th-10th decimal place -- enough for
-    # `_snapshot_effect_transform`'s `new_params == params` check to wrongly treat an UNTOUCHED
-    # adjustment filter as needing a live re-apply and a ledger rewrite on every single flip/
-    # rotate/resize, regardless of what it actually did.
+    # through flip/rotate/resize completely untouched: `_snapshot_effect_transform`'s own
+    # `new_params == params` check is what decides whether a filter needs a live re-apply and a
+    # ledger rewrite, so rounding an untouched value would wrongly trigger both on every single
+    # flip/rotate/resize regardless of what it actually did. hue_saturation's own `hue` (stored as
+    # degrees/180) is a real example of a value non-terminating enough in binary to shift in its
+    # 9th-10th decimal place under a naive whole-dict round, which is already enough for `==` to
+    # call it "changed".
 
     def test_flip_leaves_hue_saturation_completely_untouched_at_10_over_180(self):
         params = {'range': 'all', 'hue': lib.degrees_to_unit('hue', 10), 'saturation': 0.2, 'lightness': 0.0}
@@ -1766,6 +1767,21 @@ class TestValidateEffectTransform(unittest.TestCase):
             )
         self.assertNotIn('bake', str(ctx.exception))
         self.assertIn('gimp_filter op=delete', str(ctx.exception))
+
+    def test_refusal_message_shows_enough_precision_and_never_doubles_the_apostrophe(self):
+        # %.4g would print 1000.1 as "1000" (4 significant figures), losing the ".1" that IS the
+        # reason for the refusal -- %.6g keeps it. And "%r's %s" (repr's own closing quote
+        # directly against a literal possessive "'s") used to print as "'Motion Blur''s", a
+        # confusing doubled apostrophe; the current phrasing ("the %s field of filter %r") has no
+        # possessive next to the quote at all.
+        with self.assertRaises(ValueError) as ctx:
+            lib.validate_effect_transform(
+                'resize', 'gegl:motion-blur-linear', 'Motion Blur',
+                {'length': 1000.1, 'angle': 0.0},
+            )
+        message = str(ctx.exception)
+        self.assertIn('1000.1', message)
+        self.assertNotIn("''s", message)
 
     def test_accepts_operations_with_no_bounds_table_entry(self):
         lib.validate_effect_transform('flip', 'gegl:mono-mixer', 'B&W', {'red': 99.0})  # no raise

@@ -1483,8 +1483,9 @@ describe.skipIf(!install)('geometry and masks', () => {
 
   it('a gimp_add_adjustment filter (hue_saturation, a non-terminating internal value) is never planned by flip/rotate/resize at all', async () => {
     // hue=10 is stored internally as 10/180 (0.05555555555555555, a non-terminating binary
-    // fraction) -- exactly the shape of value an earlier bug's blanket rounding would perturb in
-    // its 9th-10th decimal place, wrongly treating this ADJUSTMENT filter (not one of the three
+    // fraction): an untouched field must come back from flip/rotate/resize's own transform
+    // functions bit-identical to its input, or `_snapshot_effect_transform`'s `==` check plans a
+    // spurious update for it -- wrongly treating this ADJUSTMENT filter (not one of the three
     // position/direction/size-dependent EFFECTS this tracking exists for) as "changed" by a
     // transform that has nothing to do with it at all. Sabotaging gimp:hue-saturation's OWN
     // setter (test_force_effect_update_failure) and confirming `effect_update_failures` stays
@@ -1506,28 +1507,31 @@ describe.skipIf(!install)('geometry and masks', () => {
 
       // A second, different non-terminating value, and the other two geometry ops too.
       const opened2 = await session.call<{ image: number }>('open', { path: rampPath });
-      await session.call('adjust', { image: opened2.image, type: 'hue_saturation', hue: 100 });
-      const rotated = await session.call<{ effect_update_failures?: string[] }>(
-        'test_force_effect_update_failure',
-        {
-          image: opened2.image,
-          operation: 'gimp:hue-saturation',
-          geometry_op: 'rotate',
-          degrees: 90,
-        }
-      );
-      expect(rotated.effect_update_failures).toBeUndefined();
-      const resized = await session.call<{ effect_update_failures?: string[] }>(
-        'test_force_effect_update_failure',
-        {
-          image: opened2.image,
-          operation: 'gimp:hue-saturation',
-          geometry_op: 'resize',
-          long_edge: 64,
-        }
-      );
-      expect(resized.effect_update_failures).toBeUndefined();
-      await session.call('close', { image: opened2.image });
+      try {
+        await session.call('adjust', { image: opened2.image, type: 'hue_saturation', hue: 100 });
+        const rotated = await session.call<{ effect_update_failures?: string[] }>(
+          'test_force_effect_update_failure',
+          {
+            image: opened2.image,
+            operation: 'gimp:hue-saturation',
+            geometry_op: 'rotate',
+            degrees: 90,
+          }
+        );
+        expect(rotated.effect_update_failures).toBeUndefined();
+        const resized = await session.call<{ effect_update_failures?: string[] }>(
+          'test_force_effect_update_failure',
+          {
+            image: opened2.image,
+            operation: 'gimp:hue-saturation',
+            geometry_op: 'resize',
+            long_edge: 64,
+          }
+        );
+        expect(resized.effect_update_failures).toBeUndefined();
+      } finally {
+        await session.call('close', { image: opened2.image });
+      }
     } finally {
       await session.call('close', { image: opened.image });
     }

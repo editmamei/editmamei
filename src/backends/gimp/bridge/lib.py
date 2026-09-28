@@ -967,16 +967,15 @@ def _round_transform_value(value):
     below actually computes -- never blanket-applied to a whole params dict. A value this module
     never touches (every gimp_add_adjustment type's own fields, since none of them are in this
     table; black_white/add_noise's fields; the other two effects' fields when only one of the
-    three is present) must come back bit-for-bit IDENTICAL to its input, or
-    `_snapshot_effect_transform`'s own `new_params == params` check would manufacture a spurious
-    "this filter changed" for a filter these functions have nothing to say about -- re-setting,
-    re-ledgering, and (if the live update ever failed) wrongly reporting it in
-    `effect_update_failures`, on every single flip/rotate/resize regardless of what it actually
-    touched. An earlier version of this code rounded the entire returned dict unconditionally,
-    which is exactly the bug this per-field approach fixes: a value like hue_saturation's `hue`
-    (stored as degrees/180, a non-terminating binary fraction for most degree values) would get
-    perturbed in its 9th-10th decimal place by that blanket rounding alone, which is already
-    enough for `==` to call it "changed" even though nothing about it should have moved at all."""
+    three is present) must come back bit-for-bit IDENTICAL to its input: `_snapshot_effect_
+    transform`'s own `new_params == params` check is what decides whether a filter needs
+    re-applying at all, and rounding a value that was never actually touched would manufacture a
+    spurious "this filter changed" for it -- re-setting, re-ledgering, and (if the live update ever
+    failed) wrongly reporting it in `effect_update_failures`, on every single flip/rotate/resize
+    regardless of what it actually did. hue_saturation's own `hue` (stored as degrees/180, a
+    non-terminating binary fraction for most degree values) is exactly the kind of value a
+    blanket, whole-dict round would perturb in its 9th-10th decimal place -- already enough for
+    `==` to call it "changed" even though nothing about it should have moved at all."""
     return round(value, _TRANSFORM_ROUND_NDIGITS)
 
 
