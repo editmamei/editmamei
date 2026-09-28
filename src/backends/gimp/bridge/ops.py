@@ -131,13 +131,23 @@ def _composite(img):
     return dup, dup.flatten()
 
 
-# Preview proxies, keyed by image id: a filter-free downscale of the document made once, onto
-# which the document's live filters are re-applied per preview. Rendering filters on ~0.7 MP
+# Preview proxies, keyed by (image id, max_px): a filter-free downscale of the document made once,
+# onto which the document's live filters are re-applied per preview. Rendering filters on ~0.7 MP
 # instead of 24 MP is what gets preview under a second; every route that renders from the
 # full-size document (flatten, scale, get_thumbnail's projection) costs 1.4-4.5 s after an
 # edit. Exact for per-pixel filters (curves, levels); a spatial filter would need its radius
-# scaled. Every op in this file only ever changes layer pixels via a non-destructive filter
-# (never bakes), so the proxy's filter-free base never goes stale.
+# scaled.
+#
+# The cache is correct ONLY because every op that changes pixels, layer structure, canvas size, or
+# image mode ends with `_drop_proxies(img.get_id())` -- not just the non-destructive-filter ops
+# this comment used to describe (when every op here only ever touched pixels via a live filter).
+# Layer create/create_group/delete/duplicate/move/reorder/set (opacity/mode/visible), merge_down,
+# flatten, and bake all change the document's real pixels or its layer tree, so a proxy built
+# before any of them would render stale content -- or worse, `_mirror_filters` zips the proxy's own
+# layer list against the live document's POSITIONALLY, so a structural drift between them (a layer
+# added, removed, or reordered on one side but not the other) would mis-attach a filter to the
+# wrong layer rather than merely rendering an out-of-date preview; see that function's own guard.
+# `select` is the one layer op that changes neither pixels nor structure and is deliberately exempt.
 PROXIES = {}
 
 
@@ -182,8 +192,19 @@ def _mirror_filters(src_img, dst_img):
     filters, _unknown = _ledger_get(src_img)
     src_w = src_img.get_width()
     scale = (dst_img.get_width() / src_w) if src_w else 1.0
-    # dst is a duplicate of src (see `_proxy`), so both walks yield the same layers in the same order.
-    for src, dst in zip(_all_layers(src_img), _all_layers(dst_img)):
+    # dst is a duplicate of src (see `_proxy`), so both walks yield the same layers in the same
+    # order -- PROVIDED the proxy-drop discipline above held. Checked explicitly rather than
+    # trusted: a future structural op that forgets `_drop_proxies` would otherwise silently zip a
+    # stale proxy's layer list against the live document's and mis-attach a filter to the wrong
+    # layer instead of failing loudly.
+    src_layers, dst_layers = _all_layers(src_img), _all_layers(dst_img)
+    if len(src_layers) != len(dst_layers):
+        raise lib.OpError(
+            'gimp_op_failed',
+            'internal error: the preview proxy has drifted from the document (%d vs %d layers) -- '
+            'a structural change did not drop the proxy cache' % (len(src_layers), len(dst_layers)),
+        )
+    for src, dst in zip(src_layers, dst_layers):
         for f in reversed(src.get_filters()):  # get_filters() is top-first
             g = Gimp.DrawableFilter.new(dst, f.get_operation_name(), f.get_name())
             src_cfg, dst_cfg = f.get_config(), g.get_config()
