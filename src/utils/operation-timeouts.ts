@@ -274,11 +274,9 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   gimp_inspect: 15_000,
   gimp_add_adjustment: 20_000,
   gimp_filter: 15_000,
-  // Creates or re-edits a filter, which GEGL evaluates over the layer's own FULL-RESOLUTION pixel
-  // data the moment it is appended or updated (not the preview proxy -- that's a separate, smaller
-  // render `preview`/`histogram`/`compare` trigger later, on demand) -- the same shape of work
-  // gimp_add_adjustment does (hence the matching 20s budget), not gimp_filter's own list/
-  // set_visibility/delete (15s), which never evaluate anything.
+  // Creates or re-edits a filter -- the same create/re-edit path, and the same 20s budget, as
+  // gimp_add_adjustment (not gimp_filter's own list/set_visibility/delete, 15s, which only manage
+  // the stack and never touch a filter's own config).
   gimp_add_effect: 20_000,
   gimp_crop_document: 20_000,
   gimp_resize_image: 45_000,
