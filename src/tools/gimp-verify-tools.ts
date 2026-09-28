@@ -90,7 +90,12 @@ async function gimpGetPreview(
     // latest-preview.jpg itself (see the file doc comment).
     const renderPath = gimp.tempPath(`preview-${randomUUID()}.jpg`);
     try {
-      const result = await gimp.call<{ width: number; height: number; proxy: boolean }>('preview', {
+      const result = await gimp.call<{
+        width: number;
+        height: number;
+        proxy: boolean;
+        unmirrored_filters?: string[];
+      }>('preview', {
         image: args.image,
         max_px: args.max_px,
         region: args.region,
@@ -115,6 +120,10 @@ async function gimpGetPreview(
       const proxyNote = result.proxy
         ? ' (downscaled proxy render — per-pixel filters exact, spatial filters approximate)'
         : ' (full-resolution region render — exact)';
+      const unmirroredNote =
+        result.unmirrored_filters && result.unmirrored_filters.length > 0
+          ? ` WARNING: ${result.unmirrored_filters.join(', ')} could not be rendered on this proxy and ${result.unmirrored_filters.length === 1 ? 'is' : 'are'} missing from it — check with gimp_get_preview at a full-resolution region, or gimp_export, before trusting this render.`
+          : '';
       const content: ToolResult['content'] = [];
       if (allowed) {
         content.push({
@@ -129,7 +138,8 @@ async function gimpGetPreview(
           `Preview ${result.width}x${result.height}${proxyNote}. ` +
           (allowed
             ? `Also ${fileNote}.`
-            : `privacy.send_previews_to_llm is false — image not returned to the model; ${fileNote}.`),
+            : `privacy.send_previews_to_llm is false — image not returned to the model; ${fileNote}.`) +
+          unmirroredNote,
       });
       return { content, structuredContent: { ...result, path: published ? latestName : null } };
     } finally {
@@ -187,6 +197,7 @@ async function gimpGetHistogram(
         string,
         { mean: number; median: number; p1: number; p5: number; p95: number; p99: number }
       >;
+      unmirrored_filters?: string[];
     }>('histogram', pickSchemaDeclaredKeys(histogramSchema, args));
     const summary = Object.entries(result.channels)
       .map(
@@ -194,11 +205,15 @@ async function gimpGetHistogram(
           `${ch}: mean=${s.mean.toFixed(1)} median=${s.median} p1=${s.p1} p5=${s.p5} p95=${s.p95} p99=${s.p99}`
       )
       .join(', ');
+    const unmirroredNote =
+      result.unmirrored_filters && result.unmirrored_filters.length > 0
+        ? ` WARNING: ${result.unmirrored_filters.join(', ')} could not be rendered on this proxy — these stats are missing that filter's effect entirely. Pass exact: true for a trustworthy reading.`
+        : '';
     return {
       content: [
         {
           type: 'text' as const,
-          text: `Histogram (${result.exact ? 'exact' : 'proxy'}, ${result.pixels.toLocaleString()} px): ${summary}`,
+          text: `Histogram (${result.exact ? 'exact' : 'proxy'}, ${result.pixels.toLocaleString()} px): ${summary}${unmirroredNote}`,
         },
       ],
       structuredContent: result as unknown as Record<string, unknown>,
@@ -302,6 +317,7 @@ async function gimpCompare(
         proxy: boolean;
         before_path?: string;
         after_path?: string;
+        unmirrored_filters?: string[];
       }>('compare', {
         image: args.image,
         mode,
@@ -314,6 +330,10 @@ async function gimpCompare(
       const deltaSummary = Object.entries(result.delta)
         .map(([ch, d]) => `${ch} Δmean=${d.mean >= 0 ? '+' : ''}${d.mean}`)
         .join(', ');
+      const unmirroredNote =
+        result.unmirrored_filters && result.unmirrored_filters.length > 0
+          ? ` WARNING: ${result.unmirrored_filters.join(', ')} could not be rendered on the "after" proxy — this delta is missing that filter's effect entirely.`
+          : '';
       // The bridge echoes the before/after render paths; they are temp files removed below, and a
       // full path carries the username, so neither goes back to the model.
       const { before_path: _beforePath, after_path: _afterPath, ...reported } = result;
@@ -341,7 +361,8 @@ async function gimpCompare(
           `Before/after deltas: ${deltaSummary}` +
           (previewsWithheld
             ? ' (include_previews was requested but privacy.send_previews_to_llm is false — no image returned.)'
-            : ''),
+            : '') +
+          unmirroredNote,
       });
       return { content, structuredContent: reported as unknown as Record<string, unknown> };
     } finally {
@@ -380,6 +401,15 @@ export function createGimpVerifyTools(
             height: { type: 'number' },
             proxy: { type: 'boolean' },
             path: { type: ['string', 'null'] },
+            unmirrored_filters: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Names of live filters GIMP refused to re-attach non-destructively on this proxy ' +
+                'render — missing from this render entirely, not just approximated. Empty on a ' +
+                'normal render, and always absent on a full-resolution region render ' +
+                '(proxy: false), which never mirrors filters at all.',
+            },
           },
         },
         annotations: {
@@ -431,6 +461,17 @@ export function createGimpVerifyTools(
                 },
               },
             },
+            unmirrored_filters: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Names of live filters GIMP refused to re-attach on this proxy render — absent ' +
+                'from these stats entirely. Present whenever histogram actually used the ' +
+                '(mirrored) preview proxy: the default whole-image path, OR a `region` large ' +
+                'enough to be sampled from the proxy rather than falling back to a full-' +
+                'resolution crop. Absent when exact: true, or when a region is too small and ' +
+                'falls back to that full-resolution crop — neither path mirrors filters at all.',
+            },
           },
         },
         annotations: {
@@ -462,6 +503,13 @@ export function createGimpVerifyTools(
             region_a: { type: 'object' },
             region_b: { type: 'object' },
             proxy: { type: 'boolean' },
+            unmirrored_filters: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'before_after only. Names of live filters GIMP refused to re-attach on the ' +
+                '"after" proxy render — the delta above is missing that filter\'s effect entirely.',
+            },
           },
         },
         annotations: {

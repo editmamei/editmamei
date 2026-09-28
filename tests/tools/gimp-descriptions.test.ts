@@ -34,7 +34,7 @@ function overviewSection(title: string): string {
 describe('every gimp_* description names its editor', () => {
   it('starts with "Headless GIMP: " so the model can tell it from the ps_* twin', () => {
     const gimpTools = tools.filter((t) => t.tool.name.startsWith('gimp_'));
-    expect(gimpTools.length).toBeGreaterThanOrEqual(16);
+    expect(gimpTools.length).toBeGreaterThanOrEqual(17);
     for (const t of gimpTools) {
       expect(t.tool.description, t.tool.name).toMatch(/^Headless GIMP: /);
     }
@@ -95,6 +95,104 @@ describe('gimp_filter op=list reports params the model can pass back', () => {
     expect(field('gimp_add_adjustment', 'filter_id').replace(/\s+/g, ' ')).toMatch(
       /same field names and units, so they can be passed straight back/
     );
+  });
+});
+
+describe('gimp_add_effect: allow-listed GEGL effect filters (dev-tier sibling of gimp_add_adjustment)', () => {
+  const EFFECTS = [
+    'vignette',
+    'black_white',
+    'motion_blur',
+    'lens_blur',
+    'add_noise',
+    'drop_shadow',
+  ];
+
+  it('the tool description names every effect and the shared merge/mask conventions', () => {
+    const text = description('gimp_add_effect').replace(/\s+/g, ' ');
+    for (const effect of EFFECTS) {
+      expect(text, effect).toContain(effect);
+    }
+    expect(text).toMatch(/MERGES/);
+    expect(text).toMatch(/gimp_filter/); // the shared stack this tool's filters live on
+  });
+
+  it('filter_id says a re-edit is a merge, same contract as gimp_add_adjustment', () => {
+    expect(field('gimp_add_effect', 'filter_id').replace(/\s+/g, ' ')).toMatch(
+      /MERGE, not a reset/
+    );
+  });
+
+  it('mask says this tool follows the same order-matters rule as gimp_add_adjustment', () => {
+    expect(field('gimp_add_effect', 'mask').replace(/\s+/g, ' ')).toMatch(/ORDER MATTERS/);
+  });
+
+  it('lens_blur says it is a uniform blur, not a depth-of-field falloff', () => {
+    expect(field('gimp_add_effect', 'highlight_factor').replace(/\s+/g, ' ')).toMatch(
+      /uniformly across the whole/
+    );
+  });
+
+  it('vignette and drop_shadow say their color is black and not configurable yet', () => {
+    expect(field('gimp_add_effect', 'center_y').replace(/\s+/g, ' ')).toMatch(
+      /color is black and not configurable yet/
+    );
+    expect(field('gimp_add_effect', 'opacity').replace(/\s+/g, ' ')).toMatch(
+      /color is black and not configurable yet/
+    );
+  });
+
+  it('gimp_filter itself has no apply op (reverted to list/set_visibility/delete)', () => {
+    const opEnum = (
+      byName.get('gimp_filter')!.inputSchema as unknown as {
+        properties: { op: { enum: string[] } };
+      }
+    ).properties.op.enum;
+    expect(opEnum).toEqual(['list', 'set_visibility', 'delete']);
+  });
+
+  it('lens_blur states its own much lower cap (150, not the union bound)', () => {
+    expect(field('gimp_add_effect', 'radius').replace(/\s+/g, ' ')).toMatch(
+      /lens_blur: blur radius in pixels at full resolution, 0\.\.150/
+    );
+  });
+
+  it('drop_shadow says it is clipped to the layer bounds, not grown', () => {
+    expect(field('gimp_add_effect', 'radius').replace(/\s+/g, ' ')).toMatch(
+      /clipped to the layer bounds rather than growing it/
+    );
+  });
+
+  it('vignette/motion_blur/drop_shadow stay locked to content through flip/rotate/resize, and op=list reflects it', () => {
+    const text = description('gimp_add_effect').replace(/\s+/g, ' ');
+    expect(text).toMatch(/stay locked to the content through flip, resize, and an exact/);
+    expect(text).toMatch(/90\/180\/270-degree rotate/);
+    expect(text).toMatch(/gimp_filter op=list reflects the new values afterward/);
+    expect(text).toMatch(/rotating by any OTHER angle is refused/);
+  });
+
+  it('center_x/center_y say they are fractions of the LAYER, and that crop re-centres the vignette', () => {
+    const centerX = field('gimp_add_effect', 'center_x').replace(/\s+/g, ' ');
+    const centerY = field('gimp_add_effect', 'center_y').replace(/\s+/g, ' ');
+    expect(centerX).toMatch(/fraction of the LAYER's own width/);
+    expect(centerY).toMatch(/fraction of the LAYER's own height/);
+    expect(centerX).toMatch(/Cropping re-centres the vignette/);
+  });
+
+  it('motion_blur angle states its own convention (0 horizontal, positive clockwise)', () => {
+    expect(field('gimp_add_effect', 'angle').replace(/\s+/g, ' ')).toMatch(
+      /0 is horizontal, positive angles rotate clockwise/
+    );
+  });
+
+  it('gimp_transform_canvas describes the arbitrary-angle refusal generically, without naming a dev-tier tool', () => {
+    const text = description('gimp_transform_canvas').replace(/\s+/g, ' ');
+    expect(text).toMatch(/refused while a position\/direction-dependent filter is present/);
+    expect(text).not.toContain('gimp_add_effect');
+  });
+
+  it('the arbitrary-angle refusal says to delete and re-add, never "bake"', () => {
+    expect(description('gimp_transform_canvas')).not.toMatch(/\bbake\b/);
   });
 });
 

@@ -127,6 +127,133 @@ def op_test_proxy_filter_count(args):
     return {'filters': sum(len(layer.get_filters()) for layer in _all_layers(proxy))}
 
 
+def op_test_apply_raw_effect(args):
+    """Drive the REAL `_apply_filter` (not a bypass, unlike `op_test_add_foreign_filter` above)
+    through an arbitrary GEGL operation with a trivial passthrough setter -- for proving
+    `_append_masked`'s attach-failure guard actually fires from the production create path, not
+    just when called directly. `operation` names any GEGL op (bypassing lib.EFFECT_OPERATIONS'
+    allow-list entirely); `props` are raw GEGL property names -> values, set verbatim.
+
+    Temporarily registers `_raw_setter` in the SHARED module-level `SETTERS` dict (the real
+    ops.py's own dispatch table `_apply_filter`/`_mirror_filters` read for every filter, real
+    effects included) and restores whatever was there before in a `finally` -- either the real
+    setter, if `operation` is one of the allow-listed ones, or nothing at all, so a probe against
+    a real operation name can never leave a throwaway passthrough setter permanently shadowing
+    it for the rest of the session."""
+    img = _image(args)
+    operation = lib.require(args, 'operation')
+    props = dict(args.get('props') or {})
+
+    def _raw_setter(cfg, params):
+        for key, value in params.items():
+            cfg.set_property(key, value)
+
+    previous_setter = SETTERS.get(operation)
+    SETTERS[operation] = _raw_setter
+    try:
+        return _apply_filter(img, args, operation, props, 'Test Raw Effect')
+    finally:
+        if previous_setter is None:
+            SETTERS.pop(operation, None)
+        else:
+            SETTERS[operation] = previous_setter
+
+
+def op_test_mirror_unattachable(args):
+    """Exercises `_mirror_filters`' catch-and-skip path for an attach refusal directly, rather
+    than relying on a real GEGL operation that behaves this way: no operation in the allow-list
+    naturally attaches on the source image (proving it can be live at all) yet fails to
+    re-attach on the proxy duplicate specifically (gegl:lens-blur, the one operation that DOES
+    refuse to attach, refuses identically everywhere, so it can never be live on the source
+    either -- see build_lens_blur_params' own comment). Instead, this temporarily replaces the
+    module-level `_append_masked` with a stub that raises `gimp_op_failed` for one named filter
+    and delegates to the real function for every other one, calls the real (unmodified)
+    `_proxy_render`, and restores the original `_append_masked` in a `finally` regardless of
+    outcome. `filter_name` names the ledgered filter to sabotage; `max_px` defaults to 1024."""
+    img = _image(args)
+    target_name = lib.require(args, 'filter_name')
+    max_px = int(args.get('max_px', 1024))
+
+    real_append_masked = globals()['_append_masked']
+
+    def _poisoned_append_masked(dst_img, layer, f, mask):
+        if f.get_name() == target_name:
+            f.delete()
+            raise lib.OpError('gimp_op_failed', 'poisoned for test: %s' % target_name)
+        return real_append_masked(dst_img, layer, f, mask)
+
+    globals()['_append_masked'] = _poisoned_append_masked
+    try:
+        dup, unmirrored = _proxy_render(img, max_px)
+        dup.delete()
+        return {'unmirrored_filters': unmirrored}
+    finally:
+        globals()['_append_masked'] = real_append_masked
+
+
+def op_test_force_effect_update_failure(args):
+    """Exercises `_apply_planned_effect_transform`'s failure-and-restore path directly: replaces
+    SETTERS[operation] with a stub that applies the REAL setter and then raises, on its FIRST
+    call only (simulating a live update that partially succeeds -- e.g. `f.update()` failing
+    after every `cfg.set_property()` already ran -- not one that never touches the filter at
+    all). Every later call behaves normally, so the SAME poisoned setter also serves as the
+    restore attempt `_apply_planned_effect_transform` makes with the filter's OLD params,
+    round-tripping the live config back for real rather than merely leaving it untouched.
+    Restores the real setter in a `finally` regardless of outcome.
+
+    `operation` names the GEGL operation to sabotage (e.g. 'gegl:vignette'); `geometry_op` is
+    'rotate' | 'flip' | 'resize'; every other arg is forwarded to that op (image, degrees/
+    orientation/width etc.)."""
+    operation = lib.require(args, 'operation')
+    geometry_op = lib.require(args, 'geometry_op')
+    real_setter = SETTERS[operation]
+    calls = {'n': 0}
+
+    def _poisoned_setter(cfg, params):
+        calls['n'] += 1
+        real_setter(cfg, params)
+        if calls['n'] == 1:
+            raise RuntimeError('poisoned for test: %s' % operation)
+
+    SETTERS[operation] = _poisoned_setter
+    try:
+        fn = {'rotate': op_rotate, 'flip': op_flip, 'resize': op_resize}[geometry_op]
+        return fn(args)
+    finally:
+        SETTERS[operation] = real_setter
+
+
+def op_test_add_offset_layer(args):
+    """A new, blank layer smaller than the canvas and positioned at an offset -- for proving a
+    geometry transform's math for gimp_add_effect's filters uses the OWNING LAYER's own extent
+    and position, not the canvas's, even when the layer doesn't span the whole canvas. `width`/
+    `height`/`x`/`y` are the new layer's size and position in document pixels; `name` labels it
+    (target it afterward via `effect`'s own `layer` argument)."""
+    img = _image(args)
+    width, height = int(lib.require(args, 'width')), int(lib.require(args, 'height'))
+    x, y = int(lib.require(args, 'x')), int(lib.require(args, 'y'))
+    name = args.get('name', 'Offset')
+    layer = Gimp.Layer.new(
+        img, name, width, height, Gimp.ImageType.RGB_IMAGE, 100.0, Gimp.LayerMode.NORMAL
+    )
+    img.insert_layer(layer, None, 0)
+    layer.fill(Gimp.FillType.WHITE)
+    layer.set_offsets(x, y)
+    _drop_proxies(img.get_id())
+    return {'layer': layer.get_name(), 'width': layer.get_width(), 'height': layer.get_height()}
+
+
+def op_test_ledger_dump(args):
+    """The editmamei-filters ledger's own filter names, read directly via `_ledger_get` -- NOT
+    through `op_list_filters`, which also reports "readback" (foreign, unledgered) filters found
+    by walking the layer's live filter stack. A test proving "no phantom filter was ledgered"
+    needs to see the ledger's OWN contents specifically: `op_list_filters` reporting zero filters
+    is also what a bare `layer.get_filters()` returning empty would produce, which doesn't by
+    itself rule out a stray ledger record for a filter that no longer exists."""
+    filters, _unknown = _ledger_get(_image(args))
+    return {'names': sorted(filters.keys())}
+
+
 def _pick_a_font():
     """`Gimp.context_get_font()`, falling back to the first of `Gimp.fonts_get_list('')` (both
     verified live) -- observed live that the context font can read None under concurrent load (a
@@ -225,4 +352,9 @@ OPS.update({
     'test_add_text_layer': op_test_add_text_layer,
     'test_new_image': op_test_new_image,
     'test_reorder_without_dropping_proxy': op_test_reorder_without_dropping_proxy,
+    'test_apply_raw_effect': op_test_apply_raw_effect,
+    'test_mirror_unattachable': op_test_mirror_unattachable,
+    'test_force_effect_update_failure': op_test_force_effect_update_failure,
+    'test_add_offset_layer': op_test_add_offset_layer,
+    'test_ledger_dump': op_test_ledger_dump,
 })

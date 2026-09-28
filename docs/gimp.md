@@ -153,7 +153,7 @@ its `filter_id` back to `gimp_add_adjustment` re-edits it in place rather than s
 correction on top.
 
 One ordering rule ties the two together: straighten, flip, and resize the canvas **before** adding any
-masked adjustment, then crop, then add masked adjustments. Rotate, flip, and resize all refuse
+masked filter, then crop, then add masked filters. Rotate, flip, and resize all refuse
 outright once a masked filter already exists (or any filter GIMP itself, or its GUI, created rather
 than Editmamei), since GIMP has no way to keep a filter's baked-in mask aligned through those transforms.
 Cropping is the one exception and is always safe.

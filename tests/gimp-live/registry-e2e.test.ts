@@ -137,9 +137,9 @@ describe.skipIf(!install)('gimp_* tools through the real server registry', () =>
     rmSync(fx.home, { recursive: true, force: true });
   });
 
-  it('the GIMP-only boot matrix registered exactly the 19 gimp_* tools plus the shared meta tools', () => {
+  it('the GIMP-only boot matrix registered exactly the 20 gimp_* tools plus the shared meta tools', () => {
     const names = registry.list().map((t) => t.name);
-    expect(names.filter((n) => n.startsWith('gimp_'))).toHaveLength(19);
+    expect(names.filter((n) => n.startsWith('gimp_'))).toHaveLength(20);
     expect(names).toContain('ps_list_capabilities');
     expect(names).toContain('ps_report_problem');
     expect(names).not.toContain('ps_ping');

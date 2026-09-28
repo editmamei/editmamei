@@ -274,6 +274,10 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   gimp_inspect: 15_000,
   gimp_add_adjustment: 20_000,
   gimp_filter: 15_000,
+  // Creates or re-edits a filter, rendering it onto the preview proxy in the process -- the same
+  // shape of work gimp_add_adjustment does (hence the matching 20s budget), not gimp_filter's own
+  // list/set_visibility/delete (15s), which never render anything.
+  gimp_add_effect: 20_000,
   gimp_crop_document: 20_000,
   gimp_resize_image: 45_000,
   gimp_transform_canvas: 60_000,
