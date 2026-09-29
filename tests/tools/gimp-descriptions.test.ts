@@ -256,19 +256,19 @@ describe('gimp_add_adjustment field units', () => {
 
 describe('geometry is irreversible; adjustments are not', () => {
   it.each(['gimp_crop_document', 'gimp_resize_image', 'gimp_transform_canvas'])(
-    '%s says it is irreversible and to save first',
+    '%s says it is irreversible and to checkpoint first',
     (name) => {
       const text = description(name).replace(/\s+/g, ' ');
       expect(text).toMatch(/IRREVERSIBLE in this session: there is no undo/);
-      expect(text).toMatch(/gimp_save_xcf first when in doubt/);
+      expect(text).toMatch(/gimp_checkpoint \(or gimp_save_xcf\) first when in doubt/);
     }
   );
-  it('the overview has the rule, including that adjustments come off with op=delete', () => {
-    const text = overviewSection('No undo: geometry is permanent, adjustments are not').replace(
-      /\s+/g,
-      ' '
+  it('the overview has the rule: checkpoints instead of undo, adjustments come off with op=delete', () => {
+    const text = overviewSection('No undo: use checkpoints').replace(/\s+/g, ' ');
+    expect(text).toMatch(
+      /Crop, resize, rotate, flip, merge and flatten are permanent unless you made a checkpoint/
     );
-    expect(text).toMatch(/Crop, resize, rotate, and flip are IRREVERSIBLE/);
+    expect(text).toMatch(/restore REPLACES the image, so use the new image id it reports/);
     expect(text).toMatch(/`gimp_filter` \(op=delete\) removes one/);
   });
 });

@@ -114,17 +114,26 @@ metadata (including any GPS location); only `gimp_export` removes it.
 ## What the beta covers
 
 - **Documents:** open (most formats GIMP can load: JPEG, PNG, TIFF, WebP, HEIC/HEIF, XCF, and more),
-  close, save as `.xcf` (live, re-editable), export flattened to jpg/jpeg/png/webp/tif/tiff.
+  create a blank one, close, save as `.xcf` (live, re-editable), export flattened to
+  jpg/jpeg/png/webp/tif/tiff. Convert between colour and grayscale.
+- **Layers:** create, delete, duplicate, group, reorder, move, rename, set opacity, blend mode and
+  visibility, merge down, flatten (`gimp_layer`). Place another photo into the document as a new
+  layer (`gimp_place_image`) to build a composite, and extend the canvas for borders and frames
+  (`gimp_canvas`).
 - **Non-destructive adjustments** (`gimp_add_adjustment`), 13 types: curves, levels, exposure,
   brightness/contrast, hue/saturation, color balance, color temperature, shadows/highlights,
   saturation, vibrance, sharpen, noise reduction, gaussian blur. Each stays live and re-editable by
   its `filter_id`; exporting writes a flattened copy and leaves the live document as it was.
+- **Effects** (`gimp_add_effect`): vignette, black and white, motion blur, lens blur, noise, and
+  drop shadow, live and re-editable the same way. `gimp_bake` merges a layer's live filters into its
+  pixels when you want them fixed.
 - **Masks:** `gimp_create_mask` builds a geometric mask (rectangle, ellipse, linear or radial
   gradient) that a new adjustment can be confined to.
 - **Geometry:** crop, resize, rotate (arbitrary angle, for straightening), flip.
 - **Verification:** preview render, per-channel histogram (mean, median, percentiles, full 256-bin
   histogram), before/after and region comparison.
 - **Filter-stack management:** list, toggle visibility, delete.
+- **Checkpoints** (`gimp_checkpoint`): save the image's current state and restore it later.
 
 ---
 
@@ -134,19 +143,21 @@ metadata (including any GPS location); only `gimp_export` removes it.
 - No AI subject or sky selection (GIMP has no Sensei-equivalent built in; masks here are geometric
   only: rectangle, ellipse, or gradient).
 - No text layers.
-- No creating a new layer, or most layer-level operations beyond what an adjustment or a mask needs.
-- No undo (see below).
+- No step-by-step undo: use checkpoints instead (see below).
 - Raw camera files (DNG, CR2, CR3, NEF, ARW, and the like) need a raw-develop plug-in installed in
   GIMP (darktable, RawTherapee, or ART). Without one, opening a raw file is refused with a message
   pointing at those plug-ins; develop it externally first and open the resulting JPEG/TIFF/PNG here.
 
 ---
 
-## No undo for geometry, live filters for everything else
+## Checkpoints instead of undo, live filters for everything else
 
-Crop, resize, rotate, and flip are **irreversible in this session**: there's no undo. Save with
-`gimp_save_xcf` before one of these if you might want to go back, and reopen that file to restore the
-prior state.
+GIMP has no undo when it runs headless, so crop, resize, rotate, flip, merging and flattening can't
+be stepped back one at a time. Instead, `gimp_checkpoint` saves the image's current state, every live
+filter included, and restores it later: restoring replaces the open image with the saved state and
+reports a new image id to use from then on. `gimp_checkpoint` op=list shows the checkpoints you have. Make one before anything you
+might want to take back. Each image keeps up to 5 checkpoints (20 in all); they're deleted when
+Editmamei exits, so save a `.xcf` for anything you want to keep.
 
 Adjustments are the opposite: reversible any time. `gimp_filter` (op=delete) removes one, and passing
 its `filter_id` back to `gimp_add_adjustment` re-edits it in place rather than stacking a second
@@ -179,9 +190,10 @@ few seconds (around 10 seconds on macOS).
 ### "The session restarted" / unsaved work is gone
 
 If a call times out, or GIMP crashes, the session restarts and every open image and unsaved filter is
-lost, and there is no recovery. Save with `gimp_save_xcf` early, especially before a large or slow
-operation (an exact histogram or a resize/rotate on a big document, for example), so a restart only
-costs you the last few steps rather than the whole session.
+lost. Checkpoints survive this: `gimp_checkpoint` op=restore reopens one by its id (op=list shows them). Make one,
+or save with `gimp_save_xcf`, before a large or slow operation (an exact histogram or a resize/rotate
+on a big document, for example), so a restart only costs you the last few steps rather than the
+whole session.
 
 ### Flatpak (Linux)
 
