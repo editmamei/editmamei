@@ -202,6 +202,26 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
     }
   });
 
+  it('vignette defaults are subtle: corners darken moderately, never to black, centre untouched', async () => {
+    const flatPath = join(workDir, 'vignette-default-flat.png');
+    writeCheckerboard(flatPath, 300, 200, 1, 200, 200); // a uniform 200-gray field, 3:2
+    const opened = await session.call<{ image: number }>('open', { path: flatPath });
+    try {
+      await session.call('effect', { image: opened.image, type: 'vignette' });
+      const outPath = join(workDir, 'vignette-default-flat-out.png');
+      await session.call('export', { image: opened.image, path: outPath });
+      const ppm = readPng(outPath);
+      const [centre] = pixelAt(ppm, 150, 100);
+      const [corner] = pixelAt(ppm, 1, 1);
+      expect(centre).toBe(200);
+      const darkening = 1 - corner / 200;
+      expect(darkening).toBeGreaterThan(0.1);
+      expect(darkening).toBeLessThan(0.45);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
   it('black_white (mono-mixer): gray output equals the weighted channel sum, in linear light', async () => {
     const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
     try {

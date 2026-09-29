@@ -259,3 +259,15 @@ describe('gimp_add_effect schema bounds match bridge/lib.py exactly (or its docu
     }
   });
 });
+
+it('the vignette field descriptions state the creation defaults lib.py actually uses', () => {
+  const m = LIB_PY.match(
+    /'vignette': \{'radius': ([\d.]+), 'softness': ([\d.]+), 'gamma': ([\d.]+)/
+  );
+  expect(m, "EFFECT_CREATE_DEFAULTS['vignette'] not found in lib.py").not.toBeNull();
+  const [, radius, softness, gamma] = m!;
+  const props = EFFECT_SCHEMA_FOR_TESTS.properties ?? {};
+  expect(props.radius?.description).toContain(`Default (when creating): ${radius},`);
+  expect(props.softness?.description).toContain(`Default (when creating): ${softness}.`);
+  expect(props.gamma?.description).toContain(`Default (when creating): ${gamma}.`);
+});

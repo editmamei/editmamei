@@ -780,9 +780,11 @@ EFFECT_PARAM_BUILDERS = {
 }
 
 # Creation-time defaults, already in GEGL-property units -- probed live via `describe_operation`
-# against GIMP 3.2.6's real GEGL pspecs.
+# against GIMP 3.2.6's real GEGL pspecs, except vignette's radius and softness: GEGL's own 1.2/0.8
+# renders the corners black, so these are chosen for a subtle vignette (corners about a quarter
+# darker, measured on real photos).
 EFFECT_CREATE_DEFAULTS = {
-    'vignette': {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 0.5, 'y': 0.5},
+    'vignette': {'radius': 2.0, 'softness': 1.0, 'gamma': 2.0, 'x': 0.5, 'y': 0.5},
     'black_white': {'red': 0.333, 'green': 0.333, 'blue': 0.333, 'preserve-luminosity': False},
     'motion_blur': {'length': 10.0, 'angle': 0.0},
     'lens_blur': {'blur-radius': 25.0, 'highlight-factor': 0.0},

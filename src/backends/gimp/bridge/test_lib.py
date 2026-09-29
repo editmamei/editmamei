@@ -725,7 +725,7 @@ class TestEffectParamBuilders(unittest.TestCase):
 
     def test_build_vignette_params_defaults(self):
         params = lib.build_vignette_params({}, _effect_create_defaults('vignette'))
-        self.assertEqual(params, {'radius': 1.2, 'softness': 0.8, 'gamma': 2.0, 'x': 0.5, 'y': 0.5})
+        self.assertEqual(params, {'radius': 2.0, 'softness': 1.0, 'gamma': 2.0, 'x': 0.5, 'y': 0.5})
 
     def test_build_vignette_params_maps_center_x_y_to_x_y(self):
         params = lib.build_vignette_params(
