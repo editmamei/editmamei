@@ -2000,4 +2000,59 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       await callTool(tools, 'gimp_close_document', { image: currentImage });
     }
   });
+
+  // ---- filter targeting by layer_id ---------------------------------------------------------
+
+  it.each([
+    ['gimp_add_adjustment', { type: 'exposure', exposure: 1 }],
+    ['gimp_add_effect', { type: 'drop_shadow' }],
+  ] as const)(
+    '%s puts the filter on the layer_id given, not on the selected layer',
+    async (tool, params) => {
+      const image = await openRamp();
+      try {
+        const target = await callTool(tools, 'gimp_layer', { image, op: 'create', name: 'Target' });
+        const targetId = structuredOf(target).layer_id as number;
+        // create_group selects the new group, so a dropped layer_id would land the filter there.
+        const group = await callTool(tools, 'gimp_layer', { image, op: 'create_group', name: 'G' });
+        const groupId = structuredOf(group).layer_id as number;
+
+        const added = await callTool(tools, tool, { image, layer_id: targetId, ...params });
+        expect(added.isError, JSON.stringify(added.content)).toBeFalsy();
+        const filterId = structuredOf(added).filter_id as number;
+
+        const listed = await callTool(tools, 'gimp_filter', { op: 'list', image });
+        const record = (
+          structuredOf(listed).filters as Array<{ filter_id: number; layer_id: number }>
+        ).find((f) => f.filter_id === filterId);
+        expect(record?.layer_id).toBe(targetId);
+        expect(record?.layer_id).not.toBe(groupId);
+      } finally {
+        await callTool(tools, 'gimp_close_document', { image });
+      }
+    }
+  );
+
+  it.each([
+    [
+      'gimp_add_adjustment',
+      { type: 'saturation', saturation: 1.3 },
+      /saturation does not use saturation.*scale/,
+    ],
+    ['gimp_add_effect', { type: 'vignette', length: 30 }, /vignette does not use length/],
+  ] as const)(
+    '%s refuses a field its type does not use, adding no filter',
+    async (tool, params, message) => {
+      const image = await openRamp();
+      try {
+        const result = await callTool(tools, tool, { image, ...params });
+        expect(result.isError).toBe(true);
+        expect((result.content?.[0] as { text: string }).text).toMatch(message);
+        const listed = await callTool(tools, 'gimp_filter', { op: 'list', image });
+        expect(structuredOf(listed).filters).toEqual([]);
+      } finally {
+        await callTool(tools, 'gimp_close_document', { image });
+      }
+    }
+  );
 });

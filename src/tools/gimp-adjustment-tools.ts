@@ -2,7 +2,12 @@ import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolGimpErrorResult } from '../utils/tool-helpers.js';
-import { GIMP_IMAGE_PROP, GIMP_LAYER_PROP, pickSchemaDeclaredKeys } from './gimp-shared.js';
+import {
+  GIMP_IMAGE_PROP,
+  GIMP_LAYER_ID_PROP,
+  GIMP_LAYER_PROP,
+  pickSchemaDeclaredKeys,
+} from './gimp-shared.js';
 
 /**
  * gimp_add_adjustment — the single discriminated non-destructive adjustment
@@ -81,6 +86,7 @@ const adjustSchema: JsonSchemaObject = {
         ' The filter applies to that ONE layer, not to the flattened image, so on a multi-layer ' +
         'document name the layer you mean. A layer inside a layer group can be named directly.',
     },
+    layer_id: GIMP_LAYER_ID_PROP,
     type: {
       type: 'string',
       enum: [...ADJUST_TYPES],
@@ -432,7 +438,8 @@ export function createGimpAdjustmentTools(gimp: GimpBackend): ToolDefinition[] {
           'gimp_export, and gimp_filter op=delete removes it again. `type` picks the adjustment: ' +
           'curves, levels, exposure, brightness_contrast, hue_saturation, color_balance, ' +
           'color_temperature, shadows_highlights, saturation, vibrance, sharpen, noise_reduction, ' +
-          'gaussian_blur. A filter applies to ONE layer (`layer`, else the selected or top layer), ' +
+          "gaussian_blur. A field another type uses is refused, naming this type's own fields. A " +
+          'filter applies to ONE layer (`layer_id` or `layer`, else the selected or top layer), ' +
           'not to the flattened image — on a multi-layer document, say which layer. For type ' +
           'vibrance, the knob is the `vibrance` field — `saturation` on that type is a separate ' +
           'plain multiplier that normally stays untouched. curves: ONE filter per channel — add ' +

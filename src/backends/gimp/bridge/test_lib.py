@@ -2066,5 +2066,41 @@ class TestLayerFills(unittest.TestCase):
         self.assertEqual(set(lib.LAYER_FILLS), {'white', 'black', 'transparent'})
 
 
+class TestRejectForeignFields(unittest.TestCase):
+    """A field that belongs to a different type must be refused, not silently ignored."""
+
+    def test_every_type_accepts_its_own_full_field_set(self):
+        # The fixtures carry every field each builder reads, so a type_fields table that missed
+        # one would refuse a legitimate call here.
+        for type_, user_args in {**USER_ARGS_BY_TYPE, **EFFECT_USER_ARGS_BY_TYPE}.items():
+            with self.subTest(type_=type_):
+                lib.reject_foreign_fields(type_, dict(user_args, type=type_, image=1))
+
+    def test_curves_and_levels_accept_their_own_fields(self):
+        lib.reject_foreign_fields('curves', {'type': 'curves', 'channel': 'red', 'points': []})
+        lib.reject_foreign_fields('levels', {'type': 'levels', 'gamma': 1.2, 'out_high': 240})
+
+    def test_common_keys_are_always_allowed(self):
+        lib.reject_foreign_fields('exposure', {
+            'image': 1, 'type': 'exposure', 'layer': 'L', 'layer_id': 5, 'filter_id': 9,
+            'mask': 'M', 'name': 'N', 'exposure': 1.0,
+        })
+
+    def test_a_field_from_another_type_is_refused_naming_the_real_fields(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.reject_foreign_fields('saturation', {'type': 'saturation', 'saturation': 1.3})
+        self.assertIn('saturation does not use saturation', str(ctx.exception))
+        self.assertIn('scale', str(ctx.exception))
+
+    def test_effect_types_refuse_adjustment_fields(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.reject_foreign_fields('vignette', {'type': 'vignette', 'exposure': 1, 'radius': 1})
+        self.assertIn('exposure', str(ctx.exception))
+        self.assertNotIn('radius,', str(ctx.exception).split(';')[0])
+
+    def test_none_values_are_treated_as_omitted(self):
+        lib.reject_foreign_fields('saturation', {'type': 'saturation', 'scale': 2, 'hue': None})
+
+
 if __name__ == '__main__':
     unittest.main()

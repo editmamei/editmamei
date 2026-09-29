@@ -12,7 +12,9 @@ import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts
 import { GimpSession } from '@editmamei/backends/gimp/session.ts';
 import { writeGrayRamp, readySession, LIVE_READY_TIMEOUT_MS, TEST_OPS_PY } from './support.ts';
 
-vi.setConfig({ testTimeout: 30_000 });
+// 60 s like the other live files: this file's fixture adds a text layer, and GIMP's first text
+// layer can load fonts for well over 30 s when the whole live suite runs in parallel.
+vi.setConfig({ testTimeout: 60_000 });
 
 const REQUIRE_GIMP = process.env.EDITMAMEI_REQUIRE_GIMP === '1';
 

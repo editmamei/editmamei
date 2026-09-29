@@ -26,6 +26,17 @@ export const GIMP_LAYER_PROP: JsonSchemaProperty = {
     'Layer name. Defaults to the selected layer, or the topmost layer if none is selected.',
 };
 
+/** The canonical layer handle layer-creating results and gimp_inspect report. Declared wherever
+ * GIMP_LAYER_PROP is: an undeclared key is dropped before it reaches the bridge, which would
+ * silently retarget the call at the selected layer. The description names only community-tier
+ * tools (the CE leak guard reads it). */
+export const GIMP_LAYER_ID_PROP: JsonSchemaProperty = {
+  type: 'integer',
+  description:
+    'Layer id, as gimp_inspect (and any tool that creates a layer) reports it. Takes priority ' +
+    'over `layer`, and is the only way to address one of two layers that share a name.',
+};
+
 /** A document-pixel rectangle — the bridge refuses one that lies partly or fully outside the image. */
 export const GIMP_REGION_PROP: JsonSchemaProperty = {
   type: 'object',

@@ -54,6 +54,15 @@ describe('createGimpEffectTools', () => {
     });
   });
 
+  it('forwards layer_id, so the filter lands on that layer rather than the selected one', async () => {
+    const gimp = makeGimpBackend({
+      result: { filter_id: 2, name: 'Vignette', type: 'vignette', mask: null },
+    });
+    const tools = createGimpEffectTools(gimp.asBackend());
+    await callTool(tools, 'gimp_add_effect', { image: 1, type: 'vignette', layer_id: 42 });
+    expect(gimp.lastCall().args).toMatchObject({ layer_id: 42 });
+  });
+
   it('a re-edit (filter_id given) omits every other per-effect field it did not mention — the merge contract', async () => {
     const gimp = makeGimpBackend({
       result: { filter_id: 9, name: 'Motion Blur', type: 'motion_blur', mask: null },
@@ -230,6 +239,7 @@ describe('gimp_add_effect schema bounds match bridge/lib.py exactly (or its docu
   const NON_NUMERIC_OR_SEPARATELY_HANDLED = new Set([
     'image',
     'layer',
+    'layer_id', // identifier, like filter_id
     'type',
     'filter_id',
     'mask',

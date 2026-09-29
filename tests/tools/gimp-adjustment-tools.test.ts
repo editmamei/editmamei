@@ -65,6 +65,15 @@ describe('createGimpAdjustmentTools', () => {
     });
   });
 
+  it('forwards layer_id, so the filter lands on that layer rather than the selected one', async () => {
+    const gimp = makeGimpBackend({
+      result: { filter_id: 2, name: 'Exposure', type: 'exposure', mask: null },
+    });
+    const tools = createGimpAdjustmentTools(gimp.asBackend());
+    await callTool(tools, 'gimp_add_adjustment', { image: 1, type: 'exposure', layer_id: 42 });
+    expect(gimp.lastCall().args).toMatchObject({ layer_id: 42 });
+  });
+
   it('a re-edit (filter_id given) omits every other per-type field it did not mention — the merge contract', async () => {
     const gimp = makeGimpBackend({
       result: {
@@ -322,6 +331,7 @@ describe('gimp_add_adjustment schema bounds match bridge/lib.py exactly (or its 
   const NON_NUMERIC_OR_SEPARATELY_HANDLED = new Set([
     'image',
     'layer',
+    'layer_id',
     'type',
     'filter_id',
     'mask',
