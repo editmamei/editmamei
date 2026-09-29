@@ -6,6 +6,7 @@ import { ToolRegistry, type ToolResult } from './tool-registry.js';
 import { tierOf } from './tool-tiers.js';
 import { groupOf, GROUPS, type ToolGroup } from './tool-groups.js';
 import { CAMERA_RAW_TOOL, RAW_DEVELOP_TOOL } from './tool-activity.js';
+import { hasImageContent, withholdImages } from './preview-privacy.js';
 import { EDITION } from '../edition.js';
 import { VERSION } from '../version.js';
 import { Session } from './session.js';
@@ -321,6 +322,13 @@ export class EditmameiServer {
    * that pings repeatedly isn't re-instructed to interrupt the user every time.
    */
   private updateNoticeShown = false;
+  /**
+   * `privacy.send_previews_to_llm`, read fresh from settings.json whenever a result carries an
+   * image (so `editmamei config set` takes effect without a restart). A field so tests can
+   * replace it without touching the real settings file.
+   */
+  private previewsAllowed: () => boolean = () =>
+    loadSettings().settings.privacy.send_previews_to_llm;
   // The host/community Go snippet core seam — the CE go-core binary, used by the
   // CE module's tools, by the Pro module's composite client as the fallback for
   // the community snippets its handlers build, and by the server's own pingState
@@ -1013,6 +1021,7 @@ export class EditmameiServer {
       // Update session activity
       this.session.updateActivity();
       this.trackRawDevelopState(name, result);
+      if (hasImageContent(result) && !this.previewsAllowed()) return withholdImages(result);
       return result;
     } catch (error) {
       this.logger.error(`Tool execution failed: ${name}`, error);

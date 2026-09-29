@@ -27,9 +27,9 @@ import {
  * `latest-preview.jpg` (the human-follows-along file) with an atomic copy —
  * the shared file is never handed to GIMP to write in place, so two sessions
  * for one user can't return each other's pixels. It honours
- * `privacy.send_previews_to_llm` exactly like the intended contract for the
- * `ps_*` preview tools: when it's `false`, no image bytes are returned to the
- * model. Paths go back to the model as basenames only (a full path carries
+ * `privacy.send_previews_to_llm` itself (the server also withholds images from
+ * every tool's result, see core/preview-privacy.ts): when it's `false`, no
+ * image bytes are returned to the model. Paths go back to the model as basenames only (a full path carries
  * the username).
  */
 
