@@ -366,13 +366,14 @@ describe('gimp_add_adjustment schema bounds match bridge/lib.py exactly (or its 
 // and then refused on every call that uses it — this pins the two sides together.
 describe('every gimp_add_adjustment / gimp_add_effect schema property is one the bridge accepts', () => {
   const common = LIB_PY.match(/FILTER_COMMON_KEYS = frozenset\(\(([^)]*)\)\)/);
-  const tuple = (name: string) => LIB_PY.match(new RegExp(`${name} = \(([^)]*)\)`));
+  const curves = LIB_PY.match(/CURVES_USER_FIELDS = \(([^)]*)\)/);
+  const levels = LIB_PY.match(/LEVELS_USER_FIELDS = \(([^)]*)\)/);
   const quoted = (s: string) => [...s.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!);
   const userFieldsBlock = LIB_PY.match(/USER_FIELDS = \{([\s\S]*?)\n\}/);
   const accepted = new Set([
     ...quoted(common?.[1] ?? ''),
-    ...quoted(tuple('CURVES_USER_FIELDS')?.[1] ?? ''),
-    ...quoted(tuple('LEVELS_USER_FIELDS')?.[1] ?? ''),
+    ...quoted(curves?.[1] ?? ''),
+    ...quoted(levels?.[1] ?? ''),
     // each USER_FIELDS entry is ('user_key', 'gegl-key', convert)
     ...[...(userFieldsBlock?.[1] ?? '').matchAll(/\('([a-z_]+)', '[a-z-]+', /g)].map((m) => m[1]!),
   ]);
@@ -380,6 +381,8 @@ describe('every gimp_add_adjustment / gimp_add_effect schema property is one the
   it('the parser found the tables (sanity)', () => {
     expect(common, 'FILTER_COMMON_KEYS not found in lib.py').not.toBeNull();
     expect(userFieldsBlock, 'USER_FIELDS not found in lib.py').not.toBeNull();
+    expect(quoted(curves?.[1] ?? '')).toEqual(['channel', 'points']);
+    expect(quoted(levels?.[1] ?? '')).toContain('in_low');
     expect(accepted.has('layer_id')).toBe(true);
     expect(accepted.has('scale')).toBe(true);
   });
