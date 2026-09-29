@@ -2761,6 +2761,21 @@ describe('privacy.send_previews_to_llm is enforced on every tool result', () => 
       },
       handler: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
     });
+    // ps_sequence's shape: text on top, the last step's result (image included) nested in
+    // structuredContent.
+    server.toolRegistry.register('test_nested_image_tool', {
+      tool: {
+        name: 'test_nested_image_tool',
+        description: 'test fixture',
+        inputSchema: { type: 'object' },
+      },
+      handler: async () => ({
+        content: [{ type: 'text', text: 'Ran 1 of 1 steps.' }],
+        structuredContent: {
+          final: { content: [{ type: 'image', data: 'SECRETPIXELS', mimeType: 'image/jpeg' }] },
+        },
+      }),
+    });
     return { server, checks: () => checks };
   }
 
@@ -2770,7 +2785,14 @@ describe('privacy.send_previews_to_llm is enforced on every tool result', () => 
     expect(result.content.some((c) => c.type === 'image')).toBe(false);
     expect(JSON.stringify(result)).not.toContain('SECRETPIXELS');
     expect(result.content.some((c) => c.text === 'Preview rendered.')).toBe(true);
-    expect(result.content.at(-1)?.text).toMatch(/send_previews_to_llm is false/);
+    expect(result.content.at(-1)?.text).toMatch(/withheld because the user's privacy/);
+  });
+
+  it('withholds an image nested in structuredContent (a wrapped tool result)', async () => {
+    const { server } = serverWithImageTool(false);
+    const result = await server.handleToolCall('test_nested_image_tool', {});
+    expect(JSON.stringify(result)).not.toContain('SECRETPIXELS');
+    expect(result.content.at(-1)?.text).toMatch(/^An image was withheld/);
   });
 
   it('passes the image through when the setting is true', async () => {
