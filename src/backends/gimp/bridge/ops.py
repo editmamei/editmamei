@@ -823,7 +823,7 @@ def op_adjust(args):
     that only mentions one field (e.g. `{contrast: 50}`) keeps every other field (e.g.
     `brightness`) exactly as it was, instead of silently resetting it."""
     type_ = args.get('type')
-    if type_ in lib.ADJUST_OPERATIONS or type_ in ('curves', 'levels'):
+    if type_ in lib.ADJUST_OPERATIONS:  # curves and levels included
         lib.reject_foreign_fields(type_, args)
     if type_ == 'curves':
         return op_curves(args)

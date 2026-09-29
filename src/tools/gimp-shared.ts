@@ -32,6 +32,8 @@ export const GIMP_LAYER_PROP: JsonSchemaProperty = {
  * tools (the CE leak guard reads it). */
 export const GIMP_LAYER_ID_PROP: JsonSchemaProperty = {
   type: 'integer',
+  minimum: 1,
+  maximum: 2_147_483_647,
   description:
     'Layer id, as gimp_inspect (and any tool that creates a layer) reports it. Takes priority ' +
     'over `layer`, and is the only way to address one of two layers that share a name.',

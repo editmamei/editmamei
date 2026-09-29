@@ -6,6 +6,7 @@ import {
   createGimpAdjustmentTools,
   ADJUST_SCHEMA_FOR_TESTS,
 } from '@editmamei/tools/gimp-adjustment-tools.ts';
+import { EFFECT_SCHEMA_FOR_TESTS } from '@editmamei/tools/gimp-effect-tools.ts';
 import { makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
 import { callTool, assertToolShape } from '../fixtures/tool-helpers.ts';
 
@@ -357,5 +358,37 @@ describe('gimp_add_adjustment schema bounds match bridge/lib.py exactly (or its 
         `"${name}" has a numeric schema bound but no lib.py validator was found for it`
       ).toBe(true);
     }
+  });
+});
+
+// The bridge refuses any key outside FILTER_COMMON_KEYS and the type's own fields
+// (lib.reject_foreign_fields). A schema property that is neither would be declared, forwarded,
+// and then refused on every call that uses it — this pins the two sides together.
+describe('every gimp_add_adjustment / gimp_add_effect schema property is one the bridge accepts', () => {
+  const common = LIB_PY.match(/FILTER_COMMON_KEYS = frozenset\(\(([^)]*)\)\)/);
+  const tuple = (name: string) => LIB_PY.match(new RegExp(`${name} = \(([^)]*)\)`));
+  const quoted = (s: string) => [...s.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!);
+  const userFieldsBlock = LIB_PY.match(/USER_FIELDS = \{([\s\S]*?)\n\}/);
+  const accepted = new Set([
+    ...quoted(common?.[1] ?? ''),
+    ...quoted(tuple('CURVES_USER_FIELDS')?.[1] ?? ''),
+    ...quoted(tuple('LEVELS_USER_FIELDS')?.[1] ?? ''),
+    // each USER_FIELDS entry is ('user_key', 'gegl-key', convert)
+    ...[...(userFieldsBlock?.[1] ?? '').matchAll(/\('([a-z_]+)', '[a-z-]+', /g)].map((m) => m[1]!),
+  ]);
+
+  it('the parser found the tables (sanity)', () => {
+    expect(common, 'FILTER_COMMON_KEYS not found in lib.py').not.toBeNull();
+    expect(userFieldsBlock, 'USER_FIELDS not found in lib.py').not.toBeNull();
+    expect(accepted.has('layer_id')).toBe(true);
+    expect(accepted.has('scale')).toBe(true);
+  });
+
+  it.each([
+    ['gimp_add_adjustment', ADJUST_SCHEMA_FOR_TESTS],
+    ['gimp_add_effect', EFFECT_SCHEMA_FOR_TESTS],
+  ] as const)('%s', (_name, schema) => {
+    const orphans = Object.keys(schema.properties ?? {}).filter((k) => !accepted.has(k));
+    expect(orphans).toEqual([]);
   });
 });

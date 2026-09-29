@@ -917,7 +917,7 @@ def reject_foreign_fields(type_, args):
     )
     if foreign:
         raise ValueError(
-            '%s does not use %s; its fields are: %s'
+            "type '%s' does not use field(s) %s; its fields are: %s"
             % (type_, ', '.join(foreign), ', '.join(own) or '(none)')
         )
 

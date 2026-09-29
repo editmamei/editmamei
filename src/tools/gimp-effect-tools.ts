@@ -73,7 +73,8 @@ const effectSchema: JsonSchemaObject = {
         'creation and cannot change on a re-edit. Only filters Editmamei created can be ' +
         're-edited (gimp_filter op=list shows source: "editmamei"); re-editing any other filter ' +
         '(for example one added in the GIMP GUI) is refused, because its current values cannot ' +
-        'be read back exactly — delete it and re-create it instead.',
+        'be read back exactly — delete it and re-create it instead. A re-edit keeps the filter ' +
+        'on its own layer; `layer` and `layer_id` are ignored.',
     },
     layer: {
       ...GIMP_LAYER_PROP,

@@ -2037,9 +2037,25 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     [
       'gimp_add_adjustment',
       { type: 'saturation', saturation: 1.3 },
-      /saturation does not use saturation.*scale/,
+      /type 'saturation' does not use field\(s\) saturation; its fields are: scale/,
     ],
-    ['gimp_add_effect', { type: 'vignette', length: 30 }, /vignette does not use length/],
+    [
+      'gimp_add_adjustment',
+      {
+        type: 'curves',
+        points: [
+          [0, 0],
+          [255, 200],
+        ],
+        exposure: 1,
+      },
+      /type 'curves' does not use field\(s\) exposure/,
+    ],
+    [
+      'gimp_add_effect',
+      { type: 'vignette', length: 30 },
+      /type 'vignette' does not use field\(s\) length/,
+    ],
   ] as const)(
     '%s refuses a field its type does not use, adding no filter',
     async (tool, params, message) => {
