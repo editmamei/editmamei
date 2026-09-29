@@ -318,7 +318,7 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // drop_shadow) — a sibling of gimp_add_adjustment, not a new op on gimp_filter, so the
   // dev-default-then-promote gate actually applies (tool-tiers.ts classifies per TOOL, not per
   // op; grafting a new op onto the already-'community' gimp_filter would bypass it).
-  gimp_add_effect: 'dev',
+  gimp_add_effect: 'community',
   gimp_crop_document: 'community',
   gimp_resize_image: 'community',
   gimp_transform_canvas: 'community',
@@ -328,17 +328,17 @@ export const TOOL_TIERS: Record<string, Tier> = {
   gimp_compare: 'community',
   // Disk-backed checkpoints (create/restore/list/delete), the headless
   // substitute for undo.
-  gimp_checkpoint: 'dev',
+  gimp_checkpoint: 'community',
   // Layer management (create/create_group/delete/duplicate/select/set/move/reorder/merge_down/
   // flatten) and baking a layer's live filters into its own pixels.
-  gimp_layer: 'dev',
-  gimp_bake: 'dev',
+  gimp_layer: 'community',
+  gimp_bake: 'community',
   // First-class multi-layer documents: build one from scratch, composite another file into it,
   // extend its canvas, and change its color mode.
-  gimp_create_document: 'dev',
-  gimp_place_image: 'dev',
-  gimp_canvas: 'dev',
-  gimp_convert_image_mode: 'dev',
+  gimp_create_document: 'community',
+  gimp_place_image: 'community',
+  gimp_canvas: 'community',
+  gimp_convert_image_mode: 'community',
 };
 
 /**

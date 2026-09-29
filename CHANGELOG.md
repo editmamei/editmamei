@@ -10,6 +10,40 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-09-29
+
+### Added
+
+- **GIMP can now work with layers, build composites and go back to a saved state.** Eight new
+  `gimp_*` tools take the GIMP beta from single-photo grading to multi-layer editing.
+  - `gimp_layer` creates, deletes, duplicates, groups, reorders, moves, renames and restyles layers
+    (opacity, blend mode, visibility), merges one down or flattens the image; `gimp_bake` merges a
+    layer's live filters into its pixels.
+  - `gimp_create_document` starts a blank canvas, `gimp_place_image` places another photo into the
+    document as a new layer, `gimp_canvas` extends the canvas for borders and frames, and
+    `gimp_convert_image_mode` switches between colour and grayscale.
+  - `gimp_add_effect` adds live vignette, black and white, motion blur, lens blur, noise and drop
+    shadow effects, re-editable like the adjustments.
+  - `gimp_checkpoint` saves the image's state to disk and restores it later, the undo the beta was
+    missing.
+
+### Changed
+
+- **The GIMP vignette's default is subtle.** Corners darken by about a quarter instead of going
+  black; a smaller `radius` makes it stronger.
+
+### Fixed
+
+- **GIMP adjustments now land on the layer you point to.** Naming a layer by its id was ignored,
+  so the adjustment went onto whichever layer happened to be selected.
+  - `gimp_add_adjustment` now honours `layer_id`.
+  - A setting that belongs to a different adjustment type (for example `saturation` on the
+    `saturation` type, whose setting is `scale`) is now refused with the type's own settings,
+    instead of adding a filter that does nothing.
+- **Turning off image previews now covers Photoshop too.** The `privacy.send_previews_to_llm`
+  setting only applied to GIMP, so Photoshop previews still reached the model.
+  - It now applies to every tool, including an image inside a `ps_sequence` result.
+
 ## [1.6.0] — 2026-09-26
 
 ### Added

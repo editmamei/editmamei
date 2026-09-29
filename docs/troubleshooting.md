@@ -200,8 +200,9 @@ A few common ones; the full list lives in [docs/gimp.md](gimp.md#troubleshooting
   (font cache, plug-in scan): call `gimp_ping` again in about 30 seconds. Every launch after that is
   fast.
 - **"The session restarted" and unsaved work is gone.** A timed-out or crashed call restarts the
-  GIMP process and loses every open image and unsaved filter, and there's no recovery. Save with
-  `gimp_save_xcf` before a large or slow operation next time.
+  GIMP process and loses every open image and unsaved filter. A checkpoint survives it:
+  `gimp_checkpoint` op=restore reopens the last one. Make a checkpoint, or save with `gimp_save_xcf`,
+  before a large or slow operation next time.
 - **Flatpak on Linux.** A Flatpak-packaged GIMP runs in its own process namespace, so an abrupt
   Editmamei shutdown can leave it orphaned until the next session's cleanup or a reboot.
 
