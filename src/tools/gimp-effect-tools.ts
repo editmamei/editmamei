@@ -99,11 +99,12 @@ const effectSchema: JsonSchemaObject = {
       minimum: 0,
       maximum: 1500,
       description:
-        'vignette: how far the darkened corners reach in, 0..3, relative to the LAYER (not ' +
-        'absolute pixels — the same value looks visually equivalent at any resolution, and ' +
-        'consistent with center_x/center_y below). SMALLER is STRONGER. Default (when ' +
-        'creating): 2.0, a subtle vignette (corners about a quarter darker, centre untouched); ' +
-        '1.5 is strong (corners more than half darker); 1.2 or less turns the corners black. ' +
+        'vignette: size of the untouched centre, 0..3, relative to the LAYER (not absolute ' +
+        'pixels — the same value looks visually equivalent at any resolution, and consistent ' +
+        'with center_x/center_y below). SMALLER is STRONGER. Default (when creating): 2.0, a ' +
+        'subtle vignette (corners about a quarter darker, centre untouched). At the default ' +
+        'softness and gamma, 1.5 is strong (corners more than half darker) and 1.2 or less ' +
+        'turns the corners black. ' +
         'lens_blur: blur radius in pixels at full resolution, 0..150 ' +
         '(default 25 when creating) — capped much lower than the other two effects here (measured ' +
         'live: expensive at full resolution). drop_shadow: blur radius in pixels at full ' +
@@ -125,7 +126,8 @@ const effectSchema: JsonSchemaObject = {
       maximum: 10,
       description:
         'vignette only. Falloff curve shape: lower spreads the darkening further in toward the ' +
-        'centre, higher keeps it to the corners. Default (when creating): 2.0.',
+        'centre and deepens it; higher confines it to the corners and weakens it. Default (when ' +
+        'creating): 2.0.',
     },
     center_x: {
       type: 'number',
