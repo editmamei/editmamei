@@ -892,6 +892,35 @@ USER_FIELDS = {
 CURVES_USER_FIELDS = ('channel', 'points')
 LEVELS_USER_FIELDS = ('channel', 'in_low', 'in_high', 'gamma', 'out_low', 'out_high')
 
+# Keys every adjust/effect call may carry whatever its type: addressing, identity, and the mask.
+FILTER_COMMON_KEYS = frozenset(('image', 'type', 'layer', 'layer_id', 'filter_id', 'mask', 'name'))
+
+
+def type_fields(type_):
+    """The tool-facing field names `type_`'s builder reads (same tables `user_params` reports)."""
+    if type_ == 'curves':
+        return CURVES_USER_FIELDS
+    if type_ == 'levels':
+        return LEVELS_USER_FIELDS
+    return tuple(user for user, _gegl, _convert in USER_FIELDS.get(type_, ()))
+
+
+def reject_foreign_fields(type_, args):
+    """Refuse any field `type_` does not read. The tool schemas are flat (one property per name
+    across every type), so without this a field meant for another type -- `saturation` on type
+    `saturation`, whose knob is `scale` -- validates, is ignored by the builder, and creates a
+    filter that does nothing. None values are ignored (an omitted field)."""
+    own = type_fields(type_)
+    foreign = sorted(
+        k for k, v in args.items()
+        if v is not None and k not in FILTER_COMMON_KEYS and k not in own
+    )
+    if foreign:
+        raise ValueError(
+            "type '%s' does not use field(s) %s; its fields are: %s"
+            % (type_, ', '.join(foreign), ', '.join(own) or '(none)')
+        )
+
 
 def user_params(type_, params):
     """A ledger record's `params` in the tool's own field names and units -- what `list` reports

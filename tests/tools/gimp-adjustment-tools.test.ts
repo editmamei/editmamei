@@ -6,6 +6,7 @@ import {
   createGimpAdjustmentTools,
   ADJUST_SCHEMA_FOR_TESTS,
 } from '@editmamei/tools/gimp-adjustment-tools.ts';
+import { EFFECT_SCHEMA_FOR_TESTS } from '@editmamei/tools/gimp-effect-tools.ts';
 import { makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
 import { callTool, assertToolShape } from '../fixtures/tool-helpers.ts';
 
@@ -63,6 +64,15 @@ describe('createGimpAdjustmentTools', () => {
         ],
       },
     });
+  });
+
+  it('forwards layer_id, so the filter lands on that layer rather than the selected one', async () => {
+    const gimp = makeGimpBackend({
+      result: { filter_id: 2, name: 'Exposure', type: 'exposure', mask: null },
+    });
+    const tools = createGimpAdjustmentTools(gimp.asBackend());
+    await callTool(tools, 'gimp_add_adjustment', { image: 1, type: 'exposure', layer_id: 42 });
+    expect(gimp.lastCall().args).toMatchObject({ layer_id: 42 });
   });
 
   it('a re-edit (filter_id given) omits every other per-type field it did not mention — the merge contract', async () => {
@@ -322,6 +332,7 @@ describe('gimp_add_adjustment schema bounds match bridge/lib.py exactly (or its 
   const NON_NUMERIC_OR_SEPARATELY_HANDLED = new Set([
     'image',
     'layer',
+    'layer_id',
     'type',
     'filter_id',
     'mask',
@@ -347,5 +358,40 @@ describe('gimp_add_adjustment schema bounds match bridge/lib.py exactly (or its 
         `"${name}" has a numeric schema bound but no lib.py validator was found for it`
       ).toBe(true);
     }
+  });
+});
+
+// The bridge refuses any key outside FILTER_COMMON_KEYS and the type's own fields
+// (lib.reject_foreign_fields). A schema property that is neither would be declared, forwarded,
+// and then refused on every call that uses it — this pins the two sides together.
+describe('every gimp_add_adjustment / gimp_add_effect schema property is one the bridge accepts', () => {
+  const common = LIB_PY.match(/FILTER_COMMON_KEYS = frozenset\(\(([^)]*)\)\)/);
+  const curves = LIB_PY.match(/CURVES_USER_FIELDS = \(([^)]*)\)/);
+  const levels = LIB_PY.match(/LEVELS_USER_FIELDS = \(([^)]*)\)/);
+  const quoted = (s: string) => [...s.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!);
+  const userFieldsBlock = LIB_PY.match(/USER_FIELDS = \{([\s\S]*?)\n\}/);
+  const accepted = new Set([
+    ...quoted(common?.[1] ?? ''),
+    ...quoted(curves?.[1] ?? ''),
+    ...quoted(levels?.[1] ?? ''),
+    // each USER_FIELDS entry is ('user_key', 'gegl-key', convert)
+    ...[...(userFieldsBlock?.[1] ?? '').matchAll(/\('([a-z_]+)', '[a-z-]+', /g)].map((m) => m[1]!),
+  ]);
+
+  it('the parser found the tables (sanity)', () => {
+    expect(common, 'FILTER_COMMON_KEYS not found in lib.py').not.toBeNull();
+    expect(userFieldsBlock, 'USER_FIELDS not found in lib.py').not.toBeNull();
+    expect(quoted(curves?.[1] ?? '')).toEqual(['channel', 'points']);
+    expect(quoted(levels?.[1] ?? '')).toContain('in_low');
+    expect(accepted.has('layer_id')).toBe(true);
+    expect(accepted.has('scale')).toBe(true);
+  });
+
+  it.each([
+    ['gimp_add_adjustment', ADJUST_SCHEMA_FOR_TESTS],
+    ['gimp_add_effect', EFFECT_SCHEMA_FOR_TESTS],
+  ] as const)('%s', (_name, schema) => {
+    const orphans = Object.keys(schema.properties ?? {}).filter((k) => !accepted.has(k));
+    expect(orphans).toEqual([]);
   });
 });

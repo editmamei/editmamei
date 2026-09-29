@@ -823,6 +823,8 @@ def op_adjust(args):
     that only mentions one field (e.g. `{contrast: 50}`) keeps every other field (e.g.
     `brightness`) exactly as it was, instead of silently resetting it."""
     type_ = args.get('type')
+    if type_ in lib.ADJUST_OPERATIONS:  # curves and levels included
+        lib.reject_foreign_fields(type_, args)
     if type_ == 'curves':
         return op_curves(args)
     if type_ == 'levels':
@@ -901,6 +903,7 @@ def op_effect(args):
     builder = lib.EFFECT_PARAM_BUILDERS.get(effect_type)
     if builder is None:
         raise ValueError('type must be one of %s' % sorted(lib.EFFECT_OPERATIONS))
+    lib.reject_foreign_fields(effect_type, args)
     img = _image(args)
     operation = lib.EFFECT_OPERATIONS[effect_type]
     defaults = _existing_ledger_params(img, args, operation) or lib.EFFECT_CREATE_DEFAULTS[effect_type]

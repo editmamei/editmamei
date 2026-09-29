@@ -2,7 +2,12 @@ import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolGimpErrorResult } from '../utils/tool-helpers.js';
-import { GIMP_IMAGE_PROP, GIMP_LAYER_PROP, pickSchemaDeclaredKeys } from './gimp-shared.js';
+import {
+  GIMP_IMAGE_PROP,
+  GIMP_LAYER_ID_PROP,
+  GIMP_LAYER_PROP,
+  pickSchemaDeclaredKeys,
+} from './gimp-shared.js';
 
 /**
  * gimp_add_effect — the sibling of gimp_add_adjustment for a small allow-listed set of GEGL
@@ -68,7 +73,8 @@ const effectSchema: JsonSchemaObject = {
         'creation and cannot change on a re-edit. Only filters Editmamei created can be ' +
         're-edited (gimp_filter op=list shows source: "editmamei"); re-editing any other filter ' +
         '(for example one added in the GIMP GUI) is refused, because its current values cannot ' +
-        'be read back exactly — delete it and re-create it instead.',
+        'be read back exactly — delete it and re-create it instead. A re-edit keeps the filter ' +
+        'on its own layer; `layer` and `layer_id` are ignored.',
     },
     layer: {
       ...GIMP_LAYER_PROP,
@@ -78,6 +84,7 @@ const effectSchema: JsonSchemaObject = {
         'multi-layer document name the layer you mean. A layer inside a layer group can be ' +
         'named directly.',
     },
+    layer_id: GIMP_LAYER_ID_PROP,
     mask: {
       type: 'string',
       description:
@@ -291,8 +298,9 @@ export function createGimpEffectTools(gimp: GimpBackend): ToolDefinition[] {
           'lens_blur, add_noise, drop_shadow — the same non-destructive, re-editable, maskable ' +
           "filter mechanism gimp_add_adjustment uses, sharing the SAME stack: gimp_filter's " +
           "op=list/set_visibility/delete manage this tool's filters exactly as it manages " +
-          "gimp_add_adjustment's. `type` picks the effect; a filter applies to ONE layer " +
-          '(`layer`, else the selected or top layer), not to the flattened image. A re-edit ' +
+          "gimp_add_adjustment's. `type` picks the effect; a field another effect uses is " +
+          "refused, naming this type's own fields. A filter applies to ONE layer (`layer_id` " +
+          'or `layer`, else the selected or top layer), not to the flattened image. A re-edit ' +
           "(filter_id) MERGES: any field you omit keeps the filter's existing value. Only " +
           'filters Editmamei created can be re-edited; one added in the GIMP GUI is refused ' +
           '(delete and re-create it). `mask` (a channel name from gimp_create_mask) confines a ' +
