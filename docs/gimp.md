@@ -154,7 +154,8 @@ metadata (including any GPS location); only `gimp_export` removes it.
 
 GIMP has no undo when it runs headless, so crop, resize, rotate, flip, merging and flattening can't
 be stepped back one at a time. Instead, `gimp_checkpoint` saves the image's current state, every live
-filter included, and restores it later as a fresh copy of the image. Make one before anything you
+filter included, and restores it later: restoring replaces the open image with the saved state and
+reports a new image id to use from then on. `gimp_checkpoint` op=list shows the checkpoints you have. Make one before anything you
 might want to take back. Each image keeps up to 5 checkpoints (20 in all); they're deleted when
 Editmamei exits, so save a `.xcf` for anything you want to keep.
 
@@ -189,7 +190,7 @@ few seconds (around 10 seconds on macOS).
 ### "The session restarted" / unsaved work is gone
 
 If a call times out, or GIMP crashes, the session restarts and every open image and unsaved filter is
-lost. Checkpoints survive this: `gimp_checkpoint` op=restore reopens the last one you made. Make one,
+lost. Checkpoints survive this: `gimp_checkpoint` op=restore reopens one by its id (op=list shows them). Make one,
 or save with `gimp_save_xcf`, before a large or slow operation (an exact histogram or a resize/rotate
 on a big document, for example), so a restart only costs you the last few steps rather than the
 whole session.

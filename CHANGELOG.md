@@ -23,14 +23,10 @@ earlier versions are preserved in the archived wiki repository's
     document as a new layer, `gimp_canvas` extends the canvas for borders and frames, and
     `gimp_convert_image_mode` switches between colour and grayscale.
   - `gimp_add_effect` adds live vignette, black and white, motion blur, lens blur, noise and drop
-    shadow effects, re-editable like the adjustments.
+    shadow effects, re-editable like the adjustments. The vignette is subtle by default; a smaller
+    `radius` makes it stronger.
   - `gimp_checkpoint` saves the image's state to disk and restores it later, the undo the beta was
     missing.
-
-### Changed
-
-- **The GIMP vignette's default is subtle.** Corners darken by about a quarter instead of going
-  black; a smaller `radius` makes it stronger.
 
 ### Fixed
 

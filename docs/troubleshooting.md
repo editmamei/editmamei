@@ -201,7 +201,7 @@ A few common ones; the full list lives in [docs/gimp.md](gimp.md#troubleshooting
   fast.
 - **"The session restarted" and unsaved work is gone.** A timed-out or crashed call restarts the
   GIMP process and loses every open image and unsaved filter. A checkpoint survives it:
-  `gimp_checkpoint` op=restore reopens the last one. Make a checkpoint, or save with `gimp_save_xcf`,
+  `gimp_checkpoint` op=restore reopens one by its id (op=list shows them). Make a checkpoint, or save with `gimp_save_xcf`,
   before a large or slow operation next time.
 - **Flatpak on Linux.** A Flatpak-packaged GIMP runs in its own process namespace, so an abrupt
   Editmamei shutdown can leave it orphaned until the next session's cleanup or a reboot.

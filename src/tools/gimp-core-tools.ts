@@ -206,7 +206,8 @@ workflow avoids.
 
 \`gimp_create_mask\` builds a geometric mask (rectangle / ellipse /
 gradient) into a NAMED channel. Pass that name as \`mask\` when you
-CREATE a filter with \`gimp_add_adjustment\` to confine it. A filter's
+CREATE a filter with \`gimp_add_adjustment\` or \`gimp_add_effect\` to
+confine it. A filter's
 mask is fixed at creation — re-editing it by \`filter_id\` cannot
 change which mask it uses; delete and re-create it with a new mask
 instead.
@@ -224,12 +225,25 @@ exception: cropping preserves every filter, mask, and channel correctly,
 so it's safe at any point in the sequence. Unmasked filters survive
 every geometry op.
 
-## No undo: geometry is permanent, adjustments are not
+## Layers and composites
 
-Crop, resize, rotate, and flip are IRREVERSIBLE in this session — there
-is no undo. \`gimp_save_xcf\` first when in doubt, and reopen that file
-to go back. Adjustments are reversible: \`gimp_filter\` (op=delete)
-removes one, and a re-edit by \`filter_id\` changes it in place.
+A filter applies to ONE layer. \`gimp_layer\` creates, groups, reorders,
+moves and restyles layers and merges or flattens them;
+\`gimp_place_image\` adds another file as a new layer;
+\`gimp_create_document\` starts a blank canvas. Address layers by the
+\`layer_id\` these tools and \`gimp_inspect\` report — names can repeat.
+\`gimp_bake\` merges a layer's live filters into its pixels.
+
+## No undo: use checkpoints
+
+There is no step-by-step undo. Crop, resize, rotate, flip, merge and
+flatten are permanent unless you made a checkpoint: \`gimp_checkpoint\`
+op=create before anything you may want to take back, op=restore (by
+\`checkpoint_id\`) to return to it — restore REPLACES the image, so use
+the new image id it reports. Checkpoints survive a session restart.
+Adjustments and effects are reversible on their own: \`gimp_filter\`
+(op=delete) removes one, and a re-edit by \`filter_id\` changes it in
+place.
 
 ## Previews are proxy renders
 
