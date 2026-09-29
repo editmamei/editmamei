@@ -2718,3 +2718,93 @@ describe('ps_ping license advisory', () => {
     expect(text.indexOf(ADVISORY)).toBeGreaterThan(text.indexOf('v0.19.0'));
   });
 });
+
+// privacy.send_previews_to_llm is enforced at the one place every tool result leaves the server,
+// so every image-returning tool (ps_get_preview, ps_get_selection_preview, ps_read_scene,
+// ps_detect, and module tools) honours it without its own check.
+type PreviewPrivacyServer = {
+  previewsAllowed: () => boolean;
+  toolRegistry: PsVersionServer['toolRegistry'];
+  handleToolCall(
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }>;
+};
+
+describe('privacy.send_previews_to_llm is enforced on every tool result', () => {
+  function serverWithImageTool(allowed: boolean) {
+    const server = new EditmameiServer() as unknown as PreviewPrivacyServer;
+    let checks = 0;
+    server.previewsAllowed = () => {
+      checks++;
+      return allowed;
+    };
+    server.toolRegistry.register('test_image_tool', {
+      tool: {
+        name: 'test_image_tool',
+        description: 'test fixture',
+        inputSchema: { type: 'object' },
+      },
+      handler: async () => ({
+        content: [
+          { type: 'image', data: 'SECRETPIXELS', mimeType: 'image/jpeg' },
+          { type: 'text', text: 'Preview rendered.' },
+        ],
+        structuredContent: { bytes: 12 },
+      }),
+    });
+    server.toolRegistry.register('test_text_tool', {
+      tool: {
+        name: 'test_text_tool',
+        description: 'test fixture',
+        inputSchema: { type: 'object' },
+      },
+      handler: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    // ps_sequence's shape: text on top, the last step's result (image included) nested in
+    // structuredContent.
+    server.toolRegistry.register('test_nested_image_tool', {
+      tool: {
+        name: 'test_nested_image_tool',
+        description: 'test fixture',
+        inputSchema: { type: 'object' },
+      },
+      handler: async () => ({
+        content: [{ type: 'text', text: 'Ran 1 of 1 steps.' }],
+        structuredContent: {
+          final: { content: [{ type: 'image', data: 'SECRETPIXELS', mimeType: 'image/jpeg' }] },
+        },
+      }),
+    });
+    return { server, checks: () => checks };
+  }
+
+  it('withholds image blocks when the setting is false, keeping the text', async () => {
+    const { server } = serverWithImageTool(false);
+    const result = await server.handleToolCall('test_image_tool', {});
+    expect(result.content.some((c) => c.type === 'image')).toBe(false);
+    expect(JSON.stringify(result)).not.toContain('SECRETPIXELS');
+    expect(result.content.some((c) => c.text === 'Preview rendered.')).toBe(true);
+    expect(result.content.at(-1)?.text).toMatch(/withheld because the user's privacy/);
+  });
+
+  it('withholds an image nested in structuredContent (a wrapped tool result)', async () => {
+    const { server } = serverWithImageTool(false);
+    const result = await server.handleToolCall('test_nested_image_tool', {});
+    expect(JSON.stringify(result)).not.toContain('SECRETPIXELS');
+    expect(result.content.at(-1)?.text).toMatch(/^An image was withheld/);
+  });
+
+  it('passes the image through when the setting is true', async () => {
+    const { server } = serverWithImageTool(true);
+    const result = await server.handleToolCall('test_image_tool', {});
+    expect(result.content[0]?.type).toBe('image');
+  });
+
+  it('does not read the setting for a result with no image', async () => {
+    const { server, checks } = serverWithImageTool(false);
+    const result = await server.handleToolCall('test_text_tool', {});
+    expect(result.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(checks()).toBe(0);
+  });
+});
