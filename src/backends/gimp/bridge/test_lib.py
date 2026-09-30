@@ -1158,6 +1158,69 @@ class TestValidateFeatherPx(unittest.TestCase):
             lib.validate_feather_px(-1)
 
 
+class TestValidateHexColor(unittest.TestCase):
+    def test_accepts_a_wellformed_hex_color(self):
+        self.assertEqual(lib.validate_hex_color('color', '#c0392b'), '#c0392b')
+        self.assertEqual(lib.validate_hex_color('color', '#FFFFFF'), '#FFFFFF')
+
+    def test_rejects_a_short_or_unprefixed_or_non_hex_string(self):
+        for bad in ('c0392b', '#fff', '#gggggg', '#12345', 'red', ''):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    lib.validate_hex_color('color', bad)
+
+    def test_rejects_a_non_string(self):
+        with self.assertRaises(ValueError):
+            lib.validate_hex_color('color', None)
+        with self.assertRaises(ValueError):
+            lib.validate_hex_color('color', 123456)
+
+
+class TestValidatePositivePx(unittest.TestCase):
+    def test_accepts_a_positive_value_within_the_cap(self):
+        self.assertEqual(lib.validate_positive_px('px', 4), 4)
+        self.assertEqual(lib.validate_positive_px('px', lib.MAX_FEATHER_PX), lib.MAX_FEATHER_PX)
+
+    def test_rounds_rather_than_truncates(self):
+        self.assertEqual(lib.validate_positive_px('px', 4.6), 5)
+        self.assertEqual(lib.validate_positive_px('px', 4.4), 4)
+
+    def test_rejects_zero_and_negative(self):
+        with self.assertRaises(ValueError):
+            lib.validate_positive_px('px', 0)
+        with self.assertRaises(ValueError):
+            lib.validate_positive_px('px', -1)
+
+    def test_rejects_over_the_cap(self):
+        with self.assertRaises(ValueError):
+            lib.validate_positive_px('px', lib.MAX_FEATHER_PX + 1)
+
+
+class TestComputeMaskPasteRect(unittest.TestCase):
+    """`op_load_mask`'s crop/slice math, pulled out pure so every off-canvas case is checked
+    without needing a real GIMP image."""
+
+    def test_whole_image_target_is_the_full_canvas(self):
+        self.assertEqual(lib.compute_mask_paste_rect(0, 0, 64, 64, 64, 64), (0, 0, 64, 64))
+
+    def test_a_layer_fully_inside_the_canvas_is_unclipped(self):
+        self.assertEqual(lib.compute_mask_paste_rect(5, 8, 20, 10, 64, 64), (5, 8, 25, 18))
+
+    def test_a_layer_with_a_negative_offset_is_clipped_at_the_origin(self):
+        self.assertEqual(lib.compute_mask_paste_rect(-10, -4, 20, 10, 64, 64), (0, 0, 10, 6))
+
+    def test_a_layer_hanging_off_the_right_and_bottom_is_clipped_at_the_far_edge(self):
+        self.assertEqual(lib.compute_mask_paste_rect(50, 60, 20, 10, 64, 64), (50, 60, 64, 64))
+
+    def test_a_layer_entirely_off_canvas_to_the_left_yields_an_empty_rect(self):
+        x0, y0, x1, y1 = lib.compute_mask_paste_rect(-30, 0, 20, 10, 64, 64)
+        self.assertTrue(x1 <= x0 or y1 <= y0)
+
+    def test_a_layer_entirely_off_canvas_past_the_bottom_yields_an_empty_rect(self):
+        x0, y0, x1, y1 = lib.compute_mask_paste_rect(0, 100, 20, 10, 64, 64)
+        self.assertTrue(x1 <= x0 or y1 <= y0)
+
+
 class TestMergedLedgerForWriteRemoval(unittest.TestCase):
     def test_removed_name_stays_gone_even_though_raw_still_has_it(self):
         # The exact resurrection bug: `raw` (freshly re-read) still has "Curves" because nothing

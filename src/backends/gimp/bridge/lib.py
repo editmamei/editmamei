@@ -204,6 +204,16 @@ MAX_RESIZE_MEGAPIXELS = megapixel_cap_from_env(os.environ.get('EM_GIMP_MAX_MEGAP
 
 MAX_FEATHER_PX = 1000
 
+# gimp_modify_selection's expand/contract/border radius cap -- much lower than MAX_FEATHER_PX.
+# `Gimp.Selection.grow`/`shrink`/`border` are morphological (structuring-element) operations whose
+# cost scales with the radius, unlike `feather` (a GEGL blur, flat ~0.5s regardless of radius on a
+# 24MP image, measured live). Measured live (GIMP 3.2.6, ~24MP, 6016x4000): border (the most
+# expensive of the three) took 8.2s at 100px, 13.0s at 150px, 20.2s at 200px, 59.0s at 500px --
+# capped at 150px so the worst case stays well inside gimp_modify_selection's own timeout budget
+# (see operation-timeouts.ts) with real margin, rather than raising that budget to fit an
+# uncommon, very-large-radius call.
+MAX_MORPHOLOGY_PX = 150
+
 
 def require(args, name):
     """Fetch a required field from an op's `args`, raising ValueError naming it -- the
@@ -342,6 +352,48 @@ def validate_canvas_fill(value):
     raise ValueError(
         "fill must be one of %s, or a '#rrggbb' hex color, got %r" % (sorted(CANVAS_FILLS), value)
     )
+
+
+def validate_hex_color(name, value):
+    """A '#rrggbb' hex color -- the same `_HEX_COLOR_RE` gimp_canvas's own fill validates against,
+    reused here so a color field never silently reaches `Gegl.Color.new` with a string it cannot
+    parse (which would otherwise fall back to black)."""
+    if not isinstance(value, str) or not _HEX_COLOR_RE.fullmatch(value):
+        raise ValueError('%s must be a "#rrggbb" hex color, got %r' % (name, value))
+    return value
+
+
+def validate_positive_px(name, value, max_px=MAX_FEATHER_PX):
+    """A strictly positive pixel radius (expand/contract/border/feather): 0 or negative does
+    nothing useful and is refused rather than silently accepted as a no-op. Rounds rather than
+    truncates, so 4.6 becomes 5 px, not 4."""
+    value = float(value)
+    if not 0 < value <= max_px:
+        raise ValueError('%s must be greater than 0 and at most %s' % (name, max_px))
+    return round(value)
+
+
+# gimp_select/load_mask's own DoS floor on a SOURCE mask image's dimensions, read from disk before
+# it is ever scaled down to the (already-bounded) target document or layer size -- otherwise a
+# caller-supplied mask file of arbitrary size would be decoded into memory at full resolution
+# first. Reuses the same cap `validate_resize_dims` applies to a resize target, since both are
+# "how big a single in-memory image may get" limits.
+def validate_loaded_mask_dims(width, height):
+    return validate_resize_dims(width, height)
+
+
+def compute_mask_paste_rect(ox, oy, tw, th, img_width, img_height):
+    """Where a `tw`x`th` mask (already scaled to its target -- the whole image, or one layer's own
+    bounds, at offset `(ox, oy)`) actually lands inside the `img_width`x`img_height` canvas: the
+    intersection of [ox, ox+tw) x [oy, oy+th) with [0, img_width) x [0, img_height). Pure and
+    gi-free so the off-canvas cases (a negative offset, or a layer hanging off the right/bottom
+    edge) are unit-tested without GIMP. Returns (x0, y0, x1, y1); x1 <= x0 or y1 <= y0 means the
+    mask lands ENTIRELY off-canvas (nothing to paste -- the channel stays all-black there)."""
+    x0 = max(0, ox)
+    y0 = max(0, oy)
+    x1 = min(img_width, ox + tw)
+    y1 = min(img_height, oy + th)
+    return x0, y0, x1, y1
 
 
 # gimp_canvas's anchor grid -> the fraction of the GROWTH (new size minus old size) that lands
