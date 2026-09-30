@@ -50,7 +50,7 @@ def op_test_export_mask(args):
     img = _image(args)
     path = lib.require(args, 'path')
     channel = args.get('channel')
-    src = img.get_selection() if channel in (None, 'selection') else _channel_by_name(img, channel)
+    src = img.get_selection() if channel in (None, 'selection') else _require_channel(img, channel)
     w, h = img.get_width(), img.get_height()
     data = src.get_buffer().get(Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
     with open(path, 'wb') as fh:

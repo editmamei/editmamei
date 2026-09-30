@@ -579,13 +579,6 @@ SETTERS = {
 }
 
 
-def _channel_by_name(img, name):
-    for ch in img.get_channels():
-        if ch.get_name() == name:
-            return ch
-    raise ValueError('no mask channel named %r (create one with create_mask)' % name)
-
-
 def _append_masked(img, layer, f, mask):
     """Append f, confined to channel `mask` if given. A filter appended while a selection is
     active keeps that selection as its own mask, which persists after the selection is
@@ -610,7 +603,7 @@ def _append_masked(img, layer, f, mask):
     runs before raising either way, so a refused filter that never actually attached to anything
     doesn't linger as an orphaned DrawableFilter object."""
     if mask:
-        img.select_item(Gimp.ChannelOps.REPLACE, _channel_by_name(img, mask))
+        img.select_item(Gimp.ChannelOps.REPLACE, _require_channel(img, mask))
     else:
         Gimp.Selection.none(img)
     try:
@@ -1938,6 +1931,31 @@ def _mask_name_in_use(img, name):
     return any(rec.get('params', {}).get('mask') == name for rec in filters.values())
 
 
+def _refuse_mask_in_use(img, name):
+    if _mask_name_in_use(img, name):
+        raise ValueError(
+            'mask %r is already used by an existing filter; delete that filter or use a '
+            'different name' % name
+        )
+
+
+def _find_channel(img, name):
+    for ch in img.get_channels():
+        if ch.get_name() == name:
+            return ch
+    return None
+
+
+def _require_channel(img, name):
+    """`_find_channel`, refusing a miss with the one neutral message every caller (the filter
+    mask lookup and every gimp_select-family channel reference) shares -- a channel can come from
+    gimp_select, gimp_layer_mask op=create, or load_mask, so no single tool name belongs here."""
+    ch = _find_channel(img, name)
+    if ch is None:
+        raise ValueError('no channel named %r' % name)
+    return ch
+
+
 def op_create_mask(args):
     """Geometric mask -> a named channel (replacing any same-named channel not already in use as
     a filter's mask -- see `_mask_name_in_use`), leaving the selection cleared afterward.
@@ -1972,72 +1990,96 @@ def op_create_mask(args):
     if type_ not in lib.MASK_TYPES:
         raise ValueError('type must be one of %s' % sorted(lib.MASK_TYPES))
     name = args.get('name', 'Mask')
-    if _mask_name_in_use(img, name):
-        raise ValueError(
-            'mask %r is already used by an existing filter; delete that filter or use a '
-            'different name' % name
-        )
+    _refuse_mask_in_use(img, name)
     invert = bool(args.get('invert', False))
     feather_px = lib.validate_feather_px(args.get('feather_px', 0))
     w, h = img.get_width(), img.get_height()
 
-    if type_ in ('rectangle', 'ellipse'):
-        x, y = float(lib.require(args, 'x')), float(lib.require(args, 'y'))
-        width, height = float(lib.require(args, 'width')), float(lib.require(args, 'height'))
-        if type_ == 'rectangle':
-            img.select_rectangle(Gimp.ChannelOps.REPLACE, x, y, width, height)
+    try:
+        if type_ in ('rectangle', 'ellipse'):
+            x, y = float(lib.require(args, 'x')), float(lib.require(args, 'y'))
+            width, height = float(lib.require(args, 'width')), float(lib.require(args, 'height'))
+            if type_ == 'rectangle':
+                img.select_rectangle(Gimp.ChannelOps.REPLACE, x, y, width, height)
+            else:
+                img.select_ellipse(Gimp.ChannelOps.REPLACE, x, y, width, height)
+            if invert:
+                Gimp.Selection.invert(img)
+            if feather_px > 0:
+                Gimp.Selection.feather(img, feather_px)
+            ch = _replace_named_channel(img, name, w, h)
+            # "Y' u8" (perceptual), not "Y u8" (linear) -- see `_channel_coverage`'s comment. A
+            # hard selection is 0/255 either way, but a FEATHERED one has a real falloff whose
+            # shape this format choice controls.
+            sel_data = img.get_selection().get_buffer().get(
+                Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE
+            )
+            ch_buf = ch.get_buffer()
+            ch_buf.set(Gegl.Rectangle.new(0, 0, w, h), "Y' u8", sel_data)
+            ch_buf.flush()
+            ch.update(0, 0, w, h)
         else:
-            img.select_ellipse(Gimp.ChannelOps.REPLACE, x, y, width, height)
-        if invert:
-            Gimp.Selection.invert(img)
-        if feather_px > 0:
-            Gimp.Selection.feather(img, feather_px)
-        ch = _replace_named_channel(img, name, w, h)
-        # "Y' u8" (perceptual), not "Y u8" (linear) -- see `_channel_coverage`'s comment. A hard
-        # selection is 0/255 either way, but a FEATHERED one has a real falloff whose shape this
-        # format choice controls.
-        sel_data = img.get_selection().get_buffer().get(
-            Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE
-        )
-        ch_buf = ch.get_buffer()
-        ch_buf.set(Gegl.Rectangle.new(0, 0, w, h), "Y' u8", sel_data)
-        ch_buf.flush()
-        ch.update(0, 0, w, h)
-    else:
-        ch = _replace_named_channel(img, name, w, h)
-        black, white = ('white', 'black') if invert else ('black', 'white')
-        # A gradient fill paints `start_color` at (x1,y1) and `end_color` at (x2,y2). For
-        # gradient_linear those points are the caller's own start/end -- black-at-x1 ramps
-        # toward white-at-x2 exactly as given (verified live). For gradient_radial (x1,y1) is
-        # always the CENTER and (x2,y2) the radius edge, and the intuitive reading of a radial
-        # mask is a spotlight -- full effect (white) at the center, fading to none (black) at
-        # the edge -- so the two colors are swapped relative to the linear case.
-        if type_ == 'gradient_linear':
-            start_color, end_color = black, white
-            x1, y1 = float(args.get('x1', 0)), float(args.get('y1', 0))
-            x2, y2 = float(args.get('x2', w)), float(args.get('y2', 0))
-            gtype = Gimp.GradientType.LINEAR
-        else:
-            start_color, end_color = white, black
-            cx, cy = float(args.get('cx', w / 2.0)), float(args.get('cy', h / 2.0))
-            radius = float(args.get('radius', min(w, h) / 2.0))
-            x1, y1, x2, y2 = cx, cy, cx + radius, cy
-            gtype = Gimp.GradientType.RADIAL
-        Gimp.context_push()
-        try:
-            Gimp.context_set_foreground(Gegl.Color.new(start_color))
-            Gimp.context_set_background(Gegl.Color.new(end_color))
-            Gimp.context_set_gradient_fg_bg_rgb()
-            Gimp.context_set_gradient_blend_color_space(Gimp.GradientBlendColorSpace.RGB_PERCEPTUAL)
-            ch.edit_gradient_fill(gtype, 0.0, False, 1, 0, False, x1, y1, x2, y2)
-        finally:
-            Gimp.context_pop()
-    Gimp.Selection.none(img)  # a mask is referenced by NAME at filter-creation time, not by
-    # staying the active selection -- leaving it selected let the NEXT unmasked filter silently
-    # inherit it (`_append_masked` also clears defensively, but the fix belongs here too).
+            ch = _replace_named_channel(img, name, w, h)
+            _paint_gradient_mask(ch, type_, invert, args, w, h)
+    finally:
+        Gimp.Selection.none(img)  # a mask is referenced by NAME at filter-creation time, not by
+        # staying the active selection -- leaving it selected let the NEXT unmasked filter
+        # silently inherit it (`_append_masked` also clears defensively, but the fix belongs
+        # here too).
     _drop_proxies(img.get_id())
     selected, fraction = _channel_coverage(ch, w, h)
     return {'channel': name, 'selected_pixels': selected, 'fraction': fraction}
+
+
+def _paint_gradient_mask(ch, type_, invert, args, w, h):
+    """Paint a `type_` ('gradient_linear' | 'gradient_radial') black-to-white ramp directly into
+    channel `ch`. `gegl:linear-gradient`/`gegl:radial-gradient` are NOT usable as drawable filters
+    (verified live: their pspecs return None, `DrawableFilter.new` fails) -- the working route is
+    `Drawable.edit_gradient_fill` (verified live). `Gimp.context_push`/`context_pop` bracket every
+    context change (foreground/background/gradient/blend space) so the session's ambient context
+    -- which the user's own GUI or a later call might depend on -- is restored exactly regardless
+    of how this function exits, rather than manually saving and restoring each property by hand.
+    The gradient blend color space is explicitly set to RGB_PERCEPTUAL, but verified live that this
+    has NO effect on a Channel fill's actual output either way: forcing RGB_PERCEPTUAL, forcing
+    RGB_LINEAR, and leaving the context at whatever it already was all produced byte-identical
+    output (an exact linear ramp -- x=128 reads 128) once read back correctly. What DOES control
+    the crossing point is the buffer format every reader of this channel (`_channel_coverage`) uses
+    -- `"Y' u8"` (perceptual/gamma-encoded, matching the channel's own storage), not `'Y u8'`
+    (linear light, which compresses the readback toward black, e.g. the geometric midpoint reading
+    ~55 instead of ~128). RGB_PERCEPTUAL is kept set here anyway as the explicit,
+    correct-if-it-ever-starts-mattering choice for a caller who thinks in 0-255 terms, not because
+    it changes anything measured today.
+
+    No feather here (a gradient is already a continuous ramp, nothing to feather); `invert` swaps
+    which end is black vs white. Shared by `op_create_mask` and `op_select`'s own gradient_linear/
+    gradient_radial modes."""
+    black, white = ('white', 'black') if invert else ('black', 'white')
+    # A gradient fill paints `start_color` at (x1,y1) and `end_color` at (x2,y2). For
+    # gradient_linear those points are the caller's own start/end -- black-at-x1 ramps toward
+    # white-at-x2 exactly as given (verified live). For gradient_radial (x1,y1) is always the
+    # CENTER and (x2,y2) the radius edge, and the intuitive reading of a radial mask is a
+    # spotlight -- full effect (white) at the center, fading to none (black) at the edge -- so the
+    # two colors are swapped relative to the linear case.
+    if type_ == 'gradient_linear':
+        start_color, end_color = black, white
+        x1, y1 = float(args.get('x1', 0)), float(args.get('y1', 0))
+        x2, y2 = float(args.get('x2', w)), float(args.get('y2', 0))
+        gtype = Gimp.GradientType.LINEAR
+    else:
+        start_color, end_color = white, black
+        cx, cy = float(args.get('cx', w / 2.0)), float(args.get('cy', h / 2.0))
+        radius = float(args.get('radius', min(w, h) / 2.0))
+        x1, y1, x2, y2 = cx, cy, cx + radius, cy
+        gtype = Gimp.GradientType.RADIAL
+    Gimp.context_push()
+    try:
+        Gimp.context_set_foreground(Gegl.Color.new(start_color))
+        Gimp.context_set_background(Gegl.Color.new(end_color))
+        Gimp.context_set_gradient_fg_bg_rgb()
+        Gimp.context_set_gradient_blend_color_space(Gimp.GradientBlendColorSpace.RGB_PERCEPTUAL)
+        ch.edit_gradient_fill(gtype, 0.0, False, 1, 0, False, x1, y1, x2, y2)
+    finally:
+        Gimp.context_pop()
 
 
 def op_describe_operation(args):
@@ -3466,7 +3508,7 @@ def op_select_none(args):
     return {'selection': 'none'}
 
 
-# ---------- selection spike (gimp_select / gimp_modify_mask / gimp_layer_mask / masks) ----------
+# ---------- selection: gimp_select / gimp_modify_selection / gimp_layer_mask / masks ------------
 
 _CHANNEL_OPS = {
     'replace': Gimp.ChannelOps.REPLACE, 'add': Gimp.ChannelOps.ADD,
@@ -3476,7 +3518,7 @@ _CHANNEL_OPS = {
 
 def _selection_to_channel(img, name):
     """Copy the active selection into a (replaced) named channel, clear the selection, and return
-    the op result every mask op reports."""
+    the op result every selection op reports."""
     w, h = img.get_width(), img.get_height()
     rect = Gegl.Rectangle.new(0, 0, w, h)
     data = img.get_selection().get_buffer().get(rect, 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
@@ -3491,55 +3533,88 @@ def _selection_to_channel(img, name):
     return {'channel': name, 'selected_pixels': selected, 'fraction': fraction}
 
 
-def _find_channel(img, name):
-    for ch in img.get_channels():
-        if ch.get_name() == name:
-            return ch
-    return None
+def _with_scratch_channel(img, w, h, fn):
+    """Run `fn(scratch_channel)` against a throwaway channel inserted for the duration of the
+    call, then remove it regardless of outcome. Used to stash a selection's pixel data somewhere
+    durable (a GIMP selection is a single, unnamed piece of image state -- building a SECOND shape
+    while the first is still needed, as combine != 'replace' does, has nowhere else to put it)."""
+    scratch = Gimp.Channel.new(img, '__select_scratch__', w, h, 50.0, Gegl.Color.new('black'))
+    img.insert_channel(scratch, None, 0)
+    try:
+        return fn(scratch)
+    finally:
+        img.remove_channel(scratch)
 
 
-def _refuse_mask_in_use(img, name):
-    if _mask_name_in_use(img, name):
-        raise ValueError('mask %r is already used by an existing filter; use a different name' % name)
+def _capture_selection(img, w, h, scratch):
+    """Copy the CURRENT active selection's pixels into `scratch` and load `scratch` as the active
+    selection in its place -- a roundtrip, but it makes the channel buffer the durable holder of
+    the selection's state rather than the selection itself, which `_shape_selection`'s next call
+    would otherwise overwrite."""
+    data = img.get_selection().get_buffer().get(
+        Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
+    buf = scratch.get_buffer()
+    buf.set(Gegl.Rectangle.new(0, 0, w, h), "Y' u8", data)
+    buf.flush()
+    scratch.update(0, 0, w, h)
 
 
-def _color_arg(img, drawable, args):
+def _color_arg(img, drawable, args, sample_merged):
+    """The target color for mode=color_range: an explicit `color` hex, or the color AT a sample
+    point (x, y). Document pixels throughout, like every other coordinate this API takes --
+    `sample_merged` (default True) reads the visible COMPOSITE at that point (a full,
+    filters-applied render -- the same cost gimp_get_preview's full-resolution region path pays);
+    otherwise it reads the ONE named/selected layer's own raw pixels, converting to that layer's
+    own local coordinates and refusing a point outside its bounds rather than silently sampling
+    the wrong pixel (`Drawable.get_pixel` takes drawable-local coordinates, not document ones --
+    verified live: an unconverted point on an offset layer read the wrong pixel entirely)."""
     color = args.get('color')
-    if color:
-        return Gegl.Color.new(str(color))
+    if color is not None:
+        return Gegl.Color.new(lib.validate_hex_color('color', color))
     if args.get('x') is None or args.get('y') is None:
         raise ValueError('color_range needs `color` (e.g. "#c0392b") or a sample point x, y')
-    return drawable.get_pixel(int(args['x']), int(args['y']))
+    x, y = int(args['x']), int(args['y'])
+    if sample_merged:
+        dup, flat = _composite(img)
+        try:
+            dw, dh = dup.get_width(), dup.get_height()
+            if not (0 <= x < dw and 0 <= y < dh):
+                raise ValueError('sample point (%d, %d) is outside the %dx%d image' % (x, y, dw, dh))
+            return flat.get_pixel(x, y)
+        finally:
+            dup.delete()
+    _ok, ox, oy = drawable.get_offsets()
+    lx, ly = x - ox, y - oy
+    lw, lh = drawable.get_width(), drawable.get_height()
+    if not (0 <= lx < lw and 0 <= ly < lh):
+        raise ValueError(
+            'sample point (%d, %d) is outside layer %r (%dx%d at offset %d,%d)'
+            % (x, y, drawable.get_name(), lw, lh, ox, oy)
+        )
+    return drawable.get_pixel(lx, ly)
 
 
-def op_select(args):
-    img = _image(args)
-    mode = lib.require(args, 'mode')
-    name = args.get('name', 'Selection')
-    combine = args.get('combine', 'replace')
-    if combine not in _CHANNEL_OPS:
-        raise ValueError('combine must be one of %s' % sorted(_CHANNEL_OPS))
-    _refuse_mask_in_use(img, name)
-    op = _CHANNEL_OPS[combine]
-    existing = _find_channel(img, name)
-    Gimp.Selection.none(img)
-    if combine != 'replace':
-        if existing is None:
-            raise ValueError('combine=%s needs an existing channel named %r' % (combine, name))
-        img.select_item(Gimp.ChannelOps.REPLACE, existing)
+def _shape_selection(img, mode, args, w, h):
+    """Build `mode`'s shape as the ACTIVE SELECTION, in ISOLATION (every branch uses
+    `Gimp.ChannelOps.REPLACE` against whatever was selected before, which is irrelevant -- the
+    caller always starts from a cleared selection). `op_select` applies `invert`/`feather_px` to
+    this shape ALONE, immediately after, before it is ever combined with an existing channel --
+    see `op_select`'s own docstring for why that order matters."""
+    REPLACE = Gimp.ChannelOps.REPLACE
     Gimp.context_push()
     try:
         Gimp.context_set_feather(False)
         Gimp.context_set_antialias(True)
-        Gimp.context_set_sample_threshold(float(args.get('threshold', 15)) / 255.0)
-        Gimp.context_set_sample_merged(bool(args.get('sample_merged', True)))
+        threshold = lib.validate_range('threshold', args.get('threshold', 15), 0, 255)
+        Gimp.context_set_sample_threshold(threshold / 255.0)
+        Gimp.context_set_sample_merged(lib.optional_bool(args, 'sample_merged', True))
         Gimp.context_set_sample_criterion(Gimp.SelectCriterion.COMPOSITE)
         if mode == 'all':
-            img.select_rectangle(op, 0, 0, img.get_width(), img.get_height())
+            img.select_rectangle(REPLACE, 0, 0, w, h)
         elif mode in ('rectangle', 'ellipse'):
             x, y = float(lib.require(args, 'x')), float(lib.require(args, 'y'))
             ww, hh = float(lib.require(args, 'width')), float(lib.require(args, 'height'))
-            (img.select_rectangle if mode == 'rectangle' else img.select_ellipse)(op, x, y, ww, hh)
+            (img.select_rectangle if mode == 'rectangle' else img.select_ellipse)(REPLACE, x, y, ww, hh)
         elif mode == 'polygon':
             pts = lib.require(args, 'points')
             if not isinstance(pts, list) or len(pts) < 3:
@@ -3547,31 +3622,76 @@ def op_select(args):
             segs = []
             for p in pts:
                 segs.extend([float(p[0]), float(p[1])])
-            img.select_polygon(op, segs)
+            img.select_polygon(REPLACE, segs)
         elif mode == 'color_range':
             drawable = _layer(img, args)
-            img.select_color(op, drawable, _color_arg(img, drawable, args))
+            sample_merged = lib.optional_bool(args, 'sample_merged', True)
+            img.select_color(REPLACE, drawable, _color_arg(img, drawable, args, sample_merged))
         elif mode == 'magic_wand':
             drawable = _layer(img, args)
-            img.select_contiguous_color(op, drawable, float(lib.require(args, 'x')),
+            img.select_contiguous_color(REPLACE, drawable, float(lib.require(args, 'x')),
                                         float(lib.require(args, 'y')))
         elif mode == 'alpha':
-            img.select_item(op, _layer(img, args))
+            img.select_item(REPLACE, _layer(img, args))
         elif mode == 'channel':
-            src = _find_channel(img, lib.require(args, 'source'))
-            if src is None:
-                raise ValueError('no channel named %r' % args['source'])
-            img.select_item(op, src)
+            src = _require_channel(img, lib.require(args, 'source'))
+            img.select_item(REPLACE, src)
         else:
             raise ValueError('unknown mode %r' % mode)
     finally:
         Gimp.context_pop()
-    if args.get('invert'):
-        Gimp.Selection.invert(img)
-    feather = float(args.get('feather_px', 0))
-    if feather > 0:
-        Gimp.Selection.feather(img, feather)
-    return _selection_to_channel(img, name)
+
+
+def op_select(args):
+    """Every mode builds its shape ALONE first (`_shape_selection`, or a gradient painted directly
+    into a scratch channel) -- `invert`/`feather_px` apply to that shape by itself, matching how a
+    feathered marquee combines in a raster editor: draw the new region, feather IT, then union/
+    subtract/intersect with whatever was already selected. Combining the raw (un-invert/feathered)
+    shape first would let those two options reach into the EXISTING channel's content instead,
+    which is not what either name promises."""
+    img = _image(args)
+    mode = lib.require(args, 'mode')
+    name = args.get('name', 'Selection')
+    combine = args.get('combine', 'replace')
+    if combine not in _CHANNEL_OPS:
+        raise ValueError('combine must be one of %s' % sorted(_CHANNEL_OPS))
+    _refuse_mask_in_use(img, name)
+    existing = _find_channel(img, name)
+    if combine != 'replace' and existing is None:
+        raise ValueError('combine=%s needs an existing channel named %r' % (combine, name))
+    invert = bool(args.get('invert', False))
+    feather_px = lib.validate_feather_px(args.get('feather_px', 0))
+    w, h = img.get_width(), img.get_height()
+
+    try:
+        Gimp.Selection.none(img)
+        if mode in ('gradient_linear', 'gradient_radial'):
+            def _paint(scratch):
+                _paint_gradient_mask(scratch, mode, invert, args, w, h)
+                img.select_item(Gimp.ChannelOps.REPLACE, scratch)
+            _with_scratch_channel(img, w, h, _paint)
+            # invert is already applied above (a color swap, done while painting); feather_px has
+            # no effect on a gradient (already a continuous ramp, nothing to feather).
+        else:
+            _shape_selection(img, mode, args, w, h)
+            if invert:
+                Gimp.Selection.invert(img)
+            if feather_px > 0:
+                Gimp.Selection.feather(img, feather_px)
+
+        # The active selection is now the new shape ALONE, already invert/feathered -- never yet
+        # combined with whatever `name` previously held.
+        if combine == 'replace':
+            return _selection_to_channel(img, name)
+
+        def _combine(scratch):
+            _capture_selection(img, w, h, scratch)
+            img.select_item(Gimp.ChannelOps.REPLACE, existing)
+            img.select_item(_CHANNEL_OPS[combine], scratch)
+        _with_scratch_channel(img, w, h, _combine)
+        return _selection_to_channel(img, name)
+    finally:
+        Gimp.Selection.none(img)
 
 
 def op_modify_mask(args):
@@ -3579,32 +3699,45 @@ def op_modify_mask(args):
     name = lib.require(args, 'channel')
     out = args.get('output') or name
     _refuse_mask_in_use(img, out)
-    ch = _find_channel(img, name)
-    if ch is None:
-        raise ValueError('no channel named %r' % name)
+    ch = _require_channel(img, name)
     how = lib.require(args, 'op')
-    px = float(args.get('px', 0))
-    img.select_item(Gimp.ChannelOps.REPLACE, ch)
-    if how == 'expand':
-        Gimp.Selection.grow(img, int(px))
-    elif how == 'contract':
-        Gimp.Selection.shrink(img, int(px))
-    elif how == 'border':
-        Gimp.Selection.border(img, int(px))
-    elif how == 'feather':
-        Gimp.Selection.feather(img, px)
-    elif how == 'invert':
-        Gimp.Selection.invert(img)
-    elif how == 'harden':
-        Gimp.Selection.sharpen(img)
-    elif how == 'smooth':
-        # Round off jaggies: feather, then re-threshold at 50%.
-        Gimp.Selection.feather(img, max(px, 1.0))
-        Gimp.Selection.sharpen(img)
-    else:
+    try:
+        img.select_item(Gimp.ChannelOps.REPLACE, ch)
+        if how in ('expand', 'contract', 'border'):
+            # Capped well below feather's own range -- these are morphological ops whose cost
+            # scales with the radius (see MAX_MORPHOLOGY_PX's own comment for live measurements).
+            px = lib.validate_positive_px('px', lib.require(args, 'px'), max_px=lib.MAX_MORPHOLOGY_PX)
+            if how == 'expand':
+                Gimp.Selection.grow(img, px)
+            elif how == 'contract':
+                Gimp.Selection.shrink(img, px)
+            else:
+                Gimp.Selection.border(img, px)
+        elif how == 'feather':
+            px = lib.validate_positive_px('px', lib.require(args, 'px'))
+            Gimp.Selection.feather(img, px)
+        elif how == 'invert':
+            Gimp.Selection.invert(img)
+        elif how == 'harden':
+            Gimp.Selection.sharpen(img)
+        elif how == 'smooth':
+            # Round off jaggies: feather, then re-threshold at 50%. `px` is optional here (unlike
+            # the four ops above) -- a plain smoothing pass with no caller-chosen radius is still
+            # meaningful, so it floors at 1.0 rather than requiring one.
+            px = lib.validate_range('px', args.get('px', 0), 0, lib.MAX_FEATHER_PX)
+            Gimp.Selection.feather(img, max(px, 1.0))
+            Gimp.Selection.sharpen(img)
+        else:
+            raise ValueError('unknown op %r' % how)
+        return _selection_to_channel(img, out)
+    finally:
         Gimp.Selection.none(img)
-        raise ValueError('unknown op %r' % how)
-    return _selection_to_channel(img, out)
+
+
+_LAYER_MASK_SOURCES = {
+    'white': Gimp.AddMaskType.WHITE, 'black': Gimp.AddMaskType.BLACK,
+    'alpha': Gimp.AddMaskType.ALPHA, 'grayscale': Gimp.AddMaskType.COPY,
+}
 
 
 def op_layer_mask(args):
@@ -3613,23 +3746,31 @@ def op_layer_mask(args):
     how = lib.require(args, 'op')
     mask = layer.get_mask()
     if how == 'create':
+        source = args.get('source', 'channel')
+        # Resolve and validate EVERYTHING (the channel exists, or `source` names a real kind)
+        # before touching the layer's EXISTING mask: a typo'd channel name must never destroy a
+        # hand-tuned mask already in place. The new mask is built in full -- `create_mask` (a
+        # candidate GimpLayerMask object, not yet attached) succeeds independently of whatever
+        # mask the layer currently has -- and only once that succeeds is the old one discarded.
+        if source == 'channel':
+            ch = _require_channel(img, lib.require(args, 'channel'))
+            img.select_item(Gimp.ChannelOps.REPLACE, ch)
+            try:
+                new = layer.create_mask(Gimp.AddMaskType.SELECTION)
+            finally:
+                Gimp.Selection.none(img)
+        elif source in _LAYER_MASK_SOURCES:
+            new = layer.create_mask(_LAYER_MASK_SOURCES[source])
+        else:
+            raise ValueError('source must be one of %s' % sorted(['channel'] + list(_LAYER_MASK_SOURCES)))
         if mask is not None:
             layer.remove_mask(Gimp.MaskApplyMode.DISCARD)
-        source = args.get('source', 'channel')
-        if source == 'channel':
-            ch = _find_channel(img, lib.require(args, 'channel'))
-            if ch is None:
-                raise ValueError('no channel named %r' % args['channel'])
-            img.select_item(Gimp.ChannelOps.REPLACE, ch)
-            new = layer.create_mask(Gimp.AddMaskType.SELECTION)
-            Gimp.Selection.none(img)
-        else:
-            kinds = {'white': Gimp.AddMaskType.WHITE, 'black': Gimp.AddMaskType.BLACK,
-                     'alpha': Gimp.AddMaskType.ALPHA, 'grayscale': Gimp.AddMaskType.COPY}
-            if source not in kinds:
-                raise ValueError('source must be channel, white, black, alpha or grayscale')
-            new = layer.create_mask(kinds[source])
-        layer.add_mask(new)
+        if not layer.add_mask(new):
+            raise lib.OpError(
+                'gimp_op_failed', 'GIMP could not attach the new mask to layer %r' % layer.get_name()
+            )
+        # `invert` runs AFTER add_mask -- verified live that inverting the mask object before it is
+        # attached to the layer has no visible effect (the invert is silently lost).
         if args.get('invert'):
             new.invert(False)
     elif mask is None:
@@ -3659,9 +3800,7 @@ def _gray_bytes_image(data, w, h):
 
 def op_mask_preview(args):
     img = _image(args)
-    ch = _find_channel(img, lib.require(args, 'channel'))
-    if ch is None:
-        raise ValueError('no channel named %r' % args['channel'])
+    ch = _require_channel(img, lib.require(args, 'channel'))
     out_path = lib.require(args, 'out_path')
     max_px = lib.validate_max_px(int(args.get('max_px', 1024)))
     w, h = img.get_width(), img.get_height()
@@ -3672,12 +3811,12 @@ def op_mask_preview(args):
         dw, dh = tmp.get_width(), tmp.get_height()
         if args.get('style', 'overlay') == 'mask':
             _export_stripped(tmp, out_path)
-            return {'path': out_path, 'width': dw, 'height': dh}
+            return {'path': out_path, 'width': dw, 'height': dh, 'unmirrored_filters': []}
         small = lay.get_buffer().get(Gegl.Rectangle.new(0, 0, dw, dh), 1.0, "Y' u8",
                                      Gegl.AbyssPolicy.NONE)
     finally:
         tmp.delete()
-    dup, _unmirrored = _proxy_render(img, max_px)
+    dup, unmirrored = _proxy_render(img, max_px)
     try:
         if dup.get_base_type() != Gimp.ImageBaseType.RGB:
             dup.convert_rgb()
@@ -3700,18 +3839,27 @@ def op_mask_preview(args):
         mb.flush()
         dup.flatten()
         _export_stripped(dup, out_path)
-        return {'path': out_path, 'width': dw, 'height': dh}
+        return {'path': out_path, 'width': dw, 'height': dh, 'unmirrored_filters': unmirrored}
     finally:
         dup.delete()
 
 
 def op_load_mask(args):
     """A grey mask image (PNG/JPEG, white = selected) -> a named channel. With a layer, the mask
-    is taken to cover that layer's own bounds (e.g. a mask computed from `render_layer`)."""
+    is taken to cover that layer's own bounds (e.g. a mask computed from `render_layer`).
+
+    A source that carries an alpha channel is flattened onto an explicit OPAQUE BLACK layer, not
+    GIMP's own flatten default -- a transparent pixel means "not part of the mask" NOT "selected",
+    so flattening onto white (or whatever `flatten()` would otherwise use) would silently select
+    every transparent pixel. The result is luminance x alpha: fully transparent reads 0 regardless
+    of the pixel's own color, fully opaque reads its luminance unchanged. A source with no alpha
+    channel (the common PNG/JPEG grayscale-or-RGB case) is unaffected either way."""
     img = _image(args)
     name = args.get('name', 'Mask')
     _refuse_mask_in_use(img, name)
     path = lib.require(args, 'path')
+    if not os.path.exists(path):
+        raise ValueError('%s does not exist' % os.path.basename(path))
     w, h = img.get_width(), img.get_height()
     if args.get('layer') or args.get('layer_id') is not None:
         layer = _layer(img, args)
@@ -3722,8 +3870,26 @@ def op_load_mask(args):
         tw, th = w, h
     src = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(path))
     try:
+        lib.validate_loaded_mask_dims(src.get_width(), src.get_height())
+        has_alpha = any(src_layer.has_alpha() for src_layer in src.get_layers())
         if src.get_base_type() != Gimp.ImageBaseType.GRAY:
             src.convert_grayscale()
+        if has_alpha:
+            # An explicit opaque black layer at the bottom of the stack, not a reliance on
+            # whatever background color `flatten()` might otherwise use -- this is correct
+            # regardless of that. Composited under a partially transparent pixel, black
+            # contributes nothing, so the flattened value IS luminance x alpha: fully transparent
+            # reads 0 (not part of the mask), fully opaque reads the source's own luminance
+            # unchanged, and a half-transparent light pixel reads roughly half its luminance.
+            bg = Gimp.Layer.new(src, 'mask-bg', src.get_width(), src.get_height(),
+                                Gimp.ImageType.GRAY_IMAGE, 100.0, Gimp.LayerMode.NORMAL)
+            src.insert_layer(bg, None, len(src.get_layers()))
+            Gimp.context_push()
+            try:
+                Gimp.context_set_foreground(Gegl.Color.new('black'))
+                bg.fill(Gimp.FillType.FOREGROUND)
+            finally:
+                Gimp.context_pop()
         if (src.get_width(), src.get_height()) != (tw, th):
             src.scale(tw, th)
         flat = src.flatten()
@@ -3732,7 +3898,7 @@ def op_load_mask(args):
     finally:
         src.delete()
     ch = _replace_named_channel(img, name, w, h)
-    x0, y0, x1, y1 = max(0, ox), max(0, oy), min(w, ox + tw), min(h, oy + th)
+    x0, y0, x1, y1 = lib.compute_mask_paste_rect(ox, oy, tw, th, w, h)
     if x1 > x0 and y1 > y0:
         if (ox, oy, tw, th) == (0, 0, w, h):
             sub = data
@@ -3751,7 +3917,13 @@ def op_load_mask(args):
 
 def op_render_layer(args):
     """One layer's own pixels (not the composite), downscaled, to out_path -- the input for a mask
-    that should follow that layer. Returns the layer's bounds in document pixels."""
+    that should follow that layer. Returns the layer's bounds in document pixels.
+
+    Rendered as if the layer were fully VISIBLE, at 100% opacity, in Normal mode -- set on the
+    duplicated layer before flatten, so a hidden, partially-transparent, or blend-mode layer still
+    renders its own pixels plainly rather than the (possibly empty or blended-dark) result its
+    current display settings would otherwise produce. The layer's own mask and any live filters
+    are still included, exactly as they would render in the document."""
     img = _image(args)
     layer = _layer(img, args)
     out_path = lib.require(args, 'out_path')
@@ -3763,6 +3935,9 @@ def op_render_layer(args):
         nl = Gimp.Layer.new_from_drawable(layer, tmp)
         tmp.insert_layer(nl, None, 0)
         nl.set_offsets(0, 0)
+        nl.set_visible(True)
+        nl.set_opacity(100.0)
+        nl.set_mode(Gimp.LayerMode.NORMAL)
         _scale_to_max(tmp, max_px)
         tmp.flatten()
         _export_stripped(tmp, out_path)
