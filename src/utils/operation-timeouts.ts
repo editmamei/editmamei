@@ -272,7 +272,7 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   gimp_save_xcf: 90_000,
   gimp_export: 90_000,
   // `what='channels'` reads EVERY named channel's full pixel buffer (`_channel_coverage`,
-  // ops.py) -- the same per-channel cost `gimp_create_mask` budgets 20s for a single one of.
+  // ops.py) -- the same per-channel cost gimp_select's own budget below pays for a single one of.
   // Measured live (GIMP 3.2.6, ~24MP) at ~120ms/channel. `_channels_described` also applies its
   // own internal deadline (`CHANNELS_DESCRIBE_DEADLINE_S`, ops.py) so a document with many named
   // channels stops and reports what it already read rather than run this dispatch budget out;
@@ -288,7 +288,6 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   gimp_crop_document: 20_000,
   gimp_resize_image: 45_000,
   gimp_transform_canvas: 60_000,
-  gimp_create_mask: 20_000,
   gimp_get_preview: 30_000,
   // exact: true renders the full-resolution composite, the same work gimp_export does, and it
   // is the recommended final check before export.
@@ -312,7 +311,7 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // this for several layers in one call.
   gimp_bake: 90_000,
   // gimp_create_document: builds an image and its default preview proxy, no file I/O -- cheap,
-  // same order of magnitude as gimp_inspect/gimp_create_mask.
+  // same order of magnitude as gimp_inspect.
   gimp_create_document: 15_000,
   // gimp_place_image: loads a file plus an optional scale of the placed layer -- matched to
   // gimp_open_document's own budget for the same class of file-load cost.
@@ -327,6 +326,25 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // gimp_text: a font-list read (retried while a fresh session loads its fonts) plus one text
   // render, which scales with font size and text length.
   gimp_text: 30_000,
+  // gimp_select: every mode measured live (GIMP 3.2.6, ~24MP) well under 3s -- mode=rectangle
+  // 0.58s, mode=color_range by sample point with sample_merged (the expensive path: a whole-image
+  // duplicate + flatten to read one composite pixel) 2.2s. Budgeted generously for a slower
+  // machine and combine != 'replace''s extra scratch-channel round trip, still a fraction of the
+  // heavier gimp_* budgets below.
+  gimp_select: 20_000,
+  // gimp_modify_selection: feather is flat ~0.5-0.6s regardless of radius (a GEGL blur); expand/
+  // contract/border are morphological ops whose cost scales with the radius and are capped at
+  // MAX_MORPHOLOGY_PX (150, bridge/lib.py) for exactly this reason -- measured live at that cap,
+  // the most expensive of the three (border) took ~13s on a ~24MP image, well inside this budget.
+  gimp_modify_selection: 45_000,
+  // gimp_layer_mask: op=create from a channel measured live at ~34ms on a ~24MP image (a mask
+  // attach, not a full-canvas pixel scan) -- delete/apply/invert are all cheaper still. Budgeted
+  // in the same class as gimp_create_document/gimp_close_document for headroom on a slower
+  // machine, not because anything measured approaches it.
+  gimp_layer_mask: 15_000,
+  // gimp_get_selection_preview: measured live at ~7.9s at max_px=2048 (the largest allowed render)
+  // on a ~24MP image -- the same class of cost gimp_get_preview's own 30s budget covers.
+  gimp_get_selection_preview: 30_000,
 };
 
 /**

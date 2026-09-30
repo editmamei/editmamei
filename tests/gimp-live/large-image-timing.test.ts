@@ -197,5 +197,87 @@ describe.skipIf(!install || !PERF)(
       const exportBudget = TOOL_TIMEOUT_BUDGETS_MS.gimp_export ?? DEFAULT_SCRIPT_TIMEOUT_MS;
       expect(exportMs, 'export').toBeLessThan(exportBudget * MARGIN);
     }, 180_000);
+
+    it('gimp_select / gimp_modify_selection / gimp_layer_mask / gimp_get_selection_preview, each within its configured budget (+ generous margin)', async () => {
+      const MEASUREMENT_TIMEOUT_MS = 120_000;
+
+      const pngPath = join(workDir, 'synthetic-24mp-selection.png');
+      writeSyntheticPng(pngPath, WIDTH, HEIGHT);
+      const opened = await session.call<{ image: number }>(
+        'open',
+        { path: pngPath },
+        { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+      );
+      const image = opened.image;
+
+      const { ms: selectRectMs } = await timed('gimp_select mode=rectangle (~24MP)', () =>
+        session.call(
+          'select',
+          { image, mode: 'rectangle', x: 0, y: 0, width: WIDTH, height: HEIGHT, name: 'PerfRect' },
+          { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+        )
+      );
+
+      // The worst case for color_range's sample-point path: sample_merged reads the full
+      // composite via a whole-image duplicate + flatten (see ops.py's `_color_arg`).
+      const { ms: selectColorMs } = await timed(
+        'gimp_select mode=color_range by sample point, sample_merged (~24MP)',
+        () =>
+          session.call(
+            'select',
+            { image, mode: 'color_range', x: 100, y: 100, sample_merged: true, name: 'PerfColor' },
+            { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+          )
+      );
+
+      // The worst case for expand/contract/border: `border` (the most expensive of the three,
+      // measured live) at px = MAX_MORPHOLOGY_PX (150, bridge/lib.py) -- the bridge's own cap,
+      // chosen specifically so this stays well inside the tool's budget (see
+      // operation-timeouts.ts's gimp_modify_selection comment for the scaling data behind it).
+      const { ms: modifyMs } = await timed('gimp_modify_selection op=border px=150 (~24MP)', () =>
+        session.call(
+          'modify_mask',
+          { image, channel: 'PerfRect', op: 'border', px: 150 },
+          { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+        )
+      );
+
+      const { ms: layerMaskMs } = await timed(
+        'gimp_layer_mask op=create from a channel (~24MP)',
+        () =>
+          session.call(
+            'layer_mask',
+            { image, op: 'create', source: 'channel', channel: 'PerfRect' },
+            { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+          )
+      );
+
+      const previewPath = join(workDir, 'selection-preview-perf.jpg');
+      const { ms: previewMs } = await timed(
+        'gimp_get_selection_preview at max_px=2048 (~24MP)',
+        () =>
+          session.call(
+            'mask_preview',
+            { image, channel: 'PerfRect', max_px: 2048, out_path: previewPath },
+            { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+          )
+      );
+
+      await session.call('close', { image }, { timeoutMs: MEASUREMENT_TIMEOUT_MS });
+
+      const MARGIN = 0.7;
+      const budget = (name: string) => TOOL_TIMEOUT_BUDGETS_MS[name] ?? DEFAULT_SCRIPT_TIMEOUT_MS;
+      expect(selectRectMs, 'gimp_select (rectangle)').toBeLessThan(budget('gimp_select') * MARGIN);
+      expect(selectColorMs, 'gimp_select (color_range sample_merged)').toBeLessThan(
+        budget('gimp_select') * MARGIN
+      );
+      expect(modifyMs, 'gimp_modify_selection').toBeLessThan(
+        budget('gimp_modify_selection') * MARGIN
+      );
+      expect(layerMaskMs, 'gimp_layer_mask').toBeLessThan(budget('gimp_layer_mask') * MARGIN);
+      expect(previewMs, 'gimp_get_selection_preview').toBeLessThan(
+        budget('gimp_get_selection_preview') * MARGIN
+      );
+    }, 180_000);
   }
 );
