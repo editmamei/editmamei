@@ -87,7 +87,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'gimp_get_preview',
   'gimp_get_histogram',
   'gimp_compare',
-  'gimp_get_mask_preview',
+  'gimp_get_selection_preview',
 ]);
 
 /**
@@ -229,7 +229,6 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'gimp_crop_document',
   'gimp_resize_image',
   'gimp_transform_canvas',
-  'gimp_create_mask',
   // gimp_checkpoint: op=list is read-only and op=create/delete only touch a
   // snapshot file, never the open document's own pixels — but op=restore
   // closes the old image and opens a new one in its place (the same
@@ -251,7 +250,7 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'gimp_text',
   'gimp_convert_image_mode',
   'gimp_select',
-  'gimp_modify_mask',
+  'gimp_modify_selection',
   'gimp_layer_mask',
 ]);
 
