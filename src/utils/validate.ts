@@ -41,6 +41,10 @@ export interface JsonSchemaProperty {
   // the LLM; the validator does not enforce them, handlers do).
   minItems?: number;
   maxItems?: number;
+  // String length floor — schema-only/advisory, same as minItems/maxItems above: documents "not
+  // empty" for the LLM; the validator does not enforce it (an empty string channel/layer name is
+  // a bridge-level lookup miss anyway, reported as its own clear error).
+  minLength?: number;
   // A regex a string value must satisfy, for an open-ended field an `enum` can't express (e.g. a
   // word list plus an arbitrary '#rrggbb' hex color, written as one `pattern`). Standard JSON
   // Schema semantics apply: when both `enum` and `pattern` are declared, a value must satisfy BOTH.
