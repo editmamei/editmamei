@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGimpSelectionTools } from '@editmamei/tools/gimp-selection-tools.ts';
@@ -9,9 +9,12 @@ import { callTool, assertToolShape } from '../fixtures/tool-helpers.ts';
 const scratchDir = mkdtempSync(join(tmpdir(), 'gimp-selection-tools-test-'));
 afterAll(() => rmSync(scratchDir, { recursive: true, force: true }));
 
+const allow = () => true;
+const deny = () => false;
+
 /** A fake backend whose tempPath() points at a real file this test controls, the same trick
- * gimp-verify-tools.test.ts uses for gimp_get_preview: `maskPreview` reads the bytes back with
- * `readFile`, so the path has to resolve to something real rather than the fixture's fake
+ * gimp-verify-tools.test.ts uses for gimp_get_preview: `selectionPreview` reads the bytes back
+ * with `readRender`, so the path has to resolve to something real rather than the fixture's fake
  * `/fake/gimp/...` string. */
 function makeGimpBackendWithRealPaths(
   opts: Parameters<typeof makeGimpBackend>[0] = {}
@@ -30,9 +33,9 @@ describe('createGimpSelectionTools', () => {
     const gimp = makeGimpBackend();
     const tools = createGimpSelectionTools(gimp.asBackend());
     expect(tools.map((t) => t.tool.name).sort()).toEqual([
-      'gimp_get_mask_preview',
+      'gimp_get_selection_preview',
       'gimp_layer_mask',
-      'gimp_modify_mask',
+      'gimp_modify_selection',
       'gimp_select',
     ]);
     assertToolShape(tools);
@@ -73,10 +76,24 @@ describe('createGimpSelectionTools', () => {
       const result = await callTool(tools, 'gimp_select', {
         image: 1,
         mode: 'color_range',
-        color: '#fff',
+        color: '#ffffff',
         threshold: 300,
       });
       expect(result.isError).toBe(true);
+      expect(gimp.calls).toHaveLength(0);
+    });
+
+    it('rejects a color that is not a well-formed "#rrggbb" hex string before dispatch', async () => {
+      const gimp = makeGimpBackend();
+      const tools = createGimpSelectionTools(gimp.asBackend());
+      for (const bad of ['red', '#fff', '#gggggg', 'c0392b']) {
+        const result = await callTool(tools, 'gimp_select', {
+          image: 1,
+          mode: 'color_range',
+          color: bad,
+        });
+        expect(result.isError, bad).toBe(true);
+      }
       expect(gimp.calls).toHaveLength(0);
     });
 
@@ -179,6 +196,19 @@ describe('createGimpSelectionTools', () => {
       expect('color' in gimp.lastCall().args).toBe(false);
     });
 
+    it('mode=color_range forwards sample_merged: false', async () => {
+      const gimp = makeGimpBackend({ result: {} });
+      const tools = createGimpSelectionTools(gimp.asBackend());
+      await callTool(tools, 'gimp_select', {
+        image: 1,
+        mode: 'color_range',
+        x: 5,
+        y: 6,
+        sample_merged: false,
+      });
+      expect(gimp.lastCall().args).toMatchObject({ sample_merged: false });
+    });
+
     it('mode=magic_wand forwards x/y and layer', async () => {
       const gimp = makeGimpBackend({ result: {} });
       const tools = createGimpSelectionTools(gimp.asBackend());
@@ -217,6 +247,54 @@ describe('createGimpSelectionTools', () => {
       const tools = createGimpSelectionTools(gimp.asBackend());
       await callTool(tools, 'gimp_select', { image: 1, mode: 'channel', source: 'Sky' });
       expect(gimp.lastCall().args).toMatchObject({ mode: 'channel', source: 'Sky' });
+    });
+
+    it('mode=gradient_linear forwards x1/y1/x2/y2', async () => {
+      const gimp = makeGimpBackend({
+        result: { channel: 'Grad', selected_pixels: 0, fraction: 0 },
+      });
+      const tools = createGimpSelectionTools(gimp.asBackend());
+      await callTool(tools, 'gimp_select', {
+        image: 1,
+        mode: 'gradient_linear',
+        x1: 0,
+        y1: 0,
+        x2: 100,
+        y2: 0,
+        name: 'Grad',
+      });
+      expect(gimp.lastCall().args).toMatchObject({
+        mode: 'gradient_linear',
+        x1: 0,
+        y1: 0,
+        x2: 100,
+        y2: 0,
+        name: 'Grad',
+      });
+    });
+
+    it('mode=gradient_radial forwards cx/cy/radius and invert', async () => {
+      const gimp = makeGimpBackend({
+        result: { channel: 'Vignette', selected_pixels: 0, fraction: 0 },
+      });
+      const tools = createGimpSelectionTools(gimp.asBackend());
+      await callTool(tools, 'gimp_select', {
+        image: 1,
+        mode: 'gradient_radial',
+        cx: 50,
+        cy: 50,
+        radius: 30,
+        name: 'Vignette',
+        invert: true,
+      });
+      expect(gimp.lastCall().args).toMatchObject({
+        mode: 'gradient_radial',
+        cx: 50,
+        cy: 50,
+        radius: 30,
+        name: 'Vignette',
+        invert: true,
+      });
     });
 
     it('forwards a non-default combine (add/subtract/intersect) and a custom name', async () => {
@@ -270,18 +348,18 @@ describe('createGimpSelectionTools', () => {
     });
   });
 
-  describe('gimp_modify_mask', () => {
+  describe('gimp_modify_selection', () => {
     it('requires image, channel, and op', async () => {
       const gimp = makeGimpBackend();
       const tools = createGimpSelectionTools(gimp.asBackend());
       expect(
-        (await callTool(tools, 'gimp_modify_mask', { channel: 'Mask', op: 'expand' })).isError
+        (await callTool(tools, 'gimp_modify_selection', { channel: 'Mask', op: 'expand' })).isError
       ).toBe(true);
-      expect((await callTool(tools, 'gimp_modify_mask', { image: 1, op: 'expand' })).isError).toBe(
-        true
-      );
       expect(
-        (await callTool(tools, 'gimp_modify_mask', { image: 1, channel: 'Mask' })).isError
+        (await callTool(tools, 'gimp_modify_selection', { image: 1, op: 'expand' })).isError
+      ).toBe(true);
+      expect(
+        (await callTool(tools, 'gimp_modify_selection', { image: 1, channel: 'Mask' })).isError
       ).toBe(true);
       expect(gimp.calls).toHaveLength(0);
     });
@@ -289,7 +367,7 @@ describe('createGimpSelectionTools', () => {
     it('rejects an op outside the fixed enum before dispatch', async () => {
       const gimp = makeGimpBackend();
       const tools = createGimpSelectionTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_modify_mask', {
+      const result = await callTool(tools, 'gimp_modify_selection', {
         image: 1,
         channel: 'Mask',
         op: 'dilate',
@@ -301,7 +379,7 @@ describe('createGimpSelectionTools', () => {
     it('rejects px outside 0-1000 before dispatch', async () => {
       const gimp = makeGimpBackend();
       const tools = createGimpSelectionTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_modify_mask', {
+      const result = await callTool(tools, 'gimp_modify_selection', {
         image: 1,
         channel: 'Mask',
         op: 'expand',
@@ -312,16 +390,17 @@ describe('createGimpSelectionTools', () => {
     });
 
     it.each(['expand', 'contract', 'border', 'feather', 'smooth', 'invert', 'harden'])(
-      'dispatches op=%s with px defaulted to 0 when omitted',
+      'dispatches op=%s with no px key at all when omitted (the schema declares no default; the ' +
+        'bridge itself now requires it for expand/contract/border/feather)',
       async (op) => {
         const gimp = makeGimpBackend({
           result: { channel: 'Mask', selected_pixels: 1, fraction: 0.01 },
         });
         const tools = createGimpSelectionTools(gimp.asBackend());
-        await callTool(tools, 'gimp_modify_mask', { image: 1, channel: 'Mask', op });
+        await callTool(tools, 'gimp_modify_selection', { image: 1, channel: 'Mask', op });
         expect(gimp.lastCall()).toEqual({
           op: 'modify_mask',
-          args: { image: 1, channel: 'Mask', op, px: 0 },
+          args: { image: 1, channel: 'Mask', op },
         });
       }
     );
@@ -329,7 +408,7 @@ describe('createGimpSelectionTools', () => {
     it('forwards a non-zero px', async () => {
       const gimp = makeGimpBackend({ result: {} });
       const tools = createGimpSelectionTools(gimp.asBackend());
-      await callTool(tools, 'gimp_modify_mask', {
+      await callTool(tools, 'gimp_modify_selection', {
         image: 1,
         channel: 'Mask',
         op: 'expand',
@@ -341,7 +420,7 @@ describe('createGimpSelectionTools', () => {
     it('forwards output, writing to a different channel than the source', async () => {
       const gimp = makeGimpBackend({ result: {} });
       const tools = createGimpSelectionTools(gimp.asBackend());
-      await callTool(tools, 'gimp_modify_mask', {
+      await callTool(tools, 'gimp_modify_selection', {
         image: 1,
         channel: 'Mask',
         op: 'invert',
@@ -349,7 +428,7 @@ describe('createGimpSelectionTools', () => {
       });
       expect(gimp.lastCall()).toEqual({
         op: 'modify_mask',
-        args: { image: 1, channel: 'Mask', op: 'invert', px: 0, output: 'MaskInverted' },
+        args: { image: 1, channel: 'Mask', op: 'invert', output: 'MaskInverted' },
       });
     });
 
@@ -358,7 +437,7 @@ describe('createGimpSelectionTools', () => {
         result: { channel: 'Mask', selected_pixels: 200, fraction: 0.2 },
       });
       const tools = createGimpSelectionTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_modify_mask', {
+      const result = await callTool(tools, 'gimp_modify_selection', {
         image: 1,
         channel: 'Mask',
         op: 'contract',
@@ -380,13 +459,29 @@ describe('createGimpSelectionTools', () => {
           new Error("invalid_argument: mask 'Mask' is already used by an existing filter"),
       });
       const tools = createGimpSelectionTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_modify_mask', {
+      const result = await callTool(tools, 'gimp_modify_selection', {
         image: 1,
         channel: 'Mask',
         op: 'expand',
+        px: 4,
       });
       expect(result.isError).toBe(true);
       expect((result.content?.[0] as { text: string }).text).toContain('already used');
+    });
+
+    it('maps a bridge px-required-or-capped refusal through toolGimpErrorResult', async () => {
+      const gimp = makeGimpBackend({
+        throwFor: () => new Error('invalid_argument: px must be greater than 0 and at most 150'),
+      });
+      const tools = createGimpSelectionTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_modify_selection', {
+        image: 1,
+        channel: 'Mask',
+        op: 'border',
+        px: 5,
+      });
+      expect(result.isError).toBe(true);
+      expect((result.content?.[0] as { text: string }).text).toContain('at most 150');
     });
 
     it('a missing channel surfaces as an error result', async () => {
@@ -394,10 +489,11 @@ describe('createGimpSelectionTools', () => {
         throwFor: () => new Error("invalid_argument: no channel named 'Ghost'"),
       });
       const tools = createGimpSelectionTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_modify_mask', {
+      const result = await callTool(tools, 'gimp_modify_selection', {
         image: 1,
         channel: 'Ghost',
         op: 'expand',
+        px: 4,
       });
       expect(result.isError).toBe(true);
       expect((result.content?.[0] as { text: string }).text).toContain("no channel named 'Ghost'");
@@ -551,21 +647,23 @@ describe('createGimpSelectionTools', () => {
     });
   });
 
-  describe('gimp_get_mask_preview', () => {
+  describe('gimp_get_selection_preview', () => {
     it('requires image and channel, without ever dispatching', async () => {
       const gimp = makeGimpBackend();
-      const tools = createGimpSelectionTools(gimp.asBackend());
-      expect((await callTool(tools, 'gimp_get_mask_preview', { image: 1 })).isError).toBe(true);
-      expect((await callTool(tools, 'gimp_get_mask_preview', { channel: 'Mask' })).isError).toBe(
+      const tools = createGimpSelectionTools(gimp.asBackend(), { previewsAllowed: allow });
+      expect((await callTool(tools, 'gimp_get_selection_preview', { image: 1 })).isError).toBe(
         true
       );
+      expect(
+        (await callTool(tools, 'gimp_get_selection_preview', { channel: 'Mask' })).isError
+      ).toBe(true);
       expect(gimp.calls).toHaveLength(0);
     });
 
     it('rejects a style outside overlay/mask before dispatch', async () => {
       const gimp = makeGimpBackend();
-      const tools = createGimpSelectionTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_get_mask_preview', {
+      const tools = createGimpSelectionTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_selection_preview', {
         image: 1,
         channel: 'Mask',
         style: 'outline',
@@ -576,8 +674,8 @@ describe('createGimpSelectionTools', () => {
 
     it('rejects a max_px outside 512/1024/2048 before dispatch', async () => {
       const gimp = makeGimpBackend();
-      const tools = createGimpSelectionTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_get_mask_preview', {
+      const tools = createGimpSelectionTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_selection_preview', {
         image: 1,
         channel: 'Mask',
         max_px: 640,
@@ -588,8 +686,8 @@ describe('createGimpSelectionTools', () => {
 
     it('dispatches with style defaulted to overlay and max_px to 1024, returns the image + text + structuredContent, then cleans up the temp file', async () => {
       const gimp = makeGimpBackendWithRealPaths({ result: { width: 64, height: 48 } });
-      const tools = createGimpSelectionTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_get_mask_preview', {
+      const tools = createGimpSelectionTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_selection_preview', {
         image: 1,
         channel: 'Subject',
       });
@@ -601,26 +699,38 @@ describe('createGimpSelectionTools', () => {
         style: 'overlay',
         max_px: 1024,
       });
+      // Only schema-declared keys reach the bridge (no stray metadata a caller might attach).
+      expect(Object.keys(gimp.lastCall().args).sort()).toEqual([
+        'channel',
+        'image',
+        'max_px',
+        'out_path',
+        'style',
+      ]);
       const outPath = gimp.lastCall().args.out_path as string;
       expect(typeof outPath).toBe('string');
       const image = result.content?.find((c) => c.type === 'image') as { data: string };
       expect(Buffer.from(image.data, 'base64')).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
-      expect((result.content?.[1] as { text: string }).text).toBe('Mask "Subject" 64x48.');
+      expect((result.content?.[1] as { text: string }).text).toBe('Selection "Subject" 64x48.');
       expect(result.structuredContent).toEqual({ width: 64, height: 48 });
       expect(existsSync(outPath)).toBe(false); // the per-call render file is cleaned up
     });
 
     it('forwards style=mask', async () => {
       const gimp = makeGimpBackendWithRealPaths({ result: { width: 10, height: 10 } });
-      const tools = createGimpSelectionTools(gimp.asBackend());
-      await callTool(tools, 'gimp_get_mask_preview', { image: 1, channel: 'Mask', style: 'mask' });
+      const tools = createGimpSelectionTools(gimp.asBackend(), { previewsAllowed: allow });
+      await callTool(tools, 'gimp_get_selection_preview', {
+        image: 1,
+        channel: 'Mask',
+        style: 'mask',
+      });
       expect(gimp.lastCall().args).toMatchObject({ style: 'mask' });
     });
 
     it('forwards a non-default max_px', async () => {
       const gimp = makeGimpBackendWithRealPaths({ result: { width: 10, height: 10 } });
-      const tools = createGimpSelectionTools(gimp.asBackend());
-      await callTool(tools, 'gimp_get_mask_preview', {
+      const tools = createGimpSelectionTools(gimp.asBackend(), { previewsAllowed: allow });
+      await callTool(tools, 'gimp_get_selection_preview', {
         image: 1,
         channel: 'Mask',
         max_px: 2048,
@@ -628,17 +738,100 @@ describe('createGimpSelectionTools', () => {
       expect(gimp.lastCall().args).toMatchObject({ max_px: 2048 });
     });
 
+    it('does not extract an image when privacy.send_previews_to_llm is false, but still reports dimensions', async () => {
+      const gimp = makeGimpBackendWithRealPaths({ result: { width: 32, height: 32 } });
+      const tools = createGimpSelectionTools(gimp.asBackend(), { previewsAllowed: deny });
+      const result = await callTool(tools, 'gimp_get_selection_preview', {
+        image: 1,
+        channel: 'Mask',
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.content?.some((c) => c.type === 'image')).toBe(false);
+      expect((result.content?.[0] as { text: string }).text).toContain(
+        'privacy.send_previews_to_llm is false'
+      );
+      expect(result.structuredContent).toEqual({ width: 32, height: 32 });
+    });
+
+    it('with no injected previewsAllowed, reads privacy.send_previews_to_llm from the real settings.json', async () => {
+      // Mirrors gimp-verify-tools.test.ts's identical check for gimp_get_preview/gimp_compare:
+      // every other test here injects the allow/deny function, so without this one a broken
+      // default (defaultPreviewsAllowed) would go unnoticed.
+      const home = mkdtempSync(join(tmpdir(), 'gimp-selection-home-'));
+      const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+      try {
+        mkdirSync(join(home, '.editmamei'), { recursive: true });
+        writeFileSync(
+          join(home, '.editmamei', 'settings.json'),
+          JSON.stringify({
+            privacy: { send_previews_to_llm: false },
+            telemetry: { install_id: 'keep0000000000' },
+          })
+        );
+        process.env.HOME = home;
+        process.env.USERPROFILE = home;
+
+        const gimp = makeGimpBackendWithRealPaths({ result: { width: 8, height: 8 } });
+        const tools = createGimpSelectionTools(gimp.asBackend());
+        const result = await callTool(tools, 'gimp_get_selection_preview', {
+          image: 1,
+          channel: 'Mask',
+        });
+        expect(result.isError).toBeFalsy();
+        expect(result.content?.some((c) => c.type === 'image')).toBe(false);
+        expect((result.content?.at(-1) as { text: string }).text).toMatch(
+          /send_previews_to_llm is false/
+        );
+      } finally {
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('surfaces an unmirrored_filters warning from the bridge in the text', async () => {
+      const gimp = makeGimpBackendWithRealPaths({
+        result: { width: 20, height: 20, unmirrored_filters: ['Lens Blur'] },
+      });
+      const tools = createGimpSelectionTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_selection_preview', {
+        image: 1,
+        channel: 'Mask',
+      });
+      expect((result.content?.at(-1) as { text: string }).text).toContain('Lens Blur');
+      expect((result.content?.at(-1) as { text: string }).text).toContain('could not be rendered');
+    });
+
     it('an unknown channel surfaces as an error result', async () => {
       const gimp = makeGimpBackendWithRealPaths({
         throwFor: () => new Error("invalid_argument: no channel named 'Ghost'"),
       });
-      const tools = createGimpSelectionTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_get_mask_preview', { image: 1, channel: 'Ghost' });
+      const tools = createGimpSelectionTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_selection_preview', {
+        image: 1,
+        channel: 'Ghost',
+      });
       expect(result.isError).toBe(true);
       expect((result.content?.[0] as { text: string }).text).toContain(
-        'Error previewing GIMP mask'
+        'Error previewing GIMP selection'
       );
       expect((result.content?.[0] as { text: string }).text).toContain("no channel named 'Ghost'");
+    });
+
+    it('a render GIMP never wrote is a clean gimp_op_failed, without the temp path Node would name', async () => {
+      const gimp = makeGimpBackend({ result: { width: 10, height: 10 } });
+      gimp.tempPath = (name: string) => join(scratchDir, 'never-written', name);
+      const tools = createGimpSelectionTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_selection_preview', {
+        image: 1,
+        channel: 'Mask',
+      });
+      expect(result.isError).toBe(true);
+      const text = JSON.stringify(result.content);
+      expect(text).toContain('the render was not written');
+      expect(text).not.toContain('never-written');
     });
   });
 });
