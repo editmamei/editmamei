@@ -114,7 +114,6 @@ describe('EditmameiServer construction', () => {
       'gimp_crop_document',
       'gimp_resize_image',
       'gimp_transform_canvas',
-      'gimp_create_mask',
       'gimp_get_preview',
       'gimp_get_histogram',
       'gimp_compare',

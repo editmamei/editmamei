@@ -70,7 +70,7 @@ describe('geometry refusals name BOTH conditions (masked filters and filters Edi
     ['gimp_canvas', description('gimp_canvas')],
     ['gimp_add_adjustment', description('gimp_add_adjustment')],
     ['gimp_add_adjustment mask', field('gimp_add_adjustment', 'mask')],
-    ['gimp_create_mask', description('gimp_create_mask')],
+    ['gimp_select', description('gimp_select')],
     [
       'overview Order matters',
       overviewSection('Order matters: geometry before masked adjustments'),
@@ -304,12 +304,9 @@ describe('raw handling matches op_open (the load is always tried first)', () => 
 });
 
 describe('annotations', () => {
-  it.each(['gimp_filter', 'gimp_export', 'gimp_create_mask'])(
-    '%s is marked destructive',
-    (name) => {
-      expect(byName.get(name)!.annotations?.destructiveHint).toBe(true);
-    }
-  );
+  it.each(['gimp_filter', 'gimp_export', 'gimp_select'])('%s is marked destructive', (name) => {
+    expect(byName.get(name)!.annotations?.destructiveHint).toBe(true);
+  });
 });
 
 describe('levels input rules match lib.validate_levels', () => {

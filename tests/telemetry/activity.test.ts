@@ -140,8 +140,8 @@ describe('classification mirror', () => {
     expect([...READ_ONLY_TOOLS].sort()).toEqual([
       'gimp_compare',
       'gimp_get_histogram',
-      'gimp_get_mask_preview',
       'gimp_get_preview',
+      'gimp_get_selection_preview',
       'gimp_inspect',
       'gimp_overview',
       'gimp_ping',
