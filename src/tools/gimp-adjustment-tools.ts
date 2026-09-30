@@ -110,7 +110,7 @@ const adjustSchema: JsonSchemaObject = {
     mask: {
       type: 'string',
       description:
-        'Name of a mask channel from gimp_create_mask, confining a NEW filter to it. Only valid ' +
+        'Name of a saved selection channel, confining a NEW filter to it. Only valid ' +
         "when creating (no filter_id) — a filter's mask is fixed at creation. ORDER MATTERS: " +
         'straighten / flip / resize the canvas first (gimp_transform_canvas, gimp_resize_image), ' +
         'then crop, THEN add masked adjustments — rotate, flip, and resize all refuse outright ' +
@@ -447,11 +447,11 @@ export function createGimpAdjustmentTools(gimp: GimpBackend): ToolDefinition[] {
           'separate filters for red and blue rather than one filter for both; points are [input, ' +
           'output] 0-255 pairs including the endpoints. hue_saturation and color_balance likewise ' +
           'carry ONE `range` per filter. gaussian_blur: radius in pixels at full resolution; ' +
-          'combine with a mask from gimp_create_mask for soft-focus or background-blur effects. A ' +
+          'combine with a saved-selection mask for soft-focus or background-blur effects. A ' +
           "re-edit (filter_id) MERGES: any field you omit keeps the filter's existing value, so " +
           "re-editing {contrast: 50} on a brightness_contrast filter doesn't reset brightness. Only " +
           'filters Editmamei created can be re-edited; one added in the GIMP GUI is refused (delete ' +
-          'and re-create it). `mask` (a channel name from gimp_create_mask) confines a NEW filter ' +
+          'and re-create it). `mask` (a saved selection channel name) confines a NEW filter ' +
           '— fixed at creation, cannot change on a re-edit. ORDER MATTERS: straighten / flip / ' +
           'resize the canvas first, then crop, THEN add any masked adjustment — rotate, flip, and ' +
           'resize all refuse outright once a masked adjustment filter exists, or any filter not ' +
