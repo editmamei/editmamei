@@ -57,18 +57,28 @@ const selectSchema: JsonSchemaObject = {
     image: GIMP_IMAGE_PROP,
     mode: {
       type: 'string',
-      enum: ['all', 'rectangle', 'ellipse', 'polygon', 'color_range', 'magic_wand', 'alpha', 'channel'],
+      enum: [
+        'all',
+        'rectangle',
+        'ellipse',
+        'polygon',
+        'color_range',
+        'magic_wand',
+        'alpha',
+        'channel',
+      ],
       description:
         'rectangle/ellipse: x, y, width, height. polygon: points [[x,y],...]. color_range: every ' +
         'pixel near `color` (hex) or the colour at x,y, anywhere in the image. magic_wand: the ' +
-        'contiguous region around x,y. alpha: a layer\'s opaque pixels. channel: copy channel `source`.',
+        "contiguous region around x,y. alpha: a layer's opaque pixels. channel: copy channel `source`.",
     },
     name: { type: 'string', default: 'Selection', description: 'Channel to write (replaced).' },
     combine: {
       type: 'string',
       enum: ['replace', 'add', 'subtract', 'intersect'],
       default: 'replace',
-      description: 'Combine with the existing channel of the same `name` (like shift/alt in a GUI).',
+      description:
+        'Combine with the existing channel of the same `name` (like shift/alt in a GUI).',
     },
     x: { type: 'number' },
     y: { type: 'number' },
@@ -83,7 +93,11 @@ const selectSchema: JsonSchemaObject = {
       default: 15,
       description: 'color_range/magic_wand tolerance, 0-255.',
     },
-    sample_merged: { type: 'boolean', default: true, description: 'Sample the visible composite, not one layer.' },
+    sample_merged: {
+      type: 'boolean',
+      default: true,
+      description: 'Sample the visible composite, not one layer.',
+    },
     source: { type: 'string', description: 'mode=channel: the channel to copy.' },
     layer: GIMP_LAYER_PROP,
     layer_id: GIMP_LAYER_ID_PROP,
@@ -116,7 +130,8 @@ const layerMaskSchema: JsonSchemaObject = {
     op: {
       type: 'string',
       enum: ['create', 'delete', 'apply', 'invert'],
-      description: 'create replaces any existing mask. apply bakes the mask into the layer\'s alpha.',
+      description:
+        "create replaces any existing mask. apply bakes the mask into the layer's alpha.",
     },
     source: {
       type: 'string',
@@ -148,13 +163,19 @@ const previewSchema: JsonSchemaObject = {
   required: ['image', 'channel'],
 };
 
-async function maskPreview(gimp: GimpBackend, rawArgs: Record<string, unknown>): Promise<ToolResult> {
+async function maskPreview(
+  gimp: GimpBackend,
+  rawArgs: Record<string, unknown>
+): Promise<ToolResult> {
   try {
     const args = validateArgs(previewSchema, rawArgs);
     await gimp.prepare();
     const out = gimp.tempPath(`mask-${randomUUID()}.jpg`);
     try {
-      const r = await gimp.call<{ width: number; height: number }>('mask_preview', { ...args, out_path: out });
+      const r = await gimp.call<{ width: number; height: number }>('mask_preview', {
+        ...args,
+        out_path: out,
+      });
       const bytes = await readFile(out);
       return {
         content: [
@@ -188,14 +209,21 @@ export function createGimpSelectionTools(gimp: GimpBackend): ToolDefinition[] {
           'Headless GIMP: make a selection and store it as a NAMED channel (GIMP keeps no live ' +
           'selection between calls). Geometric, polygon, colour range, magic wand, layer alpha, ' +
           'or a copy of another channel; combine add/subtract/intersect with the existing ' +
-          'channel of the same name. Use the channel as gimp_add_adjustment\'s `mask`, or ' +
+          "channel of the same name. Use the channel as gimp_add_adjustment's `mask`, or " +
           'gimp_layer_mask op=create to make a layer mask. Check it with gimp_get_mask_preview.',
         inputSchema: selectSchema,
         outputSchema: maskResultSchema,
         annotations: annotations('Select (GIMP)'),
       },
       handler: (args) =>
-        runGimpTool({ gimp, rawArgs: args, schema: selectSchema, op: 'select', errorPrefix: 'Error selecting', successText: maskText }),
+        runGimpTool({
+          gimp,
+          rawArgs: args,
+          schema: selectSchema,
+          op: 'select',
+          errorPrefix: 'Error selecting',
+          successText: maskText,
+        }),
     },
     {
       tool: {
@@ -209,7 +237,14 @@ export function createGimpSelectionTools(gimp: GimpBackend): ToolDefinition[] {
         annotations: annotations('Modify Mask (GIMP)'),
       },
       handler: (args) =>
-        runGimpTool({ gimp, rawArgs: args, schema: modifySchema, op: 'modify_mask', errorPrefix: 'Error modifying mask', successText: maskText }),
+        runGimpTool({
+          gimp,
+          rawArgs: args,
+          schema: modifySchema,
+          op: 'modify_mask',
+          errorPrefix: 'Error modifying mask',
+          successText: maskText,
+        }),
     },
     {
       tool: {
