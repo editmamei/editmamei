@@ -50,10 +50,10 @@ describe('READ_ONLY_TOOLS / KEPT_WORK_TOOLS', () => {
     }
   });
 
-  it('is exactly the original sixteen, six template/document additions, two orchestration wrappers, and six gimp_* read-only twins (30 total)', () => {
+  it('is exactly the original sixteen, six template/document additions, two orchestration wrappers, and seven gimp_* read-only twins (31 total)', () => {
     // A size pin is deliberately brittle: it forces anyone adding an entry to
     // state why that tool does not count as an edit.
-    expect(READ_ONLY_TOOLS.size).toBe(30);
+    expect(READ_ONLY_TOOLS.size).toBe(31);
   });
 });
 
@@ -140,6 +140,7 @@ describe('classification mirror', () => {
     expect([...READ_ONLY_TOOLS].sort()).toEqual([
       'gimp_compare',
       'gimp_get_histogram',
+      'gimp_get_mask_preview',
       'gimp_get_preview',
       'gimp_inspect',
       'gimp_overview',

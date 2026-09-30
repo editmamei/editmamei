@@ -87,6 +87,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'gimp_get_preview',
   'gimp_get_histogram',
   'gimp_compare',
+  'gimp_get_mask_preview',
 ]);
 
 /**
