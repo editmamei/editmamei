@@ -4,7 +4,13 @@ import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolGimpErrorResult } from '../utils/tool-helpers.js';
-import { GIMP_IMAGE_PROP, GIMP_LAYER_PROP, GIMP_MAX_PX_PROP, runGimpTool } from './gimp-shared.js';
+import {
+  GIMP_IMAGE_PROP,
+  GIMP_LAYER_ID_PROP,
+  GIMP_LAYER_PROP,
+  GIMP_MAX_PX_PROP,
+  runGimpTool,
+} from './gimp-shared.js';
 
 /**
  * Selection tools for GIMP (spike, tier 'dev'): twins of ps_select, ps_modify_selection,
@@ -12,8 +18,6 @@ import { GIMP_IMAGE_PROP, GIMP_LAYER_PROP, GIMP_MAX_PX_PROP, runGimpTool } from 
  * every result is a NAMED channel — pass it to gimp_add_adjustment's `mask`, or turn it into a
  * real layer mask with gimp_layer_mask.
  */
-
-const LAYER_ID_PROP = { type: 'integer', description: 'Layer id (takes priority over `layer`).' } as const;
 
 const maskResultSchema = {
   type: 'object',
@@ -28,6 +32,24 @@ const maskText = (result: unknown): string => {
   const r = result as { channel: string; fraction: number };
   return `Channel "${r.channel}" — ${(r.fraction * 100).toFixed(1)}% of pixels selected.`;
 };
+
+const layerMaskResultSchema = {
+  type: 'object',
+  properties: {
+    layer: { type: 'string' },
+    layer_id: { type: 'integer' },
+    op: { type: 'string' },
+    has_mask: { type: 'boolean' },
+  },
+} as const;
+
+const maskPreviewResultSchema = {
+  type: 'object',
+  properties: {
+    width: { type: 'number' },
+    height: { type: 'number' },
+  },
+} as const;
 
 const selectSchema: JsonSchemaObject = {
   type: 'object',
@@ -64,7 +86,7 @@ const selectSchema: JsonSchemaObject = {
     sample_merged: { type: 'boolean', default: true, description: 'Sample the visible composite, not one layer.' },
     source: { type: 'string', description: 'mode=channel: the channel to copy.' },
     layer: GIMP_LAYER_PROP,
-    layer_id: LAYER_ID_PROP,
+    layer_id: GIMP_LAYER_ID_PROP,
     invert: { type: 'boolean', default: false },
     feather_px: { type: 'number', minimum: 0, maximum: 1000, default: 0 },
   },
@@ -105,7 +127,7 @@ const layerMaskSchema: JsonSchemaObject = {
     channel: { type: 'string', description: 'source=channel: the channel to use.' },
     invert: { type: 'boolean', default: false, description: 'create: invert the new mask.' },
     layer: GIMP_LAYER_PROP,
-    layer_id: LAYER_ID_PROP,
+    layer_id: GIMP_LAYER_ID_PROP,
   },
   required: ['image', 'op'],
 };
@@ -139,6 +161,7 @@ async function maskPreview(gimp: GimpBackend, rawArgs: Record<string, unknown>):
           { type: 'image' as const, data: bytes.toString('base64'), mimeType: 'image/jpeg' },
           { type: 'text' as const, text: `Mask "${String(args.channel)}" ${r.width}x${r.height}.` },
         ],
+        structuredContent: { width: r.width, height: r.height },
       };
     } finally {
       await rm(out, { force: true });
@@ -197,6 +220,7 @@ export function createGimpSelectionTools(gimp: GimpBackend): ToolDefinition[] {
           'alpha — a cut-out); invert. For a cut-out composite: place the photo as a layer, ' +
           'select on that layer, then create its mask from the channel.',
         inputSchema: layerMaskSchema,
+        outputSchema: layerMaskResultSchema,
         annotations: annotations('Layer Mask (GIMP)'),
       },
       handler: (args) =>
@@ -219,6 +243,7 @@ export function createGimpSelectionTools(gimp: GimpBackend): ToolDefinition[] {
           'Headless GIMP: see a named mask channel — overlay (red over what is NOT selected, ' +
           'Quick Mask style) or the mask itself. Always check a selection before using it.',
         inputSchema: previewSchema,
+        outputSchema: maskPreviewResultSchema,
         annotations: annotations('Mask Preview (GIMP)', true),
       },
       handler: (args) => maskPreview(gimp, args),
