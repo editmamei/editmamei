@@ -8,8 +8,11 @@
  * document pixels, bounds-checked by the bridge, not here).
  */
 
+import { readFile } from 'node:fs/promises';
 import type { GimpBackend } from '../backends/gimp/backend.js';
 import type { ToolResult } from '../core/tool-registry.js';
+import { loadSettings } from '../core/settings.js';
+import { GimpError } from '../backends/gimp/errors.js';
 import { validateArgs, type JsonSchemaObject, type JsonSchemaProperty } from '../utils/validate.js';
 import { toolGimpErrorResult } from '../utils/tool-helpers.js';
 
@@ -104,6 +107,30 @@ export function pickSchemaDeclaredKeys(
   }
   return out;
 }
+
+/**
+ * Read a render GIMP was asked to write. A missing file becomes a plain `gimp_op_failed`: Node's
+ * own error would name the temp path, which sits under the user's home folder. Shared by every
+ * gimp_* tool that renders to its own per-call temp file (gimp_get_preview, gimp_compare,
+ * gimp_get_selection_preview) rather than each re-wrapping `readFile` the same way.
+ */
+export async function readRender(path: string): Promise<Buffer> {
+  try {
+    return await readFile(path);
+  } catch {
+    throw new GimpError('gimp_op_failed', 'GIMP reported success but the render was not written');
+  }
+}
+
+/** Injectable seam so tests never depend on the developer machine's real settings.json — shared
+ * by every gimp_* tool that returns image bytes and must honour `privacy.send_previews_to_llm`. */
+export interface GimpPreviewDeps {
+  /** Defaults to reading `privacy.send_previews_to_llm` from the real settings.json. */
+  previewsAllowed?: () => boolean;
+}
+
+export const defaultPreviewsAllowed = (): boolean =>
+  loadSettings().settings.privacy.send_previews_to_llm;
 
 export async function runGimpTool(spec: GimpToolSpec): Promise<ToolResult> {
   try {
