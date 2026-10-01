@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,7 @@ import {
   readSessionState,
   clearSessionState,
   sessionStatePath,
+  isPidAlive,
   MAX_OUTBOX_EVENTS,
   MAX_OUTBOX_BYTES,
   type PersistedSessionState,
@@ -244,5 +245,40 @@ describe('byte-cap compaction', () => {
     expect(appendOutboxSync([usage('photoshop_a'), usage('photoshop_b')], { dir: blocked })).toBe(
       2
     );
+  });
+});
+
+describe('isPidAlive', () => {
+  it('reports this process as running', () => {
+    expect(isPidAlive(process.pid)).toBe(true);
+  });
+
+  it('reports a process owned by another user (EPERM) as running', () => {
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    });
+    try {
+      expect(isPidAlive(4242)).toBe(true);
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it('reports a pid with no process as gone', () => {
+    // Above the default pid ceiling on Linux, macOS and Windows alike.
+    expect(isPidAlive(2 ** 30)).toBe(false);
+  });
+});
+
+describe('session-state files are per process', () => {
+  it('two pids in one dir keep separate state', () => {
+    const dir = freshDir();
+    writeSessionStateSync({ ...STATE, tool_call_count: 1 }, { dir, pid: 11 });
+    writeSessionStateSync({ ...STATE, tool_call_count: 2 }, { dir, pid: 12 });
+    expect(readSessionState({ dir, pid: 11 })?.tool_call_count).toBe(1);
+    expect(readSessionState({ dir, pid: 12 })?.tool_call_count).toBe(2);
+    clearSessionState({ dir, pid: 11 });
+    expect(readSessionState({ dir, pid: 11 })).toBeNull();
+    expect(readSessionState({ dir, pid: 12 })?.tool_call_count).toBe(2);
   });
 });

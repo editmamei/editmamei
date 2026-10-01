@@ -55,11 +55,9 @@ import { sanitizeMessage, sanitizeSnippet, sanitizeStderrTail } from './sanitize
 import { httpTransport, resolveEndpoint, type TelemetryTransport } from './transport.js';
 import {
   appendOutboxSync,
-  clearOutbox,
+  claimOrphanedSessionStates,
+  claimOutboxForDrain,
   clearSessionState,
-  readOutboxWithDiscards,
-  readSessionState,
-  rewriteOutbox,
   writeSessionStateSync,
   type OutboxOptions,
   type PersistedSessionState,
@@ -132,6 +130,10 @@ export interface TelemetryClientOptions {
   active?: boolean;
   /** Override the durable-outbox directory (tests). Defaults to `~/.editmamei`. */
   outboxDir?: string;
+  /** Stand in for another process sharing the outbox dir (tests). Defaults to `process.pid`. */
+  outboxPid?: number;
+  /** Liveness check for sibling processes' files (tests). Defaults to `isPidAlive`. */
+  isPidAlive?: (pid: number) => boolean;
 }
 
 function isTestEnv(): boolean {
@@ -215,6 +217,10 @@ export class TelemetryClient {
   private installAssets: { templates_saved?: number; action_sets?: number } = {};
   /** Throttle clock for session-state persistence. 0 = never persisted yet. */
   private lastSessionPersistMs = 0;
+  /** Whether this process has written its session-state file (the throttle clock can reset). */
+  private sessionStatePersisted = false;
+  /** The startup drain claims as this pid, so a second run would take the first's claims. */
+  private startupFlushStarted = false;
   /**
    * The day bucket this session is credited to — captured ONCE, on the first recorded call.
    * Both the clean-shutdown summary and the persisted session state reuse it instead of
@@ -235,7 +241,11 @@ export class TelemetryClient {
     this.flushIntervalMs = opts.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
     this.maxBatchSize = opts.maxBatchSize ?? MAX_BATCH_SIZE;
     this.active = opts.active ?? (EDITION !== 'dev' && !isTestEnv());
-    this.outboxOpts = opts.outboxDir ? { dir: opts.outboxDir } : {};
+    this.outboxOpts = {
+      ...(opts.outboxDir ? { dir: opts.outboxDir } : {}),
+      ...(opts.outboxPid !== undefined ? { pid: opts.outboxPid } : {}),
+      ...(opts.isPidAlive ? { isPidAlive: opts.isPidAlive } : {}),
+    };
     this.getModuleStatus = opts.getModuleStatus ?? (() => null);
     this.dims = {
       install_id: this.settings.telemetry.install_id,
@@ -465,6 +475,7 @@ export class TelemetryClient {
       ...this.summaryFields(),
     };
     writeSessionStateSync(state, this.outboxOpts);
+    this.sessionStatePersisted = true;
   }
 
   /**
@@ -552,7 +563,7 @@ export class TelemetryClient {
   /**
    * Send one batch (up to MAX_BATCH_SIZE). Content-unsafe events are dropped (never sent
    * dirty) so one path-leaking value can't get the whole batch rejected. On send failure the
-   * batch is persisted to the durable outbox for a retry on next startup (was: dropped).
+   * batch is persisted to the durable outbox for a retry on next startup.
    * Never throws.
    */
   async flush(): Promise<void> {
@@ -658,42 +669,45 @@ export class TelemetryClient {
   }
 
   /**
-   * Deliver anything the previous run(s) left behind. Runs once at server start, when the
-   * event loop is healthy (the conditions an exit-time send lacks):
-   *   1. If a session-state marker survives, the previous session was killed before a clean
-   *      shutdown — reconstruct its summary and add it to the outbox.
-   *   2. Drain the outbox to the server in batches. On a clean drain the file is cleared; on
-   *      a partial one only the UNDELIVERED remainder is written back, so the batches that
-   *      did land are never sent a second time.
+   * Deliver anything previous runs left behind. Runs once at server start, when the event
+   * loop is healthy (the conditions an exit-time send lacks):
+   *   1. Every session-state file whose process is no longer running belongs to a session
+   *      killed before a clean shutdown — reconstruct its summary and add it to the outbox.
+   *      Files of live sibling processes are left for their owners to clear.
+   *   2. Claim the outbox (an atomic rename) and drain it to the server in batches. Whatever
+   *      is not delivered is appended back to the live outbox, so the batches that did land
+   *      are never sent a second time, and an append a sibling made meanwhile is kept.
    *
-   * Note a limitation this does not close: the drain holds a snapshot taken before its first
-   * network round-trip, so an append made concurrently (a live flush failing while the drain
-   * awaits) is overwritten by the write-back. Closing it needs a lock on the file, which this
-   * best-effort path does not have.
    * Respects CURRENT consent: if usage telemetry is now off, the backlog is dropped unsent.
    * Best-effort and fire-and-forget — never throws, never blocks boot.
    */
   async flushOutboxOnStartup(): Promise<void> {
-    if (!this.active) return;
+    if (!this.active || this.startupFlushStarted) return;
+    this.startupFlushStarted = true;
     try {
-      const stale = readSessionState(this.outboxOpts);
-      if (stale && this.settings.telemetry.usage && stale.tool_call_count > 0) {
-        appendOutboxSync([summaryFromState(stale)], this.outboxOpts);
+      const orphans = claimOrphanedSessionStates(this.outboxOpts, {
+        // This process's own file can only be a predecessor's until it has written one.
+        includeOwn: !this.sessionStatePersisted,
+      });
+      if (this.settings.telemetry.usage) {
+        const summaries = orphans.states.filter((s) => s.tool_call_count > 0).map(summaryFromState);
+        this.droppedOutbox += appendOutboxSync(summaries, this.outboxOpts);
       }
-      clearSessionState(this.outboxOpts);
+      orphans.release();
 
-      const { events: pending, discarded } = readOutboxWithDiscards(this.outboxOpts);
-      // Anything the bound threw away is gone the moment we clear the file below — count it
-      // before it vanishes, or it is loss that leaves no trace anywhere.
+      const claimed = claimOutboxForDrain(this.outboxOpts);
+      const { events: pending, discarded } = claimed;
+      // Anything the bound threw away is gone the moment the claim is released below — count
+      // it before it vanishes, or it is loss that leaves no trace anywhere.
       this.droppedOutbox += discarded;
       if (pending.length === 0) {
-        clearOutbox(this.outboxOpts);
+        claimed.release([]);
         return;
       }
       // Consent is read live: a user who turned usage off between sessions doesn't want the
       // backlog sent. (Everything in the outbox was consented when recorded, but respect now.)
       if (!this.settings.telemetry.usage) {
-        clearOutbox(this.outboxOpts);
+        claimed.release([]);
         return;
       }
       // Filter ONCE, up front, over the whole backlog — not per batch inside the loop.
@@ -703,8 +717,8 @@ export class TelemetryClient {
       // remainder is already safe by construction.
       const sendable = pending.filter(isContentSafe);
       this.droppedUnsafe += pending.length - sendable.length;
-      // How many of `sendable` are delivered. Used to keep ONLY the undelivered remainder on
-      // a partial drain — see rewriteOutbox.
+      // How many of `sendable` are delivered. Used to hand back ONLY the undelivered
+      // remainder on a partial drain.
       let settled = 0;
       for (let i = 0; i < sendable.length; i += this.maxBatchSize) {
         const batch = sendable.slice(i, i + this.maxBatchSize);
@@ -717,14 +731,10 @@ export class TelemetryClient {
         }
         settled = i + batch.length;
       }
-      if (settled >= sendable.length) {
-        clearOutbox(this.outboxOpts);
-      } else {
-        // Partial drain: drop what went through, keep the rest. Clearing nothing (the old
-        // behaviour) re-sent the delivered batches on the next startup and inflated the
-        // server's counters; clearing everything would lose the undelivered tail.
-        rewriteOutbox(sendable.slice(settled), this.outboxOpts);
-      }
+      // Partial drain: drop what went through, keep the rest. Keeping everything re-sends the
+      // delivered batches on the next startup and inflates the server's counters; keeping
+      // nothing would lose the undelivered tail.
+      this.droppedOutbox += claimed.release(sendable.slice(settled));
     } catch (err) {
       this.logger.debug(`startup outbox flush error: ${errMsg(err)}`);
     }
