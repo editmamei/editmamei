@@ -391,7 +391,7 @@ describe('createGimpSelectionTools', () => {
 
     it.each(['expand', 'contract', 'border', 'feather', 'smooth', 'invert', 'harden'])(
       'dispatches op=%s with no px key at all when omitted (the schema declares no default; the ' +
-        'bridge itself now requires it for expand/contract/border/feather)',
+        'bridge validates px itself for expand/contract/border/feather)',
       async (op) => {
         const gimp = makeGimpBackend({
           result: { channel: 'Mask', selected_pixels: 1, fraction: 0.01 },

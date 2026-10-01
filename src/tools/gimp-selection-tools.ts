@@ -111,8 +111,9 @@ const selectSchema: JsonSchemaObject = {
     points: {
       type: 'array',
       minItems: 3,
+      maxItems: 10_000,
       items: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number' } },
-      description: 'polygon: at least 3 [x, y] pairs, document pixels.',
+      description: 'polygon: 3-10,000 [x, y] pairs, document pixels.',
     },
     color: {
       type: 'string',
@@ -138,8 +139,20 @@ const selectSchema: JsonSchemaObject = {
       minLength: 1,
       description: 'mode=channel: the saved selection to copy.',
     },
-    layer: GIMP_LAYER_PROP,
-    layer_id: GIMP_LAYER_ID_PROP,
+    layer: {
+      ...GIMP_LAYER_PROP,
+      description:
+        GIMP_LAYER_PROP.description +
+        ' alpha: which layer. color_range/magic_wand: only matters when sample_merged:false ' +
+        '(otherwise the visible composite is sampled, and which layer this names makes no ' +
+        'difference to the result).',
+    },
+    layer_id: {
+      ...GIMP_LAYER_ID_PROP,
+      description:
+        GIMP_LAYER_ID_PROP.description +
+        ' alpha: which layer. color_range/magic_wand: only matters when sample_merged:false.',
+    },
     invert: {
       type: 'boolean',
       default: false,
@@ -155,7 +168,8 @@ const selectSchema: JsonSchemaObject = {
       default: 0,
       description:
         'Feather radius in document pixels, applied to the NEW shape alone before any `combine`. ' +
-        'No effect on a gradient (already a continuous ramp, nothing to feather).',
+        'Refused (nonzero) on gradient_linear/gradient_radial -- already a continuous ramp, ' +
+        'nothing to feather.',
     },
     x1: {
       type: 'number',
@@ -208,9 +222,10 @@ const modifySelectionSchema: JsonSchemaObject = {
       description:
         'Radius in document pixels, rounded to the nearest whole pixel. Required (> 0) for ' +
         'expand/contract/border/feather; optional for smooth; unused otherwise. expand/contract/' +
-        'border cap at 150 (morphological ops whose cost scales with the radius — measured live ' +
-        'at over a minute for 1000px on a 24MP image); feather has no such cap up to 1000 (a ' +
-        'GEGL blur, flat cost regardless of radius).',
+        'border cap at 150 on an ordinary document, LOWER on a very large one (morphological ' +
+        "ops whose cost scales with both the radius and the document's own megapixels — the " +
+        'error names the actual cap for that document when a value is refused); feather has no ' +
+        'such cap up to 1000 (a GEGL blur, flat cost regardless of radius).',
     },
     output: {
       type: 'string',
@@ -331,16 +346,12 @@ export function createGimpSelectionTools(
       tool: {
         name: 'gimp_select',
         description:
-          'Headless GIMP: make a selection and save it as a NAMED channel (GIMP keeps no live ' +
-          'selection between calls). Geometric, polygon, colour range, magic wand, layer alpha, ' +
-          'a linear/radial gradient, or a copy of another saved selection; combine add/subtract/' +
-          "intersect with the existing one of the same name. Use the channel as gimp_add_adjustment's " +
-          '`mask` WHEN CREATING a new filter — a mask is fixed at creation and cannot change on a ' +
-          're-edit — or gimp_layer_mask op=create to make a layer mask. Check it with ' +
-          'gimp_get_selection_preview. Order matters: straighten/resize the canvas FIRST (see ' +
-          'gimp_transform_canvas, gimp_resize_image), then crop, then select and mask — rotate, ' +
-          'flip, and resize all refuse outright once ANY masked filter exists, or any filter not ' +
-          'created by Editmamei (for example one added in the GIMP GUI).',
+          'Headless GIMP: make a selection, saved as a NAMED channel (no live selection ' +
+          'persists between calls): rectangle/ellipse/polygon/colour range/magic wand/layer ' +
+          'alpha/gradient/another channel. Combine add/subtract/intersect by reusing a name. ' +
+          "Use the channel as gimp_add_adjustment's " +
+          '`mask` when creating a filter, or gimp_layer_mask for a real layer mask. Make ' +
+          'selections after straighten/resize/crop.',
         inputSchema: selectSchema,
         outputSchema: maskResultSchema,
         annotations: annotations('Select (GIMP)'),
@@ -360,8 +371,7 @@ export function createGimpSelectionTools(
         name: 'gimp_modify_selection',
         description:
           'Headless GIMP: expand, contract, border, feather, smooth, invert or harden a saved ' +
-          'selection (the ps_modify_selection twin). Refused if the target channel already ' +
-          'confines a filter.',
+          'selection. Refused if the target channel already confines a filter.',
         inputSchema: modifySelectionSchema,
         outputSchema: maskResultSchema,
         annotations: annotations('Modify Selection (GIMP)'),
