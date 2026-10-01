@@ -227,7 +227,7 @@ every geometry op.
 ## Layers and composites
 
 A filter applies to ONE layer. \`gimp_layer\` creates, groups, reorders,
-moves and restyles layers and merges or flattens them;
+and restyles layers and merges or flattens them;
 \`gimp_place_image\` adds another file as a new layer;
 \`gimp_create_document\` starts a blank canvas. Address layers by the
 \`layer_id\` these tools and \`gimp_inspect\` report — names can repeat.

@@ -332,6 +332,10 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // flatten) and baking a layer's live filters into its own pixels.
   gimp_layer: 'community',
   gimp_bake: 'community',
+  // Layer-level affine transform (fit/scale/move/rotate/flip/skew/free) — a sibling of
+  // gimp_layer, not an op on it (tool-tiers.ts classifies per TOOL, so this gets its own
+  // dev-default-then-promote gate the way gimp_add_effect did alongside gimp_filter).
+  gimp_transform_layer: 'dev',
   // First-class multi-layer documents: build one from scratch, composite another file into it,
   // extend its canvas, and change its color mode.
   gimp_create_document: 'community',

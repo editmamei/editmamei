@@ -146,6 +146,12 @@ describe.skipIf(!install)('gimp_* tools through the real server registry', () =>
       .sort();
     expect(expectedGimp.length).toBeGreaterThanOrEqual(24);
     expect(names.filter((n) => n.startsWith('gimp_')).sort()).toEqual(expectedGimp);
+  it('the GIMP-only boot matrix registered exactly the 28 gimp_* tools plus the shared meta tools', () => {
+    const names = registry.list().map((t) => t.name);
+    // 27 community-tier gimp_* tools (see server-community-edition-gimp.test.ts) plus
+    // gimp_transform_layer, the one dev-tier gimp_* tool today -- this boot matrix runs under
+    // the dev edition (no EDITION mock here), which registers community + dev-tier tools alike.
+    expect(names.filter((n) => n.startsWith('gimp_'))).toHaveLength(28);
     expect(names).toContain('ps_list_capabilities');
     expect(names).toContain('ps_report_problem');
     expect(names).not.toContain('ps_ping');

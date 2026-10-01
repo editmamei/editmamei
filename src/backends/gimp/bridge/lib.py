@@ -241,6 +241,18 @@ def effective_morphology_px(width, height):
     return max(MIN_MORPHOLOGY_PX, min(MAX_MORPHOLOGY_PX, round(scaled)))
 
 
+# gimp_transform_layer's scale/scale_x_percent/scale_y_percent bound -- generous enough for any
+# real use (100x in either direction) while still keeping a single call's resulting layer size
+# bounded alongside validate_resize_dims' own check on the actual pixel dimensions.
+TRANSFORM_LAYER_MIN_SCALE_PERCENT = 1
+TRANSFORM_LAYER_MAX_SCALE_PERCENT = 10_000
+
+# gimp_transform_layer's `interpolation` choices -- the GIMP resampling filters this bridge
+# exposes, by name. The gi-dependent mapping to the real `Gimp.InterpolationType` enum members
+# lives in ops.py (this module stays gi-free).
+TRANSFORM_LAYER_INTERPOLATIONS = ('none', 'linear', 'cubic', 'nohalo', 'lohalo')
+
+
 def require(args, name):
     """Fetch a required field from an op's `args`, raising ValueError naming it -- the
     classifier maps that to `invalid_argument`. A bare `args[name]` raises KeyError instead,
@@ -1531,6 +1543,111 @@ def validate_effect_transform(op_name, operation, filter_name, new_params):
                 'Delete it (gimp_filter op=delete) and re-add it after this geometry change.'
                 % (op_name, field, filter_name, value, lo, hi)
             )
+
+
+
+# ---- gimp_transform_layer: pure geometry math (fit/fill scale, matrix composition, bounds) ----
+#
+# A layer-level affine transform (scale/rotate/skew/free), distinct from the whole-CANVAS
+# geometry ops above and from the direction/position-dependent EFFECT param remapping above.
+# `Item.transform_matrix` (ops.py) applies the given 3x3 matrix directly in ABSOLUTE
+# document-pixel coordinates -- verified live (GIMP 3.2.6): a matrix built by
+# `compose_layer_matrix` below, applied to a layer at a known offset, moved it to exactly the
+# bounding box this module's own `transformed_bounds` predicts for the same matrix and corners
+# (within floating-point rounding). So every matrix built here already carries whatever
+# translation is needed to anchor the transform at the layer's own center; there is no separate
+# "local" coordinate frame to convert into or out of first.
+
+
+def fit_scale_fraction(layer_width, layer_height, canvas_width, canvas_height, mode):
+    """The uniform scale fraction (1.0 = 100%) that makes a `layer_width` x `layer_height`
+    rectangle fit inside (mode='fit', letterbox -- the SMALLER of the two axis ratios) or fill
+    (mode='fill', cover -- the LARGER) a `canvas_width` x `canvas_height` canvas, preserving
+    aspect. `op_transform_layer`'s `fit` scales by this fraction and centers the result; fitting
+    an already-fitted layer computes a fraction of 1.0, a no-op scale -- what makes that op
+    idempotent."""
+    if mode not in ('fit', 'fill'):
+        raise ValueError("mode must be one of 'fit', 'fill'")
+    width_ratio = canvas_width / float(layer_width)
+    height_ratio = canvas_height / float(layer_height)
+    return min(width_ratio, height_ratio) if mode == 'fit' else max(width_ratio, height_ratio)
+
+
+def _mat_mul(a, b):
+    """3x3 matrix product, both `a` and `b` flat row-major 9-lists (the same layout
+    `Item.transform_matrix`'s own 9 positional args use), applied to a column vector [x,y,1] as
+    p' = a*(b*p) -- `b` is the transform applied FIRST."""
+    return [
+        a[0] * b[0] + a[1] * b[3] + a[2] * b[6],
+        a[0] * b[1] + a[1] * b[4] + a[2] * b[7],
+        a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+        a[3] * b[0] + a[4] * b[3] + a[5] * b[6],
+        a[3] * b[1] + a[4] * b[4] + a[5] * b[7],
+        a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+        a[6] * b[0] + a[7] * b[3] + a[8] * b[6],
+        a[6] * b[1] + a[7] * b[4] + a[8] * b[7],
+        a[6] * b[2] + a[7] * b[5] + a[8] * b[8],
+    ]
+
+
+def _mat_translate(tx, ty):
+    return [1.0, 0.0, tx, 0.0, 1.0, ty, 0.0, 0.0, 1.0]
+
+
+def _mat_scale(sx, sy):
+    return [sx, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_rotate(degrees):
+    theta = math.radians(degrees)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    return [cos_t, -sin_t, 0.0, sin_t, cos_t, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_shear(skew_h_degrees, skew_v_degrees):
+    """Positive `skew_h_degrees` slants the top edge right (a point above center, smaller y,
+    moves toward +x); positive `skew_v_degrees` slants the left edge down (a point left of
+    center, smaller x, moves toward +y) -- the same convention `gimp_transform_layer`'s own
+    schema documents, and the one `ps_transform_layer`'s op=skew uses."""
+    return [
+        1.0, -math.tan(math.radians(skew_h_degrees)), 0.0,
+        -math.tan(math.radians(skew_v_degrees)), 1.0, 0.0,
+        0.0, 0.0, 1.0,
+    ]
+
+
+def compose_layer_matrix(cx, cy, scale_x_percent, scale_y_percent, degrees,
+                          skew_h_degrees, skew_v_degrees, offset_x, offset_y):
+    """The 9 row-major coefficients for `Item.transform_matrix`: a scale (percent, 100 =
+    unchanged), then a shear (skew_h_degrees/skew_v_degrees -- slant angles), then a rotation
+    (degrees, clockwise), all anchored at the layer's own center (`cx`, `cy`, document pixels),
+    followed by an absolute translation (`offset_x`, `offset_y`). `op_transform_layer`'s `free`
+    op calls this directly (scale + degrees + offset, no skew); `skew` calls it with scale 100/
+    100, degrees 0, offset 0/0; `rotate`'s own bounds check (not its actual transform, which goes
+    through `Item.transform_rotate` instead -- see ops.py) reuses it with scale 100/100, skew
+    0/0, offset 0/0 purely to predict the post-rotation bounding box via `transformed_bounds`."""
+    m = _mat_translate(-cx, -cy)
+    m = _mat_mul(_mat_scale(scale_x_percent / 100.0, scale_y_percent / 100.0), m)
+    m = _mat_mul(_mat_shear(skew_h_degrees, skew_v_degrees), m)
+    m = _mat_mul(_mat_rotate(degrees), m)
+    m = _mat_mul(_mat_translate(cx, cy), m)
+    m = _mat_mul(_mat_translate(offset_x, offset_y), m)
+    return m
+
+
+def transformed_bounds(matrix, x, y, width, height):
+    """The axis-aligned bounding box of a `width` x `height` rectangle at document-pixel origin
+    (`x`, `y`), after mapping each of its four corners through `matrix` (9 row-major
+    coefficients, `Item.transform_matrix`'s own layout) -- what the transformed layer's new
+    offsets/width/height will measure to. Used to validate a rotate/skew/free transform against
+    the same size cap `validate_resize_dims` enforces, BEFORE any pixel actually moves. Returns
+    (new_x, new_y, new_width, new_height)."""
+    corners = ((x, y), (x + width, y), (x, y + height), (x + width, y + height))
+    xs = [matrix[0] * cx + matrix[1] * cy + matrix[2] for cx, cy in corners]
+    ys = [matrix[3] * cx + matrix[4] * cy + matrix[5] for cx, cy in corners]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    return min_x, min_y, max_x - min_x, max_y - min_y
 
 
 def region_to_proxy_px(region, scale):

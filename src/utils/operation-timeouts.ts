@@ -349,6 +349,16 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // gimp_get_selection_preview: measured live at ~7.9s at max_px=2048 (the largest allowed render)
   // on a ~24MP image -- the same class of cost gimp_get_preview's own 30s budget covers.
   gimp_get_selection_preview: 30_000,
+  // gimp_transform_layer: a per-LAYER transform (not the whole canvas every other geometry tool
+  // above moves). Measured live (GIMP 3.2.6, EDITMAMEI_GIMP_PERF=1 run of tests/gimp-live's own
+  // timing test) on a fresh ~24MP (6016x4000) 8-bit layer, cold start excluded (paid once per
+  // session, on whichever gimp_* call happens to be first):
+  //   scale 2x (-> ~96MP) ~4.0s, rotate 33° ~1.8s, free (scale+rotate+offset) ~1.5s
+  // Budgeted at roughly 3x (cold start ~5.4s + worst measured ~4.0s ≈ 9.4s baseline), rounded
+  // up, the same multiplier gimp_resize_image/gimp_transform_canvas use, to absorb a slower
+  // machine and a higher `precision` (16/32-bit moves 2-4x the bytes per pixel this measurement
+  // was taken at 8-bit).
+  gimp_transform_layer: 30_000,
 };
 
 /**

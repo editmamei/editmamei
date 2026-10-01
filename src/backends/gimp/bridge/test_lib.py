@@ -2637,5 +2637,95 @@ class TestTextEstimate(unittest.TestCase):
         self.assertLess(len(str(ctx.exception)), 400)
 
 
+class TestFitScaleFraction(unittest.TestCase):
+    def test_fit_letterboxes_on_the_shorter_axis_ratio(self):
+        # A 100x50 layer into a 200x200 canvas: width ratio 2.0, height ratio 4.0 -- fit takes
+        # the smaller (2.0), leaving the result inside the canvas on both axes.
+        self.assertEqual(lib.fit_scale_fraction(100, 50, 200, 200, 'fit'), 2.0)
+
+    def test_fill_covers_on_the_larger_axis_ratio(self):
+        self.assertEqual(lib.fit_scale_fraction(100, 50, 200, 200, 'fill'), 4.0)
+
+    def test_fit_and_fill_agree_when_aspect_already_matches(self):
+        self.assertEqual(lib.fit_scale_fraction(100, 100, 300, 300, 'fit'), 3.0)
+        self.assertEqual(lib.fit_scale_fraction(100, 100, 300, 300, 'fill'), 3.0)
+
+    def test_already_fitted_layer_scales_by_exactly_1_0(self):
+        # The idempotency `op_transform_layer`'s `fit` relies on: re-fitting a layer already
+        # sized to the canvas computes a no-op scale.
+        self.assertEqual(lib.fit_scale_fraction(200, 200, 200, 200, 'fit'), 1.0)
+
+    def test_rejects_an_unknown_mode(self):
+        with self.assertRaises(ValueError):
+            lib.fit_scale_fraction(100, 100, 200, 200, 'stretch')
+
+
+class TestComposeLayerMatrix(unittest.TestCase):
+    def test_identity_when_every_param_is_a_no_op(self):
+        m = lib.compose_layer_matrix(50, 50, 100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        self.assertEqual([round(c, 9) for c in m], [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+
+    def test_pure_offset_translates_every_point_by_the_same_amount(self):
+        m = lib.compose_layer_matrix(50, 50, 100.0, 100.0, 0.0, 0.0, 0.0, 10.0, -5.0)
+        x, y, w, h = lib.transformed_bounds(m, 0, 0, 100, 100)
+        self.assertEqual((round(x, 6), round(y, 6), round(w, 6), round(h, 6)), (10.0, -5.0, 100.0, 100.0))
+
+    def test_scale_grows_the_layer_around_its_own_center(self):
+        # A 100x100 layer at (0,0), center (50,50), scaled 200%: doubles to 200x200, re-centered
+        # on the SAME point (50,50) -- new top-left (-50,-50).
+        m = lib.compose_layer_matrix(50, 50, 200.0, 200.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        x, y, w, h = lib.transformed_bounds(m, 0, 0, 100, 100)
+        self.assertEqual((round(x, 6), round(y, 6), round(w, 6), round(h, 6)), (-50.0, -50.0, 200.0, 200.0))
+
+    def test_rotate_90_about_center_swaps_width_and_height(self):
+        m = lib.compose_layer_matrix(50, 25, 100.0, 100.0, 90.0, 0.0, 0.0, 0.0, 0.0)
+        x, y, w, h = lib.transformed_bounds(m, 0, 0, 100, 50)
+        self.assertEqual((round(w, 6), round(h, 6)), (50.0, 100.0))
+        # Same center (50, 25) before and after.
+        self.assertEqual((round(x + w / 2, 6), round(y + h / 2, 6)), (50.0, 25.0))
+
+    def test_shear_leaves_a_point_at_the_center_fixed(self):
+        # A shear's own fixed point is the center it's anchored at (translate-to-origin,
+        # shear, translate-back) -- the center of the pre-transform rect maps to itself.
+        cx, cy = 40.0, 60.0
+        m = lib.compose_layer_matrix(cx, cy, 100.0, 100.0, 0.0, 30.0, 0.0, 0.0, 0.0)
+        new_x = m[0] * cx + m[1] * cy + m[2]
+        new_y = m[3] * cx + m[4] * cy + m[5]
+        self.assertAlmostEqual(new_x, cx, places=9)
+        self.assertAlmostEqual(new_y, cy, places=9)
+
+    def test_positive_skew_h_slants_the_top_edge_right(self):
+        cx, cy = 50.0, 50.0
+        m = lib.compose_layer_matrix(cx, cy, 100.0, 100.0, 0.0, 45.0, 0.0, 0.0, 0.0)
+        # A point 10px ABOVE center (smaller y): horizontal shear at 45 degrees (tan(45)=1)
+        # moves it sideways toward +x by that same 10px, with y unchanged.
+        px, py = cx, cy - 10.0
+        new_x = m[0] * px + m[1] * py + m[2]
+        new_y = m[3] * px + m[4] * py + m[5]
+        self.assertAlmostEqual(new_x, cx + 10.0, places=6)
+        self.assertAlmostEqual(new_y, cy - 10.0, places=6)
+
+    def test_positive_skew_v_slants_the_left_edge_down(self):
+        cx, cy = 50.0, 50.0
+        m = lib.compose_layer_matrix(cx, cy, 100.0, 100.0, 0.0, 0.0, 45.0, 0.0, 0.0)
+        # A point 10px LEFT of center (smaller x): vertical shear at 45 degrees moves it toward
+        # +y (down) by that same 10px, with x unchanged.
+        px, py = cx - 10.0, cy
+        new_x = m[0] * px + m[1] * py + m[2]
+        new_y = m[3] * px + m[4] * py + m[5]
+        self.assertAlmostEqual(new_x, cx - 10.0, places=6)
+        self.assertAlmostEqual(new_y, cy + 10.0, places=6)
+
+
+class TestTransformedBounds(unittest.TestCase):
+    def test_identity_matrix_leaves_bounds_unchanged(self):
+        identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        self.assertEqual(lib.transformed_bounds(identity, 5, 10, 200, 100), (5, 10, 200, 100))
+
+    def test_pure_scale_matrix_scales_the_bounds_from_the_origin(self):
+        scale2x = [2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]
+        self.assertEqual(lib.transformed_bounds(scale2x, 10, 10, 50, 20), (20, 20, 100, 40))
+
+
 if __name__ == '__main__':
     unittest.main()

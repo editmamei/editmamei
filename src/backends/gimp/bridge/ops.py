@@ -423,6 +423,16 @@ _TRANSFER_MODE_ENUM = {
     'highlights': Gimp.TransferMode.HIGHLIGHTS,
 }
 
+# gimp_transform_layer's `interpolation` choices, keyed the same way lib.TRANSFORM_LAYER_
+# INTERPOLATIONS validates them against.
+_INTERPOLATION_ENUM = {
+    'none': Gimp.InterpolationType.NONE,
+    'linear': Gimp.InterpolationType.LINEAR,
+    'cubic': Gimp.InterpolationType.CUBIC,
+    'nohalo': Gimp.InterpolationType.NOHALO,
+    'lohalo': Gimp.InterpolationType.LOHALO,
+}
+
 
 def _set_exposure(cfg, params):
     cfg.set_property('exposure', params['exposure'])
@@ -2608,19 +2618,6 @@ def _op_layer_set(img, args):
     return {'layer_id': layer.get_id(), 'name': layer.get_name(), **changed}
 
 
-def _op_layer_move(img, args):
-    layer = _layer(img, args)
-    _refuse_if_masked_filters_on(img, 'move', layer)
-    x, y = int(lib.require(args, 'x')), int(lib.require(args, 'y'))
-    _validated_move_offset(img, x, y)
-    try:
-        layer.set_offsets(x, y)
-    finally:
-        _drop_proxies(img.get_id())
-    ok, off_x, off_y = layer.get_offsets()
-    return {'layer_id': layer.get_id(), 'x': off_x if ok else None, 'y': off_y if ok else None}
-
-
 def _op_layer_reorder(img, args):
     layer = _layer(img, args)
     parent = _resolve_parent_group(img, args) if 'parent_group' in args else layer.get_parent()
@@ -2733,7 +2730,6 @@ LAYER_OPS = {
     'duplicate': _op_layer_duplicate,
     'select': _op_layer_select,
     'set': _op_layer_set,
-    'move': _op_layer_move,
     'reorder': _op_layer_reorder,
     'merge_down': _op_layer_merge_down,
     'flatten': _op_layer_flatten,
@@ -3188,8 +3184,9 @@ def op_bake(args):
 #   - `Item.scale(width, height, local_origin)` resizes just that one layer; called here while its
 #     offset is still whatever `file_load_layer` gave it (verified: local_origin's own effect on
 #     the resulting offset only matters when the pre-scale offset is non-zero), and the caller's
-#     `x`/`y` are applied afterward via the same absolute `set_offsets` `gimp_layer op=move` uses --
-#     so the requested position is always exact regardless of local_origin's own math. Both
+#     `x`/`y` are applied afterward via the same absolute `set_offsets` call every layer-move op
+#     in this bridge uses -- so the requested position is always exact regardless of
+#     local_origin's own math. Both
 #     `Drawable.scale()` and `Drawable.fill()` report failure by returning `False` rather than
 #     raising (the same class `op_open`'s own `convert_precision` comment documents) -- checked
 #     everywhere this file calls either, including the pre-existing `_fill_new_layer` shared with
@@ -3506,6 +3503,238 @@ def op_convert_image_mode(args):
     finally:
         _drop_proxies(img.get_id())
     return {'mode': mode, 'converted': True}
+
+
+# ---- gimp_transform_layer ---------------------------------------------------------------------
+#
+# A per-LAYER affine transform (fit/scale/move/rotate/flip/skew/free) -- distinct from the
+# whole-CANVAS geometry ops above (crop/resize/rotate/flip), which move or resize every layer
+# together. Addressed the same way every other gimp_* layer op is (`_layer`): layer_id takes
+# priority over layer (name), neither given falls back to the selected layer, or the topmost one.
+#
+# Verified live (GIMP 3.2.6), the assumptions this section is built on:
+#   - `Item.transform_scale`/`transform_rotate`/`transform_flip_simple`/`transform_matrix` all
+#     carry the layer's own mask along automatically, repositioned and resized to match the
+#     layer's new bounds exactly -- no separate mask transform is needed.
+#   - Calling any of these on a GROUP layer transforms the whole group as a unit: every
+#     descendant's own offsets and size update too, in lockstep with the group's. No special-
+#     casing is needed for a group target.
+#   - `Context.transform_resize` set to ADJUST (rather than the default CLIP) is what makes
+#     `rotate`/`skew`/`free` grow the layer's own bounding box to its new, larger extent instead
+#     of clipping corners that rotate/shear outside the old one -- the same growth
+#     `gimp_transform_canvas`'s `expand` gives the whole canvas, but always-on here since a
+#     layer (unlike the canvas) has no reason to ever clip its own content.
+#   - `Context.interpolation` is read by the transform itself, not passed as an argument to any
+#     of the methods above -- set explicitly before every call (never left at whatever a PRIOR
+#     call happened to leave it at).
+#   - A layer with no alpha channel (e.g. a flattened base layer) would otherwise fill any area
+#     a transform exposes outside its old bounds with an opaque background color rather than
+#     transparency -- `add_alpha()` first avoids that, for every op, not only ones that grow the
+#     bounding box (harmless on one that doesn't need it). Skipped for a group target, which has
+#     no pixels of its own to add a channel to.
+#   - Refuses outright when the layer (or a containing group) carries a masked or unverifiable
+#     adjustment filter -- `_refuse_if_masked_filters_on` (the same scoped check the whole-image
+#     geometry ops' own `_refuse_if_masked_filters` is a sibling of); an UNMASKED filter is
+#     unaffected and simply moves/scales along with the layer.
+
+
+def _transform_layer_center(layer):
+    ok, x, y = layer.get_offsets()
+    return (x if ok else 0) + layer.get_width() / 2.0, (y if ok else 0) + layer.get_height() / 2.0
+
+
+def _transform_layer_bounds(layer):
+    ok, x, y = layer.get_offsets()
+    return {
+        'x': x if ok else None, 'y': y if ok else None,
+        'width': layer.get_width(), 'height': layer.get_height(),
+    }
+
+
+def _set_transform_layer_interpolation(args):
+    choice = lib.validate_choice(
+        'interpolation', args.get('interpolation', 'cubic'), lib.TRANSFORM_LAYER_INTERPOLATIONS
+    )
+    Gimp.context_set_interpolation(_INTERPOLATION_ENUM[choice])
+    return choice
+
+
+def _ensure_layer_alpha(layer):
+    """Adds an alpha channel to `layer` if it doesn't have one already, UNLESS it's a group (no
+    pixels of its own to add a channel to). Returns whether alpha was actually added."""
+    if layer.is_group() or layer.has_alpha():
+        return False
+    if not layer.add_alpha():
+        raise lib.OpError('gimp_op_failed', 'GIMP could not add an alpha channel to this layer')
+    return True
+
+
+def _transform_layer_fit(layer, img, args):
+    mode = lib.validate_choice('mode', args.get('mode', 'fit'), ('fit', 'fill'))
+    w, h = layer.get_width(), layer.get_height()
+    fraction = lib.fit_scale_fraction(w, h, img.get_width(), img.get_height(), mode)
+    new_w, new_h = w * fraction, h * fraction
+    lib.validate_resize_dims(max(1, round(new_w)), max(1, round(new_h)))
+    alpha_added = _ensure_layer_alpha(layer)
+    x0 = (img.get_width() - new_w) / 2.0
+    y0 = (img.get_height() - new_h) / 2.0
+    layer.transform_scale(x0, y0, x0 + new_w, y0 + new_h)
+    return {'mode': mode, 'scale_percent': round(fraction * 100.0, 6), 'alpha_added': alpha_added}
+
+
+def _transform_layer_scale(layer, img, args):
+    lo, hi = lib.TRANSFORM_LAYER_MIN_SCALE_PERCENT, lib.TRANSFORM_LAYER_MAX_SCALE_PERCENT
+    sp = args.get('scale_percent')
+    sx_in, sy_in = args.get('scale_x_percent'), args.get('scale_y_percent')
+    if sx_in is None and sy_in is None:
+        if sp is None:
+            raise ValueError('scale requires scale_percent, or scale_x_percent/scale_y_percent')
+        sx = sy = lib.validate_range('scale_percent', sp, lo, hi)
+    else:
+        sx = lib.validate_range('scale_x_percent', sx_in if sx_in is not None else (sp if sp is not None else 100.0), lo, hi)
+        sy = lib.validate_range('scale_y_percent', sy_in if sy_in is not None else (sp if sp is not None else 100.0), lo, hi)
+    ok, ox, oy = layer.get_offsets()
+    w, h = layer.get_width(), layer.get_height()
+    new_w, new_h = w * sx / 100.0, h * sy / 100.0
+    lib.validate_resize_dims(max(1, round(new_w)), max(1, round(new_h)))
+    alpha_added = _ensure_layer_alpha(layer)
+    cx, cy = (ox if ok else 0) + w / 2.0, (oy if ok else 0) + h / 2.0
+    x0, y0 = cx - new_w / 2.0, cy - new_h / 2.0
+    layer.transform_scale(x0, y0, x0 + new_w, y0 + new_h)
+    return {'scale_x_percent': sx, 'scale_y_percent': sy, 'alpha_added': alpha_added}
+
+
+def _transform_layer_move(layer, img, args):
+    delta, absolute, center_on = args.get('delta'), args.get('absolute'), args.get('center_on')
+    given = [m for m in (delta, absolute, center_on) if m is not None]
+    if len(given) == 0:
+        raise ValueError('move requires exactly one of delta, absolute, center_on')
+    if len(given) > 1:
+        raise ValueError('move accepts only ONE of delta, absolute, center_on -- not more than one')
+    ok, ox, oy = layer.get_offsets()
+    ox, oy = (ox if ok else 0), (oy if ok else 0)
+    w, h = layer.get_width(), layer.get_height()
+    if delta is not None:
+        nx, ny = ox + float(lib.require(delta, 'x')), oy + float(lib.require(delta, 'y'))
+    elif absolute is not None:
+        nx, ny = float(lib.require(absolute, 'x')), float(lib.require(absolute, 'y'))
+    else:
+        nx = float(lib.require(center_on, 'x')) - w / 2.0
+        ny = float(lib.require(center_on, 'y')) - h / 2.0
+    _validated_move_offset(img, nx, ny)
+    alpha_added = _ensure_layer_alpha(layer)
+    layer.set_offsets(round(nx), round(ny))
+    return {'alpha_added': alpha_added}
+
+
+def _transform_layer_rotate(layer, img, args):
+    degrees = float(lib.require(args, 'degrees'))
+    if not math.isfinite(degrees):
+        raise ValueError('degrees must be finite')
+    cx, cy = _transform_layer_center(layer)
+    ok, ox, oy = layer.get_offsets()
+    w, h = layer.get_width(), layer.get_height()
+    matrix = lib.compose_layer_matrix(cx, cy, 100.0, 100.0, degrees, 0.0, 0.0, 0.0, 0.0)
+    _, _, new_w, new_h = lib.transformed_bounds(matrix, ox if ok else 0, oy if ok else 0, w, h)
+    lib.validate_resize_dims(max(1, round(new_w)), max(1, round(new_h)))
+    alpha_added = _ensure_layer_alpha(layer)
+    Gimp.context_set_transform_resize(Gimp.TransformResize.ADJUST)
+    layer.transform_rotate(math.radians(degrees), True, 0.0, 0.0)
+    return {'degrees': degrees, 'alpha_added': alpha_added}
+
+
+def _transform_layer_flip(layer, img, args):
+    axis = args.get('axis')
+    if axis not in _FLIP_ORIENTATIONS:
+        raise ValueError('axis must be one of %s' % sorted(_FLIP_ORIENTATIONS))
+    alpha_added = _ensure_layer_alpha(layer)
+    layer.transform_flip_simple(_FLIP_ORIENTATIONS[axis], True, 0.0)
+    return {'axis': axis, 'alpha_added': alpha_added}
+
+
+def _transform_layer_skew(layer, img, args):
+    skew_h, skew_v = args.get('skew_h_degrees'), args.get('skew_v_degrees')
+    if skew_h is None and skew_v is None:
+        raise ValueError('skew requires at least one of skew_h_degrees, skew_v_degrees')
+    skew_h = float(skew_h) if skew_h is not None else 0.0
+    skew_v = float(skew_v) if skew_v is not None else 0.0
+    if not (math.isfinite(skew_h) and math.isfinite(skew_v)):
+        raise ValueError('skew_h_degrees/skew_v_degrees must be finite')
+    cx, cy = _transform_layer_center(layer)
+    ok, ox, oy = layer.get_offsets()
+    w, h = layer.get_width(), layer.get_height()
+    matrix = lib.compose_layer_matrix(cx, cy, 100.0, 100.0, 0.0, skew_h, skew_v, 0.0, 0.0)
+    _, _, new_w, new_h = lib.transformed_bounds(matrix, ox if ok else 0, oy if ok else 0, w, h)
+    lib.validate_resize_dims(max(1, round(new_w)), max(1, round(new_h)))
+    alpha_added = _ensure_layer_alpha(layer)
+    Gimp.context_set_transform_resize(Gimp.TransformResize.ADJUST)
+    layer.transform_matrix(*matrix)
+    return {'skew_h_degrees': skew_h, 'skew_v_degrees': skew_v, 'alpha_added': alpha_added}
+
+
+def _transform_layer_free(layer, img, args):
+    lo, hi = lib.TRANSFORM_LAYER_MIN_SCALE_PERCENT, lib.TRANSFORM_LAYER_MAX_SCALE_PERCENT
+    sx = lib.validate_range('scale_x_percent', args.get('scale_x_percent', 100.0), lo, hi)
+    sy = lib.validate_range('scale_y_percent', args.get('scale_y_percent', 100.0), lo, hi)
+    degrees = float(args.get('degrees', 0.0))
+    offset_x = float(args.get('offset_x', 0.0))
+    offset_y = float(args.get('offset_y', 0.0))
+    if not (math.isfinite(degrees) and math.isfinite(offset_x) and math.isfinite(offset_y)):
+        raise ValueError('degrees/offset_x/offset_y must be finite')
+    cx, cy = _transform_layer_center(layer)
+    ok, ox, oy = layer.get_offsets()
+    w, h = layer.get_width(), layer.get_height()
+    matrix = lib.compose_layer_matrix(cx, cy, sx, sy, degrees, 0.0, 0.0, offset_x, offset_y)
+    _, _, new_w, new_h = lib.transformed_bounds(matrix, ox if ok else 0, oy if ok else 0, w, h)
+    lib.validate_resize_dims(max(1, round(new_w)), max(1, round(new_h)))
+    alpha_added = _ensure_layer_alpha(layer)
+    Gimp.context_set_transform_resize(Gimp.TransformResize.ADJUST)
+    layer.transform_matrix(*matrix)
+    return {
+        'scale_x_percent': sx, 'scale_y_percent': sy, 'degrees': degrees,
+        'offset_x': offset_x, 'offset_y': offset_y, 'alpha_added': alpha_added,
+    }
+
+
+TRANSFORM_LAYER_OPS = {
+    'fit': _transform_layer_fit,
+    'scale': _transform_layer_scale,
+    'move': _transform_layer_move,
+    'rotate': _transform_layer_rotate,
+    'flip': _transform_layer_flip,
+    'skew': _transform_layer_skew,
+    'free': _transform_layer_free,
+}
+
+
+def op_transform_layer(args):
+    img = _image(args)
+    top = args.get('op')
+    fn = TRANSFORM_LAYER_OPS.get(top)
+    if fn is None:
+        raise ValueError('op must be one of %s' % sorted(TRANSFORM_LAYER_OPS))
+    layer = _layer(img, args)
+    _refuse_if_masked_filters_on(img, top, layer)
+    # Interpolation (and, for rotate/skew/free, the ADJUST transform-resize mode) are ambient
+    # Context settings the transform methods below read rather than take as arguments -- pushed
+    # and popped so this call's choice never leaks into a LATER, unrelated gimp_* call (the same
+    # bracket `_fill_new_layer` uses around its own context changes). Each op validates its own
+    # arguments and raises BEFORE calling `_ensure_layer_alpha` (own code) or mutating anything,
+    # so a rejected call never adds an alpha channel it then goes on to refuse.
+    Gimp.context_push()
+    try:
+        interpolation = _set_transform_layer_interpolation(args)
+        extra = fn(layer, img, args)
+    finally:
+        Gimp.context_pop()
+        _drop_proxies(img.get_id())
+    result = {
+        'layer_id': layer.get_id(),
+        'bounds': _transform_layer_bounds(layer),
+        'interpolation': interpolation,
+    }
+    result.update(extra)
+    return result
 
 
 def op_select_none(args):
@@ -4067,6 +4296,7 @@ OPS = {
     'text': op_text, 'fonts': op_fonts,
     'select': op_select, 'modify_mask': op_modify_mask, 'layer_mask': op_layer_mask,
     'mask_preview': op_mask_preview, 'load_mask': op_load_mask, 'render_layer': op_render_layer,
+    'transform_layer': op_transform_layer,
 }
 
 

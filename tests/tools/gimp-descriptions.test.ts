@@ -474,22 +474,6 @@ describe('gimp_layer op=duplicate refuses on an Editmamei filter', () => {
   });
 });
 
-describe('gimp_layer op=move refuses on a masked or unverifiable filter', () => {
-  // ops.py's _refuse_if_masked_filters_on: a filter's mask does not travel with set_offsets
-  // (verified live), the same physics gimp_transform_canvas already refuses on.
-  it('the tool description, op field, and x/y fields all say move is an ABSOLUTE offset that refuses on a masked filter, on the layer or a containing group', () => {
-    const desc = description('gimp_layer').replace(/\s+/g, ' ');
-    expect(desc).toMatch(/ABSOLUTE x\/y \(not a delta\)/);
-    expect(desc).toMatch(/does not travel with content that moves beneath it/);
-    const opField = field('gimp_layer', 'op').replace(/\s+/g, ' ');
-    expect(opField).toMatch(/ABSOLUTE x\/y \(not a delta\)/);
-    expect(opField).toMatch(/or a group containing it, carries a masked or unverifiable/);
-    expect(opField).toMatch(/does not travel with content that moves beneath it/);
-    expect(field('gimp_layer', 'x')).toMatch(/ABSOLUTE horizontal offset/);
-    expect(field('gimp_layer', 'y')).toMatch(/ABSOLUTE vertical offset/);
-  });
-});
-
 describe('gimp_layer merge_down/flatten bake filters and can rasterize a visible text layer', () => {
   it('the tool description says masked filters are baked, a VISIBLE text layer is rasterized, and flatten drops alpha', () => {
     const desc = description('gimp_layer').replace(/\s+/g, ' ');
@@ -541,11 +525,9 @@ describe('gimp_bake: bakes a masked filter correctly, never rasterizes text, cle
     expect(desc).toMatch(/A masked filter's confinement survives the bake exactly/);
     expect(desc).toMatch(/a text layer stays a text layer \(baking never rasterizes one\)/);
     expect(desc).toMatch(/Baking clears any masked-filter refusal/);
+    expect(desc).toMatch(/\(gimp_canvas, gimp_resize_image, gimp_transform_canvas\)/);
     expect(desc).toMatch(
-      /\(gimp_layer op=move, gimp_canvas, gimp_resize_image, gimp_transform_canvas\)/
-    );
-    expect(desc).toMatch(
-      /sanctioned way to make a masked adjustment safe to move, resize, rotate, or flip/
+      /sanctioned way to make a masked adjustment safe to resize, rotate, or flip/
     );
     expect(desc).not.toMatch(/verified live/i);
   });
@@ -592,7 +574,7 @@ describe('gimp_place_image: multi-layer sources, mode conversion, and no metadat
       /converted automatically on load, never refused/
     );
   });
-  it('says x/y are an ABSOLUTE offset, matching gimp_layer op=move', () => {
+  it('says x/y are an ABSOLUTE offset, not a delta', () => {
     expect(description('gimp_place_image').replace(/\s+/g, ' ')).toMatch(
       /ABSOLUTE document-pixel offset \(not a delta\)/
     );

@@ -252,6 +252,8 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'gimp_select',
   'gimp_modify_selection',
   'gimp_layer_mask',
+  // gimp_transform_layer: every op repositions, resizes, or reshapes the target layer's pixels.
+  'gimp_transform_layer',
 ]);
 
 /*

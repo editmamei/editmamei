@@ -464,6 +464,45 @@ def op_test_reorder_without_dropping_proxy(args):
     return {'reordered': [l.get_name() for l in img.get_layers()]}
 
 
+def op_test_add_layer_mask(args):
+    """Attach a REAL GIMP layer mask (`Gimp.Layer.create_mask` + `add_mask`) to the target layer
+    and paint the LEFT HALF of it black (hidden), leaving the right half at the mask's own WHITE
+    default (visible) -- the test probe for proving a layer's own mask transforms along with it
+    through `Item.transform_*` (`gimp_transform_layer`), which no shipped gimp_* tool creates
+    (`gimp_create_mask` builds an unrelated filter-confinement channel, not a real layer mask)."""
+    img = _image(args)
+    layer = _layer(img, args)
+    mask = layer.create_mask(Gimp.AddMaskType.WHITE)
+    layer.add_mask(mask)
+    ok, ox, oy = layer.get_offsets()
+    x0, y0 = (ox if ok else 0), (oy if ok else 0)
+    w, h = layer.get_width(), layer.get_height()
+    img.select_rectangle(Gimp.ChannelOps.REPLACE, x0, y0, w / 2.0, h)
+    Gimp.context_push()
+    try:
+        Gimp.context_set_foreground(Gegl.Color.new('black'))
+        mask.edit_fill(Gimp.FillType.FOREGROUND)
+    finally:
+        Gimp.context_pop()
+    Gimp.Selection.none(img)
+    _drop_proxies(img.get_id())
+    return {'mask_id': mask.get_id()}
+
+
+def op_test_layer_bounds(args):
+    """A layer's own {x, y, width, height} directly -- `gimp_inspect what=layers` reports
+    offsets but not width/height, so a live test that needs to read a layer's current bounds
+    WITHOUT mutating anything (unlike every real gimp_transform_layer op) goes through this
+    instead."""
+    img = _image(args)
+    layer = _layer(img, args)
+    ok, x, y = layer.get_offsets()
+    return {
+        'x': x if ok else None, 'y': y if ok else None,
+        'width': layer.get_width(), 'height': layer.get_height(),
+    }
+
+
 OPS.update({
     'test_proxy_filter_count': op_test_proxy_filter_count,
     'test_proxy_ids': op_test_proxy_ids,
@@ -489,6 +528,8 @@ OPS.update({
     'test_ledger_dump': op_test_ledger_dump,
     'test_gray_bytes_image_leak': op_test_gray_bytes_image_leak,
     'test_build_no_alpha_gap_xcf': op_test_build_no_alpha_gap_xcf,
+    'test_add_layer_mask': op_test_add_layer_mask,
+    'test_layer_bounds': op_test_layer_bounds,
 })
 
 
