@@ -333,9 +333,13 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // heavier gimp_* budgets below.
   gimp_select: 20_000,
   // gimp_modify_selection: feather is flat ~0.5-0.6s regardless of radius (a GEGL blur); expand/
-  // contract/border are morphological ops whose cost scales with the radius and are capped at
-  // MAX_MORPHOLOGY_PX (150, bridge/lib.py) for exactly this reason -- measured live at that cap,
-  // the most expensive of the three (border) took ~13s on a ~24MP image, well inside this budget.
+  // contract/border are morphological ops whose cost scales with BOTH the radius and the
+  // document's own megapixels, so the cap itself shrinks on a large document
+  // (`effective_morphology_px`, bridge/lib.py) -- MAX_MORPHOLOGY_PX (150) only applies at or
+  // below MORPHOLOGY_BASELINE_MP (24). Measured live, border (the most expensive of the three) at
+  // its EFFECTIVE cap: ~30s at 150px on a ~24MP image, ~11.8s at the scaled 36px cap on ~100MP,
+  // ~27.2s at the scaled 17px cap on ~216.8MP (this bridge's own largest allowed document) -- all
+  // inside this budget, though the ~24MP case has the thinnest margin of the three.
   gimp_modify_selection: 45_000,
   // gimp_layer_mask: op=create from a channel measured live at ~34ms on a ~24MP image (a mask
   // attach, not a full-canvas pixel scan) -- delete/apply/invert are all cheaper still. Budgeted

@@ -41,6 +41,7 @@
     "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.ts\"",
     "test": "vitest run",
     "test:gimp": "vitest run tests/gimp-live",
+    "test:gimp:timing": "vitest run tests/gimp-live/large-image-timing.test.ts",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
