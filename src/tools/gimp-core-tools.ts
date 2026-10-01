@@ -204,14 +204,12 @@ workflow avoids.
 
 ## Masks
 
-\`gimp_select\` saves a selection (rectangle / ellipse / polygon /
-colour range / magic wand / layer alpha / gradient / a copy of
-another saved selection) into a NAMED channel. Pass that name as
-\`mask\` when you CREATE a filter with \`gimp_add_adjustment\` or
-\`gimp_add_effect\` to confine it. A filter's
-mask is fixed at creation — re-editing it by \`filter_id\` cannot
-change which mask it uses; delete and re-create it with a new mask
-instead.
+A selection can be saved into a NAMED channel. Pass the name of a
+channel saved in the image as \`mask\` when you CREATE a filter
+with \`gimp_add_adjustment\` or \`gimp_add_effect\` to confine it.
+A filter's mask is fixed at creation — re-editing it by
+\`filter_id\` cannot change which mask it uses; delete and
+re-create it with a new mask instead.
 
 ## Order matters: geometry before masked adjustments
 
