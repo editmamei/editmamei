@@ -2716,6 +2716,34 @@ class TestComposeLayerMatrix(unittest.TestCase):
         self.assertAlmostEqual(new_x, cx - 10.0, places=6)
         self.assertAlmostEqual(new_y, cy + 10.0, places=6)
 
+    def test_h_45_v_45_determinant_stays_exactly_1_not_0(self):
+        # Regression pin: the single combined-shear matrix [[1,-tan(h)],[-tan(v),1]] this used to
+        # be built from has determinant 1 - tan(h)*tan(v), which is EXACTLY 0 at h=v=45 --
+        # collapsing the whole rectangle to a line. Composed as two independent shears instead,
+        # the determinant is exactly 1 for ANY h/v, so this must not raise.
+        m = lib.compose_layer_matrix(50, 50, 100.0, 100.0, 0.0, 45.0, 45.0, 0.0, 0.0)
+        det = m[0] * m[4] - m[1] * m[3]
+        self.assertAlmostEqual(det, 1.0, places=9)
+
+    def test_h_60_v_60_determinant_stays_exactly_1_not_negative(self):
+        # Regression pin: the old single-matrix determinant 1 - tan(h)*tan(v) at h=v=60 is
+        # 1 - 3 = -2 (tan(60) ~= 1.732) -- NEGATIVE, silently mirroring the layer instead of
+        # shearing it. The two-shear composition keeps it at exactly 1 regardless.
+        m = lib.compose_layer_matrix(50, 50, 100.0, 100.0, 0.0, 60.0, 60.0, 0.0, 0.0)
+        det = m[0] * m[4] - m[1] * m[3]
+        self.assertAlmostEqual(det, 1.0, places=9)
+
+    def test_refuses_a_negative_scale_that_would_mirror_instead_of_transform(self):
+        # Out of gimp_transform_layer's own schema range (1..10000%), but the pure function
+        # itself must still refuse a composed matrix with a negative determinant on its own
+        # terms, as defense in depth against ever silently mirroring a layer.
+        with self.assertRaises(ValueError):
+            lib.compose_layer_matrix(50, 50, -100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    def test_refuses_a_near_zero_scale_that_would_collapse_to_a_line(self):
+        with self.assertRaises(ValueError):
+            lib.compose_layer_matrix(50, 50, 1e-9, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
 
 class TestTransformedBounds(unittest.TestCase):
     def test_identity_matrix_leaves_bounds_unchanged(self):
@@ -2725,6 +2753,65 @@ class TestTransformedBounds(unittest.TestCase):
     def test_pure_scale_matrix_scales_the_bounds_from_the_origin(self):
         scale2x = [2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]
         self.assertEqual(lib.transformed_bounds(scale2x, 10, 10, 50, 20), (20, 20, 100, 40))
+
+
+class TestCeilWithMargin(unittest.TestCase):
+    def test_exact_integer_still_gets_the_one_pixel_margin(self):
+        self.assertEqual(lib.ceil_with_margin(100.0), 101)
+
+    def test_rounds_up_before_adding_the_margin(self):
+        self.assertEqual(lib.ceil_with_margin(100.2), 102)
+
+    def test_a_value_just_under_a_whole_number_rounds_up_to_it_first(self):
+        self.assertEqual(lib.ceil_with_margin(99.9999), 101)
+
+
+class TestTransformLayerPrecisionBucket(unittest.TestCase):
+    def test_u8_variants_bucket_to_8(self):
+        for nick in ('u8-linear', 'u8-non-linear', 'u8-perceptual'):
+            self.assertEqual(lib.transform_layer_precision_bucket(nick), '8')
+
+    def test_u16_and_half_variants_bucket_to_16(self):
+        for nick in ('u16-non-linear', 'u16-perceptual', 'half-linear'):
+            self.assertEqual(lib.transform_layer_precision_bucket(nick), '16')
+
+    def test_u32_float_and_double_variants_bucket_to_32(self):
+        for nick in ('u32-linear', 'float-non-linear', 'double-perceptual'):
+            self.assertEqual(lib.transform_layer_precision_bucket(nick), '32')
+
+
+class TestRejectForeignTransformFields(unittest.TestCase):
+    def test_accepts_an_ops_own_fields(self):
+        lib.reject_foreign_transform_fields('skew', {'skew_h_degrees': 10, 'skew_v_degrees': 5})
+        lib.reject_foreign_transform_fields('free', {
+            'scale_x_percent': 110, 'degrees': 5, 'offset_x': 1, 'offset_y': 2,
+        })
+
+    def test_common_keys_are_always_allowed(self):
+        lib.reject_foreign_transform_fields('flip', {
+            'image': 1, 'op': 'flip', 'layer': 'L', 'layer_id': 2, 'interpolation': 'cubic',
+            'axis': 'horizontal',
+        })
+
+    def test_refuses_a_field_from_another_op(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.reject_foreign_transform_fields('scale', {'skew_h_degrees': 10})
+        self.assertIn(
+            "op 'scale' does not use field(s) skew_h_degrees; its fields are: "
+            "scale_percent, scale_x_percent, scale_y_percent",
+            str(ctx.exception),
+        )
+
+    def test_refuses_ps_style_flat_move_fields(self):
+        # gimp_transform_layer's own move takes nested {x, y} objects (delta/absolute/
+        # center_on); ps_transform_layer's flat delta_x/absolute_x names are foreign here.
+        with self.assertRaises(ValueError) as ctx:
+            lib.reject_foreign_transform_fields('move', {'delta_x': 5, 'delta_y': 5})
+        self.assertIn('delta_x', str(ctx.exception))
+        self.assertIn('delta_y', str(ctx.exception))
+
+    def test_none_values_are_treated_as_omitted(self):
+        lib.reject_foreign_transform_fields('rotate', {'degrees': 10, 'skew_h_degrees': None})
 
 
 if __name__ == '__main__':

@@ -3,10 +3,12 @@ import { createGimpTransformLayerTools } from '@editmamei/tools/gimp-transform-l
 import { makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
 import { callTool, assertToolShape } from '../fixtures/tool-helpers.ts';
 
-// The schema is flat (one object covers every op), so `validateArgs` applies EVERY declared
-// default on EVERY call regardless of which op is active — the same "a default rides along on
-// an op that ignores it" behavior gimp_layer's own test file documents for its LAYER_DEFAULTS.
-const TRANSFORM_LAYER_DEFAULTS = { mode: 'fit', offset_x: 0, offset_y: 0, interpolation: 'cubic' };
+// `interpolation` is the only field with a schema-level `default` -- it's a COMMON key every op
+// reads. mode/offset_x/offset_y deliberately have NO schema default (unlike gimp_layer's own
+// flat schema): each is op-specific, and a schema-level default would ride along on EVERY call
+// regardless of op, tripping the bridge's per-op foreign-field check on every op that doesn't
+// own it. The bridge applies each of THEIR own defaults itself when genuinely absent.
+const TRANSFORM_LAYER_DEFAULTS = { interpolation: 'cubic' };
 
 describe('createGimpTransformLayerTools', () => {
   it('returns 1 well-formed tool named gimp_transform_layer', () => {
@@ -259,6 +261,37 @@ describe('createGimpTransformLayerTools', () => {
       expect(result.isError).toBe(true);
       expect((result.content?.[0] as { text: string }).text).toContain('only ONE of');
     });
+
+    it("maps the bridge's 'no mode given' refusal through toolGimpErrorResult when none of delta/absolute/center_on is given", async () => {
+      const gimp = makeGimpBackend({
+        throwFor: () =>
+          new Error(
+            'invalid_argument: move requires exactly one of delta, absolute, center_on -- each ' +
+              'a {x, y} object; flat fields like delta_x/absolute_x are not accepted'
+          ),
+      });
+      const tools = createGimpTransformLayerTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_transform_layer', { image: 1, op: 'move' });
+      expect(result.isError).toBe(true);
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toContain('requires exactly one of');
+      expect(text).toContain('delta_x');
+    });
+
+    it("maps the bridge's predicted-position-out-of-bounds refusal through toolGimpErrorResult", async () => {
+      const gimp = makeGimpBackend({
+        throwFor: () =>
+          new Error('invalid_argument: x must be within -30000..30100 for this 100px-wide canvas'),
+      });
+      const tools = createGimpTransformLayerTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_transform_layer', {
+        image: 1,
+        op: 'move',
+        absolute: { x: 999_999, y: 0 },
+      });
+      expect(result.isError).toBe(true);
+      expect((result.content?.[0] as { text: string }).text).toContain('must be within');
+    });
   });
 
   describe('op=rotate', () => {
@@ -329,6 +362,33 @@ describe('createGimpTransformLayerTools', () => {
         args: { ...TRANSFORM_LAYER_DEFAULTS, image: 1, op: 'flip', axis: 'horizontal' },
       });
       expect((result.content?.[0] as { text: string }).text).toContain('flipped horizontal');
+    });
+
+    it("maps the bridge's 'axis must be one of' refusal through toolGimpErrorResult when axis is omitted", async () => {
+      // `axis` has no schema-level `required` (it's op-specific, like every other op's own
+      // fields), so an omitted axis dispatches through to the bridge, which is what actually
+      // refuses it -- simulated here via throwFor, the same pattern every other bridge-side
+      // refusal in this file uses.
+      const gimp = makeGimpBackend({
+        throwFor: () =>
+          new Error("invalid_argument: axis must be one of ['horizontal', 'vertical']"),
+      });
+      const tools = createGimpTransformLayerTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_transform_layer', { image: 1, op: 'flip' });
+      expect(result.isError).toBe(true);
+      expect((result.content?.[0] as { text: string }).text).toContain('axis must be one of');
+    });
+
+    it('rejects an axis outside the horizontal|vertical enum before any dispatch', async () => {
+      const gimp = makeGimpBackend();
+      const tools = createGimpTransformLayerTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_transform_layer', {
+        image: 1,
+        op: 'flip',
+        axis: 'diagonal',
+      });
+      expect(result.isError).toBe(true);
+      expect(gimp.calls).toHaveLength(0);
     });
   });
 
@@ -426,6 +486,18 @@ describe('createGimpTransformLayerTools', () => {
         op: 'transform_layer',
         args: { ...TRANSFORM_LAYER_DEFAULTS, image: 1, op: 'free', interpolation: 'none' },
       });
+    });
+
+    it('rejects an interpolation value outside the fixed enum before any dispatch', async () => {
+      const gimp = makeGimpBackend();
+      const tools = createGimpTransformLayerTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_transform_layer', {
+        image: 1,
+        op: 'free',
+        interpolation: 'bicubic-smoother',
+      });
+      expect(result.isError).toBe(true);
+      expect(gimp.calls).toHaveLength(0);
     });
   });
 

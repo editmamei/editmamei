@@ -27,6 +27,9 @@ import { createGimpCoreTools } from '@editmamei/tools/gimp-core-tools.ts';
 import { createGimpDocumentTools } from '@editmamei/tools/gimp-document-tools.ts';
 import { createGimpInspectTools } from '@editmamei/tools/gimp-inspect-tools.ts';
 import { createGimpAdjustmentTools } from '@editmamei/tools/gimp-adjustment-tools.ts';
+import { createGimpEffectTools } from '@editmamei/tools/gimp-effect-tools.ts';
+import { createGimpFilterTools } from '@editmamei/tools/gimp-filter-tools.ts';
+import { createGimpGeometryTools } from '@editmamei/tools/gimp-geometry-tools.ts';
 import { createGimpMaskTools } from '@editmamei/tools/gimp-mask-tools.ts';
 import { createGimpLayerTools } from '@editmamei/tools/gimp-layer-tools.ts';
 import { createGimpComposeTools } from '@editmamei/tools/gimp-compose-tools.ts';
@@ -172,6 +175,9 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
       ...createGimpDocumentTools(backend),
       ...createGimpInspectTools(backend),
       ...createGimpAdjustmentTools(backend),
+      ...createGimpEffectTools(backend),
+      ...createGimpFilterTools(backend),
+      ...createGimpGeometryTools(backend),
       ...createGimpMaskTools(backend),
       ...createGimpLayerTools(backend),
       ...createGimpComposeTools(backend),
@@ -531,8 +537,16 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
 
   // ---- a layer's own mask travels with it, at an offset ------------------------------------
 
-  it("a layer's own mask (and its offset position) transform together with the layer on flip", async () => {
-    const halvesPath = join(workDir, 'halves.png');
+  /** A layer with a real GIMP layer mask (left half BLACK/hidden, right half WHITE/visible via
+   * `test_add_layer_mask`), its own content left=BLUE/right=GREEN, placed at a non-zero offset
+   * (10, 5) on an 80x60 white backdrop -- the shared fixture for every mask-travel test below.
+   * Before any transform: left half reads background WHITE (masked out), right half reads the
+   * layer's own GREEN (visible). */
+  async function maskTravelFixture(): Promise<{ image: number; layerId: number }> {
+    const halvesPath = join(
+      workDir,
+      `halves-${Date.now()}-${Math.random().toString(36).slice(2)}.png`
+    );
     writeHalves(halvesPath, 40, 30, BLUE, GREEN);
     const bg = await callTool(tools, 'gimp_create_document', {
       width: 80,
@@ -540,8 +554,6 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
       fill: 'white',
     });
     const image = structuredOf(bg).image as number;
-    // Placed at a non-zero OFFSET -- proves the transform operates correctly in absolute
-    // document coordinates, not just for a layer that happens to start at (0,0).
     const placed = await callTool(tools, 'gimp_place_image', {
       image,
       file_path: halvesPath,
@@ -550,6 +562,11 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
     });
     const layerId = structuredOf(placed).layer_id as number;
     await backend.call('test_add_layer_mask', { image, layer_id: layerId });
+    return { image, layerId };
+  }
+
+  it("a layer's own mask (and its offset position) transform together with the layer on flip", async () => {
+    const { image, layerId } = await maskTravelFixture();
 
     // Before any transform: mask's left half is BLACK (hidden -> background white shows),
     // right half WHITE (visible -> the layer's own GREEN content shows).
@@ -572,6 +589,58 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
     const after = await exportPng(image, 'mask-after');
     expect(pixelAt(after, 20, 20)).toEqual(GREEN);
     expect(pixelAt(after, 35, 20)).toEqual([255, 255, 255]);
+  });
+
+  it("a layer's own mask scales together with the layer at 200%", async () => {
+    const { image, layerId } = await maskTravelFixture();
+    const scaled = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'scale',
+      layer_id: layerId,
+      scale_percent: 200,
+    });
+    expect(scaled.isError, JSON.stringify(scaled.content)).toBeFalsy();
+    // New bounds: center (30, 20) unchanged, size doubles to 80x60 -> top-left (-10, -10).
+    // Left half (local x 0..40, absolute -10..30) still hidden; right half (absolute 30..70)
+    // still visible -- the SAME relative pattern as before scaling, at the new size.
+    const after = await exportPng(image, 'mask-scale-after');
+    expect(pixelAt(after, 20, 20)).toEqual([255, 255, 255]); // left half, still masked out
+    expect(pixelAt(after, 50, 20)).toEqual(GREEN); // right half, still visible
+  });
+
+  it("a layer's own mask rotates together with the layer at 180°", async () => {
+    const { image, layerId } = await maskTravelFixture();
+    const rotated = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'rotate',
+      layer_id: layerId,
+      degrees: 180,
+    });
+    expect(rotated.isError, JSON.stringify(rotated.content)).toBeFalsy();
+    // 180 degrees swaps left/right (bounds unchanged: still (10,5) 40x30). If the mask traveled
+    // WITH the rotated content: new left=GREEN(content)+WHITE(mask,visible) -> reads GREEN; new
+    // right=BLUE(content)+BLACK(mask,hidden) -> reads background WHITE. A mask stuck at its OLD
+    // orientation would instead read left=WHITE(background), right=BLUE -- the opposite pattern.
+    const after = await exportPng(image, 'mask-rotate180-after');
+    expect(pixelAt(after, 20, 20)).toEqual(GREEN);
+    expect(pixelAt(after, 40, 20)).toEqual([255, 255, 255]);
+  });
+
+  it("a layer's own mask travels through a free (matrix-based) 180° transform too", async () => {
+    const { image, layerId } = await maskTravelFixture();
+    const freed = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'free',
+      layer_id: layerId,
+      degrees: 180,
+    });
+    expect(freed.isError, JSON.stringify(freed.content)).toBeFalsy();
+    // Same expected pattern as the dedicated 'rotate' op's own 180-degree case -- proves
+    // `Item.transform_matrix` (free's own underlying call, distinct from `transform_rotate`)
+    // carries the mask along too.
+    const after = await exportPng(image, 'mask-free180-after');
+    expect(pixelAt(after, 20, 20)).toEqual(GREEN);
+    expect(pixelAt(after, 40, 20)).toEqual([255, 255, 255]);
   });
 
   // ---- background layer (no alpha) gets one ------------------------------------------------
@@ -700,6 +769,643 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
     expect(childNode.offsets).toEqual({ x: groupBounds.x, y: groupBounds.y });
   });
 
+  // ---- cap refusals via the PREDICTED bounding box, not just the pre-transform size ---------
+
+  it('rotate refuses via the predicted bounding box (29000x10 at 45°), image unchanged', async () => {
+    const path = join(workDir, 'thin-rotate.png');
+    writeRgbPng(path, 1, 1, () => RED);
+    const bg = await callTool(tools, 'gimp_create_document', { width: 100, height: 100 });
+    const image = structuredOf(bg).image as number;
+    const placed = await callTool(tools, 'gimp_place_image', {
+      image,
+      file_path: path,
+      width: 29000,
+      height: 10,
+    });
+    const layerId = structuredOf(placed).layer_id as number;
+    const before = await layerBounds(image, layerId);
+
+    const rotated = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'rotate',
+      layer_id: layerId,
+      degrees: 45,
+    });
+    expect(rotated.isError).toBe(true);
+    expect(await layerBounds(image, layerId)).toEqual(before);
+  });
+
+  it('skew refuses via the predicted bounding box exceeding the size cap, image unchanged', async () => {
+    const path = join(workDir, 'thin-skew.png');
+    writeRgbPng(path, 1, 1, () => RED);
+    const bg = await callTool(tools, 'gimp_create_document', { width: 100, height: 100 });
+    const image = structuredOf(bg).image as number;
+    const placed = await callTool(tools, 'gimp_place_image', {
+      image,
+      file_path: path,
+      width: 10,
+      height: 20000,
+    });
+    const layerId = structuredOf(placed).layer_id as number;
+    const before = await layerBounds(image, layerId);
+
+    const skewed = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'skew',
+      layer_id: layerId,
+      skew_h_degrees: 80,
+    });
+    expect(skewed.isError).toBe(true);
+    expect(await layerBounds(image, layerId)).toEqual(before);
+  });
+
+  it('free refuses via the predicted bounding box exceeding the size cap, image unchanged', async () => {
+    const { image, layer_id } = await openQuadrants(350, 350);
+    const before = await layerBounds(image, layer_id);
+
+    const freed = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'free',
+      layer_id,
+      scale_x_percent: 10000,
+      scale_y_percent: 10000,
+    });
+    expect(freed.isError).toBe(true);
+    expect(await layerBounds(image, layer_id)).toEqual(before);
+  });
+
+  it('fit refuses via the predicted bounding box exceeding the size cap (extreme aspect + fill), image unchanged', async () => {
+    const path = join(workDir, 'thin-fit.png');
+    writeRgbPng(path, 1, 1, () => RED);
+    const bg = await callTool(tools, 'gimp_create_document', { width: 2000, height: 1000 });
+    const image = structuredOf(bg).image as number;
+    const placed = await callTool(tools, 'gimp_place_image', {
+      image,
+      file_path: path,
+      width: 1,
+      height: 100,
+    });
+    const layerId = structuredOf(placed).layer_id as number;
+    const before = await layerBounds(image, layerId);
+
+    const fitted = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'fit',
+      layer_id: layerId,
+      mode: 'fill',
+    });
+    expect(fitted.isError).toBe(true);
+    expect(await layerBounds(image, layerId)).toEqual(before);
+  });
+
+  it('free refuses when the predicted ORIGIN is out of bounds (large offset_x), even though the size is unchanged', async () => {
+    const { image, layer_id } = await openQuadrants(40, 40);
+    const before = await layerBounds(image, layer_id);
+
+    const freed = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'free',
+      layer_id,
+      offset_x: 90000,
+    });
+    expect(freed.isError).toBe(true);
+    expect((freed.content?.[0] as { text: string }).text).toContain('must be within');
+    expect(await layerBounds(image, layer_id)).toEqual(before);
+  });
+
+  // ---- skew/free direction (sign) matches the documented convention, verified live ----------
+
+  it('skew_h_degrees positive slants the top edge RIGHT (pixel probe)', async () => {
+    const quadPath = join(workDir, 'quad-skew-sign.png');
+    writeQuadrants(quadPath, 40, 40);
+    const bg = await callTool(tools, 'gimp_create_document', {
+      width: 80,
+      height: 80,
+      fill: 'white',
+    });
+    const image = structuredOf(bg).image as number;
+    const placed = await callTool(tools, 'gimp_place_image', {
+      image,
+      file_path: quadPath,
+      x: 20,
+      y: 20,
+    });
+    const layerId = structuredOf(placed).layer_id as number;
+
+    const skewed = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'skew',
+      layer_id: layerId,
+      skew_h_degrees: 30,
+    });
+    expect(skewed.isError, JSON.stringify(skewed.content)).toBeFalsy();
+    const composite = await exportPng(image, 'skew-sign');
+    // The layer spans absolute (20,20)-(60,60), center (40,40). A point just inside the
+    // ORIGINAL top-left corner, (22, 22): if the top edge truly slants RIGHT for a positive
+    // skew_h, the transformed layer's own content no longer reaches this point at all --
+    // the white backdrop shows through. (Worked out via the inverse of x' = x - tan(h)*y
+    // about the center: the point maps back to local x ~= -28, well outside the original
+    // [-20, 20] half-width.)
+    expect(pixelAt(composite, 22, 22)).toEqual([255, 255, 255]);
+  });
+
+  it("free's own rotation sign matches the dedicated rotate op's sign (pixel probe)", async () => {
+    const { image, layer_id } = await openQuadrants(40, 40);
+    const freed = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'free',
+      layer_id,
+      degrees: 90,
+    });
+    expect(freed.isError, JSON.stringify(freed.content)).toBeFalsy();
+    const composite = await exportPng(image, 'free-rotate-sign');
+    // The exact same clockwise-90 pattern as the dedicated rotate op's own test: old top-left
+    // (red) -> new top-right; old bottom-right (yellow) -> new bottom-left.
+    expect(pixelAt(composite, 30, 10)).toEqual(RED);
+    expect(pixelAt(composite, 10, 30)).toEqual(YELLOW);
+  });
+
+  // ---- rotate grows to the predicted box exactly, nothing clips -----------------------------
+
+  it('rotate 30° grows to the predicted bounding box (within 1px), with every corner of it covered -- nothing clips', async () => {
+    const quadPath = join(workDir, 'quad-rotate30.png');
+    writeQuadrants(quadPath, 40, 40);
+    const bg = await callTool(tools, 'gimp_create_document', {
+      width: 120,
+      height: 120,
+      fill: 'white',
+    });
+    const image = structuredOf(bg).image as number;
+    const placed = await callTool(tools, 'gimp_place_image', {
+      image,
+      file_path: quadPath,
+      x: 40,
+      y: 40,
+    });
+    const layerId = structuredOf(placed).layer_id as number;
+    const before = await layerBounds(image, layerId);
+
+    const rotated = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'rotate',
+      layer_id: layerId,
+      degrees: 30,
+    });
+    expect(rotated.isError, JSON.stringify(rotated.content)).toBeFalsy();
+    const bounds = structuredOf(rotated).bounds as Bounds;
+
+    const rad = (30 * Math.PI) / 180;
+    const predictedW =
+      before.width * Math.abs(Math.cos(rad)) + before.height * Math.abs(Math.sin(rad));
+    const predictedH =
+      before.width * Math.abs(Math.sin(rad)) + before.height * Math.abs(Math.cos(rad));
+    // Within a couple of pixels, not exact -- GIMP's own ADJUST rounds each axis of the
+    // rotated bounding box outward independently, which can differ from this plain trig
+    // prediction by a little more than a single pixel (measured live: up to ~1.4px).
+    expect(Math.abs(bounds.width - predictedW)).toBeLessThanOrEqual(2);
+    expect(Math.abs(bounds.height - predictedH)).toBeLessThanOrEqual(2);
+
+    // "Nothing clips" verified by area, not by probing individual corners (a rotated SQUARE's
+    // own vertex touches its AABB at a single point per corner, at an angle that varies by
+    // corner -- a fixed diagonal inset from the box corner isn't reliably still inside the
+    // shape for every corner at every angle). Rotation preserves area exactly: if ANY part of
+    // the original 40x40 (1600px) content had clipped outside the grown bounding box, the
+    // covered (non-background) pixel count would measurably shrink below it.
+    const composite = await exportPng(image, 'rotate30-corners');
+    let covered = 0;
+    for (let yy = 0; yy < composite.height; yy++) {
+      for (let xx = 0; xx < composite.width; xx++) {
+        const [r, g, b] = pixelAt(composite, xx, yy);
+        if (r !== 255 || g !== 255 || b !== 255) covered++;
+      }
+    }
+    expect(covered).toBeGreaterThan(before.width * before.height * 0.9);
+  });
+
+  // ---- the interpolation/ADJUST context bracket never leaks into a later, unrelated call ----
+
+  it('a later call with no explicit interpolation renders identically to an explicit cubic call, even right after a none+ADJUST call', async () => {
+    const path = join(workDir, 'hard-edge-leak.png');
+    writeHardEdge(path, 40, 40);
+
+    async function freshRotate(interpolation?: string): Promise<number> {
+      const opened = await callTool(tools, 'gimp_open_document', { file_path: path });
+      const image = structuredOf(opened).image as number;
+      const tree = await callTool(tools, 'gimp_inspect', { what: 'layers', image });
+      const layerId = (structuredOf(tree).layers as Array<{ layer_id: number }>)[0]!.layer_id;
+      await callTool(tools, 'gimp_transform_layer', {
+        image,
+        op: 'rotate',
+        layer_id: layerId,
+        degrees: 10,
+        ...(interpolation ? { interpolation } : {}),
+      });
+      return image;
+    }
+
+    const noneImage = await freshRotate('none');
+    await callTool(tools, 'gimp_close_document', { image: noneImage });
+
+    const defaultImage = await freshRotate(undefined);
+    const defaultComposite = await exportPng(defaultImage, 'leak-default');
+    await callTool(tools, 'gimp_close_document', { image: defaultImage });
+
+    const explicitCubicImage = await freshRotate('cubic');
+    const explicitComposite = await exportPng(explicitCubicImage, 'leak-explicit-cubic');
+    await callTool(tools, 'gimp_close_document', { image: explicitCubicImage });
+
+    expect(maxAbsDiff(defaultComposite, explicitComposite)).toBe(0);
+  });
+
+  // ---- unmasked position/direction-dependent EFFECT filters: remapped, or refused (G1) ------
+
+  it('flip remaps an unmasked motion_blur effect’s angle, and the ledger stays valid', async () => {
+    const { image, layer_id } = await openQuadrants(40, 40);
+    const effect = await callTool(tools, 'gimp_add_effect', {
+      image,
+      layer_id,
+      type: 'motion_blur',
+      angle: 30,
+      length: 10,
+    });
+    expect(effect.isError, JSON.stringify(effect.content)).toBeFalsy();
+    const filterId = structuredOf(effect).filter_id as number;
+
+    const flipped = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'flip',
+      layer_id,
+      axis: 'horizontal',
+    });
+    expect(flipped.isError, JSON.stringify(flipped.content)).toBeFalsy();
+
+    const listed = await callTool(tools, 'gimp_filter', { image, op: 'list' });
+    const record = (
+      structuredOf(listed).filters as Array<{ filter_id: number; params: { angle: number } }>
+    ).find((f) => f.filter_id === filterId)!;
+    // flip_effect_params' own horizontal-flip rule for motion_blur: angle -> wrap(180 - angle).
+    expect(record.params.angle).toBeCloseTo(150, 5);
+
+    // The ledger record itself stays valid: a re-edit by filter_id succeeds.
+    const reEdited = await callTool(tools, 'gimp_add_effect', {
+      image,
+      filter_id: filterId,
+      type: 'motion_blur',
+      length: 12,
+    });
+    expect(reEdited.isError, JSON.stringify(reEdited.content)).toBeFalsy();
+  });
+
+  it('scale 200% remaps an unmasked drop_shadow effect’s offset/radius, and the ledger stays valid', async () => {
+    const { image, layer_id } = await openQuadrants(40, 40);
+    const effect = await callTool(tools, 'gimp_add_effect', {
+      image,
+      layer_id,
+      type: 'drop_shadow',
+      offset_x: 10,
+      offset_y: 10,
+      radius: 5,
+      opacity: 0.8,
+    });
+    expect(effect.isError, JSON.stringify(effect.content)).toBeFalsy();
+    const filterId = structuredOf(effect).filter_id as number;
+
+    const scaled = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'scale',
+      layer_id,
+      scale_percent: 200,
+    });
+    expect(scaled.isError, JSON.stringify(scaled.content)).toBeFalsy();
+
+    const listed = await callTool(tools, 'gimp_filter', { image, op: 'list' });
+    const record = (
+      structuredOf(listed).filters as Array<{
+        filter_id: number;
+        params: { offset_x: number; offset_y: number; radius: number };
+      }>
+    ).find((f) => f.filter_id === filterId)!;
+    expect(record.params.offset_x).toBeCloseTo(20, 5);
+    expect(record.params.offset_y).toBeCloseTo(20, 5);
+    expect(record.params.radius).toBeCloseTo(10, 5);
+
+    const reEdited = await callTool(tools, 'gimp_add_effect', {
+      image,
+      filter_id: filterId,
+      type: 'drop_shadow',
+      opacity: 0.9,
+    });
+    expect(reEdited.isError, JSON.stringify(reEdited.content)).toBeFalsy();
+  });
+
+  it('rotate at an arbitrary angle refuses while an unmasked vignette is present; a right-angle rotate is still fine', async () => {
+    const { image, layer_id } = await openQuadrants(40, 40);
+    const effect = await callTool(tools, 'gimp_add_effect', { image, layer_id, type: 'vignette' });
+    expect(effect.isError, JSON.stringify(effect.content)).toBeFalsy();
+    const before = await layerBounds(image, layer_id);
+
+    const rotated = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'rotate',
+      layer_id,
+      degrees: 33,
+    });
+    expect(rotated.isError).toBe(true);
+    expect((rotated.content?.[0] as { text: string }).text).toContain('Vignette');
+    expect(await layerBounds(image, layer_id)).toEqual(before);
+
+    const rotated90 = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'rotate',
+      layer_id,
+      degrees: 90,
+    });
+    expect(rotated90.isError, JSON.stringify(rotated90.content)).toBeFalsy();
+  });
+
+  it('scale refuses when non-uniform while an unmasked motion_blur effect is present; a uniform scale is still fine', async () => {
+    const { image, layer_id } = await openQuadrants(40, 40);
+    const effect = await callTool(tools, 'gimp_add_effect', {
+      image,
+      layer_id,
+      type: 'motion_blur',
+      angle: 0,
+      length: 10,
+    });
+    expect(effect.isError, JSON.stringify(effect.content)).toBeFalsy();
+    const before = await layerBounds(image, layer_id);
+
+    const nonUniform = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'scale',
+      layer_id,
+      scale_x_percent: 150,
+      scale_y_percent: 50,
+    });
+    expect(nonUniform.isError).toBe(true);
+    expect(await layerBounds(image, layer_id)).toEqual(before);
+
+    const uniform = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'scale',
+      layer_id,
+      scale_percent: 150,
+    });
+    expect(uniform.isError, JSON.stringify(uniform.content)).toBeFalsy();
+  });
+
+  it('skew and free both refuse outright while an unmasked vignette is present (no angle is safe for either)', async () => {
+    const { image, layer_id } = await openQuadrants(40, 40);
+    const effect = await callTool(tools, 'gimp_add_effect', { image, layer_id, type: 'vignette' });
+    expect(effect.isError, JSON.stringify(effect.content)).toBeFalsy();
+
+    const skewed = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'skew',
+      layer_id,
+      skew_h_degrees: 10,
+    });
+    expect(skewed.isError).toBe(true);
+    expect((skewed.content?.[0] as { text: string }).text).toContain('Vignette');
+
+    const freed = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'free',
+      layer_id,
+      degrees: 10,
+    });
+    expect(freed.isError).toBe(true);
+    expect((freed.content?.[0] as { text: string }).text).toContain('Vignette');
+  });
+
+  // ---- lock-position / lock-content: refused outright, no mutation, no alpha_added (G2) -----
+
+  it('refuses outright on a lock-position layer, before any mutation or alpha-add', async () => {
+    const { image, layer_id } = await openQuadrants(40, 40);
+    await backend.call('test_set_layer_lock', { image, layer_id, lock_position: true });
+    const before = await layerBounds(image, layer_id);
+
+    const moved = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'move',
+      layer_id,
+      absolute: { x: 5, y: 5 },
+    });
+    expect(moved.isError).toBe(true);
+    expect((moved.content?.[0] as { text: string }).text).toContain('lock-position');
+    expect(await layerBounds(image, layer_id)).toEqual(before);
+
+    const tree = await callTool(tools, 'gimp_inspect', { what: 'layers', image });
+    const node = (
+      structuredOf(tree).layers as Array<{ layer_id: number; has_alpha: boolean }>
+    ).find((n) => n.layer_id === layer_id)!;
+    // This fixture's PNG has no alpha channel -- if alpha had been added despite the refusal,
+    // this would read true.
+    expect(node.has_alpha).toBe(false);
+  });
+
+  it('refuses outright on a lock-content layer, before any mutation', async () => {
+    const { image, layer_id } = await openQuadrants(40, 40);
+    await backend.call('test_set_layer_lock', { image, layer_id, lock_content: true });
+    const before = await layerBounds(image, layer_id);
+
+    const scaled = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'scale',
+      layer_id,
+      scale_percent: 150,
+    });
+    expect(scaled.isError).toBe(true);
+    expect((scaled.content?.[0] as { text: string }).text).toContain('lock-content');
+    expect(await layerBounds(image, layer_id)).toEqual(before);
+  });
+
+  // ---- an active selection is cleared before transforming (G3) -------------------------------
+
+  it('clears an active selection before transforming -- the WHOLE layer moves, no floating selection left behind', async () => {
+    const { image, layer_id } = await openQuadrants(40, 40);
+    await backend.call('test_select_rect', { image, x: 0, y: 0, width: 10, height: 10 });
+
+    const moved = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'move',
+      layer_id,
+      absolute: { x: 5, y: 5 },
+    });
+    expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
+    const bounds = structuredOf(moved).bounds as Bounds;
+    // If the selection had confined the move, only the originally-selected 10x10 corner would
+    // have moved -- the WHOLE 40x40 layer landing at exactly (5,5) proves it was cleared first.
+    expect(bounds).toMatchObject({ x: 5, y: 5, width: 40, height: 40 });
+
+    const selEmpty = await backend.call<{ selection_empty: boolean }>('test_selection_empty', {
+      image,
+    });
+    expect(selEmpty.selection_empty).toBe(true);
+  });
+
+  // ---- a GROUP target's own no-alpha descendant gets alpha too (G4) --------------------------
+
+  it("adds alpha to a GROUP target's no-alpha child, avoiding opaque corners on rotate", async () => {
+    const path = join(workDir, 'group-child-noalpha.png');
+    writeRgbPng(path, 30, 30, () => RED);
+    const bg = await callTool(tools, 'gimp_create_document', {
+      width: 100,
+      height: 100,
+      fill: 'white',
+    });
+    const image = structuredOf(bg).image as number;
+    const group = await callTool(tools, 'gimp_layer', { image, op: 'create_group', name: 'G4' });
+    const groupId = structuredOf(group).layer_id as number;
+    const placed = await callTool(tools, 'gimp_place_image', {
+      image,
+      file_path: path,
+      x: 35,
+      y: 35,
+      parent_group: groupId,
+    });
+    const childId = structuredOf(placed).layer_id as number;
+
+    const treeBefore = await callTool(tools, 'gimp_inspect', { what: 'layers', image });
+    const groupNodeBefore = (
+      structuredOf(treeBefore).layers as Array<{
+        layer_id: number;
+        children: Array<{ layer_id: number; has_alpha: boolean }>;
+      }>
+    ).find((n) => n.layer_id === groupId)!;
+    expect(groupNodeBefore.children.find((c) => c.layer_id === childId)!.has_alpha).toBe(false);
+
+    const rotated = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'rotate',
+      layer_id: groupId,
+      degrees: 30,
+      interpolation: 'none',
+    });
+    expect(rotated.isError, JSON.stringify(rotated.content)).toBeFalsy();
+    expect(structuredOf(rotated).alpha_added).toBe(true);
+
+    const treeAfter = await callTool(tools, 'gimp_inspect', { what: 'layers', image });
+    const groupNodeAfter = (
+      structuredOf(treeAfter).layers as Array<{
+        layer_id: number;
+        children: Array<{ layer_id: number; has_alpha: boolean }>;
+      }>
+    ).find((n) => n.layer_id === groupId)!;
+    expect(groupNodeAfter.children.find((c) => c.layer_id === childId)!.has_alpha).toBe(true);
+
+    // No opaque corner fill: the rotated bounding box's own corner is NOT covered by the
+    // rotated square (verified for 'rotate 30' above), so it must show the WHITE backdrop
+    // through, not an opaque fill color.
+    const groupBounds = structuredOf(rotated).bounds as Bounds;
+    const composite = await exportPng(image, 'group-no-alpha-corner');
+    expect(
+      pixelAt(composite, Math.round(groupBounds.x) + 1, Math.round(groupBounds.y) + 1)
+    ).toEqual([255, 255, 255]);
+  });
+
+  // ---- integer-pixel snapping: no half-pixel resample (G5) -----------------------------------
+
+  it('fit of a layer that already fits exactly is a true pixel-identical no-op, even at an ODD size', async () => {
+    const path = join(workDir, 'exact-fit-odd.png');
+    writeQuadrants(path, 41, 41);
+    const bg = await callTool(tools, 'gimp_create_document', { width: 41, height: 41 });
+    const image = structuredOf(bg).image as number;
+    const placed = await callTool(tools, 'gimp_place_image', { image, file_path: path });
+    const layerId = structuredOf(placed).layer_id as number;
+    const before = await exportPng(image, 'exact-fit-odd-before');
+
+    const fitted = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'fit',
+      layer_id: layerId,
+      interpolation: 'none',
+    });
+    expect(fitted.isError, JSON.stringify(fitted.content)).toBeFalsy();
+    expect(structuredOf(fitted).scale_percent).toBe(100);
+    const after = await exportPng(image, 'exact-fit-odd-after');
+    expect(maxAbsDiff(before, after)).toBe(0);
+  });
+
+  it("scale rounds a .5 boundary UP (half-up), not Python's own banker's round-to-even", async () => {
+    const path = join(workDir, 'tiny5.png');
+    writeRgbPng(path, 5, 10, () => RED);
+    const bg = await callTool(tools, 'gimp_create_document', { width: 100, height: 100 });
+    const image = structuredOf(bg).image as number;
+    const placed = await callTool(tools, 'gimp_place_image', { image, file_path: path });
+    const layerId = structuredOf(placed).layer_id as number;
+    // 5 * 50% = 2.5 exactly -- Python's own round() (banker's rounding) would snap this DOWN to
+    // 2 (the nearest EVEN integer); floor(v + 0.5) rounds it UP to 3 instead (via the two
+    // corners it snaps independently: x0=1, x1=4 -> width 3).
+    const scaled = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'scale',
+      layer_id: layerId,
+      scale_percent: 50,
+    });
+    expect(scaled.isError, JSON.stringify(scaled.content)).toBeFalsy();
+    const bounds = structuredOf(scaled).bounds as Bounds;
+    expect(bounds.width).toBe(3);
+  });
+
+  it("move center_on rounds a .5 boundary UP (half-up), not Python's own banker's round-to-even", async () => {
+    const path = join(workDir, 'tiny4.png');
+    writeRgbPng(path, 4, 4, () => RED);
+    const bg = await callTool(tools, 'gimp_create_document', { width: 100, height: 100 });
+    const image = structuredOf(bg).image as number;
+    const placed = await callTool(tools, 'gimp_place_image', { image, file_path: path });
+    const layerId = structuredOf(placed).layer_id as number;
+    // Target center (10.5, 10.5): top-left = target - half-size (2,2) = (8.5, 8.5).
+    // floor(8.5 + 0.5) = 9 (half-up); Python's own round(8.5) (banker's) would give 8.
+    const moved = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'move',
+      layer_id: layerId,
+      center_on: { x: 10.5, y: 10.5 },
+    });
+    expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
+    const bounds = structuredOf(moved).bounds as Bounds;
+    expect(bounds.x).toBe(9);
+    expect(bounds.y).toBe(9);
+  });
+
+  // ---- text layers stay text layers, reported back (G6) --------------------------------------
+
+  it('a text layer stays a text layer through a free (matrix-based) transform, reported as text_layer', async () => {
+    const bg = await callTool(tools, 'gimp_create_document', { width: 100, height: 100 });
+    const image = structuredOf(bg).image as number;
+    const text = await backend.call<{ layer_id: number }>('test_add_text_layer', {
+      image,
+      text: 'Hi',
+    });
+    const freed = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'free',
+      layer_id: text.layer_id,
+      scale_x_percent: 150,
+      degrees: 10,
+    });
+    expect(freed.isError, JSON.stringify(freed.content)).toBeFalsy();
+    expect(structuredOf(freed).text_layer).toBe(true);
+    const tree = await callTool(tools, 'gimp_inspect', { what: 'layers', image });
+    const node = (
+      structuredOf(tree).layers as Array<{ layer_id: number; is_text_layer: boolean }>
+    ).find((n) => n.layer_id === text.layer_id)!;
+    expect(node.is_text_layer).toBe(true);
+  });
+
+  it('a regular (non-text) layer reports text_layer: false', async () => {
+    const { image, layer_id } = await openQuadrants(20, 20);
+    const moved = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'move',
+      layer_id,
+      delta: { x: 1, y: 1 },
+    });
+    expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
+    expect(structuredOf(moved).text_layer).toBe(false);
+  });
+
   // ---- timing budget (opt-in, heavy) --------------------------------------------------------
   //
   // Gated behind EDITMAMEI_GIMP_PERF=1 like large-image-timing.test.ts's own block -- a ~24MP
@@ -760,5 +1466,96 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
       expect(rotateMs, 'rotate').toBeLessThan(budget * MARGIN);
       expect(freeMs, 'free').toBeLessThan(budget * MARGIN);
     }, 120_000);
+
+    // S3: the budget above is measured against a ~24MP sample, but the bridge's own
+    // precision-aware cap (lib.validate_document_dims) allows a result up to ~250MP at 8-bit or
+    // ~125MP at 16-bit -- this measures the SAME ops near THAT cap instead, the actual worst
+    // case a caller can reach without being refused outright.
+    it('scale and rotate near the precision-aware size cap (8-bit ~217MP, 16-bit ~106MP) each fit the configured budget (+ margin)', async () => {
+      async function timedNearCap(
+        label: string,
+        args: Record<string, unknown>,
+        width: number,
+        height: number,
+        precision?: '16'
+      ): Promise<number> {
+        const placeholderPath = join(
+          workDir,
+          `perf-cap-src-${label.replace(/[^a-z0-9]/gi, '')}.png`
+        );
+        writeRgbPng(placeholderPath, 10, 10, () => RED);
+        const bg = await callTool(tools, 'gimp_create_document', {
+          width,
+          height,
+          ...(precision ? { precision } : {}),
+        });
+        const image = structuredOf(bg).image as number;
+        const placed = await callTool(tools, 'gimp_place_image', {
+          image,
+          file_path: placeholderPath,
+          width,
+          height,
+        });
+        const layerId = structuredOf(placed).layer_id as number;
+
+        const t0 = Date.now();
+        const result = await callTool(tools, 'gimp_transform_layer', {
+          image,
+          layer_id: layerId,
+          ...args,
+        });
+        expect(result.isError, `${label}: ${JSON.stringify(result.content)}`).toBeFalsy();
+        const ms = Date.now() - t0;
+        // eslint-disable-next-line no-console -- the whole point: numbers visible in the log.
+        console.log(
+          `[timing-cap] gimp_transform_layer ${label}: ${ms}ms (${width}x${height}${precision ? ` ${precision}-bit` : ' 8-bit'})`
+        );
+        await callTool(tools, 'gimp_close_document', { image });
+        return ms;
+      }
+
+      // Each base size is chosen so the RESULT lands close to, but under, the cap --
+      // 250MP/30000px-per-side at 8-bit, 125MP at 16-bit -- so the transform itself (not a
+      // cap refusal) is what gets timed. Each op's OWN worst-case growth (scale's is a clean
+      // 1.1025x area factor; rotate's depends on aspect ratio too -- an elongated rectangle
+      // gains proportionally more area from even a small angle) lands close to, but under,
+      // the cap -- not the SAME base for both, which would either under-shoot one op or
+      // overshoot the other.
+      const scale8bitMs = await timedNearCap(
+        'scale8bit',
+        { op: 'scale', scale_percent: 105 },
+        27000,
+        7000
+      );
+      const rotate8bitMs = await timedNearCap(
+        'rotate8bit',
+        { op: 'rotate', degrees: 5 },
+        25000,
+        7000
+      );
+
+      // 16-bit: the tighter 125MP cap.
+      const scale16bitMs = await timedNearCap(
+        'scale16bit',
+        { op: 'scale', scale_percent: 105 },
+        13900,
+        8000,
+        '16'
+      );
+      const rotate16bitMs = await timedNearCap(
+        'rotate16bit',
+        { op: 'rotate', degrees: 5 },
+        10800,
+        8000,
+        '16'
+      );
+
+      const budget = TOOL_TIMEOUT_BUDGETS_MS.gimp_transform_layer ?? DEFAULT_SCRIPT_TIMEOUT_MS;
+      const MARGIN = 0.7;
+      expect(scale8bitMs, 'scale (8-bit, near cap)').toBeLessThan(budget * MARGIN);
+      expect(rotate8bitMs, 'rotate (8-bit, near cap)').toBeLessThan(budget * MARGIN);
+      expect(scale16bitMs, 'scale (16-bit, near cap)').toBeLessThan(budget * MARGIN);
+      expect(rotate16bitMs, 'rotate (16-bit, near cap)').toBeLessThan(budget * MARGIN);
+    }, 180_000);
   });
 });

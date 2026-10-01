@@ -721,3 +721,60 @@ describe('gimp_filter op=list reports layer/layer_id alongside the rest of the r
     expect(text).toMatch(/`?layer`?\/`?layer_id`?/);
   });
 });
+
+describe('gimp_transform_layer: description and field text pin the engine behaviour', () => {
+  it('the tool description is 100..400 characters and names layer_id', () => {
+    const desc = description('gimp_transform_layer');
+    expect(desc.length).toBeGreaterThanOrEqual(100);
+    expect(desc.length).toBeLessThanOrEqual(400);
+    expect(desc).toMatch(/layer_id/);
+  });
+
+  it('says a group target also refuses on its descendants’ masked filters', () => {
+    const desc = description('gimp_transform_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/group target.?s descendants/);
+    expect(desc).toMatch(/masked filter/);
+  });
+
+  it('says a layer with no alpha gets one (alpha_added)', () => {
+    expect(description('gimp_transform_layer')).toMatch(/alpha_added/);
+  });
+
+  it('says rotate/skew/free grow the layer so nothing clips', () => {
+    expect(description('gimp_transform_layer')).toMatch(/nothing clips/);
+  });
+
+  it('the op field documents every op, a non-uniform scale refusal, an arbitrary-angle rotate refusal, and that skew/free always refuse while an unmasked tracked effect is present', () => {
+    const text = field('gimp_transform_layer', 'op').replace(/\s+/g, ' ');
+    for (const op of ['fit', 'scale', 'move', 'rotate', 'flip', 'skew', 'free']) {
+      expect(text, op).toMatch(new RegExp(`'${op}'`));
+    }
+    expect(text).toMatch(/NON-uniform scale is refused/);
+    expect(text).toMatch(/arbitrary .*angle is refused/);
+    expect(text).toMatch(/skew and free are always refused/);
+  });
+
+  it('the op field says a text layer stays a text layer, never rasterized', () => {
+    expect(field('gimp_transform_layer', 'op').replace(/\s+/g, ' ')).toMatch(
+      /text layer stays a text layer.*never rasterized/
+    );
+  });
+
+  it('the op field says move’s three modes are {x, y} objects, and flat fields are not accepted', () => {
+    const text = field('gimp_transform_layer', 'op').replace(/\s+/g, ' ');
+    expect(text).toMatch(/\{x, y\} object/);
+    expect(text).toMatch(/delta_x\/absolute_x fields are not accepted/);
+  });
+
+  it('declares text_layer and effect_update_failures in the outputSchema', () => {
+    const schema = byName.get('gimp_transform_layer')!.outputSchema as unknown as {
+      properties: { text_layer: { type: string }; effect_update_failures: { type: string } };
+    };
+    expect(schema.properties.text_layer.type).toBe('boolean');
+    expect(schema.properties.effect_update_failures.type).toBe('array');
+  });
+
+  it('is marked destructive', () => {
+    expect(byName.get('gimp_transform_layer')!.annotations?.destructiveHint).toBe(true);
+  });
+});

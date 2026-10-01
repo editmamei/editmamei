@@ -74,7 +74,7 @@ const resizeSchema: JsonSchemaObject = {
  * this text never needs to change if that changes. A plain array of strings, not a nullable/oneOf
  * type: `runGimpTool`/`gimpTransformCanvas` simply omit the key from the result when there is
  * nothing to report, rather than encoding "empty" as a schema-level null variant. */
-const EFFECT_UPDATE_FAILURES_PROP: JsonSchemaProperty = {
+export const EFFECT_UPDATE_FAILURES_PROP: JsonSchemaProperty = {
   type: 'array',
   items: { type: 'string' },
   description:
@@ -123,7 +123,7 @@ const transformCanvasSchema: JsonSchemaObject = {
  * size in the ledger (guaranteed, bridge/ops.py's `_apply_planned_effect_transform`), and the
  * bridge also tries to restore those same OLD values to the live render (best effort -- it just
  * didn't move with the rest of the image, though rarely even that restore can fail too). */
-function effectUpdateFailuresNote(failures: string[] | undefined): string {
+export function effectUpdateFailuresNote(failures: string[] | undefined): string {
   if (!failures || failures.length === 0) return '';
   const plural = failures.length > 1;
   const it = plural ? 'them' : 'it';

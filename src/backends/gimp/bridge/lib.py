@@ -252,6 +252,74 @@ TRANSFORM_LAYER_MAX_SCALE_PERCENT = 10_000
 # lives in ops.py (this module stays gi-free).
 TRANSFORM_LAYER_INTERPOLATIONS = ('none', 'linear', 'cubic', 'nohalo', 'lohalo')
 
+# gimp_transform_layer's `free` op: offset_x/offset_y bound -- a sanity ceiling on the final
+# absolute translation, well past MAX_RESIZE_SIDE_PX (30000) so any real placement fits, but
+# tight enough that a wildly out-of-range value is refused here rather than only by the derived
+# predicted-origin check (`_validated_move_offset`) it also feeds into.
+TRANSFORM_LAYER_MAX_OFFSET_PX = 100_000
+
+# gimp_transform_layer's own op -> the field names that op reads, the same role
+# `type_fields`/`FILTER_COMMON_KEYS` play for gimp_add_adjustment/gimp_add_effect above --
+# `reject_foreign_transform_fields` refuses any OTHER declared field a caller sent (e.g. a
+# PS-style flat `delta_x`, or `skew_h_degrees` on op=scale), so a typo validates instead of
+# silently being ignored by that op's own handler.
+TRANSFORM_LAYER_COMMON_KEYS = frozenset(('image', 'op', 'layer', 'layer_id', 'interpolation'))
+
+TRANSFORM_LAYER_OP_FIELDS = {
+    'fit': ('mode',),
+    'scale': ('scale_percent', 'scale_x_percent', 'scale_y_percent'),
+    'move': ('delta', 'absolute', 'center_on'),
+    'rotate': ('degrees',),
+    'flip': ('axis',),
+    'skew': ('skew_h_degrees', 'skew_v_degrees'),
+    'free': ('scale_x_percent', 'scale_y_percent', 'degrees', 'offset_x', 'offset_y'),
+}
+
+
+def reject_foreign_transform_fields(op, args):
+    """Refuse any field `op` does not read -- the gimp_transform_layer analogue of
+    `reject_foreign_fields` above, over `TRANSFORM_LAYER_OP_FIELDS` instead of the filter-type
+    tables. `op`'s own schema is flat (one property per name across every op), so without this a
+    field meant for a DIFFERENT op (`skew_h_degrees` on op=scale, or PS's flat `delta_x` instead
+    of this tool's nested `delta`) validates, is ignored by that op's own handler, and silently
+    does nothing. None values are ignored (an omitted field)."""
+    own = TRANSFORM_LAYER_OP_FIELDS.get(op, ())
+    foreign = sorted(
+        k for k, v in args.items()
+        if v is not None and k not in TRANSFORM_LAYER_COMMON_KEYS and k not in own
+    )
+    if foreign:
+        raise ValueError(
+            "op '%s' does not use field(s) %s; its fields are: %s"
+            % (op, ', '.join(foreign), ', '.join(own) or '(none)')
+        )
+
+
+def ceil_with_margin(value):
+    """`value` rounded UP to the next whole pixel, plus one more -- the conservative integer a
+    cap check validates against for a float `transformed_bounds` predicts, matching the extra
+    pixel GIMP's own ADJUST transform-resize can add by rounding each edge of a rotated/sheared
+    bounding box outward independently (floor the min edge, ceil the max edge), which can land
+    the ACTUAL resulting integer width/height one pixel past a plain `ceil` of the float width.
+    Never used for the transform's own corner coordinates (those stay exact floats) -- only for
+    deciding whether to refuse BEFORE any pixel moves."""
+    return int(math.ceil(value)) + 1
+
+
+def transform_layer_precision_bucket(precision_nick):
+    """`Gimp.Precision.value_nick` (e.g. 'u8-non-linear', 'u16-perceptual', 'float-linear')
+    bucketed into the '8'/'16'/'32' strings `validate_document_dims`'s own
+    `DOCUMENT_MEGAPIXEL_CAP` is keyed by -- gimp_transform_layer validates a layer's predicted
+    size against the SAME precision-aware cap gimp_create_document does, rather than always
+    assuming 8-bit. u32/half/float/double all bucket to '32' (4+ bytes/channel, the most
+    conservative bucket) -- this bridge has no DOCUMENT_MEGAPIXEL_CAP entry finer than that."""
+    nick = precision_nick.lower()
+    if nick.startswith('u8'):
+        return '8'
+    if nick.startswith('u16') or nick.startswith('half'):
+        return '16'
+    return '32'
+
 
 def require(args, name):
     """Fetch a required field from an op's `args`, raising ValueError naming it -- the
@@ -1604,34 +1672,67 @@ def _mat_rotate(degrees):
     return [cos_t, -sin_t, 0.0, sin_t, cos_t, 0.0, 0.0, 0.0, 1.0]
 
 
-def _mat_shear(skew_h_degrees, skew_v_degrees):
-    """Positive `skew_h_degrees` slants the top edge right (a point above center, smaller y,
-    moves toward +x); positive `skew_v_degrees` slants the left edge down (a point left of
-    center, smaller x, moves toward +y) -- the same convention `gimp_transform_layer`'s own
-    schema documents, and the one `ps_transform_layer`'s op=skew uses."""
-    return [
-        1.0, -math.tan(math.radians(skew_h_degrees)), 0.0,
-        -math.tan(math.radians(skew_v_degrees)), 1.0, 0.0,
-        0.0, 0.0, 1.0,
-    ]
+def _mat_shear_h(skew_h_degrees):
+    """A pure horizontal shear: x' = x - tan(skew_h_degrees)*y, y' = y -- determinant exactly 1
+    for any angle. Positive `skew_h_degrees` slants the top edge right (a point above center,
+    smaller y, moves toward +x) -- the convention `gimp_transform_layer`'s own schema documents,
+    and the one `ps_transform_layer`'s op=skew uses."""
+    return [1.0, -math.tan(math.radians(skew_h_degrees)), 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_shear_v(skew_v_degrees):
+    """A pure vertical shear: x' = x, y' = -tan(skew_v_degrees)*x + y -- determinant exactly 1
+    for any angle. Positive `skew_v_degrees` slants the left edge down (a point left of center,
+    smaller x, moves toward +y)."""
+    return [1.0, 0.0, 0.0, -math.tan(math.radians(skew_v_degrees)), 1.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_determinant(m):
+    """The determinant of `m`'s linear (non-translation) 2x2 part -- the translation column
+    (indices 2, 5) never affects it. Zero means the transform collapses the rectangle to a line
+    or a point; negative means it mirrors (flips handedness) rather than purely scaling/
+    rotating/shearing it."""
+    return m[0] * m[4] - m[1] * m[3]
+
+
+# A composed matrix below this |determinant| is treated the same as an exact 0: numerically
+# indistinguishable from a transform that collapses the layer to a line, so refused outright
+# rather than handed to `Item.transform_matrix` to silently produce a degenerate result.
+TRANSFORM_LAYER_MIN_DETERMINANT = 1e-6
 
 
 def compose_layer_matrix(cx, cy, scale_x_percent, scale_y_percent, degrees,
                           skew_h_degrees, skew_v_degrees, offset_x, offset_y):
     """The 9 row-major coefficients for `Item.transform_matrix`: a scale (percent, 100 =
-    unchanged), then a shear (skew_h_degrees/skew_v_degrees -- slant angles), then a rotation
-    (degrees, clockwise), all anchored at the layer's own center (`cx`, `cy`, document pixels),
-    followed by an absolute translation (`offset_x`, `offset_y`). `op_transform_layer`'s `free`
-    op calls this directly (scale + degrees + offset, no skew); `skew` calls it with scale 100/
-    100, degrees 0, offset 0/0; `rotate`'s own bounds check (not its actual transform, which goes
-    through `Item.transform_rotate` instead -- see ops.py) reuses it with scale 100/100, skew
-    0/0, offset 0/0 purely to predict the post-rotation bounding box via `transformed_bounds`."""
+    unchanged), then a skew (skew_h_degrees/skew_v_degrees, composed as two independent real
+    shears -- Sh_v . Sh_h, each with its OWN determinant of exactly 1, so the composed skew's
+    determinant is always exactly 1 too, for any angle), then a rotation (degrees, clockwise),
+    all anchored at the layer's own center (`cx`, `cy`, document pixels), followed by an absolute
+    translation (`offset_x`, `offset_y`). Never the single combined-shear matrix
+    [[1,-tan(h)],[-tan(v),1]] -- that matrix's OWN determinant is `1 - tan(h)*tan(v)`, which
+    reaches exactly 0 at h=v=45 (collapsing the rectangle to a line) and goes NEGATIVE past that
+    (silently mirroring it instead of shearing it). `op_transform_layer`'s `free` op calls this
+    directly (scale + degrees + offset, no skew); `skew` calls it with scale 100/100, degrees 0,
+    offset 0/0; `rotate`'s own bounds check (not its actual transform, which goes through
+    `Item.transform_rotate` instead -- see ops.py) reuses it with scale 100/100, skew 0/0, offset
+    0/0 purely to predict the post-rotation bounding box via `transformed_bounds`.
+
+    Raises if the FINAL composed matrix's determinant is below `TRANSFORM_LAYER_MIN_DETERMINANT`
+    or negative -- scale alone is already bounded away from both by its own 1..10000% range, but
+    this is the belt-and-braces check against the composed result as a whole, not just its own
+    skew component."""
     m = _mat_translate(-cx, -cy)
     m = _mat_mul(_mat_scale(scale_x_percent / 100.0, scale_y_percent / 100.0), m)
-    m = _mat_mul(_mat_shear(skew_h_degrees, skew_v_degrees), m)
+    m = _mat_mul(_mat_shear_v(skew_v_degrees), _mat_mul(_mat_shear_h(skew_h_degrees), m))
     m = _mat_mul(_mat_rotate(degrees), m)
     m = _mat_mul(_mat_translate(cx, cy), m)
     m = _mat_mul(_mat_translate(offset_x, offset_y), m)
+    det = _mat_determinant(m)
+    if not math.isfinite(det) or det < 0 or abs(det) < TRANSFORM_LAYER_MIN_DETERMINANT:
+        raise ValueError(
+            'this combination of scale/skew/rotate collapses or mirrors the layer (determinant '
+            '%.6g) instead of transforming it -- reduce the scale or skew and try again' % det
+        )
     return m
 
 

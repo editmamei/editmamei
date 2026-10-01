@@ -489,6 +489,19 @@ def op_test_add_layer_mask(args):
     return {'mask_id': mask.get_id()}
 
 
+def op_test_set_layer_lock(args):
+    """Sets lock-position and/or lock-content on the target layer -- no shipped gimp_* tool
+    exposes either; a real-GIMP probe for `_refuse_if_layer_locked`'s own refusal path, which a
+    locked layer exercises (GIMP silently no-ops a transform on one rather than raising)."""
+    img = _image(args)
+    layer = _layer(img, args)
+    if args.get('lock_position') is not None:
+        layer.set_lock_position(bool(args['lock_position']))
+    if args.get('lock_content') is not None:
+        layer.set_lock_content(bool(args['lock_content']))
+    return {'lock_position': layer.get_lock_position(), 'lock_content': layer.get_lock_content()}
+
+
 def op_test_layer_bounds(args):
     """A layer's own {x, y, width, height} directly -- `gimp_inspect what=layers` reports
     offsets but not width/height, so a live test that needs to read a layer's current bounds
@@ -530,6 +543,7 @@ OPS.update({
     'test_build_no_alpha_gap_xcf': op_test_build_no_alpha_gap_xcf,
     'test_add_layer_mask': op_test_add_layer_mask,
     'test_layer_bounds': op_test_layer_bounds,
+    'test_set_layer_lock': op_test_set_layer_lock,
 })
 
 

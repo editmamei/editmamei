@@ -8,6 +8,7 @@ import {
   GIMP_LAYER_ID_PROP,
   pickSchemaDeclaredKeys,
 } from './gimp-shared.js';
+import { EFFECT_UPDATE_FAILURES_PROP, effectUpdateFailuresNote } from './gimp-geometry-tools.js';
 
 /**
  * gimp_transform_layer — the per-LAYER twin of ps_transform_layer, discriminated by `op`: fit |
@@ -19,11 +20,12 @@ import {
  * layer, or the topmost layer if none is selected.
  *
  * Verified live (GIMP 3.2.6): a layer's own mask transforms with it automatically for every op
- * here (repositioned/resized to match the layer's new bounds exactly, no separate step needed),
- * and calling any of these on a GROUP layer transforms every descendant in lockstep with the
- * group — no special-casing for a group target. `interpolation` is set explicitly via the GIMP
- * Context before every call (bracketed with a push/pop so it never leaks into a later,
- * unrelated gimp_* call) rather than left at whatever a prior call happened to set it to.
+ * here, and calling any of these on a GROUP layer transforms every descendant in lockstep with
+ * the group. A text layer stays a text layer through every op, never rasterized (`text_layer`
+ * in the result). `interpolation` is set explicitly via the GIMP Context before every call
+ * (bracketed with a push/pop so it never leaks into a later, unrelated gimp_* call) rather than
+ * left at whatever a prior call happened to set it to. A lock-position or lock-content layer is
+ * refused outright rather than silently doing nothing.
  */
 
 const TRANSFORM_LAYER_OPS = ['fit', 'scale', 'move', 'rotate', 'flip', 'skew', 'free'] as const;
@@ -51,21 +53,32 @@ const transformLayerSchema: JsonSchemaObject = {
         "'fit' scales the layer to fit (letterbox) or fill (cover) the canvas, preserving " +
         "aspect, and centers it (mode fit|fill, idempotent). 'scale' is uniform (scale_percent) " +
         'or non-uniform (scale_x_percent/scale_y_percent) — multiplicative, anchored at the ' +
-        "layer's own center. 'move' translates — pass exactly ONE of delta (relative), absolute " +
-        '(top-left target), or center_on (center target); mixing them is refused. ' +
-        "'rotate' rotates by relative degrees (positive clockwise) around the layer's own " +
-        'center; the layer GROWS to fit the rotated content — nothing is clipped. ' +
-        "'flip' mirrors horizontal|vertical in place (axis). 'skew' slants the layer " +
-        "(skew_h_degrees/skew_v_degrees) around its own center. 'free' is a numeric free " +
-        'transform in one matrix: scale_x_percent/scale_y_percent + degrees + offset_x/offset_y.',
+        "layer's own center; a NON-uniform scale is refused while an unmasked position/" +
+        'direction-dependent effect filter (vignette/motion_blur/drop_shadow) is present. ' +
+        "'move' translates — pass exactly ONE of delta (relative), absolute (top-left target), " +
+        'or center_on (center target), each a {x, y} object (flat delta_x/absolute_x fields are ' +
+        "not accepted); mixing modes is refused. 'rotate' rotates by relative degrees (positive " +
+        "clockwise) around the layer's own center; the layer GROWS to fit the rotated content " +
+        '— nothing is clipped; an arbitrary (non-90°-multiple) angle is refused while such an ' +
+        "effect is present. 'flip' mirrors horizontal|vertical in place (axis). 'skew' slants " +
+        "the layer (skew_h_degrees/skew_v_degrees) around its own center. 'free' is a numeric " +
+        'free transform in one matrix: scale_x_percent/scale_y_percent + degrees + offset_x/' +
+        'offset_y. skew and free are always refused while such an effect is present (no angle ' +
+        'is safe for either). A text layer stays a text layer through every op, never ' +
+        'rasterized.',
     },
     mode: {
       type: 'string',
       enum: ['fit', 'fill'],
-      default: 'fit',
+      // No schema-level `default` -- every field here is flat across every op, so a default
+      // would ride along on EVERY call regardless of op (the same "a default rides along on an
+      // op that ignores it" behavior gimp_layer's own schema has), tripping the per-op foreign-
+      // field check below on every op OTHER than fit. The bridge applies this op's own default
+      // ('fit') itself when the field is genuinely absent.
       description:
         "fit only. 'fit' letterboxes inside the canvas (shorter edge touches); 'fill' covers it " +
-        '(longer edge touches, overflow is left outside the canvas, not cropped).',
+        '(longer edge touches, overflow is left outside the canvas, not cropped). Defaults to ' +
+        "'fit'.",
     },
     scale_percent: {
       type: 'number',
@@ -120,15 +133,21 @@ const transformLayerSchema: JsonSchemaObject = {
       description:
         'skew only. Vertical slant angle in degrees — positive slants the left edge down.',
     },
+    // No schema-level `default` on offset_x/offset_y, for the same reason `mode` has none --
+    // the bridge defaults each to 0 itself when genuinely absent.
     offset_x: {
       type: 'number',
-      default: 0,
-      description: 'free only. Horizontal translation in document pixels, applied last.',
+      minimum: -100000,
+      maximum: 100000,
+      description:
+        'free only. Horizontal translation in document pixels, applied last. Defaults to 0.',
     },
     offset_y: {
       type: 'number',
-      default: 0,
-      description: 'free only. Vertical translation in document pixels, applied last.',
+      minimum: -100000,
+      maximum: 100000,
+      description:
+        'free only. Vertical translation in document pixels, applied last. Defaults to 0.',
     },
     interpolation: {
       type: 'string',
@@ -151,6 +170,10 @@ function alphaNote(result: Record<string, unknown>): string {
   return result.alpha_added ? ' (alpha channel added)' : '';
 }
 
+function effectNote(result: Record<string, unknown>): string {
+  return effectUpdateFailuresNote(result.effect_update_failures as string[] | undefined);
+}
+
 function transformLayerSuccessText(
   op: string,
   result: Record<string, unknown>,
@@ -160,19 +183,26 @@ function transformLayerSuccessText(
     case 'fit':
       return (
         `Layer ${result.mode === 'fill' ? 'filled' : 'fitted'} to the canvas and centered ` +
-        `(${result.scale_percent as number}%), ${boundsText(result)}${alphaNote(result)}.`
+        `(${result.scale_percent as number}%), ${boundsText(result)}${alphaNote(result)}.` +
+        effectNote(result)
       );
     case 'scale':
       return (
         `Layer scaled to ${result.scale_x_percent as number}% x ${result.scale_y_percent as number}%, ` +
-        `${boundsText(result)}${alphaNote(result)}.`
+        `${boundsText(result)}${alphaNote(result)}.${effectNote(result)}`
       );
     case 'move':
       return `Layer moved, ${boundsText(result)}${alphaNote(result)}.`;
     case 'rotate':
-      return `Layer rotated ${result.degrees as number}°, ${boundsText(result)}${alphaNote(result)}.`;
+      return (
+        `Layer rotated ${result.degrees as number}°, ${boundsText(result)}${alphaNote(result)}.` +
+        effectNote(result)
+      );
     case 'flip':
-      return `Layer flipped ${args.axis as string}, ${boundsText(result)}${alphaNote(result)}.`;
+      return (
+        `Layer flipped ${args.axis as string}, ${boundsText(result)}${alphaNote(result)}.` +
+        effectNote(result)
+      );
     case 'skew':
       return (
         `Layer skewed (h=${(result.skew_h_degrees as number) ?? 0}°, v=` +
@@ -215,18 +245,11 @@ export function createGimpTransformLayerTools(gimp: GimpBackend): ToolDefinition
       tool: {
         name: 'gimp_transform_layer',
         description:
-          'Headless GIMP: transform the active (or named) layer — choose the operation with ' +
-          '`op`. fit: scale to fit/fill the canvas + center (mode). scale: uniform ' +
-          '(scale_percent) or non-uniform (scale_x_percent/scale_y_percent) stretch, centered. ' +
-          'move: exactly one of delta (relative), absolute (top-left target), or center_on ' +
-          '(center target). rotate: relative degrees around the layer center — the layer grows ' +
-          'to fit, nothing clips. flip: axis horizontal|vertical, in place. skew: slant via ' +
-          'skew_h_degrees/skew_v_degrees. free: one combined matrix — scale_x_percent/' +
-          "scale_y_percent + degrees + offset_x/offset_y. A layer's own mask, and every child " +
-          'of a group target, transform along with it automatically. A layer with no alpha ' +
-          'channel gets one first (alpha_added: true). REFUSES outright when the layer, or a ' +
-          'group containing it, carries a masked or unverifiable adjustment filter — the same ' +
-          'check gimp_resize_image and gimp_transform_canvas apply to the whole canvas.',
+          'Headless GIMP: transform the active layer (layer/layer_id) — op selects ' +
+          'fit|scale|move|rotate|flip|skew|free, each documented on op. Rotate/skew/free grow ' +
+          'the layer so nothing clips; a layer with no alpha gets one (alpha_added). REFUSES ' +
+          "when the layer, or a group target's descendants, carries a masked filter, or an " +
+          'unmasked effect this transform cannot keep locked to the content.',
         inputSchema: transformLayerSchema,
         outputSchema: {
           type: 'object',
@@ -243,6 +266,8 @@ export function createGimpTransformLayerTools(gimp: GimpBackend): ToolDefinition
             },
             alpha_added: { type: 'boolean' },
             interpolation: { type: 'string' },
+            text_layer: { type: 'boolean' },
+            effect_update_failures: EFFECT_UPDATE_FAILURES_PROP,
             mode: { type: 'string' },
             scale_percent: { type: 'number' },
             scale_x_percent: { type: 'number' },
