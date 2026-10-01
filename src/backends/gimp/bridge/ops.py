@@ -1891,12 +1891,18 @@ def op_export(args):
 
 def _replace_named_channel(img, name, w, h):
     """Remove any existing channel called `name` and insert a fresh, black-filled one of the
-    image's own size -- `op_create_mask`'s replace-by-name semantics."""
+    image's own size -- `op_create_mask`'s replace-by-name semantics. Restores the image's
+    selected layers afterward: `insert_channel` changes them as a side effect (verified live, the
+    same class of surprise `op_place_image`'s own comment documents for `insert_layer`), which
+    would otherwise silently retarget a later layer-defaulting call (e.g. `gimp_add_adjustment`
+    with no `layer`) at whatever layer a channel happened to insert next to."""
+    original_selection = img.get_selected_layers()
     for existing in img.get_channels():
         if existing.get_name() == name:
             img.remove_channel(existing)
     ch = Gimp.Channel.new(img, name, w, h, 50.0, Gegl.Color.new('black'))
     img.insert_channel(ch, None, 0)
+    img.set_selected_layers(original_selection)
     return ch
 
 
@@ -1973,15 +1979,14 @@ def op_create_mask(args):
     of how this function exits, rather than manually saving and restoring each property by hand.
     The gradient blend color space is explicitly set to RGB_PERCEPTUAL, but verified live that this
     has NO effect on a Channel fill's actual output either way: forcing RGB_PERCEPTUAL, forcing
-    RGB_LINEAR, and leaving the context at whatever it already was all produced byte-identical
-    output (an exact linear ramp -- x=128 reads 128) once read back correctly. What DOES control
-    the crossing point is the buffer format every reader of this channel (`_channel_coverage`,
-    and the selection copy above) uses -- `"Y' u8"` (perceptual/gamma-encoded, matching the
-    channel's own storage), not `'Y u8'` (linear light, which compresses the readback toward black,
-    e.g. the geometric midpoint reading ~55 instead of ~128; this is what an earlier, incorrect
-    version of this comment blamed on the blend color space instead). RGB_PERCEPTUAL is kept set
-    here anyway as the explicit, correct-if-it-ever-starts-mattering choice for a caller who thinks
-    in 0-255 terms, not because it changes anything measured today.
+    RGB_LINEAR, and leaving the context at whatever it already was all produce the same
+    byte-identical ramp (an exact linear ramp -- x=128 reads 128) when read back with `"Y' u8"`.
+    What DOES control the crossing point is the buffer format every reader of this channel
+    (`_channel_coverage`, and the selection copy above) uses -- `"Y' u8"` (perceptual/gamma-encoded,
+    matching the channel's own storage), not `'Y u8'` (linear light, which compresses the readback
+    toward black, e.g. the geometric midpoint reading ~55 instead of ~128). RGB_PERCEPTUAL is kept
+    set here anyway as the explicit, correct-if-it-ever-starts-mattering choice for a caller who
+    thinks in 0-255 terms, not because it changes anything measured today.
 
     `feather_px` has no effect here (a gradient is already a continuous ramp, nothing to feather);
     `invert` swaps which end is black vs white."""
@@ -2041,14 +2046,14 @@ def _paint_gradient_mask(ch, type_, invert, args, w, h):
     of how this function exits, rather than manually saving and restoring each property by hand.
     The gradient blend color space is explicitly set to RGB_PERCEPTUAL, but verified live that this
     has NO effect on a Channel fill's actual output either way: forcing RGB_PERCEPTUAL, forcing
-    RGB_LINEAR, and leaving the context at whatever it already was all produced byte-identical
-    output (an exact linear ramp -- x=128 reads 128) once read back correctly. What DOES control
-    the crossing point is the buffer format every reader of this channel (`_channel_coverage`) uses
-    -- `"Y' u8"` (perceptual/gamma-encoded, matching the channel's own storage), not `'Y u8'`
-    (linear light, which compresses the readback toward black, e.g. the geometric midpoint reading
-    ~55 instead of ~128). RGB_PERCEPTUAL is kept set here anyway as the explicit,
-    correct-if-it-ever-starts-mattering choice for a caller who thinks in 0-255 terms, not because
-    it changes anything measured today.
+    RGB_LINEAR, and leaving the context at whatever it already was all produce the same
+    byte-identical ramp (an exact linear ramp -- x=128 reads 128) when read back with `"Y' u8"`.
+    What DOES control the crossing point is the buffer format every reader of this channel
+    (`_channel_coverage`) uses -- `"Y' u8"` (perceptual/gamma-encoded, matching the channel's own
+    storage), not `'Y u8'` (linear light, which compresses the readback toward black, e.g. the
+    geometric midpoint reading ~55 instead of ~128). RGB_PERCEPTUAL is kept set here anyway as the
+    explicit, correct-if-it-ever-starts-mattering choice for a caller who thinks in 0-255 terms, not
+    because it changes anything measured today.
 
     No feather here (a gradient is already a continuous ramp, nothing to feather); `invert` swaps
     which end is black vs white. Shared by `op_create_mask` and `op_select`'s own gradient_linear/
@@ -3535,22 +3540,34 @@ def _selection_to_channel(img, name):
 
 def _with_scratch_channel(img, w, h, fn):
     """Run `fn(scratch_channel)` against a throwaway channel inserted for the duration of the
-    call, then remove it regardless of outcome. Used to stash a selection's pixel data somewhere
-    durable (a GIMP selection is a single, unnamed piece of image state -- building a SECOND shape
-    while the first is still needed, as combine != 'replace' does, has nowhere else to put it)."""
+    call, then remove it regardless of outcome -- including when `fn` itself raises partway
+    through (e.g. a bad gradient argument), so a failed select never leaves a stray channel
+    behind. Used to stash a selection's pixel data somewhere durable (a GIMP selection is a
+    single, unnamed piece of image state -- building a SECOND shape while the first is still
+    needed, as combine != 'replace' does, has nowhere else to put it).
+
+    Verified the same defensive way `_assert_layer_attached` checks a new layer: some GIMP calls
+    report success having silently done nothing, so insertion is confirmed by walking the image's
+    own live channel list rather than trusting the call's return value alone. If that check fails,
+    there is nothing to remove (the channel was never actually attached). Restores the image's
+    selected layers afterward -- see `_replace_named_channel`'s identical comment for why."""
+    original_selection = img.get_selected_layers()
     scratch = Gimp.Channel.new(img, '__select_scratch__', w, h, 50.0, Gegl.Color.new('black'))
     img.insert_channel(scratch, None, 0)
+    if not any(ch.get_id() == scratch.get_id() for ch in img.get_channels()):
+        raise lib.OpError('gimp_op_failed', 'the scratch channel did not attach to the image')
+    img.set_selected_layers(original_selection)
     try:
         return fn(scratch)
     finally:
         img.remove_channel(scratch)
+        img.set_selected_layers(original_selection)
 
 
 def _capture_selection(img, w, h, scratch):
-    """Copy the CURRENT active selection's pixels into `scratch` and load `scratch` as the active
-    selection in its place -- a roundtrip, but it makes the channel buffer the durable holder of
-    the selection's state rather than the selection itself, which `_shape_selection`'s next call
-    would otherwise overwrite."""
+    """Copy the CURRENT active selection's pixels into `scratch`'s own buffer -- a durable
+    snapshot the caller can reload as the active selection later, after building a SECOND shape
+    (`_shape_selection`'s next call) would otherwise overwrite the first one."""
     data = img.get_selection().get_buffer().get(
         Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
     buf = scratch.get_buffer()
@@ -3561,37 +3578,67 @@ def _capture_selection(img, w, h, scratch):
 
 def _color_arg(img, drawable, args, sample_merged):
     """The target color for mode=color_range: an explicit `color` hex, or the color AT a sample
-    point (x, y). Document pixels throughout, like every other coordinate this API takes --
-    `sample_merged` (default True) reads the visible COMPOSITE at that point (a full,
-    filters-applied render -- the same cost gimp_get_preview's full-resolution region path pays);
-    otherwise it reads the ONE named/selected layer's own raw pixels, converting to that layer's
-    own local coordinates and refusing a point outside its bounds rather than silently sampling
-    the wrong pixel (`Drawable.get_pixel` takes drawable-local coordinates, not document ones --
-    verified live: an unconverted point on an offset layer read the wrong pixel entirely)."""
+    point (x, y), always in document pixels. `Gimp.Image.pick_color` takes document coordinates
+    regardless of `sample_merged` and itself reports failure -- rather than a wrong or default
+    pixel -- for a point outside the image, or (when not sampling the composite) outside the one
+    given drawable's own bounds (verified live, GIMP 3.2.6: an out-of-bounds point returns
+    `(False, None)`, never raises and never silently samples the wrong pixel)."""
     color = args.get('color')
     if color is not None:
         return Gegl.Color.new(lib.validate_hex_color('color', color))
     if args.get('x') is None or args.get('y') is None:
         raise ValueError('color_range needs `color` (e.g. "#c0392b") or a sample point x, y')
-    x, y = int(args['x']), int(args['y'])
-    if sample_merged:
-        dup, flat = _composite(img)
-        try:
-            dw, dh = dup.get_width(), dup.get_height()
-            if not (0 <= x < dw and 0 <= y < dh):
-                raise ValueError('sample point (%d, %d) is outside the %dx%d image' % (x, y, dw, dh))
-            return flat.get_pixel(x, y)
-        finally:
-            dup.delete()
+    x, y = float(args['x']), float(args['y'])
+    success, picked = img.pick_color([drawable], x, y, sample_merged, False, 0.0)
+    if not success or picked is None:
+        where = 'the image' if sample_merged else 'layer %r' % drawable.get_name()
+        raise ValueError('sample point (%g, %g) is outside %s' % (x, y, where))
+    return picked
+
+
+def _layer_local_point(drawable, x, y):
+    """Convert a DOCUMENT-space point to coordinates local to `drawable`, refusing one outside its
+    bounds. `Gimp.Image.select_contiguous_color` (unlike `pick_color`) takes LOCAL coordinates when
+    sampling one drawable rather than the composite -- verified live, GIMP 3.2.6: an unconverted
+    document-space point on an offset layer selected the wrong region of that layer entirely
+    (or nothing, if the document point happened to fall outside the layer's own pixel extent)."""
     _ok, ox, oy = drawable.get_offsets()
     lx, ly = x - ox, y - oy
     lw, lh = drawable.get_width(), drawable.get_height()
     if not (0 <= lx < lw and 0 <= ly < lh):
         raise ValueError(
-            'sample point (%d, %d) is outside layer %r (%dx%d at offset %d,%d)'
+            'sample point (%g, %g) is outside layer %r (%dx%d at offset %d,%d)'
             % (x, y, drawable.get_name(), lw, lh, ox, oy)
         )
-    return drawable.get_pixel(lx, ly)
+    return lx, ly
+
+
+# A DoS floor on mode=polygon's point count -- the same reasoning as the resize/document pixel
+# caps elsewhere in this file.
+MAX_POLYGON_POINTS = 10_000
+
+
+def _polygon_segments(points):
+    """Validate `points` (mode=polygon's own argument) and flatten it into GIMP's flat
+    [x1, y1, x2, y2, ...] segment list. Every point must be an [x, y] pair of finite numbers -- a
+    malformed one (not a pair, a non-numeric value, NaN/Infinity) is refused here rather than
+    reaching `Gimp.Image.select_polygon` as garbage or silently coercing to 0."""
+    if not isinstance(points, list) or len(points) < 3:
+        raise ValueError('points must be a list of at least 3 [x, y] pairs')
+    if len(points) > MAX_POLYGON_POINTS:
+        raise ValueError('points must be at most %d pairs' % MAX_POLYGON_POINTS)
+    segs = []
+    for i, p in enumerate(points):
+        if not isinstance(p, (list, tuple)) or len(p) != 2:
+            raise ValueError('points[%d] must be an [x, y] pair' % i)
+        x, y = p
+        if (
+            not isinstance(x, (int, float)) or not isinstance(y, (int, float))
+            or not (math.isfinite(x) and math.isfinite(y))
+        ):
+            raise ValueError('points[%d] must be finite numbers' % i)
+        segs.extend([float(x), float(y)])
+    return segs
 
 
 def _shape_selection(img, mode, args, w, h):
@@ -3601,14 +3648,24 @@ def _shape_selection(img, mode, args, w, h):
     this shape ALONE, immediately after, before it is ever combined with an existing channel --
     see `op_select`'s own docstring for why that order matters."""
     REPLACE = Gimp.ChannelOps.REPLACE
+    sample_merged = lib.optional_bool(args, 'sample_merged', True)
     Gimp.context_push()
     try:
         Gimp.context_set_feather(False)
         Gimp.context_set_antialias(True)
         threshold = lib.validate_range('threshold', args.get('threshold', 15), 0, 255)
         Gimp.context_set_sample_threshold(threshold / 255.0)
-        Gimp.context_set_sample_merged(lib.optional_bool(args, 'sample_merged', True))
+        Gimp.context_set_sample_merged(sample_merged)
         Gimp.context_set_sample_criterion(Gimp.SelectCriterion.COMPOSITE)
+        # Set explicitly rather than inherited from whatever the session's own ambient context
+        # happens to already hold (a GUI action, or an earlier call, could have left either at a
+        # non-default value): sample_transparent False matches color_range/magic_wand's own
+        # "colour" framing -- a fully transparent pixel has no colour to match, so it is excluded
+        # from both the sampled target and the contiguous region, the same as GIMP's own tool
+        # defaults. diagonal_neighbors False keeps magic_wand's contiguous region 4-connected
+        # (up/down/left/right only), also GIMP's own tool default.
+        Gimp.context_set_sample_transparent(False)
+        Gimp.context_set_diagonal_neighbors(False)
         if mode == 'all':
             img.select_rectangle(REPLACE, 0, 0, w, h)
         elif mode in ('rectangle', 'ellipse'):
@@ -3616,21 +3673,26 @@ def _shape_selection(img, mode, args, w, h):
             ww, hh = float(lib.require(args, 'width')), float(lib.require(args, 'height'))
             (img.select_rectangle if mode == 'rectangle' else img.select_ellipse)(REPLACE, x, y, ww, hh)
         elif mode == 'polygon':
-            pts = lib.require(args, 'points')
-            if not isinstance(pts, list) or len(pts) < 3:
-                raise ValueError('points must be a list of at least 3 [x, y] pairs')
-            segs = []
-            for p in pts:
-                segs.extend([float(p[0]), float(p[1])])
+            segs = _polygon_segments(lib.require(args, 'points'))
             img.select_polygon(REPLACE, segs)
         elif mode == 'color_range':
             drawable = _layer(img, args)
-            sample_merged = lib.optional_bool(args, 'sample_merged', True)
             img.select_color(REPLACE, drawable, _color_arg(img, drawable, args, sample_merged))
         elif mode == 'magic_wand':
             drawable = _layer(img, args)
-            img.select_contiguous_color(REPLACE, drawable, float(lib.require(args, 'x')),
-                                        float(lib.require(args, 'y')))
+            x, y = float(lib.require(args, 'x')), float(lib.require(args, 'y'))
+            if sample_merged:
+                # select_contiguous_color takes DOCUMENT coordinates when sampling the composite
+                # (verified live) -- bounds-checked against the image itself, since GIMP silently
+                # selects nothing for an out-of-image point rather than refusing it.
+                if not (0 <= x < w and 0 <= y < h):
+                    raise ValueError('sample point (%g, %g) is outside the %dx%d image' % (x, y, w, h))
+                img.select_contiguous_color(REPLACE, drawable, x, y)
+            else:
+                # ...but LOCAL coordinates when sampling one drawable (verified live) -- see
+                # _layer_local_point's own comment.
+                lx, ly = _layer_local_point(drawable, x, y)
+                img.select_contiguous_color(REPLACE, drawable, lx, ly)
         elif mode == 'alpha':
             img.select_item(REPLACE, _layer(img, args))
         elif mode == 'channel':
@@ -3661,6 +3723,11 @@ def op_select(args):
         raise ValueError('combine=%s needs an existing channel named %r' % (combine, name))
     invert = bool(args.get('invert', False))
     feather_px = lib.validate_feather_px(args.get('feather_px', 0))
+    if feather_px > 0 and mode in ('gradient_linear', 'gradient_radial'):
+        raise ValueError(
+            'feather_px has no effect on a gradient (already a continuous ramp) -- omit it for '
+            'mode=%s rather than pass a value that would silently do nothing' % mode
+        )
     w, h = img.get_width(), img.get_height()
 
     try:
@@ -3670,8 +3737,7 @@ def op_select(args):
                 _paint_gradient_mask(scratch, mode, invert, args, w, h)
                 img.select_item(Gimp.ChannelOps.REPLACE, scratch)
             _with_scratch_channel(img, w, h, _paint)
-            # invert is already applied above (a color swap, done while painting); feather_px has
-            # no effect on a gradient (already a continuous ramp, nothing to feather).
+            # invert is already applied above, as a color swap done while painting.
         else:
             _shape_selection(img, mode, args, w, h)
             if invert:
@@ -3705,8 +3771,10 @@ def op_modify_mask(args):
         img.select_item(Gimp.ChannelOps.REPLACE, ch)
         if how in ('expand', 'contract', 'border'):
             # Capped well below feather's own range -- these are morphological ops whose cost
-            # scales with the radius (see MAX_MORPHOLOGY_PX's own comment for live measurements).
-            px = lib.validate_positive_px('px', lib.require(args, 'px'), max_px=lib.MAX_MORPHOLOGY_PX)
+            # scales with the radius AND the document's own megapixel count (see
+            # `effective_morphology_px`'s own comment for the live measurements behind this).
+            morphology_cap = lib.effective_morphology_px(img.get_width(), img.get_height())
+            px = lib.validate_positive_px('px', lib.require(args, 'px'), max_px=morphology_cap)
             if how == 'expand':
                 Gimp.Selection.grow(img, px)
             elif how == 'contract':
@@ -3766,12 +3834,17 @@ def op_layer_mask(args):
         if mask is not None:
             layer.remove_mask(Gimp.MaskApplyMode.DISCARD)
         if not layer.add_mask(new):
+            # Best-effort: put the old mask back rather than leaving the layer maskless on top of
+            # having failed to attach the new one. If this ALSO fails, the layer is left without a
+            # mask either way, but the attempt costs nothing.
+            if mask is not None:
+                layer.add_mask(mask)
             raise lib.OpError(
                 'gimp_op_failed', 'GIMP could not attach the new mask to layer %r' % layer.get_name()
             )
         # `invert` runs AFTER add_mask -- verified live that inverting the mask object before it is
         # attached to the layer has no visible effect (the invert is silently lost).
-        if args.get('invert'):
+        if lib.optional_bool(args, 'invert', False):
             new.invert(False)
     elif mask is None:
         raise ValueError('layer %r has no mask' % layer.get_name())
@@ -3789,12 +3862,19 @@ def op_layer_mask(args):
 
 
 def _gray_bytes_image(data, w, h):
+    """A new GRAY image carrying `data` as its one layer's pixels. Caller deletes it. `tmp` is torn
+    down on any failure after its own creation (layer build, insert, or buffer write) -- otherwise
+    an exception here would leave the image orphaned in GIMP with no reference left to free it."""
     tmp = Gimp.Image.new(w, h, Gimp.ImageBaseType.GRAY)
-    lay = Gimp.Layer.new(tmp, 'm', w, h, Gimp.ImageType.GRAY_IMAGE, 100.0, Gimp.LayerMode.NORMAL)
-    tmp.insert_layer(lay, None, 0)
-    buf = lay.get_buffer()
-    buf.set(Gegl.Rectangle.new(0, 0, w, h), "Y' u8", data)
-    buf.flush()
+    try:
+        lay = Gimp.Layer.new(tmp, 'm', w, h, Gimp.ImageType.GRAY_IMAGE, 100.0, Gimp.LayerMode.NORMAL)
+        tmp.insert_layer(lay, None, 0)
+        buf = lay.get_buffer()
+        buf.set(Gegl.Rectangle.new(0, 0, w, h), "Y' u8", data)
+        buf.flush()
+    except Exception:
+        tmp.delete()
+        raise
     return tmp, lay
 
 
@@ -3848,18 +3928,23 @@ def op_load_mask(args):
     """A grey mask image (PNG/JPEG, white = selected) -> a named channel. With a layer, the mask
     is taken to cover that layer's own bounds (e.g. a mask computed from `render_layer`).
 
-    A source that carries an alpha channel is flattened onto an explicit OPAQUE BLACK layer, not
-    GIMP's own flatten default -- a transparent pixel means "not part of the mask" NOT "selected",
-    so flattening onto white (or whatever `flatten()` would otherwise use) would silently select
-    every transparent pixel. The result is luminance x alpha: fully transparent reads 0 regardless
-    of the pixel's own color, fully opaque reads its luminance unchanged. A source with no alpha
-    channel (the common PNG/JPEG grayscale-or-RGB case) is unaffected either way."""
+    Flattened onto an explicit OPAQUE BLACK layer at the bottom of the stack always -- never
+    GIMP's own flatten default (the session's current background colour, verified live) -- so a
+    source smaller than its own canvas, or carrying alpha, never picks up stray colour for the
+    gap/transparent area: a transparent (or uncovered) pixel means "not part of the mask" NOT
+    "selected". Every alpha-carrying layer's own composite space is set to RGB_PERCEPTUAL before
+    flattening, so the result is value x alpha IN PERCEPTUAL SPACE (verified live: a 50%-alpha
+    white pixel over black reads ~128, the plain 255 x 0.5), not a linear-light blend (which would
+    read ~186 for the same input) -- a mask is a plain 0-255 coverage value, not a photographed
+    light, so the perceptual (byte-arithmetic) reading is the one that matches every other mask
+    value this bridge produces."""
     img = _image(args)
     name = args.get('name', 'Mask')
     _refuse_mask_in_use(img, name)
     path = lib.require(args, 'path')
+    basename = os.path.basename(path)
     if not os.path.exists(path):
-        raise ValueError('%s does not exist' % os.path.basename(path))
+        raise FileNotFoundError('no file named %s to load as a mask' % basename)
     w, h = img.get_width(), img.get_height()
     if args.get('layer') or args.get('layer_id') is not None:
         layer = _layer(img, args)
@@ -3868,28 +3953,31 @@ def op_load_mask(args):
     else:
         ox = oy = 0
         tw, th = w, h
-    src = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(path))
+    load_error = None
+    try:
+        src = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(path))
+    except Exception as e:
+        src = None
+        load_error = str(e)
+    if src is None:
+        detail = _path_free_detail(load_error)
+        raise lib.OpError('gimp_op_failed', 'could not load %s as a mask%s' % (basename, detail))
     try:
         lib.validate_loaded_mask_dims(src.get_width(), src.get_height())
-        has_alpha = any(src_layer.has_alpha() for src_layer in src.get_layers())
         if src.get_base_type() != Gimp.ImageBaseType.GRAY:
             src.convert_grayscale()
-        if has_alpha:
-            # An explicit opaque black layer at the bottom of the stack, not a reliance on
-            # whatever background color `flatten()` might otherwise use -- this is correct
-            # regardless of that. Composited under a partially transparent pixel, black
-            # contributes nothing, so the flattened value IS luminance x alpha: fully transparent
-            # reads 0 (not part of the mask), fully opaque reads the source's own luminance
-            # unchanged, and a half-transparent light pixel reads roughly half its luminance.
-            bg = Gimp.Layer.new(src, 'mask-bg', src.get_width(), src.get_height(),
-                                Gimp.ImageType.GRAY_IMAGE, 100.0, Gimp.LayerMode.NORMAL)
-            src.insert_layer(bg, None, len(src.get_layers()))
-            Gimp.context_push()
-            try:
-                Gimp.context_set_foreground(Gegl.Color.new('black'))
-                bg.fill(Gimp.FillType.FOREGROUND)
-            finally:
-                Gimp.context_pop()
+        for src_layer in src.get_layers():
+            if src_layer.has_alpha():
+                src_layer.set_composite_space(Gimp.LayerColorSpace.RGB_PERCEPTUAL)
+        bg = Gimp.Layer.new(src, 'mask-bg', src.get_width(), src.get_height(),
+                            Gimp.ImageType.GRAY_IMAGE, 100.0, Gimp.LayerMode.NORMAL)
+        src.insert_layer(bg, None, len(src.get_layers()))
+        Gimp.context_push()
+        try:
+            Gimp.context_set_foreground(Gegl.Color.new('black'))
+            bg.fill(Gimp.FillType.FOREGROUND)
+        finally:
+            Gimp.context_pop()
         if (src.get_width(), src.get_height()) != (tw, th):
             src.scale(tw, th)
         flat = src.flatten()
@@ -3923,7 +4011,10 @@ def op_render_layer(args):
     duplicated layer before flatten, so a hidden, partially-transparent, or blend-mode layer still
     renders its own pixels plainly rather than the (possibly empty or blended-dark) result its
     current display settings would otherwise produce. The layer's own mask and any live filters
-    are still included, exactly as they would render in the document."""
+    are still included, exactly as they would render in the document. Any remaining transparency
+    (the layer's own alpha, not just visibility/opacity/mode) is flattened onto an explicit OPAQUE
+    WHITE background -- not whatever the session's own ambient context background happens to be --
+    since the output feeds a subject/object detector that expects an ordinary opaque photo."""
     img = _image(args)
     layer = _layer(img, args)
     out_path = lib.require(args, 'out_path')
@@ -3938,6 +4029,15 @@ def op_render_layer(args):
         nl.set_visible(True)
         nl.set_opacity(100.0)
         nl.set_mode(Gimp.LayerMode.NORMAL)
+        bg = Gimp.Layer.new(tmp, 'render-bg', lw, lh, Gimp.ImageType.RGB_IMAGE, 100.0,
+                            Gimp.LayerMode.NORMAL)
+        tmp.insert_layer(bg, None, 1)
+        Gimp.context_push()
+        try:
+            Gimp.context_set_foreground(Gegl.Color.new('white'))
+            bg.fill(Gimp.FillType.FOREGROUND)
+        finally:
+            Gimp.context_pop()
         _scale_to_max(tmp, max_px)
         tmp.flatten()
         _export_stripped(tmp, out_path)

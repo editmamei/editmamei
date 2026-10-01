@@ -295,6 +295,41 @@ export function writeRgbaSquare(
   writeFileSync(path, png);
 }
 
+/** A uniform RGBA PNG -- every pixel the same `fill` color at the same `alpha` (0-255) -- for
+ * testing a mask loader's own alpha-compositing math against a single, exact, known value rather
+ * than a hard edge. */
+export function writeRgbaFlat(
+  path: string,
+  width: number,
+  height: number,
+  fill: [number, number, number],
+  alpha: number
+): void {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // color type: truecolor with alpha (RGBA)
+  const raw = Buffer.alloc(height * (1 + width * 4));
+  let offset = 0;
+  for (let y = 0; y < height; y++) {
+    raw[offset++] = 0; // per-scanline filter: None
+    for (let x = 0; x < width; x++) {
+      raw[offset++] = fill[0];
+      raw[offset++] = fill[1];
+      raw[offset++] = fill[2];
+      raw[offset++] = alpha;
+    }
+  }
+  const png = Buffer.concat([
+    PNG_SIGNATURE,
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+  writeFileSync(path, png);
+}
+
 /** A tiny indexed-color (palette, PNG color type 3) PNG -- GIMP loads this as `base_type:
  * 'indexed'`, and verified live that `Image.convert_precision` fails outright for that base type
  * (a real GIMP-side "must not be of type 'indexed'" error, returned as a plain `False` rather than

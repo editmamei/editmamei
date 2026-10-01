@@ -29,11 +29,7 @@ def op_test_select_mask(args):
     if (w, h) != (img.get_width(), img.get_height()):
         raise ValueError('mask is %dx%d, image is %dx%d' % (w, h, img.get_width(), img.get_height()))
     name = args.get('name', 'Mask')
-    if _mask_name_in_use(img, name):
-        raise ValueError(
-            'mask %r is already used by an existing filter; delete that filter or use a '
-            'different name' % name
-        )
+    _refuse_mask_in_use(img, name)
     ch = _replace_named_channel(img, name, w, h)
     buf = ch.get_buffer()
     buf.set(Gegl.Rectangle.new(0, 0, w, h), "Y' u8", data)
@@ -360,6 +356,101 @@ def op_test_new_image(args):
     return {'image': img.get_id()}
 
 
+def op_test_split_image(args):
+    """A two-color image split at the horizontal midpoint (left `color_a`, right `color_b`, each a
+    `#rrggbb` hex) -- a bridge-level fixture for color_range/magic_wand sample-point tests across
+    base types no gimp_* tool can reach directly ('indexed' has no tool-level route in OR out at
+    all: `gimp_create_document` only offers rgb/grayscale, `gimp_convert_image_mode` refuses an
+    indexed source outright). Always painted in RGB first, then converted -- GIMP has no fill
+    primitive that paints indexed pixels by an arbitrary RGB color directly, since a fill has to
+    land on a palette entry that may not exist yet."""
+    width, height = int(args.get('width', 64)), int(args.get('height', 64))
+    base = args.get('base_type', 'rgb')
+    if base not in _TEST_IMAGE_BASE_TYPES:
+        raise ValueError('base_type must be one of %s' % sorted(_TEST_IMAGE_BASE_TYPES))
+    color_a = Gegl.Color.new(lib.validate_hex_color('color_a', args.get('color_a', '#282828')))
+    color_b = Gegl.Color.new(lib.validate_hex_color('color_b', args.get('color_b', '#dcdcdc')))
+    half = width // 2
+    img = Gimp.Image.new(width, height, Gimp.ImageBaseType.RGB)
+    try:
+        layer = Gimp.Layer.new(img, 'split', width, height, Gimp.ImageType.RGB_IMAGE, 100.0,
+                               Gimp.LayerMode.NORMAL)
+        img.insert_layer(layer, None, 0)
+        Gimp.context_push()
+        try:
+            img.select_rectangle(Gimp.ChannelOps.REPLACE, 0, 0, half, height)
+            Gimp.context_set_foreground(color_a)
+            layer.edit_fill(Gimp.FillType.FOREGROUND)
+            img.select_rectangle(Gimp.ChannelOps.REPLACE, half, 0, width - half, height)
+            Gimp.context_set_foreground(color_b)
+            layer.edit_fill(Gimp.FillType.FOREGROUND)
+        finally:
+            Gimp.context_pop()
+        Gimp.Selection.none(img)
+        if base == 'gray':
+            img.convert_grayscale()
+        elif base == 'indexed':
+            img.convert_indexed(Gimp.ConvertDitherType.NONE, Gimp.ConvertPaletteType.GENERATE, 8,
+                                False, False, '')
+    except Exception:
+        img.delete()
+        raise
+    return {'image': img.get_id(), 'width': width, 'height': height, 'half': half}
+
+
+def op_test_gray_bytes_image_leak(args):
+    """Exercises `_gray_bytes_image`'s own cleanup directly: forces the layer build that happens
+    AFTER its temp image is created to fail, by swapping `Gimp.Layer.new` for a stub that raises
+    (restored in `finally`). A corrupt-pixel-data approach was considered and rejected -- handing
+    GEGL a wrong-length buffer risks a native crash instead of a clean Python exception, where this
+    sabotages a call GIMP never reaches with bad data at all. Reports whether a new image was left
+    open afterward."""
+    before = {i.get_id() for i in Gimp.get_images()}
+    real_layer_new = Gimp.Layer.new
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError('forced failure for the leak test')
+
+    Gimp.Layer.new = _boom
+    try:
+        raised = False
+        try:
+            _gray_bytes_image(bytes(64), 8, 8)
+        except RuntimeError:
+            raised = True
+    finally:
+        Gimp.Layer.new = real_layer_new
+    after = {i.get_id() for i in Gimp.get_images()}
+    return {'raised': raised, 'leaked_images': sorted(after - before)}
+
+
+def op_test_build_no_alpha_gap_xcf(args):
+    """A 64x64 RGB .xcf with two NO-ALPHA layers covering only part of the canvas (the top half,
+    and the bottom-right quarter), leaving the bottom-left quarter uncovered by either -- for
+    testing that `load_mask`'s own explicit black background layer (not GIMP's own flatten
+    default) fills the gap a multi-layer, alpha-less source leaves uncovered. No gimp_* tool can
+    build a layer with no alpha channel at all (`gimp_layer op=create` always adds one, verified
+    live: `_LAYER_CAPABLE_BASE_TYPES` only offers RGBA/GRAYA)."""
+    path = lib.require(args, 'path')
+    img = Gimp.Image.new(64, 64, Gimp.ImageBaseType.RGB)
+    try:
+        top = Gimp.Layer.new(img, 'top-half', 64, 32, Gimp.ImageType.RGB_IMAGE, 100.0,
+                             Gimp.LayerMode.NORMAL)
+        img.insert_layer(top, None, 0)
+        top.set_offsets(0, 0)
+        top.fill(Gimp.FillType.WHITE)
+        corner = Gimp.Layer.new(img, 'bottom-right', 32, 32, Gimp.ImageType.RGB_IMAGE, 100.0,
+                                Gimp.LayerMode.NORMAL)
+        img.insert_layer(corner, None, 1)
+        corner.set_offsets(32, 32)
+        corner.fill(Gimp.FillType.WHITE)
+        if not Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, img, Gio.File.new_for_path(path), None):
+            raise lib.OpError('gimp_op_failed', 'could not save the no-alpha-gap test fixture')
+    finally:
+        img.delete()
+    return {'path': path}
+
+
 def op_test_reorder_without_dropping_proxy(args):
     """Swaps the image's two topmost layers WITHOUT calling `_drop_proxies` -- deliberately
     bypasses the proxy-invalidation discipline every real structural op in ops.py follows, so a
@@ -389,12 +480,15 @@ OPS.update({
     'test_all_layers_order': op_test_all_layers_order,
     'test_set_channels_deadline': op_test_set_channels_deadline,
     'test_new_image': op_test_new_image,
+    'test_split_image': op_test_split_image,
     'test_reorder_without_dropping_proxy': op_test_reorder_without_dropping_proxy,
     'test_apply_raw_effect': op_test_apply_raw_effect,
     'test_mirror_unattachable': op_test_mirror_unattachable,
     'test_force_effect_update_failure': op_test_force_effect_update_failure,
     'test_add_offset_layer': op_test_add_offset_layer,
     'test_ledger_dump': op_test_ledger_dump,
+    'test_gray_bytes_image_leak': op_test_gray_bytes_image_leak,
+    'test_build_no_alpha_gap_xcf': op_test_build_no_alpha_gap_xcf,
 })
 
 

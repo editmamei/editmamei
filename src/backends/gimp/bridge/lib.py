@@ -207,12 +207,38 @@ MAX_FEATHER_PX = 1000
 # gimp_modify_selection's expand/contract/border radius cap -- much lower than MAX_FEATHER_PX.
 # `Gimp.Selection.grow`/`shrink`/`border` are morphological (structuring-element) operations whose
 # cost scales with the radius, unlike `feather` (a GEGL blur, flat ~0.5s regardless of radius on a
-# 24MP image, measured live). Measured live (GIMP 3.2.6, ~24MP, 6016x4000): border (the most
-# expensive of the three) took 8.2s at 100px, 13.0s at 150px, 20.2s at 200px, 59.0s at 500px --
-# capped at 150px so the worst case stays well inside gimp_modify_selection's own timeout budget
-# (see operation-timeouts.ts) with real margin, rather than raising that budget to fit an
-# uncommon, very-large-radius call.
+# 24MP image, measured live). This is the cap for a document at or below MORPHOLOGY_BASELINE_MP;
+# a bigger document gets a SMALLER cap -- see `effective_morphology_px`.
 MAX_MORPHOLOGY_PX = 150
+
+# Measured live at px=150 (border, the most expensive of the three): ~30s at 24MP (6016x4000),
+# ~73.5s at 100MP (14000x7143), and a GIMP session OUTRIGHT TIMEOUT past 180s at ~217MP
+# (30000x7228, this bridge's own largest allowed document -- MAX_RESIZE_SIDE_PX/
+# MAX_RESIZE_MEGAPIXELS). Cost does not scale linearly with megapixels (100MP was only ~2.45x the
+# 24MP cost for a ~4.17x bigger image), but it very much does not fit inside
+# gimp_modify_selection's budget either, so the cap itself has to shrink as the document grows.
+MORPHOLOGY_BASELINE_MP = 24.0
+# A document-size floor so a huge document still gets a meaningfully large morphology radius
+# rather than being squeezed to single-digit pixels.
+MIN_MORPHOLOGY_PX = 10
+
+
+def effective_morphology_px(width, height):
+    """The actual expand/contract/border cap for a `width`x`height` document: `MAX_MORPHOLOGY_PX`
+    at or below `MORPHOLOGY_BASELINE_MP`, shrinking as 1/megapixels above it (simple and, per the
+    live measurements on `MAX_MORPHOLOGY_PX`'s own comment, SAFELY conservative -- the real cost
+    curve is sub-linear in megapixels, so this reduces the cap by more than the measured cost
+    alone would require). Verified live at the two points that matter: at ~100MP the scaled cap
+    (36px) cost ~11.8s; at ~217MP (this bridge's largest allowed document) the scaled cap (17px)
+    cost ~27.2s -- both comfortably inside gimp_modify_selection's 45s budget with its own margin,
+    even though a large document also carries a substantial FIXED per-call cost that shrinking
+    `px` alone cannot remove (measured ~13-17s of that 27.2s at ~217MP comes from px=5 alone,
+    i.e. just handling a document that size, before any morphology radius is even considered)."""
+    megapixels = (width * height) / 1_000_000.0
+    if megapixels <= MORPHOLOGY_BASELINE_MP:
+        return MAX_MORPHOLOGY_PX
+    scaled = MAX_MORPHOLOGY_PX * MORPHOLOGY_BASELINE_MP / megapixels
+    return max(MIN_MORPHOLOGY_PX, min(MAX_MORPHOLOGY_PX, round(scaled)))
 
 
 def require(args, name):
@@ -363,21 +389,30 @@ def validate_hex_color(name, value):
     return value
 
 
+def _round_half_up(value):
+    """Round half away from zero, unlike Python's builtin `round()` (round-half-to-even:
+    `round(0.5) == 0`, `round(2.5) == 2`) -- surprising for a user-facing pixel radius, where
+    "4.5 px" should become 5, not 4."""
+    return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
+
+
 def validate_positive_px(name, value, max_px=MAX_FEATHER_PX):
-    """A strictly positive pixel radius (expand/contract/border/feather): 0 or negative does
-    nothing useful and is refused rather than silently accepted as a no-op. Rounds rather than
-    truncates, so 4.6 becomes 5 px, not 4."""
-    value = float(value)
-    if not 0 < value <= max_px:
-        raise ValueError('%s must be greater than 0 and at most %s' % (name, max_px))
-    return round(value)
+    """A strictly positive pixel radius (expand/contract/border/feather). Rounds half-up to the
+    nearest whole pixel FIRST, then refuses anything that is not strictly positive or exceeds
+    max_px -- so a value that ROUNDS to 0 (e.g. 0.3) is refused, same as an outright 0 or
+    negative, rather than silently accepted as a no-op radius."""
+    rounded = int(_round_half_up(float(value)))
+    if not 0 < rounded <= max_px:
+        raise ValueError('%s must round to a value greater than 0 and at most %s' % (name, max_px))
+    return rounded
 
 
-# gimp_select/load_mask's own DoS floor on a SOURCE mask image's dimensions, read from disk before
-# it is ever scaled down to the (already-bounded) target document or layer size -- otherwise a
-# caller-supplied mask file of arbitrary size would be decoded into memory at full resolution
-# first. Reuses the same cap `validate_resize_dims` applies to a resize target, since both are
-# "how big a single in-memory image may get" limits.
+# load_mask's own DoS floor on a SOURCE mask image's dimensions. Checked right after
+# `Gimp.file_load` decodes the file (GIMP's Python environment has no cheap way to read a PNG/
+# JPEG header's own width/height without decoding -- GdkPixbuf is not bound in this environment),
+# so it bounds the IN-MEMORY size before the heavier work that follows (alpha compositing, scale,
+# flatten), not the decode itself. Reuses the same cap `validate_resize_dims` applies to a resize
+# target, since both are "how big a single in-memory image may get" limits.
 def validate_loaded_mask_dims(width, height):
     return validate_resize_dims(width, height)
 

@@ -12,7 +12,7 @@
  * `structuredContent.fraction` self-report alone.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts';
@@ -33,6 +33,7 @@ import {
   pixelAt,
   writeColorSwatches,
   writeRgbaSquare,
+  writeRgbaFlat,
   writeHardEdge,
   SWATCHES,
   SWATCH_SIZE,
@@ -171,7 +172,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('mode=ellipse reports plausible coverage for its bounding box (~pi/4)', async () => {
+      it('mode=ellipse covers close to pi/4 of its bounding box', async () => {
         const image = await createDoc(64, 64);
         try {
           const result = await callTool(tools, 'gimp_select', {
@@ -185,8 +186,10 @@ describe.skipIf(!install)(
           });
           expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
           const boxFraction = (structuredOf(result).selected_pixels as number) / (32 * 32);
-          expect(boxFraction).toBeGreaterThan(0.6);
-          expect(boxFraction).toBeLessThan(0.9);
+          // pi/4 ~= 0.7854, with a small tolerance for anti-aliasing at the boundary (measured
+          // live at a 32x32 size: ~0.81).
+          expect(boxFraction).toBeGreaterThan(0.75);
+          expect(boxFraction).toBeLessThan(0.82);
         } finally {
           await callTool(tools, 'gimp_close_document', { image });
         }
@@ -215,7 +218,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it('mode=polygon refuses fewer than 3 points, dispatching nothing', async () => {
+      it('mode=polygon refuses fewer than 3 points before it ever reaches the bridge', async () => {
         const image = await createDoc(64, 64);
         try {
           const result = await callTool(tools, 'gimp_select', {
@@ -233,7 +236,64 @@ describe.skipIf(!install)(
         }
       });
 
-      it('mode=color_range selects approximately one swatch by its exact color', async () => {
+      // The next three call the bridge op directly, past the tool schema, to check what the
+      // bridge itself does with a malformed `points` argument the schema would normally never let
+      // through (a schema change elsewhere, or a caller going around the tool layer, must still
+      // land on a clean, bounded refusal here).
+
+      it('mode=polygon (direct bridge call) refuses a point that is not an [x, y] pair', async () => {
+        const image = await createDoc(64, 64);
+        try {
+          await expect(
+            backend.call('select', {
+              image,
+              mode: 'polygon',
+              points: [
+                [0, 0],
+                [32, 0, 0],
+                [0, 32],
+              ],
+              name: 'BadPair',
+            })
+          ).rejects.toThrow();
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('mode=polygon (direct bridge call) refuses a non-numeric coordinate', async () => {
+        const image = await createDoc(64, 64);
+        try {
+          await expect(
+            backend.call('select', {
+              image,
+              mode: 'polygon',
+              points: [
+                [0, 0],
+                ['not a number', 0],
+                [0, 32],
+              ],
+              name: 'BadNumber',
+            })
+          ).rejects.toThrow();
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('mode=polygon (direct bridge call) refuses more than 10,000 points', async () => {
+        const image = await createDoc(64, 64);
+        try {
+          const points = Array.from({ length: 10_001 }, (_, i) => [i % 64, (i * 7) % 64]);
+          await expect(
+            backend.call('select', { image, mode: 'polygon', points, name: 'TooMany' })
+          ).rejects.toThrow();
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('mode=color_range selects exactly one swatch by its exact color', async () => {
         const swatchesPath = tempFile('png');
         writeColorSwatches(swatchesPath);
         const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
@@ -248,9 +308,11 @@ describe.skipIf(!install)(
             name: 'ColorSel',
           });
           expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
-          const frac = structuredOf(result).fraction as number;
-          expect(frac).toBeGreaterThan(0.1); // 1/6 of the 6-swatch strip, ~0.1667
-          expect(frac).toBeLessThan(0.2);
+          // Every swatch is a flat, hard-edged solid color (no anti-aliased boundary pixels) --
+          // an exact-color match should hit exactly one whole swatch, not a fuzzy fraction of it.
+          expect(structuredOf(result)).toMatchObject({
+            selected_pixels: SWATCH_SIZE * SWATCH_SIZE,
+          });
         } finally {
           await callTool(tools, 'gimp_close_document', { image });
         }
@@ -266,6 +328,137 @@ describe.skipIf(!install)(
             name: 'BadColor',
           });
           expect(result.isError).toBe(true);
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('mode=color_range by sample point works on a GRAYSCALE document', async () => {
+        const built = await backend.call<{
+          image: number;
+          width: number;
+          height: number;
+          half: number;
+        }>('test_split_image', { base_type: 'gray', width: 32, height: 16 });
+        const { image, half } = built;
+        try {
+          const result = await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'color_range',
+            x: half / 2,
+            y: 8,
+            threshold: 5,
+            name: 'GraySample',
+          });
+          expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+          expect(structuredOf(result)).toMatchObject({ selected_pixels: half * 16 });
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('mode=color_range by sample point works on an INDEXED document', async () => {
+        const built = await backend.call<{
+          image: number;
+          width: number;
+          height: number;
+          half: number;
+        }>('test_split_image', { base_type: 'indexed', width: 32, height: 16 });
+        const { image, half } = built;
+        try {
+          const result = await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'color_range',
+            x: half / 2,
+            y: 8,
+            threshold: 5,
+            name: 'IndexedSample',
+          });
+          expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+          expect(structuredOf(result)).toMatchObject({ selected_pixels: half * 16 });
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('mode=color_range by sample point works on a 16-bit document', async () => {
+        const opened = await callTool(tools, 'gimp_create_document', {
+          width: 32,
+          height: 16,
+          precision: '16',
+          fill: 'black',
+        });
+        const image = structuredOf(opened).image as number;
+        try {
+          const top = await callTool(tools, 'gimp_layer', {
+            image,
+            op: 'create',
+            name: 'Top16',
+            width: 16,
+            height: 16,
+            fill: 'white',
+          });
+          expect(top.isError, JSON.stringify(top.content)).toBeFalsy();
+
+          const onWhite = await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'color_range',
+            x: 4,
+            y: 8,
+            threshold: 5,
+            name: 'Sample16White',
+          });
+          expect(onWhite.isError, JSON.stringify(onWhite.content)).toBeFalsy();
+          expect(structuredOf(onWhite)).toMatchObject({ selected_pixels: 16 * 16 });
+
+          const onBlack = await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'color_range',
+            x: 24,
+            y: 8,
+            threshold: 5,
+            name: 'Sample16Black',
+          });
+          expect(onBlack.isError, JSON.stringify(onBlack.content)).toBeFalsy();
+          expect(structuredOf(onBlack)).toMatchObject({ selected_pixels: 16 * 16 });
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('mode=color_range by sample point works on a document with a transparent layer', async () => {
+        const image = await createDoc(64, 64, 'transparent');
+        try {
+          const squarePath = tempFile('png');
+          writeRgbaSquare(squarePath, 64, 64, 16, 16, 20, [255, 0, 0]);
+          const placed = await callTool(tools, 'gimp_place_image', {
+            image,
+            file_path: squarePath,
+            name: 'Square',
+          });
+          expect(placed.isError, JSON.stringify(placed.content)).toBeFalsy();
+
+          // Sample point inside the opaque square.
+          const inside = await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'color_range',
+            x: 26,
+            y: 26,
+            threshold: 10,
+            name: 'TransparentSample',
+          });
+          expect(inside.isError, JSON.stringify(inside.content)).toBeFalsy();
+          expect(structuredOf(inside)).toMatchObject({ selected_pixels: 20 * 20 });
+
+          // A point outside the image entirely is still refused, alpha channel or not.
+          const outside = await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'color_range',
+            x: 1000,
+            y: 1000,
+            name: 'TransparentOutside',
+          });
+          expect(outside.isError).toBe(true);
         } finally {
           await callTool(tools, 'gimp_close_document', { image });
         }
@@ -290,6 +483,82 @@ describe.skipIf(!install)(
           expect(structuredOf(result)).toMatchObject({
             selected_pixels: SWATCH_SIZE * SWATCH_SIZE,
           });
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it(
+        "mode=magic_wand with sample_merged:false converts the point into the LAYER's own " +
+          'local coordinates, on an offset layer',
+        async () => {
+          const image = await createDoc(150, 60, 'white');
+          try {
+            const swatchesPath = tempFile('png');
+            writeColorSwatches(swatchesPath);
+            const placed = await callTool(tools, 'gimp_place_image', {
+              image,
+              file_path: swatchesPath,
+              name: 'Swatches',
+              x: 20,
+              y: 20,
+            });
+            expect(placed.isError, JSON.stringify(placed.content)).toBeFalsy();
+
+            const swatchIndex = 4; // 'green', local x in [64, 80)
+            const docX = swatchIndex * SWATCH_SIZE + SWATCH_SIZE / 2 + 20; // 92
+            const docY = SWATCH_SIZE / 2 + 20; // 28
+            const result = await callTool(tools, 'gimp_select', {
+              image,
+              mode: 'magic_wand',
+              x: docX,
+              y: docY,
+              layer: 'Swatches',
+              sample_merged: false,
+              name: 'WandOffset',
+            });
+            expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+            expect(structuredOf(result)).toMatchObject({
+              selected_pixels: SWATCH_SIZE * SWATCH_SIZE,
+            });
+
+            const pgm = await exportChannel(image, 'WandOffset');
+            const width = 150;
+            expect(pgm[docY * width + docX]).toBe(255); // the clicked point itself
+            // Document x=70, y=28 sits over the NEIGHBORING 'red' swatch (local x=50, in [48,64)) --
+            // selected only if the point were wrongly treated as already-local and clamped/wrapped
+            // into the wrong swatch instead of correctly offset into 'green'.
+            expect(pgm[docY * width + 70]).toBe(0);
+          } finally {
+            await callTool(tools, 'gimp_close_document', { image });
+          }
+        }
+      );
+
+      it('mode=magic_wand with sample_merged:false refuses a point outside the named layer', async () => {
+        const image = await createDoc(150, 60, 'white');
+        try {
+          const swatchesPath = tempFile('png');
+          writeColorSwatches(swatchesPath);
+          const placed = await callTool(tools, 'gimp_place_image', {
+            image,
+            file_path: swatchesPath,
+            name: 'Swatches',
+            x: 20,
+            y: 20,
+          });
+          expect(placed.isError, JSON.stringify(placed.content)).toBeFalsy();
+
+          const result = await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'magic_wand',
+            x: 5,
+            y: 5,
+            layer: 'Swatches',
+            sample_merged: false,
+            name: 'WandOutside',
+          });
+          expect(result.isError).toBe(true);
         } finally {
           await callTool(tools, 'gimp_close_document', { image });
         }
@@ -575,6 +844,21 @@ describe.skipIf(!install)(
         }
       });
 
+      it('gradient_linear refuses a nonzero feather_px instead of silently ignoring it', async () => {
+        const image = await createDoc(64, 64);
+        try {
+          const result = await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'gradient_linear',
+            feather_px: 10,
+            name: 'GradFeather',
+          });
+          expect(result.isError).toBe(true);
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
       it('gradient_radial centers full effect and fades to none at the radius edge', async () => {
         const image = await createDoc(64, 64);
         try {
@@ -594,6 +878,135 @@ describe.skipIf(!install)(
           await callTool(tools, 'gimp_close_document', { image });
         }
       });
+
+      async function channelNames(image: number): Promise<string[]> {
+        const inspected = await callTool(tools, 'gimp_inspect', { what: 'channels', image });
+        return (structuredOf(inspected).channels as Array<{ name: string }>).map((c) => c.name);
+      }
+
+      it('a gradient select leaves no scratch channel behind', async () => {
+        const image = await createDoc(64, 64);
+        try {
+          const result = await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'gradient_linear',
+            name: 'Grad',
+          });
+          expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+          expect(await channelNames(image)).toEqual(['Grad']);
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('a combine select (two shapes in sequence) leaves no scratch channel behind', async () => {
+        const image = await createDoc(64, 64);
+        try {
+          await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'rectangle',
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 32,
+            name: 'Combined',
+          });
+          const result = await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'rectangle',
+            x: 32,
+            y: 0,
+            width: 32,
+            height: 32,
+            combine: 'add',
+            name: 'Combined',
+          });
+          expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+          expect(await channelNames(image)).toEqual(['Combined']);
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it(
+        'a gradient combined onto an existing channel uses two scratch channels in sequence, ' +
+          'leaving neither behind',
+        async () => {
+          const image = await createDoc(64, 64);
+          try {
+            await callTool(tools, 'gimp_select', {
+              image,
+              mode: 'rectangle',
+              x: 0,
+              y: 0,
+              width: 32,
+              height: 64,
+              name: 'GradCombo',
+            });
+            // The gradient build uses its OWN scratch channel to paint the ramp, then combine=add
+            // uses a SECOND one to snapshot the existing selection before unioning -- both within
+            // this one call.
+            const result = await callTool(tools, 'gimp_select', {
+              image,
+              mode: 'gradient_linear',
+              combine: 'add',
+              name: 'GradCombo',
+            });
+            expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+            expect(await channelNames(image)).toEqual(['GradCombo']);
+            // The left half was already fully selected by the rectangle; unioned with a gradient
+            // that ramps from black (unselected) to white (selected), coverage can only grow.
+            const fraction = structuredOf(result).fraction as number;
+            expect(fraction).toBeGreaterThanOrEqual(0.5);
+          } finally {
+            await callTool(tools, 'gimp_close_document', { image });
+          }
+        }
+      );
+
+      it(
+        'a bad gradient arg that fails AFTER the scratch channel exists leaves channels and ' +
+          'the selection untouched',
+        async () => {
+          const image = await createDoc(64, 64);
+          try {
+            await callTool(tools, 'gimp_select', {
+              image,
+              mode: 'rectangle',
+              x: 0,
+              y: 0,
+              width: 10,
+              height: 10,
+              name: 'Pre',
+            });
+            const before = await channelNames(image);
+            const beforeSelected = await backend.call<{ selection_empty: boolean }>(
+              'test_selection_empty',
+              { image }
+            );
+
+            // Bypasses the tool schema's `type: number` on x1 -- the bridge itself must still
+            // refuse cleanly once the value reaches the actual gradient paint.
+            await expect(
+              backend.call('select', {
+                image,
+                mode: 'gradient_linear',
+                x1: 'not a number',
+                name: 'BadGrad',
+              })
+            ).rejects.toThrow();
+
+            expect(await channelNames(image)).toEqual(before);
+            const afterSelected = await backend.call<{ selection_empty: boolean }>(
+              'test_selection_empty',
+              { image }
+            );
+            expect(afterSelected.selection_empty).toBe(beforeSelected.selection_empty);
+          } finally {
+            await callTool(tools, 'gimp_close_document', { image });
+          }
+        }
+      );
 
       it('combine=add unions two disjoint rectangles exactly', async () => {
         const image = await createDoc(64, 64);
@@ -718,10 +1131,11 @@ describe.skipIf(!install)(
 
       it('invert applies to the NEW shape alone, before combine — not to the unioned result', async () => {
         // A 2x2 grid of 32x32 quadrants: TL, TR, BL, BR. Existing channel 'X' = TL. New call:
-        // shape = BR, invert: true, combine: add. Per-shape invert (correct): invert(BR) = every
-        // quadrant except BR = TL+TR+BL (0.75), unioned with the existing TL changes nothing
-        // (already included) -> 0.75. Post-combine invert (the bug): invert(TL union BR) =
-        // TR+BL (0.5). The two hypotheses predict different, measurable fractions.
+        // shape = BR, invert: true, combine: add. Inverting the NEW shape alone before combining:
+        // invert(BR) = every quadrant except BR = TL+TR+BL (0.75), unioned with the existing TL
+        // changes nothing (already included) -> 0.75. Inverting the already-combined result
+        // instead would give invert(TL union BR) = TR+BL (0.5) -- the two give different,
+        // measurable fractions.
         const image = await createDoc(64, 64);
         try {
           await callTool(tools, 'gimp_select', {
@@ -839,6 +1253,61 @@ describe.skipIf(!install)(
           await callTool(tools, 'gimp_close_document', { image });
         }
       });
+
+      it(
+        'gimp_select does not change which layer is selected -- a later layer-defaulting call ' +
+          'still lands on the layer the caller picked',
+        async () => {
+          const image = await createDoc(64, 64, 'black');
+          try {
+            const top = await callTool(tools, 'gimp_layer', {
+              image,
+              op: 'create',
+              name: 'Top',
+              fill: 'white',
+            });
+            expect(top.isError, JSON.stringify(top.content)).toBeFalsy();
+
+            const layers = await callTool(tools, 'gimp_inspect', { what: 'layers', image });
+            const bg = (
+              structuredOf(layers).layers as Array<{ layer_id: number; name: string }>
+            ).find((l) => l.name !== 'Top')!;
+
+            // Explicitly reselect the LOWER (background) layer -- creating Top likely made IT the
+            // selected one, same as a real GUI action would.
+            await callTool(tools, 'gimp_layer', { image, op: 'select', layer_id: bg.layer_id });
+
+            const selected = await callTool(tools, 'gimp_select', {
+              image,
+              mode: 'rectangle',
+              x: 0,
+              y: 0,
+              width: 10,
+              height: 10,
+              name: 'LowerLayerCheck',
+            });
+            expect(selected.isError, JSON.stringify(selected.content)).toBeFalsy();
+
+            // No `layer`/`layer_id` -- defaults to "the selected layer", which must STILL be the
+            // background, not whatever gimp_select's own channel bookkeeping happened to touch.
+            const added = await callTool(tools, 'gimp_add_adjustment', {
+              image,
+              type: 'exposure',
+              exposure: 1,
+            });
+            expect(added.isError, JSON.stringify(added.content)).toBeFalsy();
+
+            const filters = await backend.call<{ filters: Array<{ layer_id: number }> }>(
+              'list_filters',
+              { image }
+            );
+            expect(filters.filters).toHaveLength(1);
+            expect(filters.filters[0]!.layer_id).toBe(bg.layer_id);
+          } finally {
+            await callTool(tools, 'gimp_close_document', { image });
+          }
+        }
+      );
 
       it('requires image and mode, and rejects an unknown mode or combine before dispatch', async () => {
         const image = await createDoc(8, 8);
@@ -1137,6 +1606,39 @@ describe.skipIf(!install)(
         }
       });
 
+      it('smooth with no px at all still dispatches (optional, floors at 1px)', async () => {
+        const image = await createDoc(64, 64);
+        try {
+          await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'rectangle',
+            x: 8,
+            y: 8,
+            width: 8,
+            height: 24,
+            name: 'StairNoPx',
+          });
+          await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'rectangle',
+            x: 16,
+            y: 16,
+            width: 8,
+            height: 24,
+            name: 'StairNoPx',
+            combine: 'add',
+          });
+          const result = await callTool(tools, 'gimp_modify_selection', {
+            image,
+            channel: 'StairNoPx',
+            op: 'smooth',
+          });
+          expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
       it('expand/contract/border refuse px <= 0, and px beyond the 150px cap', async () => {
         const image = await createDoc(64, 64);
         try {
@@ -1179,6 +1681,29 @@ describe.skipIf(!install)(
             });
             expect(atCap.isError, `${op} px=150`).toBeFalsy();
           }
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('a document above the morphology baseline gets a LOWER px cap than 150', async () => {
+        const image = await createDoc(64, 64);
+        try {
+          // ~30.1MP, just over MORPHOLOGY_BASELINE_MP (24) -- the cap must already have shrunk
+          // (to 120px here), well short of actually running the slow op at the full 150px.
+          await backend.call('resize', { image, width: 7_000, height: 4_300 });
+          await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'rectangle',
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 16,
+            name: 'BigCap',
+          });
+          await expect(
+            backend.call('modify_mask', { image, channel: 'BigCap', op: 'border', px: 150 })
+          ).rejects.toThrow(/120/);
         } finally {
           await callTool(tools, 'gimp_close_document', { image });
         }
@@ -1331,8 +1856,8 @@ describe.skipIf(!install)(
           expect(first.isError, JSON.stringify(first.content)).toBeFalsy();
           const beforeComposite = await exportComposite(image);
 
-          // Live test for D1: a bad channel name must be refused WITHOUT destroying the existing,
-          // working mask -- neither its has_mask flag nor its rendered effect may change.
+          // A bad channel name must be refused WITHOUT destroying the existing, working mask --
+          // neither its has_mask flag nor its rendered effect may change.
           const badReplace = await callTool(tools, 'gimp_layer_mask', {
             image,
             op: 'create',
@@ -1378,24 +1903,135 @@ describe.skipIf(!install)(
         }
       });
 
-      it.each(['white', 'black', 'alpha', 'grayscale'] as const)(
-        'create with source=%s attaches a mask without error',
-        async (source) => {
-          const { image, topId } = await blackWhiteDoc();
-          try {
-            const result = await callTool(tools, 'gimp_layer_mask', {
-              image,
-              op: 'create',
-              source,
-              layer_id: topId,
-            });
-            expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
-            expect(structuredOf(result)).toMatchObject({ has_mask: true });
-          } finally {
-            await callTool(tools, 'gimp_close_document', { image });
-          }
+      it('create with source=white makes the layer fully visible, by its composite pixels', async () => {
+        const { image, topId } = await blackWhiteDoc();
+        try {
+          const result = await callTool(tools, 'gimp_layer_mask', {
+            image,
+            op: 'create',
+            source: 'white',
+            layer_id: topId,
+          });
+          expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+          const composite = await exportComposite(image);
+          expect(pixelAt(composite, 16, 16)).toEqual([255, 255, 255]); // the top (white) layer
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
         }
-      );
+      });
+
+      it('create with source=black fully hides the layer, by its composite pixels', async () => {
+        const { image, topId } = await blackWhiteDoc();
+        try {
+          const result = await callTool(tools, 'gimp_layer_mask', {
+            image,
+            op: 'create',
+            source: 'black',
+            layer_id: topId,
+          });
+          expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+          const composite = await exportComposite(image);
+          expect(pixelAt(composite, 16, 16)).toEqual([0, 0, 0]); // the black background, revealed
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it("create with source=alpha multiplies the layer's own alpha a second time, measurably", async () => {
+        // A layer's own alpha already produces the exact same final pixels a source=alpha mask
+        // would, so attaching the mask on top of an UNCHANGED alpha is the one setup where the
+        // mask's own effect shows up: visibility becomes layer_alpha x mask_value, so a uniform
+        // 50%-alpha layer gets noticeably MORE transparent once its own alpha is also copied in
+        // as a mask, not just re-applied as a no-op.
+        const image = await createDoc(64, 64, 'black');
+        try {
+          const srcPath = tempFile('png');
+          writeRgbaFlat(srcPath, 64, 64, [255, 255, 255], 128);
+          const placed = await callTool(tools, 'gimp_place_image', {
+            image,
+            file_path: srcPath,
+            name: 'HalfAlpha',
+          });
+          expect(placed.isError, JSON.stringify(placed.content)).toBeFalsy();
+          const layerId = structuredOf(placed).layer_id as number;
+
+          const before = await exportComposite(image);
+          const beforeValue = pixelAt(before, 32, 32)[0];
+
+          const result = await callTool(tools, 'gimp_layer_mask', {
+            image,
+            op: 'create',
+            source: 'alpha',
+            layer_id: layerId,
+          });
+          expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+
+          const after = await exportComposite(image);
+          const afterValue = pixelAt(after, 32, 32)[0];
+          // A true no-op would leave this within a pixel or two of beforeValue; squaring a
+          // uniform 50% alpha measured live as a ~49-unit drop (~188 -> ~137), comfortably past
+          // any rounding noise.
+          expect(afterValue).toBeLessThan(beforeValue - 20);
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it("create with source=grayscale derives the mask from the layer's own luminance", async () => {
+        const image = await createDoc(64, 64, 'white');
+        try {
+          const srcPath = tempFile('png');
+          writeHardEdge(srcPath, 64, 64); // left half black, right half white
+          const placed = await callTool(tools, 'gimp_place_image', {
+            image,
+            file_path: srcPath,
+            name: 'HardEdge',
+          });
+          expect(placed.isError, JSON.stringify(placed.content)).toBeFalsy();
+          const layerId = structuredOf(placed).layer_id as number;
+
+          const result = await callTool(tools, 'gimp_layer_mask', {
+            image,
+            op: 'create',
+            source: 'grayscale',
+            layer_id: layerId,
+          });
+          expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+
+          const composite = await exportComposite(image);
+          // Left half: dark luminance -> hidden by the mask -> the white background shows
+          // through (NOT the layer's own black, which an unmasked render would show).
+          expect(pixelAt(composite, 16, 32)).toEqual([255, 255, 255]);
+          // Right half: bright luminance -> visible -> the layer's own white.
+          expect(pixelAt(composite, 48, 32)).toEqual([255, 255, 255]);
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('create with source=channel and invert together produce a fully-hidden mask', async () => {
+        const { image, topId } = await blackWhiteDoc();
+        try {
+          await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'all',
+            name: 'AllChannel',
+          });
+          const result = await callTool(tools, 'gimp_layer_mask', {
+            image,
+            op: 'create',
+            source: 'channel',
+            channel: 'AllChannel',
+            invert: true,
+            layer_id: topId,
+          });
+          expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+          const composite = await exportComposite(image);
+          expect(pixelAt(composite, 16, 16)).toEqual([0, 0, 0]); // fully selected, then inverted -> hidden
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
 
       it('create with source=white then invert produces a fully-hidden mask', async () => {
         const { image, topId } = await blackWhiteDoc();
@@ -1706,6 +2342,18 @@ describe.skipIf(!install)(
         }
       });
 
+      it('does not leave an orphaned image behind when its gray scratch image fails to build', async () => {
+        // Bridge-internal: `mask_preview` builds a throwaway gray image from the channel's own
+        // pixels before rendering anything. If that build fails partway through, the half-built
+        // image must not stay open with nothing left to free it.
+        const result = await backend.call<{ raised: boolean; leaked_images: number[] }>(
+          'test_gray_bytes_image_leak',
+          {}
+        );
+        expect(result.raised).toBe(true);
+        expect(result.leaked_images).toEqual([]);
+      });
+
       it('works on an image carrying a live filter', async () => {
         const image = await createDoc(32, 32, 'white');
         try {
@@ -1929,6 +2577,34 @@ describe.skipIf(!install)(
         }
       });
 
+      it(
+        'a multi-layer source with NO alpha that does not cover the canvas does not pick up ' +
+          'the session background for the gap',
+        async () => {
+          const image = await createDoc(64, 64);
+          try {
+            const xcfPath = tempFile('xcf');
+            // Two NO-ALPHA layers: the top half, and the bottom-right quarter -- the bottom-left
+            // quarter is covered by NEITHER, a gap only an explicit black background (not
+            // whatever GIMP's own flatten default, or the session's ambient context, happens to
+            // be) can correctly fill as "not part of the mask".
+            await backend.call('test_build_no_alpha_gap_xcf', { path: xcfPath });
+            const result = await backend.call<{ selected_pixels: number }>('load_mask', {
+              image,
+              path: xcfPath,
+              name: 'NoAlphaGap',
+            });
+            const pgm = await exportChannel(image, 'NoAlphaGap');
+            expect(pgm[8 * 64 + 8]).toBe(255); // top half -> covered, white -> selected
+            expect(pgm[48 * 64 + 48]).toBe(255); // bottom-right quarter -> covered, white -> selected
+            expect(pgm[48 * 64 + 8]).toBe(0); // bottom-left quarter -> the uncovered gap -> NOT selected
+            expect(result.selected_pixels).toBe(64 * 32 + 32 * 32);
+          } finally {
+            await callTool(tools, 'gimp_close_document', { image });
+          }
+        }
+      );
+
       it('refuses a mask name already confining a live filter', async () => {
         const image = await createDoc(64, 64);
         try {
@@ -1971,6 +2647,41 @@ describe.skipIf(!install)(
           await callTool(tools, 'gimp_close_document', { image });
         }
       });
+
+      it('a 50%-alpha white pixel loads as ~128 (perceptual), not ~186 (linear-light)', async () => {
+        const image = await createDoc(64, 64);
+        try {
+          const maskPath = tempFile('png');
+          writeRgbaFlat(maskPath, 64, 64, [255, 255, 255], 128);
+          await backend.call('load_mask', { image, path: maskPath, name: 'HalfAlpha' });
+          const pgm = await exportChannel(image, 'HalfAlpha');
+          const value = pgm[32 * 64 + 32]!;
+          expect(value).toBeGreaterThan(118);
+          expect(value).toBeLessThan(138);
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it(
+        'a file GIMP cannot load as an image (file_load returns None) is a clean error, ' +
+          'not a stack trace',
+        async () => {
+          const image = await createDoc(8, 8);
+          try {
+            // Verified live: GIMP's `file_load` returns None outright for a file it cannot
+            // recognize as an image, rather than raising -- the SAME "returned normally having
+            // silently done nothing" shape `op_place_image`'s own comment names for its loader.
+            const garbagePath = tempFile('png');
+            writeFileSync(garbagePath, 'this is not a png file at all');
+            await expect(
+              backend.call('load_mask', { image, path: garbagePath, name: 'NotAnImage' })
+            ).rejects.toThrow();
+          } finally {
+            await callTool(tools, 'gimp_close_document', { image });
+          }
+        }
+      );
     });
 
     describe('render_layer', () => {
@@ -2117,6 +2828,104 @@ describe.skipIf(!install)(
           await expect(
             backend.call('render_layer', { image, layer_id: 999_999, out_path: outPath })
           ).rejects.toThrow();
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('flattens a layer with its own transparency onto an opaque WHITE background', async () => {
+        const image = await createDoc(64, 64, 'white');
+        try {
+          const squarePath = tempFile('png');
+          writeRgbaSquare(squarePath, 64, 64, 16, 16, 20, [200, 30, 30]);
+          const placed = await callTool(tools, 'gimp_place_image', {
+            image,
+            file_path: squarePath,
+            name: 'Trans',
+          });
+          expect(placed.isError, JSON.stringify(placed.content)).toBeFalsy();
+          const layerId = structuredOf(placed).layer_id as number;
+
+          const outPath = tempFile('png');
+          await backend.call('render_layer', { image, layer_id: layerId, out_path: outPath });
+          const png = readPng(outPath);
+          expect(pixelAt(png, 26, 26)).toEqual([200, 30, 30]); // inside the opaque square
+          expect(pixelAt(png, 2, 2)).toEqual([255, 255, 255]); // fully transparent source pixel
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it("includes the layer's own native mask, not just its unmasked pixels", async () => {
+        const image = await createDoc(32, 32, 'white');
+        try {
+          const top = await callTool(tools, 'gimp_layer', {
+            image,
+            op: 'create',
+            name: 'Masked',
+            fill: 'black',
+          });
+          expect(top.isError, JSON.stringify(top.content)).toBeFalsy();
+          const layerId = structuredOf(top).layer_id as number;
+
+          await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'rectangle',
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 32,
+            name: 'HalfMask',
+          });
+          const masked = await callTool(tools, 'gimp_layer_mask', {
+            image,
+            op: 'create',
+            channel: 'HalfMask',
+            layer_id: layerId,
+          });
+          expect(masked.isError, JSON.stringify(masked.content)).toBeFalsy();
+
+          const outPath = tempFile('png');
+          await backend.call('render_layer', { image, layer_id: layerId, out_path: outPath });
+          const png = readPng(outPath);
+          expect(pixelAt(png, 8, 16)).toEqual([0, 0, 0]); // masked VISIBLE: the layer's own black
+          expect(pixelAt(png, 24, 16)).toEqual([255, 255, 255]); // masked HIDDEN: the white bg
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
+      it('includes a live filter already applied to the layer', async () => {
+        const image = await createDoc(32, 32, 'white');
+        try {
+          const top = await callTool(tools, 'gimp_layer', {
+            image,
+            op: 'create',
+            name: 'Filtered',
+            fill: 'black',
+          });
+          expect(top.isError, JSON.stringify(top.content)).toBeFalsy();
+          const layerId = structuredOf(top).layer_id as number;
+
+          const added = await callTool(tools, 'gimp_add_adjustment', {
+            image,
+            type: 'curves',
+            layer_id: layerId,
+            points: [
+              [0, 200],
+              [255, 200],
+            ], // forces every pixel to the same flat output, regardless of the raw fill
+          });
+          expect(added.isError, JSON.stringify(added.content)).toBeFalsy();
+
+          const outPath = tempFile('png');
+          await backend.call('render_layer', { image, layer_id: layerId, out_path: outPath });
+          const png = readPng(outPath);
+          const [r, g, b] = pixelAt(png, 16, 16);
+          for (const c of [r, g, b]) {
+            expect(c).toBeGreaterThan(190);
+            expect(c).toBeLessThan(210);
+          }
         } finally {
           await callTool(tools, 'gimp_close_document', { image });
         }
