@@ -9,8 +9,9 @@ install (the `editmamei` MCP server), not about the
 
 The short version: your photos aren't uploaded to us. What Editmamei sends to its own
 servers is content-free usage data, tied to a random install ID (documented field-for-field
-below, and you can switch it off with one command), plus, if you have Pro, the license check and
-the module download, which carry your license key (see [Pro](#pro)). (When your AI assistant needs to see an edit, a downscaled preview
+below, and you can switch it off with one command). If you have Pro, your license key also goes
+to a third-party licensing service, and to Editmamei's delivery endpoint on each startup (see
+[Pro](#pro)). (When your AI assistant needs to see an edit, a downscaled preview
 goes to that assistant; covered under "Your AI assistant is a cloud service" below.)
 
 ---
@@ -24,7 +25,7 @@ There is one line Editmamei does not cross, on any setting or edition:
 - **Your file paths.** Full paths stay local. Where a path is unavoidable in an opt-in
   diagnostic message, it's reduced to a bare filename first (see [Sanitization](#sanitization)).
 - **Your metadata.** Camera info, GPS, and author fields are never sent to Editmamei. Your
-  AI assistant does read them when it inspects a document.
+  AI assistant can read them (for example when it requests a document's metadata).
 
 The previews your AI assistant looks at are a separate matter: that's your AI client talking
 to its own cloud, not Editmamei. See [Your AI assistant is a cloud service](#your-ai-assistant-is-a-cloud-service).
@@ -453,11 +454,17 @@ using a cloud AI, and a function of which assistant you choose, not a hop Editma
 
 ## Pro
 
-Validating a Pro license is a content-free check. Confirming your license sends the license key
-and a device identifier (Pro covers two devices per license) to the licensing service, and never
-any document, image, or path data. Activation also downloads the signed, encrypted Pro module
-itself from Editmamei's delivery endpoint; those requests carry your license key (in a request header) and a
-client identifier string, and no document data. Your photos stay on your machine, exactly as with the rest of Editmamei.
+Pro licensing is content-free. Activation sends your license key and a hashed device identifier
+(a salted SHA-256 of hostname, username, platform and architecture, so no raw values; Pro covers
+two devices per license) to the licensing service, a third-party licensing provider. About once a
+day, revalidation sends the license key (plus the store's organization ID) to the same service,
+without the device identifier. Neither request carries document, image, or path data.
+
+On every Pro startup, Editmamei also asks its own delivery endpoint whether a newer Pro module
+exists, and downloads the signed, encrypted module if so. That request carries your license key (in
+a request header) and a fixed user-agent string that is the same for every install, and no document
+data. It is not governed by the `update_check` setting. Your photos stay on your machine, exactly as
+with the rest of Editmamei.
 
 ---
 
