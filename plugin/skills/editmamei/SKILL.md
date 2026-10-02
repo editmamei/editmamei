@@ -132,7 +132,7 @@ Any selection that required more than a single rectangle call is non-trivial. No
 
 **If you need the mask later in the session:** note the selection parameters (tool, bounds, feather radius) so you can rebuild in one call rather than re-deriving from scratch.
 
-**If your `tools/list` includes a script execution tool:** use it to save the selection to a named Photoshop channel (`doc.channels.add()` + `doc.selection.store(channel)`) so it can be reloaded via `doc.selection.load(channel)` in a later call. Use this for any mask you expect to reuse more than twice.
+**If your `tools/list` includes a script execution tool:** use it to save the selection as a named alpha channel in the document, so a later call can turn that channel back into the selection. Use this for any mask you expect to reuse more than twice.
 
 # Co-working — when the user has touched the document
 
