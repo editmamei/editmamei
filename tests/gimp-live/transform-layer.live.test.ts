@@ -30,7 +30,7 @@ import { createGimpAdjustmentTools } from '@editmamei/tools/gimp-adjustment-tool
 import { createGimpEffectTools } from '@editmamei/tools/gimp-effect-tools.ts';
 import { createGimpFilterTools } from '@editmamei/tools/gimp-filter-tools.ts';
 import { createGimpGeometryTools } from '@editmamei/tools/gimp-geometry-tools.ts';
-import { createGimpMaskTools } from '@editmamei/tools/gimp-mask-tools.ts';
+import { createGimpSelectionTools } from '@editmamei/tools/gimp-selection-tools.ts';
 import { createGimpLayerTools } from '@editmamei/tools/gimp-layer-tools.ts';
 import { createGimpComposeTools } from '@editmamei/tools/gimp-compose-tools.ts';
 import { createGimpTransformLayerTools } from '@editmamei/tools/gimp-transform-layer-tools.ts';
@@ -178,7 +178,7 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
       ...createGimpEffectTools(backend),
       ...createGimpFilterTools(backend),
       ...createGimpGeometryTools(backend),
-      ...createGimpMaskTools(backend),
+      ...createGimpSelectionTools(backend),
       ...createGimpLayerTools(backend),
       ...createGimpComposeTools(backend),
       ...createGimpTransformLayerTools(backend),
@@ -683,9 +683,9 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
 
   it('refuses when the layer carries a masked filter (image unchanged); baking clears the refusal', async () => {
     const { image, layer_id } = await openQuadrants(40, 40);
-    await callTool(tools, 'gimp_create_mask', {
+    await callTool(tools, 'gimp_select', {
       image,
-      type: 'rectangle',
+      mode: 'rectangle',
       x: 0,
       y: 0,
       width: 20,

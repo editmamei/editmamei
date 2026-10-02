@@ -24,6 +24,7 @@ import { createGimpVerifyTools } from '@editmamei/tools/gimp-verify-tools.ts';
 import { createGimpAdjustmentTools } from '@editmamei/tools/gimp-adjustment-tools.ts';
 import { createGimpLayerTools } from '@editmamei/tools/gimp-layer-tools.ts';
 import { createGimpComposeTools } from '@editmamei/tools/gimp-compose-tools.ts';
+import { createGimpTransformLayerTools } from '@editmamei/tools/gimp-transform-layer-tools.ts';
 import { createGimpSelectionTools } from '@editmamei/tools/gimp-selection-tools.ts';
 import type { ToolDefinition, ToolResult } from '@editmamei/core/tool-registry.ts';
 import { callTool } from '../fixtures/tool-helpers.ts';
@@ -95,6 +96,7 @@ describe.skipIf(!install)(
         ...createGimpAdjustmentTools(backend),
         ...createGimpLayerTools(backend),
         ...createGimpComposeTools(backend),
+        ...createGimpTransformLayerTools(backend),
         ...createGimpSelectionTools(backend),
       ];
       await readyGimpRegistry((name, args) => callTool(tools, name, args));
@@ -795,12 +797,11 @@ describe.skipIf(!install)(
           });
           expect(offset.isError, JSON.stringify(offset.content)).toBeFalsy();
           const layerId = structuredOf(offset).layer_id as number;
-          const moved = await callTool(tools, 'gimp_layer', {
+          const moved = await callTool(tools, 'gimp_transform_layer', {
             image,
             op: 'move',
             layer_id: layerId,
-            x: 20,
-            y: 20,
+            absolute: { x: 20, y: 20 },
           });
           expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
 
@@ -2118,12 +2119,11 @@ describe.skipIf(!install)(
           // Placed so it STRADDLES the mask boundary below (x in [20,40)): part of the layer
           // overlaps the selected half, part does not, and part of the canvas is outside the
           // layer's own placement entirely -- three distinct outcomes to check.
-          await callTool(tools, 'gimp_layer', {
+          await callTool(tools, 'gimp_transform_layer', {
             image,
             op: 'move',
             layer_id: photoId,
-            x: 20,
-            y: 10,
+            absolute: { x: 20, y: 10 },
           });
 
           // Select the LEFT half of the full canvas -- only the portion overlapping the layer's
@@ -2484,12 +2484,11 @@ describe.skipIf(!install)(
           });
           expect(layer.isError, JSON.stringify(layer.content)).toBeFalsy();
           const layerId = structuredOf(layer).layer_id as number;
-          const moved = await callTool(tools, 'gimp_layer', {
+          const moved = await callTool(tools, 'gimp_transform_layer', {
             image,
             op: 'move',
             layer_id: layerId,
-            x: 5,
-            y: 8,
+            absolute: { x: 5, y: 8 },
           });
           expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
 
@@ -2539,12 +2538,11 @@ describe.skipIf(!install)(
             height: 20,
           });
           const layerId = structuredOf(layer).layer_id as number;
-          await callTool(tools, 'gimp_layer', {
+          await callTool(tools, 'gimp_transform_layer', {
             image,
             op: 'move',
             layer_id: layerId,
-            x: -10,
-            y: -5,
+            absolute: { x: -10, y: -5 },
           });
 
           const maskPath = tempFile('png');
@@ -2579,12 +2577,11 @@ describe.skipIf(!install)(
             height: 20,
           });
           const layerId = structuredOf(layer).layer_id as number;
-          await callTool(tools, 'gimp_layer', {
+          await callTool(tools, 'gimp_transform_layer', {
             image,
             op: 'move',
             layer_id: layerId,
-            x: 55,
-            y: 55,
+            absolute: { x: 55, y: 55 },
           });
 
           const maskPath = tempFile('png');
@@ -2747,12 +2744,11 @@ describe.skipIf(!install)(
           });
           expect(layer.isError, JSON.stringify(layer.content)).toBeFalsy();
           const layerId = structuredOf(layer).layer_id as number;
-          const moved = await callTool(tools, 'gimp_layer', {
+          const moved = await callTool(tools, 'gimp_transform_layer', {
             image,
             op: 'move',
             layer_id: layerId,
-            x: 5,
-            y: 8,
+            absolute: { x: 5, y: 8 },
           });
           expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
 
