@@ -128,7 +128,7 @@ This repository holds the Community source. Pro is a separately licensed module 
 
 Editmamei can also drive GIMP, headless, as a second editor alongside (or instead of) Photoshop. When GIMP 3.2+ is detected on your machine, a `gimp_*` tool set registers next to the `ps_*` one; use it when you ask for GIMP, or when Photoshop isn't available. There's no visible window: edits happen in a background `gimp-console` process, and you follow along through rendered previews in the conversation instead of watching a window change.
 
-The beta covers documents (open, create, save `.xcf`, export), layers and groups, placing one photo into another, 13 non-destructive adjustment types and six effects (vignette, black and white, motion and lens blur, noise, drop shadow), geometric masks, crop/resize/rotate/flip, canvas extension, colour/grayscale conversion, checkpoints you can restore, and the same preview/histogram/compare verification primitives the Photoshop side has. It doesn't yet cover heal/clone, AI subject or sky selection, or text. Full details, requirements, and troubleshooting: [docs/gimp.md](docs/gimp.md).
+The beta covers documents (open, create, save `.xcf`, export), layers and groups, placing one photo into another, 13 non-destructive adjustment types and six effects (vignette, black and white, motion and lens blur, noise, drop shadow), geometric masks, crop/resize/rotate/flip, canvas extension, color/grayscale conversion, checkpoints you can restore, and the same preview/histogram/compare verification primitives the Photoshop side has. It doesn't yet cover heal/clone, AI subject or sky selection, or text. Full details, requirements, and troubleshooting: [docs/gimp.md](docs/gimp.md).
 
 ## Build from source
 
