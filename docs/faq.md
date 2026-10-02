@@ -151,7 +151,7 @@ The most common cause is `grace-expired` on a healthy subscription, which usuall
 
 ### Do you offer a free trial?
 
-Yes. The monthly Pro plan has a 7-day free trial. Community is also free forever, so you can use the full core toolkit at no cost before deciding on Pro. For current Pro plans and terms, see [editmamei.com/pricing](https://editmamei.com/pricing). If a paid subscription ever lapses, Editmamei keeps running as Community rather than locking you out.
+Yes. The monthly Pro plan has a 7-day free trial, which turns into the monthly plan automatically unless you cancel before it ends. Community is also free forever, so you can use the full core toolkit at no cost before deciding on Pro. For current Pro plans and terms, see [editmamei.com/pricing](https://editmamei.com/pricing). If a paid subscription ever lapses, Editmamei keeps running as Community rather than locking you out.
 
 ---
 
