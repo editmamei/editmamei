@@ -170,6 +170,7 @@ The source in this repository is the same code published to npm, so none of the 
 - **Install:** [docs/installation.md](docs/installation.md)
 - **Getting started:** [docs/getting-started.md](docs/getting-started.md)
 - **FAQ:** [docs/faq.md](docs/faq.md)
+- **AI clients:** [docs/clients.md](docs/clients.md)
 - **Troubleshooting:** [docs/troubleshooting.md](docs/troubleshooting.md)
 - **GIMP (beta):** [docs/gimp.md](docs/gimp.md)
 - **Pro features:** [docs/pro-features.md](docs/pro-features.md)
