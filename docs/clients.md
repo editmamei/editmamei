@@ -46,9 +46,9 @@ Not supported: LM Studio (the model does not receive images that tools return, s
 
 If your client truncates the list, set `EDITMAMEI_EDITOR=photoshop` in the server's `env` block to register only the Photoshop tools (or `gimp` for only the GIMP tools). See [gimp.md](gimp.md#pinning-the-editor). Most clients also let you switch off individual tools.
 
-**Timeouts.** Some operations take longer than a minute, such as AI selection and large scene reads. Codex defaults to 60 seconds per tool call ([docs](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)) and Cline's default is also reported as 60 seconds. Raise those limits where the client section below says so.
+**Timeouts.** Some operations take longer than a minute, such as AI selection and large scene reads. Codex defaults to 300 seconds per tool call ([openai/codex#28234](https://github.com/openai/codex/pull/28234)) and Cline's default is also reported as 60 seconds. Raise those limits where the client section below says so.
 
-**Images and structured results.** Editmamei returns preview images alongside structured results. Two clients have open upstream bugs where the structured result can replace the rest of a tool result before the model sees it: VS Code ([microsoft/vscode#290063](https://github.com/microsoft/vscode/issues/290063)) and Codex ([openai/codex#10334](https://github.com/openai/codex/issues/10334)). In an affected client the model may not see previews. Until this is tested, treat both clients as possibly limited.
+**Images and structured results.** Editmamei returns preview images alongside structured results. Two clients have open upstream issues around structured results. VS Code still passes tool-result images to the model, but replaces the text content when structured content is present ([microsoft/vscode#290063](https://github.com/microsoft/vscode/issues/290063)). Codex can drop the rest of a tool result when a structured result is present ([openai/codex#10334](https://github.com/openai/codex/issues/10334)), so the model may not see previews there. Until this is tested, treat Codex as possibly limited.
 
 ## Claude Desktop
 
@@ -146,7 +146,7 @@ args = ["-y", "editmamei"]
 tool_timeout_sec = 600
 ```
 
-Or `codex mcp add editmamei -- npx -y editmamei`, then add the `tool_timeout_sec` line by hand. The default is 60 seconds ([docs](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)). Known limit: issue #10334 above.
+Or `codex mcp add editmamei -- npx -y editmamei`, then add the `tool_timeout_sec` line by hand. The default is 300 seconds ([openai/codex#28234](https://github.com/openai/codex/pull/28234)). Known limit: issue #10334 above.
 
 ## Windsurf / Devin Desktop
 
