@@ -152,7 +152,7 @@ The cost of `ps_inspect` (what=layer_tree) is ~0.5 seconds. It eliminates the en
 - **Mask every adjustment that applies to part of the image**, not the whole. Use a selection first; the adjustment layer auto-masks from the active selection.
 - **Preserve the original.** Pixel-modifying filters auto-duplicate the active layer by default (the auto-duplicate-first pattern). Do not set `apply_to_active_layer` to true unless the user explicitly asked you to bake into the original.
 - **Group by canonical stack order.** Pre-plan your groups before enacting. Use the professional stack order (bottom to top): Retouching → Dodge & Burn → Global Tone → Color → Effects → Sharpening (see "Canonical layer stack" below). Never let any category grow beyond 3 ungrouped layers — create the group before you add the 4th, not after. A 17-layer flat stack is harder to hand off than a 5-group stack with 3 layers each.
-- **Never erase, always mask.** Use `ps_layer_mask` (op `create`) and paint black to hide, white to reveal. A masked pixel can always be recovered; a deleted pixel cannot. If a mask covers too much, paint it back or invert it — never reach for the eraser.
+- **Never erase, always mask.** Use the `create` operation of `ps_layer_mask` and paint black to hide, white to reveal. A masked pixel can always be recovered; a deleted pixel cannot. If a mask covers too much, paint it back or invert it — never reach for the eraser.
 - **Sharpen last, blend Luminosity.** Sharpening amplifies every artifact in the render pipeline above it. Always place sharpening at the very top of the layer stack, after all tone and color work. Set blend mode to `"luminosity"` via `ps_set_layer` (property `blend_mode`) to prevent color fringing on high-contrast edges.
 
 Counter-example to avoid: a user asks to "make the image warmer." You run a Photo Filter on a duplicated pixel layer and merge it down. Don't. Use the `ps_add_adjustment_layer` Photo Filter type so the user can adjust intensity later.
@@ -171,14 +171,14 @@ Professional stacks follow a fixed rendering order — bottom layers process fir
 
 Why this order matters: sharpening halos amplify color fringing if color layers sit above the sharpening layer. Tone should be neutral before color is tuned — otherwise color corrections fight a shifting baseline. The order is causal, not aesthetic.
 
-Create groups bottom-to-top with `ps_group` (op=create) — each new group lands above the active layer as a SIBLING, even if a group is currently active (the tool hoists it out from inside that group by default; set `into_active_group` to true only if you deliberately want the new group nested inside the active one). If you realize mid-edit that a group is out of order, use `ps_move_layer_to_position` to correct it before adding more layers. Photoshop's layer color labels (settable in the layer panel) are a professional convention for group orientation — suggest red for Retouching, yellow for Tone, green for Color, blue for Effects when handing off files.
+Create groups bottom-to-top with the `create` operation of `ps_group`: each new group lands above the active layer as a SIBLING, even if a group is currently active (the tool hoists it out from inside that group by default; set `into_active_group` to true only if you deliberately want the new group nested inside the active one). If you realize mid-edit that a group is out of order, use `ps_move_layer_to_position` to correct it before adding more layers. Photoshop's layer color labels (settable in the layer panel) are a professional convention for group orientation — suggest red for Retouching, yellow for Tone, green for Color, blue for Effects when handing off files.
 
 # Dodge & Burn — the 50% gray method
 
 Painting directly on a pixel layer to dodge or burn is destructive. The professional non-destructive method:
 
 1. `ps_create_layer` — name it "Dodge & Burn".
-2. `ps_fill_layer` — fill with 50% gray (`#808080`). Visually invisible in Overlay or Soft Light blend mode — 50% gray is the mode's mathematical no-op.
+2. `ps_fill_layer` — fill with 50% gray (`#808080`). Visually invisible in Overlay or Soft Light blend mode — 50% gray is the mode's neutral value.
 3. `ps_set_layer` (property `blend_mode`) — set to `"soft light"` for portraits (gentler) or `"overlay"` for stronger local contrast. Painting white brightens (dodge); painting black darkens (burn). Use 10–25% brush opacity — full strength is almost always too heavy.
 
 One D&B layer handles all local contrast sculpting. Do not stack multiple D&B layers on the same scene.
@@ -188,7 +188,7 @@ Blend mode caveat: Overlay also boosts saturation, which shifts skin tones. If t
 # Verification primitives — call them, don't skip them
 
 - **`ps_get_preview`** is the default check. Add `annotations` (rectangles, guides, points, current-selection markers) when verifying spatial work — a red rectangle over the target region + a green rectangle over the actual placement turns a hard spatial estimation into an easy visual comparison.
-- **`ps_get_histogram`** is for tonal and color verification. Compare the post-edit histogram against the pre-edit. A shadow recovery that didn't shift the dark-point mass is a no-op even if the preview "looks brighter."
+- **`ps_get_histogram`** is for tonal and color verification. Compare the post-edit histogram against the pre-edit. A shadow recovery that didn't shift the dark-point mass changed nothing, even if the preview "looks brighter."
 - **`ps_get_layer_bounds_diff`** for "did the layer end up where I intended" checks.
 - **`ps_compare_regions`** for "do these two areas now match" checks (color match, exposure match between exposures).
 
