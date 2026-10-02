@@ -97,7 +97,7 @@ It's the locator behind the precision workflow: name a place, get verified geome
 
 ### Detection-driven object edits
 
-- `ps_edit_object`: finds an object with the on-device detector and edits it in place.
+- `ps_edit_object`: finds an object with the on-device detector and removes it, blurs the background behind it, or spotlights it.
 - `ps_add_text_to_object`: finds an object with the on-device detector and adds text relative to it.
 
 Both use box-level detection that runs on your machine. For a precise cutout of an object, use named-object selection below.
