@@ -22,8 +22,8 @@ There is one line Editmamei does not cross, on any setting or edition:
   Photoshop document data are ever sent to Editmamei.
 - **Your file paths.** Full paths stay local. Where a path is unavoidable in an opt-in
   diagnostic message, it's reduced to a bare filename first (see [Sanitization](#sanitization)).
-- **Your metadata.** Camera info, GPS, and author fields are never part of what Editmamei
-  transmits.
+- **Your metadata.** Camera info, GPS, and author fields are never sent to Editmamei. Your
+  AI assistant does read them when it inspects a document.
 
 The previews your AI assistant looks at are a separate matter: that's your AI client talking
 to its own cloud, not Editmamei. See [Your AI assistant is a cloud service](#your-ai-assistant-is-a-cloud-service).

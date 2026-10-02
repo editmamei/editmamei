@@ -53,7 +53,7 @@ This is enough to drive a full landscape or product editing workflow in conversa
 
 ## What Pro adds to Editmamei
 
-Pro adds the develop-grade and precision toolkit: Camera Raw develop, precision placement, named-object masks, face-aware editing, warp, subject-instance targeting, and the reproducible-template system, plus Photoshop Actions and scripting.
+Pro adds Camera Raw as a re-editable filter, raw files developed before they open, folder batch, templates, precise placement and warp, named-object and face selections, subject-instance targeting, and Photoshop Actions and scripting.
 
 ### Templates: the whole reproducible-recipe system
 

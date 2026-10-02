@@ -42,7 +42,7 @@ All three supported clients work with Editmamei. The right one for you depends o
 
 **Claude Desktop** is the easiest to set up and the most familiar if you've used Claude on the web. It's a great fit for everyday edits: a single hero shot to grade, a portrait to retouch, a quick template to apply. Most one-off and short-session work runs comfortably here.
 
-**Claude Code** is a terminal-based client. It takes more setup, but it has a much larger working memory for the conversation, which keeps it fast when a session runs long. Real-estate batches, wedding sets, multi-image template authoring, and any workflow that runs through dozens of edits in a row stay responsive on Code in ways Desktop currently cannot match. If you regularly notice the AI slowing down as you keep editing, switching to Code is the fix.
+**Claude Code** is a terminal-based client. It takes more setup, but it is built for long sessions and manages the conversation's working memory differently from Desktop. Real-estate batches, wedding sets, multi-image template authoring, and any workflow that runs through dozens of edits in a row are the cases where it is worth trying. If you regularly notice the AI slowing down as you keep editing, switching to Code may help.
 
 **Cursor** runs Editmamei the same way Claude Desktop does. Use it if it's already part of your workflow.
 
@@ -94,7 +94,7 @@ The current Community tool surface does not include a file-deletion tool. The AI
 
 ### Can it batch edit a whole shoot?
 
-Photo by photo, yes. There is no one-click folder runner. The workflow that scales is a Pro template: save a look once, then have the AI reapply it to each photo, re-deriving the settings for that image rather than stamping identical values, and checking each result against the template's criteria. Long many-image sessions are exactly where Claude Code's larger working memory pays off; see [Which AI client should I use?](#which-ai-client-should-i-use)
+Yes. A Pro template carries the look, photo by photo: save a look once, then have the AI reapply it to each photo, re-deriving the settings for that image rather than stamping identical values, and checking each result against the template's criteria. Pro batch (`ps_batch`) runs the crop, resize and export across the folder as one Photoshop pass. Long many-image sessions are where a client with room for a long conversation helps; see [Which AI client should I use?](#which-ai-client-should-i-use)
 
 ### How does the AI know what the image looks like?
 
@@ -119,7 +119,7 @@ AI assistants have a working memory for the conversation, and as it grows, the A
 This is a property of the AI client, not of Editmamei or Photoshop. Two things help:
 
 1. **Start a fresh conversation when you switch projects.** Closing a session and starting a new one resets the working memory. If you've been on one image for an hour and want to move to the next, a new chat is faster than continuing the old one.
-2. **Use Claude Code for sustained work.** Claude Code has a much larger working memory, which means it stays fast across hundreds of edits in one session. See [Which AI client should I use?](#which-ai-client-should-i-use) for when each client makes sense.
+2. **Use Claude Code for sustained work.** Claude Code is built for long sessions and may stay faster across many edits in one conversation. See [Which AI client should I use?](#which-ai-client-should-i-use) for when each client makes sense.
 
 ---
 
@@ -127,11 +127,11 @@ This is a property of the AI client, not of Editmamei or Photoshop. Two things h
 
 ### What's the difference between Community and Pro?
 
-See the full breakdown in [pro-features.md](pro-features.md). Short version: Community covers the full working-photographer editing surface: documents, layers, layer transforms and straightening, non-destructive adjustment layers, filters, content-aware retouch, layer styles, masks, selections (including Photoshop's Select Subject and Select Sky), shape layers and pen paths, channel compositing, on-device scene awareness, per-channel histograms and visual verification, history, text, and image placement. Pro adds the develop-grade and precision toolkit: **Camera Raw develop** as a re-editable Smart Filter, **precision placement** (name a location, get verified geometry), **named-object masks**, **face-mesh perception**, **subject-instance targeting**, **warp**, the **whole reproducible-template system**, and **Photoshop Actions + ExtendScript scripting**. The [main README](../README.md#editions) carries the same split at a glance; [pro-features.md](pro-features.md) is the canonical version.
+See the full breakdown in [pro-features.md](pro-features.md). Short version: Community covers the full working-photographer editing surface: documents, layers, layer transforms and straightening, non-destructive adjustment layers, filters, content-aware retouch, layer styles, masks, selections (including Photoshop's Select Subject and Select Sky), shape layers and pen paths, channel compositing, on-device scene awareness, per-channel histograms and visual verification, history, text, and image placement. Pro adds the develop-grade and precision toolkit: **Camera Raw** as a re-editable Smart Filter, **raw files developed before they open**, **folder batch**, **precision placement** (name a location, get verified geometry), **named-object masks**, **face-mesh perception**, **subject-instance targeting**, **warp**, the **whole reproducible-template system**, and **Photoshop Actions + ExtendScript scripting**. The [main README](../README.md#editions) carries the same split at a glance; [pro-features.md](pro-features.md) is the canonical version.
 
 ### Can it drive Camera Raw?
 
-Pro can. The Camera Raw Filter applies to a Smart Object layer as a re-editable Smart Filter, so the develop settings stay live and individually adjustable later. The raw-file import dialog itself and Camera Raw's local masks are outside what Photoshop exposes to scripting here.
+Pro can, two ways. The Camera Raw Filter applies to a Smart Object layer as a re-editable Smart Filter, so the develop settings stay live and individually adjustable later. Raw-file develop (`ps_develop_raw`) writes Camera Raw's settings file, so Upright, lens and crop corrections apply before the file opens. Camera Raw's local masks are outside what Photoshop exposes to scripting here.
 
 ### What does "precision placement" actually do?
 
@@ -151,7 +151,7 @@ The most common cause is `grace-expired` on a healthy subscription, which usuall
 
 ### Do you offer a free trial?
 
-Community is free forever, so you can use the full core toolkit at no cost before deciding on Pro. For current Pro plans and terms, see [editmamei.com/pricing](https://editmamei.com/pricing). If a paid subscription ever lapses, Editmamei keeps running as Community rather than locking you out.
+Yes. The monthly Pro plan has a 7-day free trial. Community is also free forever, so you can use the full core toolkit at no cost before deciding on Pro. For current Pro plans and terms, see [editmamei.com/pricing](https://editmamei.com/pricing). If a paid subscription ever lapses, Editmamei keeps running as Community rather than locking you out.
 
 ---
 

@@ -81,7 +81,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**111 tools total.** The Photoshop surface is **87 tools across 16 capability groups** (62 Community, 25 Pro), every one namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. Alongside it, a second, independent editor surface drives headless GIMP: **24 `gimp_*` tools, Community, currently in beta**, see [GIMP (beta)](#gimp-beta) below. Pro's additions are Photoshop-only; GIMP has no Pro tier.
+**107 tools total.** The Photoshop surface is **83 tools across 16 capability groups** (62 Community, 21 Pro), covering the work in groups rather than one tool per Photoshop feature. Every one is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. Alongside it, a second, independent editor surface drives headless GIMP: **24 `gimp_*` tools, Community, currently in beta**, see [GIMP (beta)](#gimp-beta) below. Pro's additions are Photoshop-only; GIMP has no Pro tier.
 
 | Group | Edition | Tools |
 | --- | --- | --- |
@@ -116,7 +116,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 ## Editions
 
 - **Community** is free and covers the everyday editing surface: documents, layers, selections (including AI Select Subject and Select Sky), non-destructive adjustments, filters, masks, type, retouching, on-device perception, and the inspect/verify primitives.
-- **Pro** adds Camera Raw develop, the grounded precision tools (warp, named-object masks, precision placement), subject-instance targeting, face-mesh perception, the reproducible-template system, and Photoshop Actions plus the scripting escape hatch.
+- **Pro** adds Camera Raw as a re-editable filter, raw files developed before they open, folder batch, the reproducible-template system, the grounded precision tools (warp, named-object masks, precision placement), subject-instance and face-mesh targeting, and Photoshop Actions plus the scripting escape hatch.
 
 Pro is a Photoshop-only upgrade: it adds nothing to the GIMP surface below.
 
