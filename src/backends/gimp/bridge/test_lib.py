@@ -5,6 +5,8 @@
 # test.ts). NOT staged into dist/ (scripts/copy-gimp-bridge.ts stages only
 # ops.py and lib.py) since it never runs in a shipped install.
 
+import contextlib
+import importlib
 import json
 import math
 import os
@@ -993,6 +995,56 @@ class TestValidateResizeDims(unittest.TestCase):
     def test_rejects_non_positive(self):
         with self.assertRaises(ValueError):
             lib.validate_resize_dims(0, 100)
+
+
+class TestMegapixelCapEnv(unittest.TestCase):
+    """EM_GIMP_MAX_MEGAPIXELS may only LOWER the 250 MP cap (and the 125/60 precision caps with it)."""
+
+    @contextlib.contextmanager
+    def _env(self, value):
+        """Reload lib under the env value for the duration of the block, then restore it."""
+        old = os.environ.get('EM_GIMP_MAX_MEGAPIXELS')
+        try:
+            if value is None:
+                os.environ.pop('EM_GIMP_MAX_MEGAPIXELS', None)
+            else:
+                os.environ['EM_GIMP_MAX_MEGAPIXELS'] = value
+            yield importlib.reload(lib)
+        finally:
+            if old is None:
+                os.environ.pop('EM_GIMP_MAX_MEGAPIXELS', None)
+            else:
+                os.environ['EM_GIMP_MAX_MEGAPIXELS'] = old
+            importlib.reload(lib)
+
+    def test_unset_is_unchanged(self):
+        with self._env(None) as m:
+            self.assertEqual(m.MAX_RESIZE_MEGAPIXELS, 250)
+            self.assertEqual(m.DOCUMENT_MEGAPIXEL_CAP, {'8': 250, '16': 125, '32': 60})
+
+    def test_lowered_scales_precision_caps(self):
+        with self._env('80') as m:
+            self.assertEqual(m.MAX_RESIZE_MEGAPIXELS, 80)
+            self.assertEqual(m.DOCUMENT_MEGAPIXEL_CAP, {'8': 80, '16': 40, '32': 20})
+            with self.assertRaisesRegex(ValueError, 'at most 80 MP'):
+                m.validate_resize_dims(10_000, 9_000)
+
+    def test_fractional_value_reported_numerically(self):
+        with self._env('12.5') as m:
+            with self.assertRaisesRegex(ValueError, 'at most 3.125 MP'):
+                m.validate_document_dims(3_000, 3_000, '32')
+
+    def test_invalid_values_ignored(self):
+        for bad in ('', 'abc', 'nan', 'inf', '-5', '0'):
+            with self._env(bad) as m:
+                self.assertEqual(m.MAX_RESIZE_MEGAPIXELS, 250, bad)
+                self.assertEqual(m.DOCUMENT_MEGAPIXEL_CAP, {'8': 250, '16': 125, '32': 60}, bad)
+
+    def test_raising_ignored(self):
+        for big in ('250', '500', '100000'):
+            with self._env(big) as m:
+                self.assertEqual(m.MAX_RESIZE_MEGAPIXELS, 250, big)
+                self.assertEqual(m.DOCUMENT_MEGAPIXEL_CAP['16'], 125, big)
 
 
 class TestValidateDocumentDims(unittest.TestCase):
