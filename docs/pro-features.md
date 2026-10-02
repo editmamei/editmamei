@@ -53,7 +53,7 @@ This is enough to drive a full landscape or product editing workflow in conversa
 
 ## What Pro adds to Editmamei
 
-Pro adds Camera Raw as a re-editable filter, raw files developed before they open, folder batch, templates, precise placement and warp, named-object and face selections, subject-instance targeting, and Photoshop Actions and scripting.
+Pro adds Camera Raw as a re-editable filter, raw files developed before they open, folder batch, templates, precise placement and warp, named-object and face selections, subject-instance targeting, detection-driven object edits and text placement, and Photoshop Actions and scripting.
 
 ### Templates: the whole reproducible-recipe system
 
@@ -79,7 +79,7 @@ Scope note, honestly: this develops open documents, and Camera Raw's local masks
 
 ### Raw files, developed before they open
 
-`ps_develop_raw` develops the raw file rather than the opened pixels. That distinction buys three things nothing else in Photoshop can reach from a script: Upright levelling and perspective correction, crop with straighten, and lens profile correction. A filter cannot change a layer's dimensions, so Photoshop disables that whole panel for the Camera Raw Filter. Working on the file instead sidesteps it.
+`ps_develop_raw` develops the raw file rather than the opened pixels. That distinction buys three things nothing else in Photoshop can reach from a script: Upright leveling and perspective correction, crop with straighten, and lens profile correction. A filter cannot change a layer's dimensions, so Photoshop disables that whole panel for the Camera Raw Filter. Working on the file instead sidesteps it.
 
 You also get Camera Raw's own Auto, the full modern develop set, and the option to open straight to 16 bit, which has to be decided at open because converting later flattens the document.
 
@@ -94,6 +94,13 @@ Scope note, honestly: HEIC is not included. Photoshop opens HEIC by a route that
 `ps_resolve_placement` is how the AI stops guessing coordinates. It names a location the way you would ("under the left eye", "along the roofline", "halfway between the two boats"). Local computer vision finds the anchors (faces, objects, edges, corners), a deterministic resolver turns the phrase into exact document pixels, and an objective geometric check runs before anything is applied. The AI then reviews a zoomed crop of the placement, not the full frame, because that's the judgment it can actually make reliably. Placements are measured, not eyeballed.
 
 It's the locator behind the precision workflow: name a place, get verified geometry, then drive the warps and named-object selection from it.
+
+### Detection-driven object edits
+
+- `ps_edit_object`: finds an object with the on-device detector and edits it in place.
+- `ps_add_text_to_object`: finds an object with the on-device detector and adds text relative to it.
+
+Both use box-level detection that runs on your machine. For a precise cutout of an object, use named-object selection below.
 
 ### Named-object selection
 
