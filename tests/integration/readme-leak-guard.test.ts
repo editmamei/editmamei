@@ -11,7 +11,7 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 
 /**
  * Walks a directory and returns every regular file path under it.
- * Used to enumerate all SKILL.md / companion docs inside skills/.
+ * Used to enumerate all SKILL.md / companion docs inside plugin/skills/.
  */
 function listFilesRecursive(start: string): string[] {
   if (!existsSync(start)) return [];
@@ -148,20 +148,21 @@ describe('public README leak guard', () => {
 });
 
 /**
- * The Editmamei skill bundle (skills/editmamei/SKILL.md + companions)
- * ships in the npm tarball and is uploaded by end users to claude.ai.
+ * The Editmamei skill (plugin/skills/editmamei/SKILL.md + companions)
+ * ships in the npm tarball, is uploaded by end users to claude.ai, and is
+ * the skill the Claude plugin bundle installs.
  * Same invariant as the README: no 'dev' / 'none'-tier tool names allowed.
  * Otherwise the skill tells Claude to invoke tools the user can't actually
  * reach in their CE / Pro build.
  */
 describe('skills/ leak guard', () => {
-  const skillsDir = join(REPO_ROOT, 'skills');
+  const skillsDir = join(REPO_ROOT, 'plugin', 'skills');
   const skillFiles = listFilesRecursive(skillsDir).filter((p) => /\.(md|txt)$/i.test(p));
 
   it('finds at least one skill file (so the test is actually scanning something)', () => {
     expect(
       skillFiles.length,
-      'No skill markdown files found under skills/. Either skills/ was deleted or the leak guard would silently pass on an empty scan.'
+      'No skill markdown files found under plugin/skills/. Either it was moved or the leak guard would silently pass on an empty scan.'
     ).toBeGreaterThan(0);
   });
 

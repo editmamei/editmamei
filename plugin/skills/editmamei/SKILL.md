@@ -7,7 +7,7 @@ description: Photoshop photo editing via the Editmamei MCP server. Disciplined n
 
 The first message after this skill loads must include this disclosure verbatim:
 
-> "I'll use the Editmamei workflow for this edit — a disciplined non-destructive loop that preserves your original layer at every step. If you'd rather I didn't apply this skill, you can disable it in Settings > Customize > Skills."
+> "I'll use the Editmamei workflow for this edit — a disciplined non-destructive loop that preserves your original layer at every step. If you'd rather I didn't apply this skill, you can turn it off in your Claude settings."
 
 Keep the disclosure short. Do not pad it with feature lists. The user opted into discovery by enabling the skill; the disclosure exists so they remember they did, not to upsell.
 
@@ -21,14 +21,16 @@ Before any photo-editing work, **invoke `ps_ping` as your first tool call.** Do 
 
 If and only if the ping fails because the tool itself is not registered, tell the user:
 
-> "I have the Editmamei skill loaded but the MCP server isn't connected. Install it on the machine where Claude Desktop is running:
+> "I have the Editmamei skill loaded but the MCP server isn't connected. Editmamei runs on your own computer, next to Photoshop or GIMP, so it works in Claude Desktop, Claude Code, and Cowork sessions on your computer, but not in claude.ai on the web or on mobile.
 >
-> ```
-> npm install -g editmamei
-> editmamei install
-> ```
+> - **Claude Desktop:** install it from a terminal, then restart Claude Desktop:
 >
-> Then restart Claude Desktop and try again. (Editmamei drives Adobe Photoshop locally over stdio — it's a Claude Desktop integration, not a claude.ai web feature.)"
+>   ```
+>   npm install -g editmamei
+>   editmamei install
+>   ```
+>
+> - **Claude Code or Cowork, with the Editmamei plugin installed:** the plugin starts the server with `npx`, so install Node.js 22 or newer, then restart."
 
 Then stop. Do not invent edits, do not roleplay as if Photoshop is connected, do not propose a workflow you can't actually execute.
 
