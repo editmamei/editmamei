@@ -155,7 +155,7 @@ describe('public README leak guard', () => {
  * Otherwise the skill tells Claude to invoke tools the user can't actually
  * reach in their CE / Pro build.
  */
-describe('skills/ leak guard', () => {
+describe('plugin/skills/ leak guard', () => {
   const skillsDir = join(REPO_ROOT, 'plugin', 'skills');
   const skillFiles = listFilesRecursive(skillsDir).filter((p) => /\.(md|txt)$/i.test(p));
 
@@ -179,7 +179,7 @@ describe('skills/ leak guard', () => {
     }
     expect(
       leaks,
-      `'dev'-tier tool names found in skills/: ${leaks.join('; ')}. ` +
+      `'dev'-tier tool names found in plugin/skills/: ${leaks.join('; ')}. ` +
         `The skill bundle is uploaded by users to claude.ai — referencing a ` +
         `'dev'-tier tool tells Claude to invoke something the user can't ` +
         `actually reach in their CE / Pro build. Either promote the tool or ` +
@@ -198,7 +198,9 @@ describe('skills/ leak guard', () => {
         if (containsToolName(content, name)) leaks.push(`${file}: ${name}`);
       }
     }
-    expect(leaks, `'none'-tier tool names found in skills/: ${leaks.join('; ')}.`).toEqual([]);
+    expect(leaks, `'none'-tier tool names found in plugin/skills/: ${leaks.join('; ')}.`).toEqual(
+      []
+    );
   });
 
   // The skill ships once to claude.ai per user. It is therefore visible
@@ -223,7 +225,7 @@ describe('skills/ leak guard', () => {
     }
     expect(
       leaks,
-      `'pro'-tier tool names found in skills/: ${leaks.join('; ')}. ` +
+      `'pro'-tier tool names found in plugin/skills/: ${leaks.join('; ')}. ` +
         `The skill ships to claude.ai for BOTH CE and Pro users — naming a ` +
         `Pro-only tool tells CE users about features they can't reach. ` +
         `Strip the mention; Pro users discover their Pro tools via tools/list.`
@@ -249,7 +251,7 @@ describe('skills/ leak guard', () => {
     }
     expect(
       leaks,
-      `Tier markers found in skills/: ${leaks.join('; ')}. ` +
+      `Tier markers found in plugin/skills/: ${leaks.join('; ')}. ` +
         `The skill must be tier-agnostic — it describes the workflow ` +
         `available in this session; tools/list reveals inventory.`
     ).toEqual([]);

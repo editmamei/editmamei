@@ -2,7 +2,7 @@
 
 Edit photos in desktop Adobe Photoshop or GIMP by describing what you want. Editmamei is an MCP server that runs on your computer, next to your editor, and gives Claude tools to open documents, build adjustment layers, make selections and masks, apply filters, retouch, and export. A bundled skill teaches Claude a non-destructive workflow: assess the photo, plan the edit, apply it one step at a time, then check the result with a preview and histogram before calling it done.
 
-Your original layer is never overwritten. Tonal and color changes land as adjustment layers, partial edits are masked, and layers are grouped in the order a retoucher would hand off, so you can keep editing the file by hand afterwards.
+By default your original layer is never overwritten. Tonal and color changes land as adjustment layers, partial edits are masked, and layers are grouped in the order a retoucher would hand off, so you can keep editing the file by hand afterwards.
 
 ## What this plugin contains
 
@@ -49,7 +49,7 @@ Claude checks the connection first, looks at the image, proposes a plan for open
 - **Usage telemetry, on by default** to `editmamei-telemetry-server.editmamei.workers.dev`, Editmamei's own endpoint: content-free events such as the tool name, success, duration, response size, versions, OS, and a random install ID. Never image content, file paths, or what you asked for. Turn it off by setting `telemetry.usage` to `false` in `~/.editmamei/settings.json`.
 - **Diagnostics, off by default**: sanitized error detail sent to the same endpoint, only if you set `telemetry.diagnostics` to `true`.
 - **Update check** to `registry.npmjs.org`: one request at startup asking for the latest version number, with no identifiers. Turn it off by setting `update_check` to `false`.
-- **Pro license, only if you activate one**: the license key and a device identifier go to the licensing service (`api.polar.sh`), and the signed Pro module downloads from `editmamei-delivery.editmamei.workers.dev`. A Community install makes neither request.
+- **Pro license, only if you activate one**: the license key and a device identifier go to the licensing service (`api.polar.sh`) at activation and periodically to re-check the license. The license key is then presented to `editmamei-delivery.editmamei.workers.dev` to download the signed Pro module. A Community install makes none of these requests.
 - **Previews to Claude**: when Claude needs to see an edit, the tool result carries a downscaled JPEG, the same as attaching a photo to the conversation. Set `privacy.send_previews_to_llm` to `false` to get text-only results.
 
 Every telemetry field, the retention periods, and your rights over the data are listed in the [privacy documentation](https://github.com/editmamei/editmamei/blob/main/docs/privacy.md).

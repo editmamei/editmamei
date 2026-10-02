@@ -13,6 +13,11 @@
  * hints into the spawned server (the telemetry toggles), so it also sets
  * `EDITMAMEI_INSTALL_CHANNEL=mcpb` (`buildMcpbManifest`).
  *
+ * The Claude plugin bundle (`plugin/.mcp.json`) sets `EDITMAMEI_INSTALL_CHANNEL=plugin` the
+ * same way. Its server runs through npx, but pinned to an exact version, so the npx
+ * remediation ("the next run picks up the new version") would be false for it: only
+ * updating the plugin moves the pin.
+ *
  * The remaining channels are told apart from the entry script's own path (`process.argv[1]`
  * — the file Node was invoked with), REALPATH-RESOLVED first: a global npm/nvm/Homebrew
  * install runs through a symlinked bin shim (`/usr/local/bin/editmamei`, an nvm shim under
@@ -64,7 +69,7 @@ import { realpathSync } from 'node:fs';
 import { EDITION } from './edition.js';
 
 export type InstallChannel =
-  'npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'source' | 'dev' | 'unknown';
+  'npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'plugin' | 'source' | 'dev' | 'unknown';
 
 /** Split a path into its non-empty, LOWERCASED segments, on either separator (Windows paths
  *  in this codebase can arrive with either, since they're not always normalized before
@@ -133,6 +138,7 @@ export function resolveInstallChannel(
   // honestly so the update remediation doesn't tell a contributor to `npm install`.
   if (edition === 'dev') return 'dev';
   if (env.EDITMAMEI_INSTALL_CHANNEL === 'mcpb') return 'mcpb';
+  if (env.EDITMAMEI_INSTALL_CHANNEL === 'plugin') return 'plugin';
 
   const trimmedArgv1 = argv1?.trim();
   if (!trimmedArgv1) return 'unknown';

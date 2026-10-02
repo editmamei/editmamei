@@ -60,6 +60,15 @@ describe('updateMessage', () => {
     expect(local).not.toContain('npm install -g');
   });
 
+  it('tells a plugin install to update the plugin, since its npx version is pinned', () => {
+    const plugin = updateMessage('plugin', '0.19.0');
+    expect(plugin).toContain('0.19.0');
+    expect(plugin).toContain('Update the Editmamei plugin');
+    // A restart reruns the pinned version, so the npx "picks it up automatically" line is false here.
+    expect(plugin).not.toContain('npx');
+    expect(plugin).not.toContain('npm install');
+  });
+
   it('gives a generic remediation for unknown (entry path not available to classify)', () => {
     const unknown = updateMessage('unknown', '0.19.0');
     expect(unknown).toContain('0.19.0');

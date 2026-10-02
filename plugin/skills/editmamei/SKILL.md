@@ -30,7 +30,8 @@ If and only if the ping fails because the tool itself is not registered, tell th
 >   editmamei install
 >   ```
 >
-> - **Claude Code or Cowork, with the Editmamei plugin installed:** the plugin starts the server with `npx`, so install Node.js 22 or newer, then restart."
+> - **Claude Code or Cowork, with the Editmamei plugin installed:** the plugin starts the server with `npx`, so install Node.js 22 or newer, then restart.
+> - **Claude Code without the plugin:** install the Editmamei plugin, or run the Claude Desktop steps above."
 
 Then stop. Do not invent edits, do not roleplay as if Photoshop is connected, do not propose a workflow you can't actually execute.
 

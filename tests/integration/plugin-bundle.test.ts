@@ -8,14 +8,15 @@
  * the listing's description and must disclose every host the server contacts,
  * so the hosts are read from the same constants the code uses.
  */
-import { describe, it, expect } from 'vitest';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { describe, it, expect, vi } from 'vitest';
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { resolveEndpoint } from '@editmamei/telemetry/transport.ts';
 import { resolveDeliveryConfig } from '@editmamei/delivery/config.ts';
 import { resolvePolarConfig } from '@editmamei/license/config.ts';
+import { resolveUpdateCheckUrl } from '@editmamei/update/check.ts';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const PLUGIN_DIR = join(REPO_ROOT, 'plugin');
@@ -31,6 +32,8 @@ function listFiles(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
     const p = join(dir, entry);
+    // The directory loads only regular files; a symlink in the plugin folder blocks submission.
+    if (lstatSync(p).isSymbolicLink()) throw new Error(`symlink in plugin folder: ${p}`);
     if (statSync(p).isDirectory()) out.push(...listFiles(p));
     else out.push(p);
   }
@@ -61,11 +64,14 @@ describe('plugin manifest', () => {
 });
 
 describe('plugin MCP server', () => {
-  it('launches exactly the released package version', () => {
+  it('launches exactly the released package version, marked as the plugin channel', () => {
+    // The channel marker makes the update notice say "update the plugin": with a pinned
+    // version, the npx advice to just restart would rerun the old release.
     expect(Object.keys(mcp.mcpServers)).toEqual(['editmamei']);
     expect(mcp.mcpServers.editmamei).toEqual({
       command: 'npx',
       args: ['-y', `${pkg.name}@${pkg.version}`],
+      env: { EDITMAMEI_INSTALL_CHANNEL: 'plugin' },
     });
   });
 });
@@ -117,14 +123,15 @@ describe('plugin README', () => {
   });
 
   it('discloses every host the server contacts', () => {
-    const updateSource = readFileSync(join(REPO_ROOT, 'src', 'update', 'check.ts'), 'utf8');
-    expect(updateSource).toContain('https://registry.npmjs.org/');
+    // Clear the delivery override so a local dev endpoint in the shell can't stand in for the default.
+    vi.stubEnv('EDITMAMEI_DELIVERY_URL', undefined);
     const hosts = [
       new URL(resolveEndpoint({})).host,
-      new URL(resolveDeliveryConfig(undefined).baseUrl).host,
+      new URL(resolveDeliveryConfig().baseUrl).host,
       new URL(resolvePolarConfig('production').baseUrl).host,
-      'registry.npmjs.org',
+      new URL(resolveUpdateCheckUrl({})).host,
     ];
+    vi.unstubAllEnvs();
     for (const host of hosts) expect(readme, `README does not mention ${host}`).toContain(host);
   });
 
