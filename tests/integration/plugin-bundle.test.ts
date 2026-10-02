@@ -114,6 +114,16 @@ describe('plugin folder hygiene', () => {
       expect(body).toMatch(new RegExp(`^---\\r?\\nname: ${dir}\\r?\\n`));
     }
   });
+
+  it('keeps credential-manager command names out of skill text', () => {
+    // The directory's scan reads `pass` and `op` as password-manager commands and holds
+    // the plugin for review, even as ordinary words ("a develop pass", "a no-op").
+    const skillsDir = join(PLUGIN_DIR, 'skills');
+    for (const dir of readdirSync(skillsDir)) {
+      const body = readFileSync(join(skillsDir, dir, 'SKILL.md'), 'utf8');
+      expect(body.match(/\b(pass|op)\b/gi), `${dir}/SKILL.md`).toBeNull();
+    }
+  });
 });
 
 describe('plugin README', () => {
