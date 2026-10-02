@@ -99,7 +99,7 @@ Reports, per client, whether Editmamei is registered and what command would laun
 
 ## Manual configuration
 
-If `editmamei install` couldn't reach one of your clients (for example, because the `claude` binary isn't on your PATH, or you're using a different MCP-compatible client), register Editmamei by hand.
+If `editmamei install` couldn't reach one of your clients (for example, because the `claude` binary isn't on your PATH, or you're using a different MCP-compatible client), register Editmamei by hand. For other MCP clients (VS Code, Codex, Gemini CLI, Zed, Cline and more), see [clients.md](clients.md), which lists the config location and format for each.
 
 ### Claude Desktop
 

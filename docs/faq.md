@@ -34,7 +34,7 @@ Officially:
 - [Cursor](https://cursor.com/)
 - [Claude Code](https://claude.ai/code)
 
-Any MCP-compatible client should work; Editmamei is a standard MCP stdio server. `editmamei install` detects your installed clients (Claude Desktop, Cursor, Claude Code) and writes each one's config in a single pass; for other clients, the [manual configuration steps](installation.md#manual-configuration) show what to put in your client's config.
+Any MCP-compatible client should work (per-client setup is in [clients.md](clients.md)); Editmamei is a standard MCP stdio server. `editmamei install` detects your installed clients (Claude Desktop, Cursor, Claude Code) and writes each one's config in a single pass; for other clients, the [manual configuration steps](installation.md#manual-configuration) show what to put in your client's config.
 
 ### Which AI client should I use?
 
