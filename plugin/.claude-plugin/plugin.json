@@ -1,7 +1,7 @@
 {
   "name": "editmamei",
   "displayName": "Editmamei",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Edit photos in desktop Adobe Photoshop or GIMP by describing what you want. Non-destructive by default: adjustment layers, masks, and groups you can keep editing by hand, with previews and histograms to check every step.",
   "author": {
     "name": "Editmamei",
