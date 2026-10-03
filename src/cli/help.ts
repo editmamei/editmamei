@@ -39,8 +39,8 @@ Install options:
 
   --skip-skill               Skip copying the editmamei skill bundle to your Downloads folder.
                              By default, install drops editmamei-skill.zip in Downloads with
-                             instructions for uploading it to claude.ai (Settings > Customize >
-                             Skills). Pass this flag for headless / CI installs where the skill
+                             instructions for uploading it to claude.ai (Settings > Skills).
+                             Pass this flag for headless / CI installs where the skill
                              upload step doesn't apply.
 
 Config examples:

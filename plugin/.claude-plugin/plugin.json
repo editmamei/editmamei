@@ -1,0 +1,18 @@
+{
+  "name": "editmamei",
+  "displayName": "Editmamei",
+  "version": "1.7.0",
+  "description": "Edit photos in desktop Adobe Photoshop or GIMP by describing what you want. Non-destructive by default: adjustment layers, masks, and groups you can keep editing by hand, with previews and histograms to check every step.",
+  "author": {
+    "name": "Editmamei",
+    "url": "https://editmamei.com"
+  },
+  "homepage": "https://editmamei.com",
+  "repository": "https://github.com/editmamei/editmamei",
+  "license": "FSL-1.1-MIT",
+  "keywords": ["photo-editing", "photoshop", "gimp", "retouching", "color-grading", "mcp"],
+  "icon": "./icon.png",
+  "documentationUrl": "https://github.com/editmamei/editmamei/tree/main/docs",
+  "supportUrl": "https://github.com/editmamei/editmamei/issues",
+  "privacyPolicyUrl": "https://github.com/editmamei/editmamei/blob/main/docs/privacy.md"
+}

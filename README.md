@@ -81,7 +81,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**111 tools total.** The Photoshop surface is **87 tools across 16 capability groups** (62 Community, 25 Pro), every one namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. Alongside it, a second, independent editor surface drives headless GIMP: **24 `gimp_*` tools, Community, currently in beta**, see [GIMP (beta)](#gimp-beta) below. Pro's additions are Photoshop-only; GIMP has no Pro tier.
+**107 tools total.** The Photoshop surface is **83 tools across 16 capability groups** (62 Community, 21 Pro), covering the work in groups rather than one tool per Photoshop feature. Every one is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. Alongside it, a second, independent editor surface drives headless GIMP: **24 `gimp_*` tools, Community, currently in beta**, see [GIMP (beta)](#gimp-beta) below. Pro's additions are Photoshop-only; GIMP has no Pro tier.
 
 | Group | Edition | Tools |
 | --- | --- | --- |
@@ -116,7 +116,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 ## Editions
 
 - **Community** is free and covers the everyday editing surface: documents, layers, selections (including AI Select Subject and Select Sky), non-destructive adjustments, filters, masks, type, retouching, on-device perception, and the inspect/verify primitives.
-- **Pro** adds Camera Raw develop, the grounded precision tools (warp, named-object masks, precision placement), subject-instance targeting, face-mesh perception, the reproducible-template system, and Photoshop Actions plus the scripting escape hatch.
+- **Pro** adds Camera Raw as a re-editable filter, raw files developed before they open, folder batch, the reproducible-template system, the grounded precision tools (warp, named-object masks, precision placement), subject-instance and face-mesh targeting, and Photoshop Actions plus the scripting escape hatch.
 
 Pro is a Photoshop-only upgrade: it adds nothing to the GIMP surface below.
 
@@ -128,7 +128,7 @@ This repository holds the Community source. Pro is a separately licensed module 
 
 Editmamei can also drive GIMP, headless, as a second editor alongside (or instead of) Photoshop. When GIMP 3.2+ is detected on your machine, a `gimp_*` tool set registers next to the `ps_*` one; use it when you ask for GIMP, or when Photoshop isn't available. There's no visible window: edits happen in a background `gimp-console` process, and you follow along through rendered previews in the conversation instead of watching a window change.
 
-The beta covers documents (open, create, save `.xcf`, export), layers and groups, placing one photo into another, 13 non-destructive adjustment types and six effects (vignette, black and white, motion and lens blur, noise, drop shadow), geometric masks, crop/resize/rotate/flip, canvas extension, colour/grayscale conversion, checkpoints you can restore, and the same preview/histogram/compare verification primitives the Photoshop side has. It doesn't yet cover heal/clone, AI subject or sky selection, or text. Full details, requirements, and troubleshooting: [docs/gimp.md](docs/gimp.md).
+The beta covers documents (open, create, save `.xcf`, export), layers and groups, placing one photo into another, 13 non-destructive adjustment types and six effects (vignette, black and white, motion and lens blur, noise, drop shadow), geometric masks, crop/resize/rotate/flip, canvas extension, color/grayscale conversion, checkpoints you can restore, and the same preview/histogram/compare verification primitives the Photoshop side has. It doesn't yet cover heal/clone, AI subject or sky selection, or text. Full details, requirements, and troubleshooting: [docs/gimp.md](docs/gimp.md).
 
 ## Build from source
 
@@ -170,6 +170,7 @@ The source in this repository is the same code published to npm, so none of the 
 - **Install:** [docs/installation.md](docs/installation.md)
 - **Getting started:** [docs/getting-started.md](docs/getting-started.md)
 - **FAQ:** [docs/faq.md](docs/faq.md)
+- **AI clients:** [docs/clients.md](docs/clients.md)
 - **Troubleshooting:** [docs/troubleshooting.md](docs/troubleshooting.md)
 - **GIMP (beta):** [docs/gimp.md](docs/gimp.md)
 - **Pro features:** [docs/pro-features.md](docs/pro-features.md)

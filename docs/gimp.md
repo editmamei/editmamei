@@ -115,7 +115,7 @@ metadata (including any GPS location); only `gimp_export` removes it.
 
 - **Documents:** open (most formats GIMP can load: JPEG, PNG, TIFF, WebP, HEIC/HEIF, XCF, and more),
   create a blank one, close, save as `.xcf` (live, re-editable), export flattened to
-  jpg/jpeg/png/webp/tif/tiff. Convert between colour and grayscale.
+  jpg/jpeg/png/webp/tif/tiff. Convert between color and grayscale.
 - **Layers:** create, delete, duplicate, group, reorder, move, rename, set opacity, blend mode and
   visibility, merge down, flatten (`gimp_layer`). Place another photo into the document as a new
   layer (`gimp_place_image`) to build a composite, and extend the canvas for borders and frames

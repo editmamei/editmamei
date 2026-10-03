@@ -7,9 +7,11 @@ install (the `editmamei` MCP server), not about the
 [editmamei.com](https://editmamei.com) website, which has its own
 [privacy policy](https://editmamei.com/privacy).
 
-The short version: your photos aren't uploaded to us. The only thing Editmamei sends to its own
-servers is content-free usage data, tied to a random install ID; it's documented field-for-field
-below, and you can switch it off with one command. (When your AI assistant needs to see an edit, a downscaled preview
+The short version: your photos aren't uploaded to us. What Editmamei sends to its own
+servers is content-free usage data, tied to a random install ID (documented field-for-field
+below, and you can switch it off with one command). If you have Pro, your license key also goes
+to a third-party licensing service, and to Editmamei's delivery endpoint on each startup (see
+[Pro](#pro)). (When your AI assistant needs to see an edit, a downscaled preview
 goes to that assistant; covered under "Your AI assistant is a cloud service" below.)
 
 ---
@@ -22,8 +24,8 @@ There is one line Editmamei does not cross, on any setting or edition:
   Photoshop document data are ever sent to Editmamei.
 - **Your file paths.** Full paths stay local. Where a path is unavoidable in an opt-in
   diagnostic message, it's reduced to a bare filename first (see [Sanitization](#sanitization)).
-- **Your metadata.** Camera info, GPS, and author fields are never part of what Editmamei
-  transmits.
+- **Your metadata.** Camera info, GPS, and author fields are never sent to Editmamei. Your
+  AI assistant can read them (for example when it requests a document's metadata).
 
 The previews your AI assistant looks at are a separate matter: that's your AI client talking
 to its own cloud, not Editmamei. See [Your AI assistant is a cloud service](#your-ai-assistant-is-a-cloud-service).
@@ -32,8 +34,8 @@ to its own cloud, not Editmamei. See [Your AI assistant is a cloud service](#you
 
 ## Diagnostic reports (you generate, you share)
 
-When something breaks, you — or your assistant, via the `ps_report_problem` tool or the
-`editmamei report` command — can generate a **diagnostic bundle**: a single
+When something breaks, you, or your assistant, via the `ps_report_problem` tool or the
+`editmamei report` command, can generate a **diagnostic bundle**: a single
 `editmamei-diagnostics-<id>.json` file saved to your **Downloads** folder. Editmamei never
 uploads it. You review the file and attach it to a bug report yourself.
 
@@ -42,8 +44,8 @@ The bundle is sanitized to the same hard line as everything above:
 - **No image or document content**, **no tool arguments**, and file paths reduced to basenames.
 - It holds recent server log lines, your OS / Editmamei / Photoshop versions, your
   `install_id`, and a content-free summary of recent tool calls (name, success, duration, error
-  class — never the arguments). If a Claude Desktop log is present, a redacted tail is included
-  with every request and response **body** removed — only method names and timing are kept.
+  class, never the arguments). If a Claude Desktop log is present, a redacted tail is included
+  with every request and response **body** removed; only method names and timing are kept.
 
 Because it's a local file, you can open it and see exactly what you're sharing before you send it.
 
@@ -194,7 +196,7 @@ content-free fields as above, with **no tool name, no counts, no free text**. `p
 
 | Field | Meaning |
 |---|---|
-| `channel` | Which install route you used: `npx`, `npm_global` (installed from the package registry into a global prefix), `npm_local` (installed as a dependency of another local project), `mcpb` (the one-click Claude Desktop extension), `source` (running from a git checkout), or `unknown` (the entry path could not be read). One of those six values; nothing else. |
+| `channel` | Which install route you used: `npx`, `npm_global` (installed from the package registry into a global prefix), `npm_local` (installed as a dependency of another local project), `mcpb` (the one-click Claude Desktop extension), `plugin` (the Claude plugin), `source` (running from a git checkout), or `unknown` (the entry path could not be read). One of those seven values; nothing else. |
 | `node_major` | The Node.js major version Editmamei is running under (e.g. `22`). Omitted if unknown. |
 | `arch` | CPU architecture bucket: `x64`, `arm64`, or `other`. Always present — an unrecognized architecture sends `other`, never omitted. |
 | `os_major` | Your OS's major version (e.g. `11` for Windows 11, `15` for macOS Sequoia). Omitted if unparseable. |
@@ -260,7 +262,7 @@ install its module is distinguishable from one that's working:
 | `module_version` | The Pro module's version, or `null` if none is installed. |
 | `abi` | The module's internal compatibility number, or `null` if unknown. |
 
-No image content, no paths, no tool arguments — an enum outcome plus the module's own version numbers.
+No image content, no paths, no tool arguments, just an enum outcome plus the module's own version numbers.
 
 ### Session summary: one per session (on by default)
 
@@ -293,7 +295,7 @@ No image content, no paths, no tool arguments — an enum outcome plus the modul
 }
 ```
 
-`tool_call_count`, `distinct_tools`, and `any_failures` are simple totals for the session — how
+`tool_call_count`, `distinct_tools`, and `any_failures` are simple totals for the session: how
 many tool calls happened, how many distinct tools, whether anything failed. No per-call detail.
 
 | Field | Meaning |
@@ -314,16 +316,16 @@ many tool calls happened, how many distinct tools, whether anything failed. No p
 `dropped_events`, `dropped_outbox`, `dropped_unsafe`, and `usage_calls_sent` cover **this run
 of the program**, not strictly this session: undelivered events are retried at the next
 startup, so a run can report deliveries and drops belonging to an earlier session's backlog.
-That also means a run which made no tool calls at all can still send a summary — with
-`tool_call_count: 0` — if it had events to report as dropped. It carries no more about you
+That also means a run which made no tool calls at all can still send a summary, with
+`tool_call_count: 0`, if it had events to report as dropped. It carries no more about you
 than any other summary.
 
 `duration_s`, `ended_after_failure`, `behind_latest`, `module_update`, `templates_saved`, and
-`action_sets` are each omitted — never sent as a false zero — when this session never learned
+`action_sets` are each omitted (never sent as a false zero) when this session never learned
 them. `retry_count`, `edits_ok`, `kept_work`, `dropped_events`, `dropped_outbox`, `dropped_unsafe`,
 and `usage_calls_sent` are present on any summary this version writes normally: `0` is a real
 observation (no retries, no edits kept, nothing dropped), not an unknown. The one exception is
-a summary reconstructed after the program was killed outright — it carries only the counters
+a summary reconstructed after the program was killed outright. It carries only the counters
 that had been written to disk before the kill, so an older build's leftover state file can
 produce a summary with some of them missing.
 
@@ -378,8 +380,8 @@ Before any diagnostic string leaves, it runs through a fixed cleanup pass:
 
 1. Home directory redacted (`C:\Users\you\…` → `~\…`).
 2. Absolute paths collapsed to their final filename (`C:\photos\client\shot.psd` → `shot.psd`).
-3. Name-miss detail redacted: everything after a `not found:` marker — the name that was
-   asked for and any list of the layer/group/channel names that exist — becomes
+3. Name-miss detail redacted: everything after a `not found:` marker (the name that was
+   asked for and any list of the layer/group/channel names that exist) becomes
    `[redacted]`. Layer names are your content; the full message stays in the local
    session log on your machine only.
 4. Backslashes normalized to forward slashes; leading separators stripped.
@@ -395,7 +397,7 @@ entirely** rather than sent.
 Usage and diagnostic events are sent to Editmamei's **own** telemetry endpoint (not a
 third-party analytics company), where they're aggregated by day. Sending is batched and
 best-effort: it happens in the background, times out quickly, and never blocks your editing.
-Events that fail to send — offline, a network hiccup, the endpoint unreachable — are held in a
+Events that fail to send (offline, a network hiccup, the endpoint unreachable) are held in a
 small, bounded local queue and retried at the next launch; they are never queued indefinitely.
 
 Per-install daily counts derived from Category A events (calls, failures, edits, exports, and
@@ -405,26 +407,26 @@ channel, and the country, time zone, and serving datacenter that the network edg
 the connection) is kept until **24 months after the install was last seen**. Long enough to see
 how usage changes over the life of an install, and no longer.
 Opt-in diagnostic rows (Category B, the sanitized error detail) are deleted after **90 days**.
-The day-by-day totals that carry no install ID at all — how many times a tool ran across
-everyone, and whether it worked — are not tied to you and are not on that clock.
+The day-by-day totals that carry no install ID at all (how many times a tool ran across
+everyone, and whether it worked) are not tied to you and are not on that clock.
 
 ---
 
 ## Update check
 
 When `update_check` is on (the default), Editmamei makes **one** request at startup to the
-**public npm registry** (`registry.npmjs.org`) to ask what the latest published version is, and —
-if you're behind — tells you so the next time you check the connection. This is the one request
+**public npm registry** (`registry.npmjs.org`) to ask what the latest published version is, and,
+if you're behind, tells you so the next time you check the connection. This is the one request
 that goes to npm rather than Editmamei's own endpoint; it's an ordinary registry lookup, the same
 public data `npm` itself reads.
 
-- It sends **no usage data and no identifiers** — it's a plain "what's the latest version?" GET. No
+- It sends **no usage data and no identifiers**: it's a plain "what's the latest version?" GET. No
   images, file paths, install ID, or personal data are involved.
 - It's best-effort: it times out quickly, never retries, and never blocks startup. Offline → it's
   silently skipped.
 - When a newer version is available, the notice may also mention which tools failed in your
   **previous session**, read from the local session log described above. That read stays on this
-  machine — it changes what the notice *says*, not what is sent anywhere.
+  machine. It changes what the notice *says*, not what is sent anywhere.
 - Turn it off with `update_check false` (CLI or settings file), or the **Check for updates** toggle
   in the Claude Desktop extension settings.
 
@@ -452,11 +454,17 @@ using a cloud AI, and a function of which assistant you choose, not a hop Editma
 
 ## Pro
 
-Validating a Pro license is a content-free check. Confirming your license sends the license key
-and a device identifier (Pro covers two devices per license) to the licensing service, and never
-any document, image, or path data. Activation also downloads the signed, encrypted Pro module
-itself from Editmamei's delivery endpoint; that request carries your license entitlement and no
-document data. Your photos stay on your machine, exactly as with the rest of Editmamei.
+Pro licensing is content-free. Activation sends your license key and a hashed device identifier
+(a salted SHA-256 of hostname, username, platform and architecture, so no raw values; Pro covers
+two devices per license) to the licensing service, a third-party licensing provider. About once a
+day, revalidation sends the license key (plus the store's organization ID) to the same service,
+without the device identifier. Neither request carries document, image, or path data.
+
+On every Pro startup, Editmamei also asks its own delivery endpoint whether a newer Pro module
+exists, and downloads the signed, encrypted module if so. That request carries your license key (in
+a request header) and a fixed user-agent string that is the same for every install, and no document
+data. It is not governed by the `update_check` setting. Your photos stay on your machine, exactly as
+with the rest of Editmamei.
 
 ---
 
@@ -476,10 +484,10 @@ to the rights below.
 
 **Lawful basis.**
 
-- **Usage and reliability data** (on by default) — legitimate interests: identifying defects, and
+- **Usage and reliability data** (on by default): legitimate interests: identifying defects, and
   establishing which features are used and on which Photoshop versions. You have the right to
   object, and the setting is the mechanism.
-- **Diagnostic detail** (off by default) — consent, given by enabling it and withdrawn by
+- **Diagnostic detail** (off by default): consent, given by enabling it and withdrawn by
   disabling it.
 
 The two settings are independent. Disabling usage telemetry stops that stream entirely, including

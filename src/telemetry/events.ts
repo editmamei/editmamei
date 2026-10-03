@@ -28,7 +28,7 @@ export interface TelemetryDimensions {
    */
   edition: string;
   platform: string;
-  /** Install channel: 'npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'source' | 'dev'.
+  /** Install channel: 'npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'plugin' | 'source' | 'dev'.
    *  Attached to the boot ping only. */
   channel: string;
   /** Resolved lazily — null until the first PS connection identifies the version. */
@@ -161,7 +161,7 @@ export interface SessionStartEvent {
   platform: string;
   ps_version: string;
   /**
-   * Install channel ('npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'source'). Carried on the
+   * Install channel ('npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'plugin' | 'source'). Carried on the
    * boot ping only — it's a stable per-install attribute, so the server stores it once in
    * `installs_seen` (no daily rollup), keep-first-known. The dev edition is
    * telemetry-inert, so 'dev' never reaches the wire.

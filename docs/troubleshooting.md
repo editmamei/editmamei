@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Organised by what you're seeing, not by what's broken underneath. Most answers differ depending on
+Organized by what you're seeing, not by what's broken underneath. Most answers differ depending on
 how you installed Editmamei, so start here.
 
 ## Which install do you have?

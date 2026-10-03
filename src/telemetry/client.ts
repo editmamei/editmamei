@@ -110,7 +110,7 @@ export interface TelemetryClientOptions {
    * passes the real value so telemetry reflects the loaded module, not the build.
    */
   edition?: string;
-  /** Install channel ('npx' | 'npm_global' | 'mcpb' | 'source' | 'dev'). Defaults to
+  /** Install channel ('npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'plugin' | 'source' | 'dev'). Defaults to
    *  `resolveInstallChannel()`. */
   channel?: string;
   /**
