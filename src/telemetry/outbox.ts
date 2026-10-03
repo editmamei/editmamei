@@ -329,8 +329,9 @@ export interface ClaimedOutbox extends OutboxRead {
  * read (and send) the same events. Claims left behind by a drain whose process died mid-way are
  * picked up too, once their pid is no longer running.
  *
- * Call once per process, at startup, before this process could have claimed anything itself:
- * a claim carrying this process's own pid is then a predecessor's that happened to share it.
+ * Call once per process, at startup. A claim carrying this process's own pid is then either a
+ * predecessor's that happened to share it, or a compaction this process already finished
+ * (compaction is synchronous), so taking it in place is safe either way.
  */
 export function claimOutboxForDrain(opts: OutboxOptions = {}): ClaimedOutbox {
   const dir = baseDir(opts);
@@ -459,7 +460,9 @@ export function rewriteOutbox(events: TelemetryEvent[], opts: OutboxOptions = {}
  * claims it, and the kept events are APPENDED back onto the live outbox, never written over
  * it. A drain that claims the outbox first leaves nothing here to compact; a drain that comes
  * second finds no live outbox (or only appends made since) and skips the claim while this
- * process is running. Either way each event sits in exactly one file. A sibling append that
+ * process is running. Either way each event sits in one file, except between the append-back
+ * and the claim's removal: a crash there re-sends the kept events, which favors a duplicate over
+ * a loss in the same way the drain does. A sibling append that
  * lands in the claim after it was read is carried over with the kept events. If this process
  * dies part-way, or the append-back fails, the claim stays under this pid's name and a later
  * startup drain recovers it once the pid is gone.
