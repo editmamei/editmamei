@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir, release } from 'node:os';
 import { join } from 'node:path';
 import { osMajor, nodeMajor, boundMajor } from '@editmamei/telemetry/activity.ts';
@@ -67,6 +75,8 @@ function makeClient(
     channel?: string;
     getModuleStatus?: () => ModuleStatusInfo | null;
     now?: () => Date;
+    outboxPid?: number;
+    isPidAlive?: (pid: number) => boolean;
   } = {}
 ) {
   return new TelemetryClient({
@@ -82,6 +92,8 @@ function makeClient(
     ...(over.channel !== undefined ? { channel: over.channel } : {}),
     ...(over.getModuleStatus !== undefined ? { getModuleStatus: over.getModuleStatus } : {}),
     ...(over.now !== undefined ? { now: over.now } : {}),
+    ...(over.outboxPid !== undefined ? { outboxPid: over.outboxPid } : {}),
+    ...(over.isPidAlive !== undefined ? { isPidAlive: over.isPidAlive } : {}),
   });
 }
 
@@ -1508,5 +1520,370 @@ describe('startup outbox drain — remaining boundaries', () => {
     await c.flushOutboxOnStartup();
     const kept = readOutbox({ dir }).map((e) => (e as { tool: string }).tool);
     expect(kept).toEqual(['ps_export']); // the safe event retried, the unsafe one gone for good
+  });
+});
+
+describe('concurrent server processes sharing one outbox dir', () => {
+  // Several MCP clients (or windows of one) each run their own server process against the
+  // same ~/.editmamei. Each test stands in for those processes with distinct `outboxPid`s and
+  // an injected liveness check, so "is that sibling still running" is under test control.
+  const LIVE = 1001;
+  const NEW = 1002;
+  const alive =
+    (...pids: number[]) =>
+    (pid: number) =>
+      pids.includes(pid);
+  const summariesIn = (batches: TelemetryEvent[][]) =>
+    batches.flat().filter((e) => e.type === 'session_summary') as Array<{
+      tool_call_count: number;
+    }>;
+  const toolsIn = (events: TelemetryEvent[]) => events.map((e) => (e as { tool: string }).tool);
+  const record = (c: TelemetryClient, tool = 'ps_export') =>
+    c.recordCall({ tool, success: true, duration_ms: 1, error_class: null });
+  const claimFiles = (dir: string) => readdirSync(dir).filter((n) => n.includes('draining'));
+
+  it('a booting process does not report a LIVE sibling session as crashed', async () => {
+    const dir = freshOutboxDir();
+    const sibling = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: LIVE });
+    record(sibling);
+
+    const rec = recorder();
+    const booting = makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(LIVE),
+    });
+    await booting.flushOutboxOnStartup();
+    expect(summariesIn(rec.batches)).toHaveLength(0);
+    // The sibling's state is untouched, so its own shutdown still owns its summary.
+    expect(readSessionState({ dir, pid: LIVE })?.tool_call_count).toBe(1);
+
+    await sibling.shutdown();
+    expect(readOutbox({ dir }).filter((e) => e.type === 'session_summary')).toHaveLength(1);
+  });
+
+  it('many sibling boots during one live session report it zero times', async () => {
+    const dir = freshOutboxDir();
+    const sibling = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: LIVE });
+    record(sibling);
+    const rec = recorder();
+    for (let pid = 2000; pid < 2010; pid++) {
+      await makeClient(makeSettings(), rec, {
+        outboxDir: dir,
+        outboxPid: pid,
+        isPidAlive: alive(LIVE),
+      }).flushOutboxOnStartup();
+    }
+    expect(summariesIn(rec.batches)).toHaveLength(0);
+  });
+
+  it('a DEAD sibling session is reconstructed exactly once', async () => {
+    const dir = freshOutboxDir();
+    const killed = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: LIVE });
+    record(killed);
+    // No shutdown: the process was killed.
+
+    const first = recorder();
+    await makeClient(makeSettings(), first, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(),
+    }).flushOutboxOnStartup();
+    expect(summariesIn(first.batches).map((s) => s.tool_call_count)).toEqual([1]);
+
+    const second = recorder();
+    await makeClient(makeSettings(), second, {
+      outboxDir: dir,
+      outboxPid: NEW + 1,
+      isPidAlive: alive(),
+    }).flushOutboxOnStartup();
+    expect(summariesIn(second.batches)).toHaveLength(0);
+  });
+
+  // The claim phase is synchronous, so under Promise.all the two boots run back to back rather
+  // than interleaving; this pins that the second finds nothing left, not the rename itself.
+  it('two processes booting back to back reconstruct a dead session once', async () => {
+    const dir = freshOutboxDir();
+    const killed = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: LIVE });
+    record(killed);
+
+    const rec = recorder();
+    // Both booting processes are running while they drain; only the killed one is gone.
+    const a = makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(NEW, NEW + 1),
+    });
+    const b = makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW + 1,
+      isPidAlive: alive(NEW, NEW + 1),
+    });
+    await Promise.all([a.flushOutboxOnStartup(), b.flushOutboxOnStartup()]);
+    expect(summariesIn(rec.batches)).toHaveLength(1);
+  });
+
+  it('does not take its own state once it has persisted some', async () => {
+    const dir = freshOutboxDir();
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, outboxPid: NEW });
+    record(c); // persists this process's live state
+    await c.flushOutboxOnStartup();
+    expect(summariesIn(rec.batches)).toHaveLength(0);
+    expect(readSessionState({ dir, pid: NEW })?.tool_call_count).toBe(1);
+  });
+
+  it('recovers the pre-upgrade shared session file once', async () => {
+    const dir = freshOutboxDir();
+    const legacy: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '1.7.0',
+      edition: 'community',
+      platform: 'darwin',
+      ps_version: '27.7.0',
+      tool_call_count: 4,
+      distinct_tools: 2,
+      any_failures: false,
+    };
+    writeFileSync(join(dir, 'telemetry-session.json'), JSON.stringify(legacy));
+
+    const rec = recorder();
+    await makeClient(makeSettings(), rec, { outboxDir: dir }).flushOutboxOnStartup();
+    expect(summariesIn(rec.batches).map((s) => s.tool_call_count)).toEqual([4]);
+    expect(existsSync(join(dir, 'telemetry-session.json'))).toBe(false);
+
+    const again = recorder();
+    await makeClient(makeSettings(), again, { outboxDir: dir }).flushOutboxOnStartup();
+    expect(summariesIn(again.batches)).toHaveLength(0);
+  });
+
+  it('keeps a batch a sibling appends while the drain is on the network', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_backlog')], { dir });
+    const sent: TelemetryEvent[][] = [];
+    const c = makeClient(
+      makeSettings(),
+      {
+        batches: sent,
+        transport: async (_url: string, body: string) => {
+          // A sibling's live flush fails mid-drain and falls back to the outbox.
+          appendOutboxSync([usageLine('ps_sibling')], { dir });
+          sent.push((JSON.parse(body) as { events: TelemetryEvent[] }).events);
+        },
+      },
+      { outboxDir: dir }
+    );
+    await c.flushOutboxOnStartup();
+    expect(toolsIn(sent.flat())).toEqual(['ps_backlog']);
+    expect(toolsIn(readOutbox({ dir }))).toEqual(['ps_sibling']);
+  });
+
+  it('two concurrent drains send each queued event once', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(['ps_a', 'ps_b', 'ps_c', 'ps_d'].map(usageLine), { dir });
+    const rec = recorder();
+    const both = alive(NEW, NEW + 1);
+    const a = makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: both,
+      maxBatchSize: 1,
+    });
+    const b = makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW + 1,
+      isPidAlive: both,
+      maxBatchSize: 1,
+    });
+    await Promise.all([a.flushOutboxOnStartup(), b.flushOutboxOnStartup()]);
+    expect(toolsIn(rec.batches.flat()).sort()).toEqual(['ps_a', 'ps_b', 'ps_c', 'ps_d']);
+    expect(readOutbox({ dir })).toHaveLength(0);
+  });
+
+  it('hands an undelivered remainder back to the live outbox and leaves no claim behind', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_a'), usageLine('ps_b')], { dir });
+    const c = makeClient(makeSettings(), failAfter(1), { outboxDir: dir, maxBatchSize: 1 });
+    await c.flushOutboxOnStartup();
+    expect(toolsIn(readOutbox({ dir }))).toEqual(['ps_b']);
+    expect(claimFiles(dir)).toEqual([]);
+  });
+
+  it('re-drains a claim abandoned by a drain whose process died, but not a live one', async () => {
+    const dir = freshOutboxDir();
+    writeFileSync(
+      join(dir, `telemetry-outbox.draining.${LIVE}.0.ndjson`),
+      JSON.stringify(usageLine('ps_orphan')) + '\n'
+    );
+
+    const whileAlive = recorder();
+    await makeClient(makeSettings(), whileAlive, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(LIVE),
+    }).flushOutboxOnStartup();
+    expect(whileAlive.batches).toHaveLength(0);
+
+    const afterDeath = recorder();
+    await makeClient(makeSettings(), afterDeath, {
+      outboxDir: dir,
+      outboxPid: NEW + 1,
+      isPidAlive: alive(),
+    }).flushOutboxOnStartup();
+    expect(toolsIn(afterDeath.batches.flat())).toEqual(['ps_orphan']);
+    expect(claimFiles(dir)).toEqual([]);
+  });
+
+  it('recovers a compaction claim once its process has died, and only once', async () => {
+    const dir = freshOutboxDir();
+    writeFileSync(
+      join(dir, `telemetry-outbox.compacting.${LIVE}.0.ndjson`),
+      JSON.stringify(usageLine('ps_compacting')) + '\n'
+    );
+    const boot = async (pid: number, isPidAlive: (pid: number) => boolean) => {
+      const rec = recorder();
+      await makeClient(makeSettings(), rec, {
+        outboxDir: dir,
+        outboxPid: pid,
+        isPidAlive,
+      }).flushOutboxOnStartup();
+      return toolsIn(rec.batches.flat());
+    };
+
+    // While the compacting process runs, it owns the claim and will append back what it keeps.
+    expect(await boot(NEW, alive(LIVE))).toEqual([]);
+    expect(await boot(NEW + 1, alive())).toEqual(['ps_compacting']);
+    expect(await boot(NEW + 2, alive())).toEqual([]);
+    expect(readdirSync(dir).filter((n) => n.includes('compacting'))).toEqual([]);
+  });
+
+  it('a dead pid claim does not overwrite a leftover claim under this pid', async () => {
+    const dir = freshOutboxDir();
+    const write = (pid: number, tool: string) =>
+      writeFileSync(
+        join(dir, `telemetry-outbox.draining.${pid}.0.ndjson`),
+        JSON.stringify(usageLine(tool)) + '\n'
+      );
+    write(900, 'ps_dead'); // sorts first, and would be renamed onto NEW's first claim name
+    write(NEW, 'ps_predecessor'); // left by an earlier process that had this pid
+    const rec = recorder();
+    await makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(),
+    }).flushOutboxOnStartup();
+    expect(toolsIn(rec.batches.flat()).sort()).toEqual(['ps_dead', 'ps_predecessor']);
+    expect(claimFiles(dir)).toEqual([]);
+  });
+
+  it('carries over a sibling write that lands in the claimed file after it was read', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_backlog')], { dir });
+    const sent: TelemetryEvent[][] = [];
+    const c = makeClient(
+      makeSettings(),
+      {
+        batches: sent,
+        transport: async (_url: string, body: string) => {
+          // A sibling opened the outbox just before the rename, so its write lands in the claim.
+          const [claimFile] = claimFiles(dir);
+          appendFileSync(join(dir, claimFile!), JSON.stringify(usageLine('ps_late')) + '\n');
+          sent.push((JSON.parse(body) as { events: TelemetryEvent[] }).events);
+        },
+      },
+      { outboxDir: dir }
+    );
+    await c.flushOutboxOnStartup();
+    expect(toolsIn(sent.flat())).toEqual(['ps_backlog']);
+    expect(toolsIn(readOutbox({ dir }))).toEqual(['ps_late']);
+    expect(claimFiles(dir)).toEqual([]);
+  });
+
+  it('counts a remainder the hand-back could not write in the next summary', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_a'), usageLine('ps_b')], { dir });
+    let calls = 0;
+    const c = makeClient(
+      makeSettings(),
+      {
+        batches: [],
+        transport: async () => {
+          calls += 1;
+          if (calls === 1) {
+            // The live outbox path becomes unwritable before the remainder is handed back.
+            mkdirSync(outboxPath({ dir }));
+            return;
+          }
+          throw new Error('network down');
+        },
+      },
+      { outboxDir: dir, maxBatchSize: 1 }
+    );
+    await c.flushOutboxOnStartup();
+    rmSync(outboxPath({ dir }), { recursive: true });
+    record(c);
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.dropped_outbox).toBe(1);
+  });
+
+  it('with usage off, consumes dead sessions unreported and leaves live ones alone', async () => {
+    const dir = freshOutboxDir();
+    const dead = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: 900 });
+    record(dead);
+    const live = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: LIVE });
+    record(live);
+
+    const rec = recorder();
+    await makeClient(makeSettings({ usage: false }), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(LIVE),
+    }).flushOutboxOnStartup();
+    expect(rec.batches).toHaveLength(0);
+    expect(readSessionState({ dir, pid: 900 })).toBeNull();
+    expect(readSessionState({ dir, pid: LIVE })?.tool_call_count).toBe(1);
+    expect(readdirSync(dir).filter((n) => n.startsWith('.session-recover'))).toEqual([]);
+  });
+
+  it('resumes a recovery whose process died after claiming the file', async () => {
+    const dir = freshOutboxDir();
+    const state: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '1.7.0',
+      edition: 'community',
+      platform: 'win32',
+      ps_version: '27.7.0',
+      tool_call_count: 3,
+      distinct_tools: 1,
+      any_failures: false,
+    };
+    writeFileSync(
+      join(dir, `.session-recover.${LIVE}.telemetry-session.900.json`),
+      JSON.stringify(state)
+    );
+    const rec = recorder();
+    await makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(),
+    }).flushOutboxOnStartup();
+    expect(summariesIn(rec.batches).map((s) => s.tool_call_count)).toEqual([3]);
+    expect(readdirSync(dir).filter((n) => n.startsWith('.session-recover'))).toEqual([]);
+  });
+
+  it('runs the startup drain once per client', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_a')], { dir });
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    appendOutboxSync([usageLine('ps_b')], { dir });
+    await c.flushOutboxOnStartup();
+    expect(toolsIn(rec.batches.flat())).toEqual(['ps_a']);
+    expect(toolsIn(readOutbox({ dir }))).toEqual(['ps_b']);
   });
 });
