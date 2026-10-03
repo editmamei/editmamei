@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   appendOutboxSync,
+  claimOutboxForDrain,
   readOutbox,
   readOutboxWithDiscards,
   rewriteOutbox,
@@ -267,6 +268,30 @@ describe('isPidAlive', () => {
   it('reports a pid with no process as gone', () => {
     // Above the default pid ceiling on Linux, macOS and Windows alike.
     expect(isPidAlive(2 ** 30)).toBe(false);
+  });
+});
+
+describe('drain claims and a sibling append in flight', () => {
+  it('re-reads a half-written trailing line at release instead of losing it', () => {
+    const dir = freshDir();
+    appendOutboxSync([usage('photoshop_a')], { dir });
+    const torn = JSON.stringify(usage('photoshop_torn')) + '\n';
+    const half = Math.floor(torn.length / 2);
+    // A sibling that opened the outbox before the claim has written half its line so far.
+    appendFileSync(outboxPath({ dir }), torn.slice(0, half), 'utf8');
+
+    const drain = claimOutboxForDrain({ dir, pid: 41, isPidAlive: () => false });
+    expect(drain.events.map((e) => (e as { tool: string }).tool)).toEqual(['photoshop_a']);
+    expect(drain.discarded).toBe(0);
+
+    // The sibling's write finishes into the claimed file while the drain is on the network.
+    const [claimFile] = readdirSync(dir).filter((n) => n.includes('.draining.'));
+    appendFileSync(join(dir, claimFile!), torn.slice(half), 'utf8');
+
+    expect(drain.release([])).toBe(0);
+    expect(readOutbox({ dir }).map((e) => (e as { tool: string }).tool)).toEqual([
+      'photoshop_torn',
+    ]);
   });
 });
 

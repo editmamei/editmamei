@@ -130,7 +130,13 @@ export interface TelemetryClientOptions {
   active?: boolean;
   /** Override the durable-outbox directory (tests). Defaults to `~/.editmamei`. */
   outboxDir?: string;
-  /** Stand in for another process sharing the outbox dir (tests). Defaults to `process.pid`. */
+  /**
+   * Stand in for another process sharing the outbox dir (tests). Defaults to `process.pid`.
+   *
+   * At most one TelemetryClient per pid and outbox dir. Session-state files and outbox claims
+   * are owned by pid, and the startup drain treats claims under its own pid as a dead
+   * predecessor's, so two clients sharing a pid would take each other's live files.
+   */
   outboxPid?: number;
   /** Liveness check for sibling processes' files (tests). Defaults to `isPidAlive`. */
   isPidAlive?: (pid: number) => boolean;

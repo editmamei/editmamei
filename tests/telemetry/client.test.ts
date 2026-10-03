@@ -1735,6 +1735,29 @@ describe('concurrent server processes sharing one outbox dir', () => {
     expect(claimFiles(dir)).toEqual([]);
   });
 
+  it('recovers a compaction claim once its process has died, and only once', async () => {
+    const dir = freshOutboxDir();
+    writeFileSync(
+      join(dir, `telemetry-outbox.compacting.${LIVE}.0.ndjson`),
+      JSON.stringify(usageLine('ps_compacting')) + '\n'
+    );
+    const boot = async (pid: number, isPidAlive: (pid: number) => boolean) => {
+      const rec = recorder();
+      await makeClient(makeSettings(), rec, {
+        outboxDir: dir,
+        outboxPid: pid,
+        isPidAlive,
+      }).flushOutboxOnStartup();
+      return toolsIn(rec.batches.flat());
+    };
+
+    // While the compacting process runs, it owns the claim and will append back what it keeps.
+    expect(await boot(NEW, alive(LIVE))).toEqual([]);
+    expect(await boot(NEW + 1, alive())).toEqual(['ps_compacting']);
+    expect(await boot(NEW + 2, alive())).toEqual([]);
+    expect(readdirSync(dir).filter((n) => n.includes('compacting'))).toEqual([]);
+  });
+
   it('a dead pid claim does not overwrite a leftover claim under this pid', async () => {
     const dir = freshOutboxDir();
     const write = (pid: number, tool: string) =>
