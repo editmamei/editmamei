@@ -1,5 +1,8 @@
 /*
- * Bundles skills/editmamei/ into dist/skills/editmamei-skill.zip.
+ * Bundles plugin/skills/editmamei/ into dist/skills/editmamei-skill.zip.
+ *
+ * The skill lives inside plugin/ because the Claude plugin bundle can only
+ * ship files from its own folder; this zip and the plugin share one source.
  *
  * The zip layout is what Anthropic's Skills feature expects on upload:
  * the zip's root contains the skill folder (not the folder's contents),
@@ -39,7 +42,7 @@ export interface BuildSkillZipOptions {
 }
 
 export function buildSkillZip(opts: BuildSkillZipOptions = {}): { destPath: string } {
-  const skillSourceDir = join(REPO_ROOT, 'skills', 'editmamei');
+  const skillSourceDir = join(REPO_ROOT, 'plugin', 'skills', 'editmamei');
 
   // Sanity-check the source before zipping. Avoids producing an empty
   // bundle if someone deletes the SKILL.md by mistake.

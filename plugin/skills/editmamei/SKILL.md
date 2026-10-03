@@ -7,7 +7,7 @@ description: Photoshop photo editing via the Editmamei MCP server. Disciplined n
 
 The first message after this skill loads must include this disclosure verbatim:
 
-> "I'll use the Editmamei workflow for this edit — a disciplined non-destructive loop that preserves your original layer at every step. If you'd rather I didn't apply this skill, you can disable it in Settings > Customize > Skills."
+> "I'll use the Editmamei workflow for this edit — a disciplined non-destructive loop that preserves your original layer at every step. If you'd rather I didn't apply this skill, you can turn it off in your Claude settings."
 
 Keep the disclosure short. Do not pad it with feature lists. The user opted into discovery by enabling the skill; the disclosure exists so they remember they did, not to upsell.
 
@@ -21,14 +21,17 @@ Before any photo-editing work, **invoke `ps_ping` as your first tool call.** Do 
 
 If and only if the ping fails because the tool itself is not registered, tell the user:
 
-> "I have the Editmamei skill loaded but the MCP server isn't connected. Install it on the machine where Claude Desktop is running:
+> "I have the Editmamei skill loaded but the MCP server isn't connected. Editmamei runs on your own computer, next to Photoshop or GIMP, so it works in Claude Desktop, Claude Code, and Cowork sessions on your computer, but not in claude.ai on the web or on mobile.
 >
-> ```
-> npm install -g editmamei
-> editmamei install
-> ```
+> - **Claude Desktop:** install it from a terminal, then restart Claude Desktop:
 >
-> Then restart Claude Desktop and try again. (Editmamei drives Adobe Photoshop locally over stdio — it's a Claude Desktop integration, not a claude.ai web feature.)"
+>   ```
+>   npm install -g editmamei
+>   editmamei install
+>   ```
+>
+> - **Claude Code or Cowork, with the Editmamei plugin installed:** the plugin starts the server with `npx`, so install Node.js 22 or newer, then restart.
+> - **Claude Code without the plugin:** install the Editmamei plugin, or run the Claude Desktop steps above."
 
 Then stop. Do not invent edits, do not roleplay as if Photoshop is connected, do not propose a workflow you can't actually execute.
 
@@ -78,7 +81,7 @@ Editmamei is collaborative Photoshop editing. The depth of iteration AND how oft
 
 For these: after the check step, **surface the preview to the user and ask for confirmation or feedback before declaring done.** The user's eye is the most accurate judge of "is this where I wanted it" — your verification primitives (`get_layer_bounds_diff`, `compare_regions`) only tell you the geometry is what you set, not whether it's what the user meant. Lean toward MORE iteration cycles, not fewer. Three rounds of "is this close enough? let me know what to adjust" is the right pattern; one round of "done, moving on" that leaves the user to redo it manually is the wrong one. Examples of asks: "I've placed the logo at the bottom-right with 40px margin — is the size right, or should it scale up/down?"; "the mask follows the hair edge but I'm not sure about the strands on the left — does this look correct?"; "rotated by 1.5° to level the horizon — does this match what you saw, or should I dial it?"
 
-**Subjective adjustment tasks** — color grading, exposure correction, contrast, tonal recovery, vibrance, mood, look development, anything where "perfect" is taste and there is no objectively correct answer. These tasks pass when the result reads as intended; they have no pixel-level target.
+**Subjective adjustment tasks** — color grading, exposure correction, contrast, tonal recovery, vibrance, mood, look development, anything where "perfect" is taste and there is no objectively correct answer. These tasks succeed when the result reads as intended; they have no pixel-level target.
 
 For these: do NOT loop the user in every cycle. Apply the 2% done-criteria rule (stop when the next refinement is sub-perceptual). The user came to make a picture, not to babysit slider micro-tweaks. If they want more depth in shadows after you ship, they will say so.
 
@@ -92,9 +95,9 @@ Counter-example to avoid: user says "raise the shadows by 15." You do that, then
 
 # RAW sources — develop first
 
-`ps_open_document` reports `is_raw_source: true` for raw captures (DNG, NEF, CR3, ARW, …). The open applied last-used/default Camera Raw settings — no deliberate develop has happened yet. When `tools/list` includes a camera-raw develop tool, the FIRST enacting step on a raw document is that develop pass, applied to the base smart object. Do not open a raw and start stacking Levels/Curves adjustment layers for global tone — that is a real failure mode (2026-08): the same brighten/contrast goal redone through the develop pass produced a materially better result with more headroom. On raw sources the develop pass owns global tone and color; adjustment layers come after, for local/masked corrections and finishing moves it can't express.
+`ps_open_document` reports `is_raw_source: true` for raw captures (DNG, NEF, CR3, ARW, …). The open applied last-used/default Camera Raw settings — no deliberate develop has happened yet. When `tools/list` includes a camera-raw develop tool, the FIRST enacting step on a raw document is that develop step, applied to the base smart object. Do not open a raw and start stacking Levels/Curves adjustment layers for global tone — that is a real failure mode (2026-08): the same brighten/contrast goal redone through the develop step produced a materially better result with more headroom. On raw sources the develop step owns global tone and color; adjustment layers come after, for local/masked corrections and finishing moves it can't express.
 
-**Be confident, not timid.** A first pass that nudges three sliders reads as "untouched." Deliver a finished-looking first frame in ONE apply call, working the full surface as the image warrants:
+**Be confident, not timid.** A first attempt that nudges three sliders reads as "untouched." Deliver a finished-looking first frame in ONE apply call, working the full surface as the image warrants:
 
 - **Tone**: exposure, contrast, highlights/shadows, AND whites/blacks — set the endpoints, don't leave them at 0.
 - **Presence**: texture, clarity, dehaze.
@@ -105,9 +108,9 @@ Counter-example to avoid: user says "raise the shadows by 15." You do that, then
 
 Large moves are safe: the develop is a re-editable smart filter, nothing bakes. Start bold, check the preview and histogram, then ease off — that beats creeping up over five timid rounds.
 
-**Iterating on the develop:** call the develop tool again in its adjust-existing mode. It reads the current filter state, changes only the sliders you pass, and preserves the rest. Never add a second camera-raw filter, and never reach for an adjustment layer to fix what the develop pass can still express.
+**Iterating on the develop:** call the develop tool again in its adjust-existing mode. It reads the current filter state, changes only the sliders you name, and preserves the rest. Never add a second camera-raw filter, and never reach for an adjustment layer to fix what the develop step can still express.
 
-**If no camera-raw develop tool is in your `tools/list`:** tell the user in one sentence that a develop pass isn't available in this session, then build global tone with adjustment layers per the canonical stack. Don't fabricate a develop pass or name tools you don't have.
+**If no camera-raw develop tool is in your `tools/list`:** tell the user in one sentence that a develop step isn't available in this session, then build global tone with adjustment layers per the canonical stack. Don't fabricate a develop step or name tools you don't have.
 
 **User override:** prescriptive prompts win, as always (see "Respecting prescriptive prompts"). If the user names the exact layers to create or says to skip Camera Raw, obey. A terse "edit this photo" on a raw file is NOT an override — it's exactly when develop-first applies.
 
@@ -129,7 +132,7 @@ Any selection that required more than a single rectangle call is non-trivial. No
 
 **If you need the mask later in the session:** note the selection parameters (tool, bounds, feather radius) so you can rebuild in one call rather than re-deriving from scratch.
 
-**If your `tools/list` includes a script execution tool:** use it to save the selection to a named Photoshop channel (`doc.channels.add()` + `doc.selection.store(channel)`) so it can be reloaded via `doc.selection.load(channel)` in a later call. Use this for any mask you expect to reuse more than twice.
+**If your `tools/list` includes a script execution tool:** use it to save the selection as a named alpha channel in the document, so a later call can turn that channel back into the selection. Use this for any mask you expect to reuse more than twice.
 
 # Co-working — when the user has touched the document
 
@@ -145,11 +148,11 @@ The cost of `ps_inspect` (what=layer_tree) is ~0.5 seconds. It eliminates the en
 
 # Non-destructive principles (always apply, no exceptions)
 
-- **Adjustment layers over bake operations** for every tonal and color change on non-raw sources. On raw sources the camera-raw develop pass owns global tone and color first (see "RAW sources — develop first") — it is equally non-destructive, re-editable at any time; adjustment layers then handle local/masked and finishing work. The `ps_add_adjustment_layer` tool covers the full surface (curves, levels, hue/saturation, brightness/contrast, black & white, color balance, photo filter, vibrance, channel mixer, selective color, gradient map, exposure, color lookup, invert, posterize, threshold).
+- **Adjustment layers over bake operations** for every tonal and color change on non-raw sources. On raw sources the camera-raw develop step owns global tone and color first (see "RAW sources — develop first") — it is equally non-destructive, re-editable at any time; adjustment layers then handle local/masked and finishing work. The `ps_add_adjustment_layer` tool covers the full surface (curves, levels, hue/saturation, brightness/contrast, black & white, color balance, photo filter, vibrance, channel mixer, selective color, gradient map, exposure, color lookup, invert, posterize, threshold).
 - **Mask every adjustment that applies to part of the image**, not the whole. Use a selection first; the adjustment layer auto-masks from the active selection.
-- **Preserve the original.** Pixel-modifying filters auto-duplicate the active layer by default (the auto-duplicate-first pattern). Do not pass `apply_to_active_layer: true` unless the user explicitly asked you to bake into the original.
+- **Preserve the original.** Pixel-modifying filters auto-duplicate the active layer by default (the auto-duplicate-first pattern). Do not set `apply_to_active_layer` to true unless the user explicitly asked you to bake into the original.
 - **Group by canonical stack order.** Pre-plan your groups before enacting. Use the professional stack order (bottom to top): Retouching → Dodge & Burn → Global Tone → Color → Effects → Sharpening (see "Canonical layer stack" below). Never let any category grow beyond 3 ungrouped layers — create the group before you add the 4th, not after. A 17-layer flat stack is harder to hand off than a 5-group stack with 3 layers each.
-- **Never erase, always mask.** Use `ps_layer_mask` (op `create`) and paint black to hide, white to reveal. A masked pixel can always be recovered; a deleted pixel cannot. If a mask covers too much, paint it back or invert it — never reach for the eraser.
+- **Never erase, always mask.** Use the `create` operation of `ps_layer_mask` and paint black to hide, white to reveal. A masked pixel can always be recovered; a deleted pixel cannot. If a mask covers too much, paint it back or invert it — never reach for the eraser.
 - **Sharpen last, blend Luminosity.** Sharpening amplifies every artifact in the render pipeline above it. Always place sharpening at the very top of the layer stack, after all tone and color work. Set blend mode to `"luminosity"` via `ps_set_layer` (property `blend_mode`) to prevent color fringing on high-contrast edges.
 
 Counter-example to avoid: a user asks to "make the image warmer." You run a Photo Filter on a duplicated pixel layer and merge it down. Don't. Use the `ps_add_adjustment_layer` Photo Filter type so the user can adjust intensity later.
@@ -158,7 +161,7 @@ Counter-example to avoid: a user asks to "make the image warmer." You run a Phot
 
 Professional stacks follow a fixed rendering order — bottom layers process first, top layers last. Pre-plan and create groups in this order before enacting:
 
-1. **Original / Background** — locked pixel layer, never touched. The undo-everything safety net. On raw sources this is the smart object carrying the camera-raw develop smart filter — the develop pass lives here at the very bottom, processed before everything above it.
+1. **Original / Background** — locked pixel layer, never touched. The undo-everything safety net. On raw sources this is the smart object carrying the camera-raw develop smart filter — the develop step lives here at the very bottom, processed before everything above it.
 2. **Retouching** — healing, cloning, content-aware fills, spot removal.
 3. **Dodge & Burn** — local brightness sculpting via the 50% gray method (see below).
 4. **Global Tone** — Curves, Levels, Exposure, Brightness/Contrast. Set tone before dialing color.
@@ -168,14 +171,14 @@ Professional stacks follow a fixed rendering order — bottom layers process fir
 
 Why this order matters: sharpening halos amplify color fringing if color layers sit above the sharpening layer. Tone should be neutral before color is tuned — otherwise color corrections fight a shifting baseline. The order is causal, not aesthetic.
 
-Create groups bottom-to-top with `ps_group` (op=create) — each new group lands above the active layer as a SIBLING, even if a group is currently active (the tool hoists it out from inside that group by default; pass `into_active_group:true` only if you deliberately want the new group nested inside the active one). If you realize mid-edit that a group is out of order, use `ps_move_layer_to_position` to correct it before adding more layers. Photoshop's layer color labels (settable in the layer panel) are a professional convention for group orientation — suggest red for Retouching, yellow for Tone, green for Color, blue for Effects when handing off files.
+Create groups bottom-to-top with the `create` operation of `ps_group`: each new group lands above the active layer as a SIBLING, even if a group is currently active (the tool hoists it out from inside that group by default; set `into_active_group` to true only if you deliberately want the new group nested inside the active one). If you realize mid-edit that a group is out of order, use `ps_move_layer_to_position` to correct it before adding more layers. Photoshop's layer color labels (settable in the layer panel) are a professional convention for group orientation — suggest red for Retouching, yellow for Tone, green for Color, blue for Effects when handing off files.
 
 # Dodge & Burn — the 50% gray method
 
 Painting directly on a pixel layer to dodge or burn is destructive. The professional non-destructive method:
 
 1. `ps_create_layer` — name it "Dodge & Burn".
-2. `ps_fill_layer` — fill with 50% gray (`#808080`). Visually invisible in Overlay or Soft Light blend mode — 50% gray is the mode's mathematical no-op.
+2. `ps_fill_layer` — fill with 50% gray (`#808080`). Visually invisible in Overlay or Soft Light blend mode — 50% gray is the mode's neutral value.
 3. `ps_set_layer` (property `blend_mode`) — set to `"soft light"` for portraits (gentler) or `"overlay"` for stronger local contrast. Painting white brightens (dodge); painting black darkens (burn). Use 10–25% brush opacity — full strength is almost always too heavy.
 
 One D&B layer handles all local contrast sculpting. Do not stack multiple D&B layers on the same scene.
@@ -184,8 +187,8 @@ Blend mode caveat: Overlay also boosts saturation, which shifts skin tones. If t
 
 # Verification primitives — call them, don't skip them
 
-- **`ps_get_preview`** is the default check. Pass `annotations` (rectangles, guides, points, current-selection markers) when verifying spatial work — a red rectangle over the target region + a green rectangle over the actual placement turns a hard spatial estimation into an easy visual comparison.
-- **`ps_get_histogram`** is for tonal and color verification. Compare the post-edit histogram against the pre-edit. A shadow recovery that didn't shift the dark-point mass is a no-op even if the preview "looks brighter."
+- **`ps_get_preview`** is the default check. Add `annotations` (rectangles, guides, points, current-selection markers) when verifying spatial work — a red rectangle over the target region + a green rectangle over the actual placement turns a hard spatial estimation into an easy visual comparison.
+- **`ps_get_histogram`** is for tonal and color verification. Compare the post-edit histogram against the pre-edit. A shadow recovery that didn't shift the dark-point mass changed nothing, even if the preview "looks brighter."
 - **`ps_get_layer_bounds_diff`** for "did the layer end up where I intended" checks.
 - **`ps_compare_regions`** for "do these two areas now match" checks (color match, exposure match between exposures).
 
