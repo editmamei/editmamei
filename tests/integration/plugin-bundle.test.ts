@@ -61,6 +61,19 @@ describe('plugin manifest', () => {
     expect(manifest.author?.name).toBeTruthy();
     expect(existsSync(join(PLUGIN_DIR, manifest.icon))).toBe(true);
   });
+
+  it('ships a listing icon the directory accepts', () => {
+    // A square PNG, 512 to 2048 px, under 2 MB. The directory takes the listing icon once,
+    // at the first save or submission, so a rejected or low-resolution one is permanent.
+    const png = readFileSync(join(PLUGIN_DIR, manifest.icon));
+    expect(png.subarray(1, 4).toString('ascii')).toBe('PNG');
+    const width = png.readUInt32BE(16);
+    const height = png.readUInt32BE(20);
+    expect(width).toBe(height);
+    expect(width).toBeGreaterThanOrEqual(512);
+    expect(width).toBeLessThanOrEqual(2048);
+    expect(png.length).toBeLessThan(2 * 1024 * 1024);
+  });
 });
 
 describe('plugin MCP server', () => {
