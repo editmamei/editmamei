@@ -10,6 +10,33 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.7.1] — 2026-10-02
+
+### Added
+
+- **Editmamei is available as a Claude plugin.** A plugin bundle for Claude's plugin directory
+  carries the Editmamei skill and a launcher pinned to this release.
+  - Plugin installs get their own update notice, which tells you to update the plugin rather than
+    rerun npx.
+- **Setup notes for more AI clients.** `docs/clients.md` covers configuration for MCP clients
+  beyond Claude Desktop, Claude Code and Cursor, with each one's known limits.
+
+### Fixed
+
+- **Running Editmamei in several AI clients at once no longer double-counts usage data.** Each
+  server process now keeps its own session state and only recovers sessions from processes that
+  have exited.
+  - Startup drains and outbox compaction claim the outbox by rename, so concurrent processes
+    neither send the same events twice nor drop each other's.
+- **The skill upload instructions point at the right claude.ai screen.** `editmamei install` and
+  `editmamei --help` now say Settings > Skills, then Add > Upload skill.
+
+### Changed
+
+- **Corrected docs.** Tool counts (83 for Photoshop, 24 for GIMP), the Pro feature list (raw
+  develop, batch, object-aimed edits), the free trial terms, and the privacy page's description
+  of license checks and Pro module updates now match the product.
+
 ## [1.7.0] — 2026-09-29
 
 ### Added
