@@ -70,7 +70,7 @@ For each detected client, the command:
 
 If a client isn't detected, that line is reported as "skipped" and doesn't abort the run.
 
-The command also drops the Editmamei skill bundle (`editmamei-skill.zip`) into your Downloads folder and prints instructions for uploading it to claude.ai (Settings → Customize → Skills). The bundle is only for driving Editmamei from claude.ai; if you don't use claude.ai, ignore the file or pass `--skip-skill`.
+The command also drops the Editmamei skill bundle (`editmamei-skill.zip`) into your Downloads folder and prints instructions for uploading it to claude.ai (Settings > Skills, then Add > Upload skill). The bundle is only for driving Editmamei from claude.ai; if you don't use claude.ai, ignore the file or pass `--skip-skill`.
 
 Restart your AI client(s) after this completes. Config changes only take effect on a fresh boot.
 
@@ -99,7 +99,7 @@ Reports, per client, whether Editmamei is registered and what command would laun
 
 ## Manual configuration
 
-If `editmamei install` couldn't reach one of your clients (for example, because the `claude` binary isn't on your PATH, or you're using a different MCP-compatible client), register Editmamei by hand.
+If `editmamei install` couldn't reach one of your clients (for example, because the `claude` binary isn't on your PATH, or you're using a different MCP-compatible client), register Editmamei by hand. For other MCP clients (VS Code, Codex, Gemini CLI, Zed, Cline and more), see [clients.md](clients.md), which lists the config location and format for each.
 
 ### Claude Desktop
 

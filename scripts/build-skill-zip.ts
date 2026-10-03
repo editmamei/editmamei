@@ -17,7 +17,7 @@
  * the published tarball at node_modules/editmamei/dist/skills/
  * editmamei-skill.zip. The editmamei install CLI copies it from there
  * to the user's Downloads folder for manual upload to claude.ai →
- * Settings > Customize > Skills.
+ * Settings > Skills.
  */
 
 import { existsSync, mkdirSync, statSync } from 'node:fs';
