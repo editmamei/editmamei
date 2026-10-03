@@ -396,3 +396,25 @@ OPS.update({
     'test_add_offset_layer': op_test_add_offset_layer,
     'test_ledger_dump': op_test_ledger_dump,
 })
+
+
+def op_test_save_unstripped(args):
+    """Saves the live image to `path` through plain file_save (no metadata stripping), so a
+    fixture can carry the image's own metadata into a format the bridge's export refuses."""
+    img = _image(args)
+    ok = Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, img, Gio.File.new_for_path(args['path']), None)
+    return {'ok': bool(ok)}
+
+
+def op_test_set_orientation_tag(args):
+    """Sets Exif.Image.Orientation on the live image's own metadata."""
+    img = _image(args)
+    md = img.get_metadata()
+    md.try_set_tag_string('Exif.Image.Orientation', str(args['value']))
+    img.set_metadata(md)
+    return {'ok': True}
+
+
+OPS['test_save_unstripped'] = op_test_save_unstripped
+OPS['test_set_orientation_tag'] = op_test_set_orientation_tag
+

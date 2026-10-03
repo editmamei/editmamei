@@ -778,6 +778,87 @@ export function writeGpsXmpJpeg(path: string): void {
   writeFileSync(path, withGpsCoordinates(Buffer.from(GPS_XMP_JPEG_BASE64, 'base64')));
 }
 
+/**
+ * A JPEG with an EXIF APP1 segment (one IFD0 entry: Orientation) inserted right after SOI.
+ * `jpeg` must carry no EXIF of its own (a bridge export never does).
+ */
+export function withExifOrientation(jpeg: Buffer, orientation: number): Buffer {
+  const tiff = Buffer.alloc(26);
+  tiff.write('II', 0, 'latin1');
+  tiff.writeUInt16LE(42, 2);
+  tiff.writeUInt32LE(8, 4);
+  tiff.writeUInt16LE(1, 8); // one IFD0 entry
+  tiff.writeUInt16LE(0x0112, 10); // Orientation
+  tiff.writeUInt16LE(3, 12); // SHORT
+  tiff.writeUInt32LE(1, 14);
+  tiff.writeUInt16LE(orientation, 18);
+  tiff.writeUInt32LE(0, 22); // no next IFD
+  const payload = Buffer.concat([Buffer.from('Exif  ', 'latin1'), tiff]);
+  const header = Buffer.from([0xff, 0xe1, 0, 0]);
+  header.writeUInt16BE(payload.length + 2, 2);
+  return Buffer.concat([jpeg.subarray(0, 2), header, payload, jpeg.subarray(2)]);
+}
+
+export const CORNER_COLORS = {
+  topLeft: [255, 0, 0],
+  topRight: [0, 255, 0],
+  bottomLeft: [0, 0, 255],
+  bottomRight: [255, 255, 0],
+} as const;
+
+/**
+ * The upright picture's colour at (x, y): a quarter-size block of red (top-left), green
+ * (top-right), blue (bottom-left) and yellow (bottom-right) in the corners, mid-gray elsewhere.
+ */
+function cornerMarkerColor(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): [number, number, number] {
+  const bw = Math.floor(width / 4);
+  const bh = Math.floor(height / 4);
+  const left = x < bw;
+  const right = x >= width - bw;
+  const top = y < bh;
+  const bottom = y >= height - bh;
+  if (top && left) return [...CORNER_COLORS.topLeft];
+  if (top && right) return [...CORNER_COLORS.topRight];
+  if (bottom && left) return [...CORNER_COLORS.bottomLeft];
+  if (bottom && right) return [...CORNER_COLORS.bottomRight];
+  return [128, 128, 128];
+}
+
+/**
+ * The corner-marker picture (`width` x `height` when upright) as an image would be STORED under
+ * EXIF `orientation` (1-8): the pixels a camera writes so that a viewer applying that orientation
+ * shows the upright picture. 5-8 store it transposed (`height` x `width`). Mapping per the EXIF
+ * spec's "0th row / 0th column" table.
+ */
+export function writeCornerMarkers(
+  path: string,
+  width: number,
+  height: number,
+  orientation = 1
+): void {
+  const swapped = orientation >= 5;
+  const storedW = swapped ? height : width;
+  const storedH = swapped ? width : height;
+  writePng(path, storedW, storedH, (sx, sy) => {
+    const upright = {
+      1: [sx, sy],
+      2: [width - 1 - sx, sy],
+      3: [width - 1 - sx, height - 1 - sy],
+      4: [sx, height - 1 - sy],
+      5: [sy, sx],
+      6: [width - 1 - sy, sx],
+      7: [width - 1 - sy, height - 1 - sx],
+      8: [sy, height - 1 - sx],
+    }[orientation]!;
+    return cornerMarkerColor(upright[0]!, upright[1]!, width, height);
+  });
+}
+
 // ---- session readiness (a slow first GIMP launch) --------------------------
 //
 // A real GIMP's very first launch on a machine (font cache, plug-in scan,

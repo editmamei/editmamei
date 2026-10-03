@@ -32,6 +32,7 @@ interface OpenResult {
   base_type: string;
   precision: string;
   layers: string[];
+  orientation_applied?: number;
 }
 
 const openSchema: JsonSchemaObject = {
@@ -77,7 +78,10 @@ async function gimpOpenDocument(
           text:
             `Opened ${basename(filePath)} as image ${result.image} ` +
             `(${result.width}x${result.height}, ${result.base_type}, ${result.precision}). ` +
-            `${result.layers.length} layer(s): ${result.layers.join(', ') || '(none)'}.`,
+            `${result.layers.length} layer(s): ${result.layers.join(', ') || '(none)'}.` +
+            (result.orientation_applied !== undefined
+              ? ` Rotated upright for EXIF orientation ${result.orientation_applied}.`
+              : ''),
         },
       ],
       structuredContent: result as unknown as Record<string, unknown>,
