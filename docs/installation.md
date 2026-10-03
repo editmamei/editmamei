@@ -70,7 +70,7 @@ For each detected client, the command:
 
 If a client isn't detected, that line is reported as "skipped" and doesn't abort the run.
 
-The command also drops the Editmamei skill bundle (`editmamei-skill.zip`) into your Downloads folder and prints instructions for uploading it to claude.ai (Settings > Extensions). The bundle is only for driving Editmamei from claude.ai; if you don't use claude.ai, ignore the file or pass `--skip-skill`.
+The command also drops the Editmamei skill bundle (`editmamei-skill.zip`) into your Downloads folder and prints instructions for uploading it to claude.ai (Settings > Skills, then Add > Upload skill). The bundle is only for driving Editmamei from claude.ai; if you don't use claude.ai, ignore the file or pass `--skip-skill`.
 
 Restart your AI client(s) after this completes. Config changes only take effect on a fresh boot.
 

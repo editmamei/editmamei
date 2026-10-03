@@ -7,7 +7,7 @@ description: Photoshop photo editing via the Editmamei MCP server. Disciplined n
 
 The first message after this skill loads must include this disclosure verbatim:
 
-> "I'll use the Editmamei workflow for this edit — a disciplined non-destructive loop that preserves your original layer at every step. If you'd rather I didn't apply this skill, you can disable it in Settings > Extensions."
+> "I'll use the Editmamei workflow for this edit — a disciplined non-destructive loop that preserves your original layer at every step. If you'd rather I didn't apply this skill, you can disable it in Settings > Skills."
 
 Keep the disclosure short. Do not pad it with feature lists. The user opted into discovery by enabling the skill; the disclosure exists so they remember they did, not to upsell.
 

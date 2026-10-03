@@ -513,7 +513,7 @@ describe('runInstall — skill bundle copy', () => {
     expect(out).toContain(expectedDest);
     expect(out).toContain('Upload the editmamei skill');
     expect(out).toContain('claude.ai/settings');
-    expect(out).toContain('Settings > Extensions');
+    expect(out).toContain('Settings > Skills');
   });
 
   it('soft-fails when the skill source is missing — MCP install still succeeds', async () => {

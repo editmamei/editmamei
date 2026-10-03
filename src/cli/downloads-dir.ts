@@ -2,7 +2,7 @@
  * Cross-platform Downloads folder detection.
  *
  * The Editmamei skill bundle is copied here after `editmamei install`
- * so the user can hand-upload it to claude.ai > Settings > Extensions.
+ * so the user can hand-upload it to claude.ai > Settings > Skills.
  * Downloads is the conventional landing zone every OS user
  * already knows how to find — picking a less obvious location would
  * just be friction.
