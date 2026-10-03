@@ -229,4 +229,41 @@ describe.skipIf(!install)('EXIF orientation (live GIMP)', () => {
       await session.call('close', { image: reopened.image });
     }
   });
+
+  for (const orientation of [6, 3]) {
+    it(`a TIFF tagged ${orientation} is left to its own loader on open and place`, async () => {
+      // TIFF's loader applies (or declines) its orientation tag itself; the bridge orients JPEG only.
+      const path = await taggedJpeg(orientation);
+      const opened = await session.call<{ image: number }>('open', { path });
+      const tif = join(workDir, `tagged-${orientation}.tif`);
+      try {
+        await session.call('test_set_orientation_tag', { image: opened.image, value: orientation });
+        await session.call('test_save_unstripped', { image: opened.image, path: tif });
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+      const reopened = await session.call<{ image: number; orientation_applied?: number }>('open', {
+        path: tif,
+      });
+      try {
+        expect(reopened.orientation_applied).toBeUndefined();
+      } finally {
+        await session.call('close', { image: reopened.image });
+      }
+      const doc = await session.call<{ image: number }>('create_document', {
+        width: 200,
+        height: 160,
+        fill: 'white',
+      });
+      try {
+        const placed = await session.call<{ orientation_applied?: number }>('place_image', {
+          image: doc.image,
+          path: tif,
+        });
+        expect(placed.orientation_applied).toBeUndefined();
+      } finally {
+        await session.call('close', { image: doc.image });
+      }
+    });
+  }
 });

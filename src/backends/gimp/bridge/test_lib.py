@@ -2267,6 +2267,17 @@ class TestExifOrientation(unittest.TestCase):
         for raw in (None, '', 'right, top', '0', '9', '-1', '6.5', object()):
             self.assertIsNone(lib.parse_exif_orientation(raw), repr(raw))
 
+    def test_clear_drops_every_orientation_tag(self):
+        class FakeMetadata:
+            def __init__(self):
+                self.tags = {tag: '6' for tag in lib.ORIENTATION_TAGS}
+
+            def try_clear_tag(self, tag):
+                return self.tags.pop(tag, None) is not None
+
+        md = FakeMetadata()
+        self.assertTrue(lib.clear_exif_orientation(md))
+        self.assertEqual(md.tags, {})
 
     def test_read_and_clear_through_a_metadata_object(self):
         class FakeMetadata:

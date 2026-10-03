@@ -419,14 +419,23 @@ def read_exif_orientation(metadata):
         return None
 
 
+# Every tag a viewer may read orientation from; the EXIF one is the one this bridge applies.
+ORIENTATION_TAGS = (EXIF_ORIENTATION_TAG, 'Xmp.tiff.Orientation', 'Exif.Thumbnail.Orientation')
+
+
 def clear_exif_orientation(metadata):
-    """Removes the orientation tag from `metadata` (absent reads as normal); True on success.
-    Clearing is used rather than writing 1: GIMP's metadata object can silently ignore a write of
-    that tag while still reporting success."""
-    try:
-        return bool(metadata.try_clear_tag(EXIF_ORIENTATION_TAG))
-    except Exception:
-        return False
+    """Removes the orientation tags from `metadata` (absent reads as normal); True when the EXIF
+    one was cleared. Clearing is used rather than writing 1: GIMP's metadata object can silently
+    ignore a write of that tag while still reporting success."""
+    cleared = False
+    for tag in ORIENTATION_TAGS:
+        try:
+            ok = bool(metadata.try_clear_tag(tag))
+        except Exception:
+            ok = False
+        if tag == EXIF_ORIENTATION_TAG:
+            cleared = ok
+    return cleared
 
 
 def pct_to_unit(name, value, lo=-100.0, hi=100.0):

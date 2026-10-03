@@ -702,17 +702,19 @@ _ORIENTATION_LAYER_STEPS = {
     'flip_v': lambda layer: layer.transform_flip_simple(Gimp.OrientationType.VERTICAL, True, 0),
 }
 
-# Formats whose own loader owns orientation: `.xcf` stores already-upright pixels, and the HEIF
-# loader applies the container's own rotation and writes the tag back as 1.
-_ORIENTATION_EXEMPT_EXTENSIONS = {'.xcf', '.heic', '.heif', '.avif'}
+# Formats whose loader leaves EXIF orientation unapplied in a non-interactive load. Only JPEG is
+# rotated here: other loaders apply their own orientation (HEIF's container rotation, TIFF's
+# orientation tag, raw-develop plug-ins), and `.xcf` stores upright pixels, so rotating them
+# again would turn them twice.
+_ORIENTATION_EXTENSIONS = {'.jpg', '.jpeg', '.jpe', '.jfif'}
 
 
 def _file_orientation(path, ext):
     """(orientation, metadata) from the source file at `path`: the EXIF Orientation (2-8) and the
     file's own metadata object, or (None, None) when the tag is missing, normal (1), unreadable,
-    or the format is exempt. Read from the file itself: the metadata a load attaches to the image
-    is not a reliable source (it can carry another file's tags)."""
-    if ext in _ORIENTATION_EXEMPT_EXTENSIONS:
+    or the format is not one this bridge orients. Read from the file itself: the metadata a load
+    attaches to the image is not a reliable source (it can carry another file's tags)."""
+    if ext not in _ORIENTATION_EXTENSIONS:
         return None, None
     try:
         md = Gimp.Metadata.load_from_file(Gio.File.new_for_path(path))
@@ -730,8 +732,12 @@ def _upright_open_image(img, orientation, md):
     to 1 does not reliably stick), so a viewer of a later copy cannot rotate it again."""
     for step in lib.exif_orientation_steps(orientation):
         _ORIENTATION_IMAGE_STEPS[step](img)
-    if lib.clear_exif_orientation(md):
-        img.set_metadata(md)
+    # The pixels are already upright; metadata is a courtesy to later copies and never fails an open.
+    try:
+        if lib.clear_exif_orientation(md):
+            img.set_metadata(md)
+    except Exception:
+        pass
 
 
 def _upright_placed_layer(layer, orientation):
@@ -2914,11 +2920,13 @@ def op_place_image(args):
     original_selection = img.get_selected_layers()
     baked_filters = []
     try:
+        # The DoS floor applies to the SOURCE file's own size too; checked before any rotation
+        # (it is symmetric in width and height, so the upright size passes or fails alike).
+        lib.validate_resize_dims(loaded.get_width(), loaded.get_height())
         orientation_applied, _md = _file_orientation(path, ext)
         if orientation_applied is not None:
             _upright_placed_layer(loaded, orientation_applied)
         w0, h0 = loaded.get_width(), loaded.get_height()
-        lib.validate_resize_dims(w0, h0)  # the DoS floor applies to the SOURCE file's own size too
 
         width, height = args.get('width'), args.get('height')
         if width is not None or height is not None:
