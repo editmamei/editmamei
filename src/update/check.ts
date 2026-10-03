@@ -214,6 +214,9 @@ export function updateMessage(channel: InstallChannel, latest: string): string {
       // permanent download URL never 404s (see release.yml); the version is
       // surfaced in parentheses here for clarity.
       return `Download editmamei.mcpb (v${latest}) from ${RELEASES_URL} and reinstall the Claude Desktop extension.`;
+    case 'plugin':
+      // The plugin pins an exact npx version, so a restart alone reruns the old one.
+      return `Editmamei v${latest} is available. Update the Editmamei plugin in Claude, then restart.`;
     case 'dev':
       return `You're on a local dev build — pull the latest source and rebuild.`;
     case 'npx':

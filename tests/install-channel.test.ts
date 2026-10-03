@@ -29,6 +29,16 @@ describe('resolveInstallChannel', () => {
     ).toBe('mcpb');
   });
 
+  it('reports plugin when the Claude plugin env marker is set, even under an _npx cache dir', () => {
+    expect(
+      resolveInstallChannel(
+        { EDITMAMEI_INSTALL_CHANNEL: 'plugin' },
+        'community',
+        '/home/x/.npm/_npx/abc123/node_modules/editmamei/dist/index.js'
+      )
+    ).toBe('plugin');
+  });
+
   it('reports npx for an entry script under an _npx cache dir (POSIX and Windows)', () => {
     expect(
       resolveInstallChannel(

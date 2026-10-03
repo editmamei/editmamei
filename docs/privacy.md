@@ -196,7 +196,7 @@ content-free fields as above, with **no tool name, no counts, no free text**. `p
 
 | Field | Meaning |
 |---|---|
-| `channel` | Which install route you used: `npx`, `npm_global` (installed from the package registry into a global prefix), `npm_local` (installed as a dependency of another local project), `mcpb` (the one-click Claude Desktop extension), `source` (running from a git checkout), or `unknown` (the entry path could not be read). One of those six values; nothing else. |
+| `channel` | Which install route you used: `npx`, `npm_global` (installed from the package registry into a global prefix), `npm_local` (installed as a dependency of another local project), `mcpb` (the one-click Claude Desktop extension), `plugin` (the Claude plugin), `source` (running from a git checkout), or `unknown` (the entry path could not be read). One of those seven values; nothing else. |
 | `node_major` | The Node.js major version Editmamei is running under (e.g. `22`). Omitted if unknown. |
 | `arch` | CPU architecture bucket: `x64`, `arm64`, or `other`. Always present — an unrecognized architecture sends `other`, never omitted. |
 | `os_major` | Your OS's major version (e.g. `11` for Windows 11, `15` for macOS Sequoia). Omitted if unparseable. |

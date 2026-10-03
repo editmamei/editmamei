@@ -11,7 +11,7 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 
 /**
  * Walks a directory and returns every regular file path under it.
- * Used to enumerate all SKILL.md / companion docs inside skills/.
+ * Used to enumerate all SKILL.md / companion docs inside plugin/skills/.
  */
 function listFilesRecursive(start: string): string[] {
   if (!existsSync(start)) return [];
@@ -148,20 +148,21 @@ describe('public README leak guard', () => {
 });
 
 /**
- * The Editmamei skill bundle (skills/editmamei/SKILL.md + companions)
- * ships in the npm tarball and is uploaded by end users to claude.ai.
+ * The Editmamei skill (plugin/skills/editmamei/SKILL.md + companions)
+ * ships in the npm tarball, is uploaded by end users to claude.ai, and is
+ * the skill the Claude plugin bundle installs.
  * Same invariant as the README: no 'dev' / 'none'-tier tool names allowed.
  * Otherwise the skill tells Claude to invoke tools the user can't actually
  * reach in their CE / Pro build.
  */
-describe('skills/ leak guard', () => {
-  const skillsDir = join(REPO_ROOT, 'skills');
+describe('plugin/skills/ leak guard', () => {
+  const skillsDir = join(REPO_ROOT, 'plugin', 'skills');
   const skillFiles = listFilesRecursive(skillsDir).filter((p) => /\.(md|txt)$/i.test(p));
 
   it('finds at least one skill file (so the test is actually scanning something)', () => {
     expect(
       skillFiles.length,
-      'No skill markdown files found under skills/. Either skills/ was deleted or the leak guard would silently pass on an empty scan.'
+      'No skill markdown files found under plugin/skills/. Either it was moved or the leak guard would silently pass on an empty scan.'
     ).toBeGreaterThan(0);
   });
 
@@ -178,7 +179,7 @@ describe('skills/ leak guard', () => {
     }
     expect(
       leaks,
-      `'dev'-tier tool names found in skills/: ${leaks.join('; ')}. ` +
+      `'dev'-tier tool names found in plugin/skills/: ${leaks.join('; ')}. ` +
         `The skill bundle is uploaded by users to claude.ai — referencing a ` +
         `'dev'-tier tool tells Claude to invoke something the user can't ` +
         `actually reach in their CE / Pro build. Either promote the tool or ` +
@@ -197,7 +198,9 @@ describe('skills/ leak guard', () => {
         if (containsToolName(content, name)) leaks.push(`${file}: ${name}`);
       }
     }
-    expect(leaks, `'none'-tier tool names found in skills/: ${leaks.join('; ')}.`).toEqual([]);
+    expect(leaks, `'none'-tier tool names found in plugin/skills/: ${leaks.join('; ')}.`).toEqual(
+      []
+    );
   });
 
   // The skill ships once to claude.ai per user. It is therefore visible
@@ -222,7 +225,7 @@ describe('skills/ leak guard', () => {
     }
     expect(
       leaks,
-      `'pro'-tier tool names found in skills/: ${leaks.join('; ')}. ` +
+      `'pro'-tier tool names found in plugin/skills/: ${leaks.join('; ')}. ` +
         `The skill ships to claude.ai for BOTH CE and Pro users — naming a ` +
         `Pro-only tool tells CE users about features they can't reach. ` +
         `Strip the mention; Pro users discover their Pro tools via tools/list.`
@@ -248,7 +251,7 @@ describe('skills/ leak guard', () => {
     }
     expect(
       leaks,
-      `Tier markers found in skills/: ${leaks.join('; ')}. ` +
+      `Tier markers found in plugin/skills/: ${leaks.join('; ')}. ` +
         `The skill must be tier-agnostic — it describes the workflow ` +
         `available in this session; tools/list reveals inventory.`
     ).toEqual([]);
