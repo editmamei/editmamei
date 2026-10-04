@@ -769,6 +769,70 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
     expect(childNode.offsets).toEqual({ x: groupBounds.x, y: groupBounds.y });
   });
 
+  it("refuses a group transform whose layers' TOTAL result exceeds the cap, image unchanged", async () => {
+    const bg = await callTool(tools, 'gimp_create_document', { width: 100, height: 100 });
+    const image = structuredOf(bg).image as number;
+    const group = await callTool(tools, 'gimp_layer', { image, op: 'create_group', name: 'Big' });
+    const groupId = structuredOf(group).layer_id as number;
+    for (let i = 0; i < 4; i++) {
+      await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name: `C${i}`,
+        width: 100,
+        height: 100,
+        fill: 'black',
+        parent_group: groupId,
+      });
+    }
+    const before = await layerBounds(image, groupId);
+    // 4 layers x (9000x9000 = 81 MP) = 324 MP total; each one, and the group's own box, is under
+    // the 250 MP cap on its own.
+    const scaled = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'scale',
+      layer_id: groupId,
+      scale_percent: 9000,
+    });
+    expect(scaled.isError).toBe(true);
+    expect((scaled.content?.[0] as { text: string }).text).toContain('would total');
+    expect(await layerBounds(image, groupId)).toEqual(before);
+  });
+
+  it('refuses a group transform naming a locked descendant, before moving anything', async () => {
+    const bg = await callTool(tools, 'gimp_create_document', { width: 100, height: 100 });
+    const image = structuredOf(bg).image as number;
+    const group = await callTool(tools, 'gimp_layer', { image, op: 'create_group', name: 'G5' });
+    const groupId = structuredOf(group).layer_id as number;
+    const ids: number[] = [];
+    for (const name of ['Free', 'Pinned']) {
+      const made = await callTool(tools, 'gimp_layer', {
+        image,
+        op: 'create',
+        name,
+        width: 20,
+        height: 20,
+        fill: 'black',
+        parent_group: groupId,
+      });
+      ids.push(structuredOf(made).layer_id as number);
+    }
+    await backend.call('test_set_layer_lock', { image, layer_id: ids[1], lock_position: true });
+    const before = await Promise.all(ids.map((id) => layerBounds(image, id)));
+
+    const moved = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op: 'move',
+      layer_id: groupId,
+      delta: { x: 10, y: 10 },
+    });
+    expect(moved.isError).toBe(true);
+    const text = (moved.content?.[0] as { text: string }).text;
+    expect(text).toContain('Pinned');
+    expect(text).toContain('lock-position');
+    expect(await Promise.all(ids.map((id) => layerBounds(image, id)))).toEqual(before);
+  });
+
   // ---- cap refusals via the PREDICTED bounding box, not just the pre-transform size ---------
 
   it('rotate refuses via the predicted bounding box (29000x10 at 45°), image unchanged', async () => {
@@ -1387,6 +1451,31 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
     });
     expect(freed.isError, JSON.stringify(freed.content)).toBeFalsy();
     expect(structuredOf(freed).text_layer).toBe(true);
+    const tree = await callTool(tools, 'gimp_inspect', { what: 'layers', image });
+    const node = (
+      structuredOf(tree).layers as Array<{ layer_id: number; is_text_layer: boolean }>
+    ).find((n) => n.layer_id === text.layer_id)!;
+    expect(node.is_text_layer).toBe(true);
+  });
+
+  it.each([
+    ['flip', { axis: 'horizontal' }],
+    ['skew', { skew_h_degrees: 15 }],
+  ])('a text layer stays a text layer through %s', async (op, fields) => {
+    const bg = await callTool(tools, 'gimp_create_document', { width: 100, height: 100 });
+    const image = structuredOf(bg).image as number;
+    const text = await backend.call<{ layer_id: number }>('test_add_text_layer', {
+      image,
+      text: 'Hi',
+    });
+    const done = await callTool(tools, 'gimp_transform_layer', {
+      image,
+      op,
+      layer_id: text.layer_id,
+      ...fields,
+    });
+    expect(done.isError, JSON.stringify(done.content)).toBeFalsy();
+    expect(structuredOf(done).text_layer).toBe(true);
     const tree = await callTool(tools, 'gimp_inspect', { what: 'layers', image });
     const node = (
       structuredOf(tree).layers as Array<{ layer_id: number; is_text_layer: boolean }>

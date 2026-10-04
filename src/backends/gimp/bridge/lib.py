@@ -311,8 +311,9 @@ def transform_layer_precision_bucket(precision_nick):
     bucketed into the '8'/'16'/'32' strings `validate_document_dims`'s own
     `DOCUMENT_MEGAPIXEL_CAP` is keyed by -- gimp_transform_layer validates a layer's predicted
     size against the SAME precision-aware cap gimp_create_document does, rather than always
-    assuming 8-bit. u32/half/float/double all bucket to '32' (4+ bytes/channel, the most
-    conservative bucket) -- this bridge has no DOCUMENT_MEGAPIXEL_CAP entry finer than that."""
+    assuming 8-bit. u16 and half bucket to '16' (2 bytes/channel); every other precision (u32,
+    float, double) buckets to '32' (4+ bytes/channel, the most conservative bucket) -- this
+    bridge has no DOCUMENT_MEGAPIXEL_CAP entry finer than that."""
     nick = precision_nick.lower()
     if nick.startswith('u8'):
         return '8'
@@ -437,7 +438,24 @@ def validate_document_dims(width, height, precision='8'):
     megapixels = (width * height) / 1_000_000.0
     if megapixels > cap:
         raise ValueError('a %s-bit document must be at most %g MP' % (precision, cap))
+        raise ValueError(
+            '%s %s-bit document must be at most %d MP'
+            % ('an' if precision == '8' else 'a', precision, cap)
+        )
     return width, height
+
+
+def validate_group_total_pixels(sizes, precision='8'):
+    """A GROUP transform allocates every non-group descendant's own result buffer, so the SUM of
+    their predicted pixel counts (`sizes`: (width, height) pairs) must fit the same
+    precision-aware megapixel ceiling `validate_document_dims` applies to a single layer."""
+    cap = DOCUMENT_MEGAPIXEL_CAP[precision]
+    megapixels = sum(w * h for w, h in sizes) / 1_000_000.0
+    if megapixels > cap:
+        raise ValueError(
+            "the group's layers would total %.1f MP after this transform; the %s-bit limit is %d MP"
+            % (megapixels, precision, cap)
+        )
 
 
 def validate_feather_px(value):

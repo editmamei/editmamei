@@ -1104,6 +1104,30 @@ class TestValidateDocumentDims(unittest.TestCase):
         with self.assertRaises(ValueError):
             lib.validate_document_dims(0, 100)
 
+    def test_message_uses_the_right_article(self):
+        with self.assertRaisesRegex(ValueError, r'^an 8-bit document'):
+            lib.validate_document_dims(20000, 20000, '8')
+        with self.assertRaisesRegex(ValueError, r'^a 16-bit document'):
+            lib.validate_document_dims(20000, 20000, '16')
+
+
+class TestValidateGroupTotalPixels(unittest.TestCase):
+    def test_accepts_a_total_at_or_under_the_cap(self):
+        lib.validate_group_total_pixels([(5000, 5000)] * 10, '8')
+
+    def test_rejects_when_the_sum_exceeds_the_cap_though_each_layer_fits(self):
+        sizes = [(9000, 9000)] * 4  # 81 MP each, 324 MP total
+        for size in sizes:
+            lib.validate_document_dims(*size, precision='8')
+        with self.assertRaisesRegex(ValueError, 'total'):
+            lib.validate_group_total_pixels(sizes, '8')
+
+    def test_cap_is_precision_aware(self):
+        sizes = [(5000, 5000)] * 3  # 75 MP
+        lib.validate_group_total_pixels(sizes, '16')
+        with self.assertRaises(ValueError):
+            lib.validate_group_total_pixels(sizes, '32')
+
 
 class TestValidateCanvasFill(unittest.TestCase):
     def test_accepts_every_layer_fill(self):

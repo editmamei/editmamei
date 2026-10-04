@@ -3524,10 +3524,12 @@ def op_convert_image_mode(args):
 #   - Calling any of these on a GROUP layer transforms the whole group as a unit: every
 #     descendant's own offsets and size update too, in lockstep with the group's. No special-
 #     casing is needed for a group target beyond its own alpha (every non-group descendant gets
-#     one independently -- a group has no pixels of its own) and its own predicted size cap
-#     (every non-group descendant's own predicted size is checked too: GIMP allocates and
-#     transforms each descendant's own pixel buffer independently, so the group's own aggregate
-#     bounding box fitting the cap does not guarantee each descendant's own buffer does).
+#     one independently -- a group has no pixels of its own) and its predicted size caps: the
+#     group's own bounding box, each non-group descendant's own predicted size, and the SUM of
+#     those descendant sizes must all fit (GIMP allocates and transforms each descendant's own
+#     pixel buffer independently, so the group's bounding box fitting the cap guarantees
+#     neither a single descendant's buffer nor their combined memory does). A locked layer
+#     anywhere in the group's subtree refuses the whole transform up front.
 #   - `Context.transform_resize` set to ADJUST (rather than the default CLIP) is what makes
 #     `rotate`/`skew`/`free` grow the layer's own bounding box to its new, larger extent instead
 #     of clipping corners that rotate/shear outside the old one -- the same growth
@@ -3544,8 +3546,8 @@ def op_convert_image_mode(args):
 #     could not transform by returning a FALSY value (`False`/`None`) rather than raising --
 #     checked both proactively (`_refuse_if_layer_locked`, before alpha is ever added) and on the
 #     actual call's own return value (`_checked_transform`, defense in depth).
-#   - A text layer stays a text layer through every op here (verified for transform_scale and
-#     transform_rotate; reported back as `text_layer`), never rasterized.
+#   - A text layer stays a text layer through every op here (verified live for scale, rotate,
+#     flip, skew and free; reported back as `text_layer`), never rasterized.
 #   - Refuses outright when the layer (or a containing group) carries a masked or unverifiable
 #     adjustment filter -- `_refuse_if_masked_filters_on` (the same scoped check the whole-image
 #     geometry ops' own `_refuse_if_masked_filters` is a sibling of). An UNMASKED adjustment
@@ -3588,19 +3590,23 @@ def _snap_px(value):
 
 
 def _refuse_if_layer_locked(layer):
-    """Refuses outright, before anything else runs (including adding alpha), when `layer` is
-    lock-position or lock-content. Verified live (GIMP 3.2.6): GIMP does not raise for either --
-    it silently no-ops `set_offsets`/every `transform_*` method instead (`_checked_transform`'s
-    own comment) -- so this catches it earlier, with a clear, specific message, rather than
-    leave it to that generic defense-in-depth check alone."""
-    if layer.get_lock_position():
-        raise ValueError(
-            'layer %r is lock-position and cannot be transformed; unlock it first' % layer.get_name()
-        )
-    if layer.get_lock_content():
-        raise ValueError(
-            'layer %r is lock-content and cannot be transformed; unlock it first' % layer.get_name()
-        )
+    """Refuses outright, before anything else runs (including adding alpha), when `layer` -- or,
+    for a group, any layer in its subtree that the transform would move -- is lock-position or
+    lock-content. Verified live (GIMP 3.2.6): GIMP does not raise for either -- it silently
+    no-ops `set_offsets`/every `transform_*` method instead (`_checked_transform`'s own comment)
+    -- so this catches it earlier, naming the offending layer, rather than leave a group
+    half-transformed or fall through to that generic defense-in-depth check alone."""
+    for item in _layer_subtree(layer):
+        if item.get_lock_position():
+            raise ValueError(
+                'layer %r is lock-position and cannot be transformed; unlock it first'
+                % item.get_name()
+            )
+        if item.get_lock_content():
+            raise ValueError(
+                'layer %r is lock-content and cannot be transformed; unlock it first'
+                % item.get_name()
+            )
 
 
 def _checked_transform(layer, result):
@@ -3700,8 +3706,8 @@ def _validate_transform_sizes(img, layer, matrix, precision):
     """Validates `layer`'s own PREDICTED size (via `lib.transformed_bounds`, mapping the
     layer's current rect through `matrix`) against the engine's precision-aware size cap
     (`lib.validate_document_dims`, the same one gimp_create_document uses) -- and, for a GROUP
-    target, every non-group descendant's own predicted size the same way (see this section's own
-    comment for why). Does NOT validate the predicted ORIGIN -- callers whose own target position
+    target, every non-group descendant's own predicted size the same way, plus the descendants'
+    summed pixel count (`lib.validate_group_total_pixels`; see this section's own comment). Does NOT validate the predicted ORIGIN -- callers whose own target position
     is exactly `transformed_bounds`' own (new_x, new_y) call `_validated_move_offset` on it
     themselves (`_validate_transform_prediction`, below); `fit`'s own target is the canvas
     center instead, validated separately. Returns the layer's own predicted
@@ -3714,6 +3720,7 @@ def _validate_transform_sizes(img, layer, matrix, precision):
         lib.ceil_with_margin(new_w), lib.ceil_with_margin(new_h), precision=precision
     )
     if layer.is_group():
+        sizes = []
         for descendant in _layer_subtree(layer):
             if descendant.get_id() == layer.get_id() or descendant.is_group():
                 continue
@@ -3721,9 +3728,10 @@ def _validate_transform_sizes(img, layer, matrix, precision):
             dx, dy = (dx if dok else 0), (dy if dok else 0)
             dw, dh = descendant.get_width(), descendant.get_height()
             _, _, pred_w, pred_h = lib.transformed_bounds(matrix, dx, dy, dw, dh)
-            lib.validate_document_dims(
-                lib.ceil_with_margin(pred_w), lib.ceil_with_margin(pred_h), precision=precision
-            )
+            pw, ph = lib.ceil_with_margin(pred_w), lib.ceil_with_margin(pred_h)
+            lib.validate_document_dims(pw, ph, precision=precision)
+            sizes.append((pw, ph))
+        lib.validate_group_total_pixels(sizes, precision)
     return new_x, new_y, new_w, new_h
 
 

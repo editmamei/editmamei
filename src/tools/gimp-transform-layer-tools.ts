@@ -25,7 +25,8 @@ import { EFFECT_UPDATE_FAILURES_PROP, effectUpdateFailuresNote } from './gimp-ge
  * in the result). `interpolation` is set explicitly via the GIMP Context before every call
  * (bracketed with a push/pop so it never leaks into a later, unrelated gimp_* call) rather than
  * left at whatever a prior call happened to set it to. A lock-position or lock-content layer is
- * refused outright rather than silently doing nothing.
+ * refused outright rather than silently doing nothing -- for a group, a locked layer anywhere in
+ * it refuses the whole transform, and the layers' summed result size must fit the size cap.
  */
 
 const TRANSFORM_LAYER_OPS = ['fit', 'scale', 'move', 'rotate', 'flip', 'skew', 'free'] as const;
