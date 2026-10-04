@@ -300,10 +300,13 @@ def validate_resize_dims(width, height):
 # that picks its own bit depth up front (`open`/`resize`/etc. all work on whatever precision an
 # already-open image happens to be), so it is the one place this DoS floor needs to vary by
 # precision rather than assuming 8-bit throughout.
-DOCUMENT_MEGAPIXEL_CAP = ({'8': MAX_RESIZE_MEGAPIXELS, '16': 125, '32': 60}
-                          if MAX_RESIZE_MEGAPIXELS == _DEFAULT_MAX_RESIZE_MEGAPIXELS else
-                          {'8': MAX_RESIZE_MEGAPIXELS, '16': MAX_RESIZE_MEGAPIXELS / 2,
-                           '32': MAX_RESIZE_MEGAPIXELS / 4})
+# A lowered EM_GIMP_MAX_MEGAPIXELS scales the 16/32-bit caps down with the 8-bit one, never above
+# their own defaults.
+DOCUMENT_MEGAPIXEL_CAP = {
+    '8': MAX_RESIZE_MEGAPIXELS,
+    '16': min(125, MAX_RESIZE_MEGAPIXELS / 2),
+    '32': min(60, MAX_RESIZE_MEGAPIXELS / 4),
+}
 
 
 def validate_document_dims(width, height, precision='8'):
