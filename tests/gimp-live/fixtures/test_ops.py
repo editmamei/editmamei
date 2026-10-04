@@ -580,3 +580,31 @@ def op_test_set_text_markup(args):
 
 
 OPS['test_set_text_markup'] = op_test_set_text_markup
+
+
+def op_test_lock_layer(args):
+    """Lock a layer's pixels (`lock_content`), as the GUI's lock toggle does."""
+    img = _image(args)
+    layer = _layer(img, args)
+    layer.set_lock_content(bool(args.get('locked', True)))
+    return {'layer_id': layer.get_id(), 'locked': layer.get_lock_content()}
+
+
+def op_test_layer_mask_stats(args):
+    """Whether the layer has a layer mask and, if so, its size and how many mask pixels are fully
+    on, fully off, and in between (a feathered edge)."""
+    img = _image(args)
+    layer = _layer(img, args)
+    mask = layer.get_mask()
+    if mask is None:
+        return {'has_mask': False}
+    w, h = layer.get_width(), layer.get_height()
+    data = mask.get_buffer().get(Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
+    on = data.count(255)
+    off = data.count(0)
+    return {'has_mask': True, 'width': w, 'height': h, 'on': on, 'off': off,
+            'partial': len(data) - on - off}
+
+
+OPS['test_lock_layer'] = op_test_lock_layer
+OPS['test_layer_mask_stats'] = op_test_layer_mask_stats

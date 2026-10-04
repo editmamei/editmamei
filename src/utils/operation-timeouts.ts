@@ -362,6 +362,11 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // same ~3x multiplier gimp_resize_image/gimp_transform_canvas use, with margin left over for
   // a slower machine.
   gimp_transform_layer: 30_000,
+  // gimp_match_layer: two cropped throwaway renders plus the ring growth. Measured on a 24 MP
+  // (6016x4000) document: 1.4 s for a 600x400 layer, 6.4 s for 2000x1500, 22 s for a 4000x3000
+  // layer with the default 400 px surround (3.9 s with reference 'below', which skips the growth;
+  // edge options add ~1 s). Budgeted at ~3x the worst case.
+  gimp_match_layer: 70_000,
 };
 
 /**

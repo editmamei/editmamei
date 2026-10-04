@@ -638,12 +638,14 @@ def _append_masked(img, layer, f, mask):
             Gimp.Selection.none(img)
 
 
-def _apply_filter(img, args, operation, params, default_name, type_=None):
+def _apply_filter(img, args, operation, params, default_name, type_=None, tag=None):
     """Create (or, with filter_id, update in place) a filter and record it in the ledger.
     A new filter may be confined to a mask channel (`mask`); a re-edit keeps the mask the
     filter was created with. `type_` is the user-facing adjust `type` (e.g. "shadows_highlights")
     recorded alongside `operation` (the GEGL op name) so a filter listing can report what the
-    model asked for, not just the GEGL internals."""
+    model asked for, not just the GEGL internals. `tag`, when given, marks the record as made by
+    another op (`lib.MATCH_TAG`) so that op can find its own filters later; a re-edit keeps the
+    tag the record already had."""
     filters, unknown = _ledger_get(img)
     if args.get('filter_id') is not None:
         f = _existing_filter(img, args, operation)
@@ -658,7 +660,11 @@ def _apply_filter(img, args, operation, params, default_name, type_=None):
         SETTERS[operation](f.get_config(), params)
         params['mask'] = args.get('mask')
         _append_masked(img, layer, f, params['mask'])
-    filters[f.get_name()] = {'operation': operation, 'type': type_, 'params': params}
+    record = {'operation': operation, 'type': type_, 'params': params}
+    tag = tag or filters.get(f.get_name(), {}).get('tag')
+    if tag:
+        record['tag'] = tag
+    filters[f.get_name()] = record
     _ledger_put(img, filters, unknown)
     return {'filter_id': f.get_id(), 'name': f.get_name(), 'type': type_, 'mask': params['mask']}
 
@@ -987,6 +993,294 @@ def op_effect(args):
     params = builder(args, defaults)
     default_name = effect_type.replace('_', ' ').title()
     return _apply_filter(img, args, operation, params, default_name, type_=effect_type)
+
+
+# ---- match_layer ------------------------------------------------------------------------
+
+def _match_hist(drawable, channel):
+    """(mean, std_dev, pixel count) of `channel` over `drawable` under the image's current
+    selection, in 0-255. A selection-aware read (verified live): with no selection it covers the
+    whole drawable, so callers refuse an EMPTY selection before asking."""
+    ok, mean, std_dev, _median, _pixels, count, _pct = drawable.histogram(CHANNELS[channel], 0.0, 1.0)
+    if not ok:
+        raise lib.OpError('gimp_op_failed', 'GIMP could not read the %s histogram' % channel)
+    return mean, std_dev, int(round(count))
+
+
+def _match_select_visible(dup, target):
+    """Select what `target` shows: its alpha (hardened to 50%) intersected with its layer mask."""
+    dup.select_item(Gimp.ChannelOps.REPLACE, target)
+    mask = target.get_mask()
+    if mask is not None:
+        dup.select_item(Gimp.ChannelOps.INTERSECT, mask)
+    Gimp.Selection.sharpen(dup)
+
+
+def _match_render(img, layer, roi, previous_filter_indexes, mode):
+    """A throwaway duplicate of `img`, cropped to `roi` (x, y, w, h), with the layer's previous
+    match filters removed. `mode` 'source' keeps only the layer (and its groups) visible; 'below'
+    hides it and everything above it. Returns (dup, target); the caller selects, flattens, and
+    deletes `dup`."""
+    all_ids = [l.get_id() for l in _all_layers(img)]
+    dup = img.duplicate()
+    try:
+        dup_layers = _all_layers(dup)
+        if len(dup_layers) != len(all_ids):
+            raise lib.OpError('gimp_op_failed', 'could not duplicate the layer stack for measuring')
+        target = dup_layers[all_ids.index(layer.get_id())]
+        ancestors = {a.get_id() for a in _layer_ancestors(target)}
+        x, y, w, h = roi
+        if (w, h) != (img.get_width(), img.get_height()):
+            dup.crop(w, h, x, y)
+        target_filters = target.get_filters()
+        for i in previous_filter_indexes:
+            target_filters[i].delete()
+        if mode == 'source':
+            for l in dup_layers:
+                l.set_visible(l.get_id() == target.get_id() or l.get_id() in ancestors)
+            target.set_opacity(100.0)
+            target.set_mode(Gimp.LayerMode.NORMAL)
+        else:
+            index = dup_layers.index(target)
+            above_or_self = {l.get_id() for l in dup_layers[:index + 1]} - ancestors
+            for l in dup_layers:
+                if l.get_id() in above_or_self:
+                    l.set_visible(False)
+            if not any(l.get_visible() and not l.is_group() for l in dup_layers):
+                raise ValueError('there are no visible layers below this layer to match against')
+        return dup, target
+    except Exception:
+        dup.delete()
+        raise
+
+
+def _match_measure_source(img, layer, roi, previous_filter_indexes, channels):
+    dup, target = _match_render(img, layer, roi, previous_filter_indexes, 'source')
+    try:
+        _match_select_visible(dup, target)
+        if Gimp.Selection.is_empty(dup):
+            raise ValueError('the layer has no visible pixels to measure')
+        flat = dup.flatten()
+        return {c: _match_hist(flat, c) for c in channels}
+    finally:
+        dup.delete()
+
+
+def _match_measure_reference(img, layer, roi, previous_filter_indexes, channels, opts):
+    dup, target = _match_render(img, layer, roi, previous_filter_indexes, 'below')
+    try:
+        if opts['reference'] == 'surround':
+            _match_select_visible(dup, target)
+            if Gimp.Selection.is_empty(dup):
+                raise ValueError('the layer has no visible pixels to measure')
+            visible = Gimp.Selection.save(dup)
+            Gimp.Selection.grow(dup, opts['surround_px'])
+            dup.select_item(Gimp.ChannelOps.SUBTRACT, visible)
+            Gimp.Selection.sharpen(dup)
+            if Gimp.Selection.is_empty(dup):
+                raise ValueError(
+                    'there is no canvas around the layer to sample (it fills the canvas); use '
+                    "reference 'below'"
+                )
+        else:
+            _ok, ox, oy = target.get_offsets()
+            dup.select_rectangle(Gimp.ChannelOps.REPLACE, ox, oy, target.get_width(), target.get_height())
+            if Gimp.Selection.is_empty(dup):
+                raise ValueError('the layer has no visible pixels to measure')
+        flat = dup.flatten()
+        return {c: _match_hist(flat, c) for c in channels}
+    finally:
+        dup.delete()
+
+
+class _PreservedSelection(object):
+    """Keeps the user's selection across ops that clear or replace it: the selection is saved to
+    a temporary channel on entry and restored (or cleared, if there was none) on exit, whichever
+    way the body ends."""
+
+    def __init__(self, img):
+        self.img = img
+        self.saved = None
+
+    def __enter__(self):
+        if not Gimp.Selection.is_empty(self.img):
+            self.saved = Gimp.Selection.save(self.img)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self.saved is not None:
+                self.img.select_item(Gimp.ChannelOps.REPLACE, self.saved)
+            else:
+                Gimp.Selection.none(self.img)
+        finally:
+            if self.saved is not None:
+                self.img.remove_channel(self.saved)
+        return False
+
+
+def _match_refine_edges(img, layer, contract_px, feather_px):
+    """Contract then feather the layer's mask (one made from its alpha when it has none). Only
+    the part of the mask on the canvas is rewritten; alpha is never touched. The caller holds the
+    selection (`_PreservedSelection`). Returns whether a mask was created."""
+    created = False
+    mask = layer.get_mask()
+    if mask is None:
+        mask = layer.create_mask(Gimp.AddMaskType.ALPHA)
+        layer.add_mask(mask)
+        created = True
+    try:
+        img.select_item(Gimp.ChannelOps.REPLACE, mask)
+        if contract_px:
+            Gimp.Selection.shrink(img, contract_px)
+        if feather_px:
+            Gimp.Selection.feather(img, feather_px)
+        _ok, ox, oy = layer.get_offsets()
+        cw, ch = img.get_width(), img.get_height()
+        x0, y0 = max(0, ox), max(0, oy)
+        x1, y1 = min(cw, ox + layer.get_width()), min(ch, oy + layer.get_height())
+        if x1 > x0 and y1 > y0:
+            data = img.get_selection().get_buffer().get(
+                Gegl.Rectangle.new(x0, y0, x1 - x0, y1 - y0), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE
+            )
+            buf = mask.get_buffer()
+            buf.set(Gegl.Rectangle.new(x0 - ox, y0 - oy, x1 - x0, y1 - y0), "Y' u8", data)
+            buf.flush()
+            mask.update(x0 - ox, y0 - oy, x1 - x0, y1 - y0)
+    except Exception:
+        if created:
+            try:
+                layer.remove_mask(Gimp.MaskApplyMode.DISCARD)
+            except Exception:
+                pass
+        raise
+    return created
+
+
+def op_match_layer(args):
+    """Pull a pasted layer's colour and tone toward what surrounds it, as live curves filters.
+
+    Measure (on throwaway duplicates cropped to the layer's box grown by the surround, deleted on
+    every path -- the document, its selection and its visibility are not touched while
+    measuring): the layer's visible pixels (alpha AND layer mask, its own non-match filters
+    rendered) against the reference -- a ring of canvas around the visible area ('surround'), or
+    the whole composite of everything below under the layer's box ('below'). Per channel,
+    `lib.match_transfer` gives the linear map and `lib.match_curve_points` its curve.
+
+    'both' and 'color' write red/green/blue curves (matching each channel's mean and spread
+    already matches tone, so 'both' adds no value curve on top); 'tone' writes one value curve
+    from the VALUE (max of R,G,B) statistics. Each curve is a `gimp:curves` filter named 'Match
+    <channel>', ledgered with `lib.MATCH_TAG`; a repeat call deletes the layer's previous tagged
+    filters and writes fresh ones. The edge options then refine the layer mask."""
+    img = _image(args)
+    layer = _layer(img, args)
+    if layer.is_group():
+        raise ValueError(
+            'cannot match a layer group: it has no pixels of its own; match a layer inside it'
+        )
+    if layer.is_text_layer():
+        raise ValueError('cannot match a text layer: bake it to pixels first (gimp_bake)')
+    if layer.get_lock_content():
+        raise ValueError('layer %r is locked; unlock it first' % layer.get_name())
+    lw, lh = layer.get_width(), layer.get_height()
+    opts = lib.validate_match_args(args, lw, lh)
+    _ok, ox, oy = layer.get_offsets()
+    pad = opts['surround_px'] if opts['reference'] == 'surround' else 0
+    roi = lib.match_roi(ox, oy, lw, lh, img.get_width(), img.get_height(), pad)
+    if roi is None:
+        raise ValueError('the layer is entirely outside the canvas')
+
+    ledger, _unknown = _ledger_get(img)
+    previous = [
+        (i, f) for i, f in enumerate(layer.get_filters())
+        if ledger.get(f.get_name(), {}).get('tag') == lib.MATCH_TAG
+        and ledger[f.get_name()].get('operation') == f.get_operation_name()
+    ]
+    previous_indexes = [i for i, _f in previous]
+    channels = ['value'] if opts['match'] == 'tone' else ['red', 'green', 'blue']
+
+    source = _match_measure_source(img, layer, roi, previous_indexes, channels)
+    reference = _match_measure_reference(img, layer, roi, previous_indexes, channels, opts)
+    source_pixels = min(count for _m, _s, count in source.values())
+    reference_pixels = min(count for _m, _s, count in reference.values())
+    if source_pixels < lib.MATCH_MIN_PIXELS:
+        raise ValueError(
+            'the layer has only %d visible pixels to measure (need at least %d)'
+            % (source_pixels, lib.MATCH_MIN_PIXELS)
+        )
+    if reference_pixels < lib.MATCH_MIN_PIXELS:
+        raise ValueError(
+            'only %d reference pixels were found around the layer (need at least %d); raise '
+            "surround_px or use reference 'below'" % (reference_pixels, lib.MATCH_MIN_PIXELS)
+        )
+
+    plans = []
+    for channel in channels:
+        mu_s, sd_s, _n = source[channel]
+        mu_r, sd_r, _n = reference[channel]
+        t = lib.match_transfer(mu_s, sd_s, mu_r, sd_r, opts['s'])
+        points = lib.match_curve_points(mu_s, t['gain'], t['shift'])
+        plans.append((channel, mu_s, sd_s, mu_r, sd_r, t, points))
+
+    created, replaced, edge = [], [], None
+    try:
+        with _PreservedSelection(img):
+            # Replace, don't stack: this layer's previous match filters go first.
+            if previous:
+                names = set()
+                for _i, f in previous:
+                    names.add(f.get_name())
+                    replaced.append(f.get_id())
+                    f.delete()
+                filters, unknown = _ledger_get(img)
+                for name in names:
+                    filters.pop(name, None)
+                _ledger_put(img, filters, unknown, removed=names)
+            for channel, _ms, _ss, _mr, _sr, _t, points in plans:
+                created.append(_apply_filter(
+                    img, {'layer_id': layer.get_id(), 'name': 'Match %s' % channel},
+                    'gimp:curves', {'channel': channel, 'points': points}, 'Match %s' % channel,
+                    type_='curves', tag=lib.MATCH_TAG,
+                ))
+            if opts['edge_contract_px'] or opts['edge_feather_px']:
+                mask_created = _match_refine_edges(
+                    img, layer, opts['edge_contract_px'], opts['edge_feather_px']
+                )
+                edge = {
+                    'contract_px': opts['edge_contract_px'],
+                    'feather_px': opts['edge_feather_px'],
+                    'mask_created': mask_created,
+                }
+    finally:
+        _drop_proxies(img.get_id())
+
+    def stat(mean, std):
+        return {'mean': round(mean, 2), 'std': round(std, 2)}
+
+    return {
+        'layer': layer.get_name(),
+        'layer_id': layer.get_id(),
+        'match': opts['match'],
+        'reference': opts['reference'],
+        'strength': opts['strength'],
+        'surround_px': opts['surround_px'] if opts['reference'] == 'surround' else None,
+        'filters': [
+            {'filter_id': c['filter_id'], 'name': c['name'], 'channel': p[0]}
+            for c, p in zip(created, plans)
+        ],
+        'replaced_filter_ids': replaced,
+        'measured': {'layer_pixels': source_pixels, 'reference_pixels': reference_pixels},
+        'channels': {
+            channel: {
+                'before': stat(mu_s, sd_s),
+                'after': stat(t['mean_after'], t['std_after']),
+                'reference': stat(mu_r, sd_r),
+                'gain': round(t['gain'], 3),
+            }
+            for channel, mu_s, sd_s, mu_r, sd_r, t, _pts in plans
+        },
+        'edge': edge,
+    }
 
 
 def op_filter(args):
@@ -4549,6 +4843,7 @@ OPS = {
     'select': op_select, 'modify_mask': op_modify_mask, 'layer_mask': op_layer_mask,
     'mask_preview': op_mask_preview, 'load_mask': op_load_mask, 'render_layer': op_render_layer,
     'transform_layer': op_transform_layer,
+    'match_layer': op_match_layer,
 }
 
 
