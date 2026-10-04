@@ -662,10 +662,17 @@ def _apply_filter(img, args, operation, params, default_name, type_=None):
 
 # ---- operations -------------------------------------------------------------------------
 
+def _document_ids():
+    """Ids of the open documents. The preview proxies in `PROXIES` are real GIMP images but belong
+    to the bridge, so they are never listed."""
+    hidden = [p.get_id() for p in PROXIES.values() if p.is_valid()]
+    return lib.visible_image_ids([i.get_id() for i in Gimp.get_images()], hidden)
+
+
 def op_ping(args):
     major, minor, micro = lib.parse_gimp_version(Gimp.version())
     return {'major': major, 'minor': minor, 'micro': micro,
-            'images': [i.get_id() for i in Gimp.get_images()]}
+            'images': _document_ids()}
 
 
 # `precision` open-time promotion, using the enum names GIMP 3 actually exposes (verified live).

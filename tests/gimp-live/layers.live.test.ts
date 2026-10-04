@@ -1329,16 +1329,9 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
         max_px: 512,
         out_path: join(workDir, 's3-warm.png'),
       });
-      const documents = await callTool(tools, 'gimp_inspect', { what: 'documents' });
-      expect(documents.isError, JSON.stringify(documents.content)).toBeFalsy();
-      const ids = (structuredOf(documents).documents as Array<{ image: number }>).map(
-        (d) => d.image
-      );
-      const proxyId = ids.find((id) => id !== image);
-      expect(
-        proxyId,
-        `expected a second (proxy) image id alongside ${image}; got ${JSON.stringify(ids)}`
-      ).toBeDefined();
+      const { ids } = await backend.call<{ ids: number[] }>('test_proxy_ids', {});
+      const proxyId = ids[0];
+      expect(proxyId, `expected a live proxy image; got ${JSON.stringify(ids)}`).toBeDefined();
 
       const result = await callTool(tools, 'gimp_layer', {
         image: proxyId,

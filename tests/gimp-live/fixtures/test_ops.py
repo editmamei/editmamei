@@ -127,6 +127,11 @@ def op_test_proxy_filter_count(args):
     return {'filters': sum(len(layer.get_filters()) for layer in _all_layers(proxy))}
 
 
+def op_test_proxy_ids(args):
+    """The image ids of every live preview proxy the bridge holds."""
+    return {'ids': [p.get_id() for p in PROXIES.values() if p.is_valid()]}
+
+
 def _pick_a_font():
     """`Gimp.context_get_font()`, falling back to the first of `Gimp.fonts_get_list('')` (both
     verified live) -- observed live that the context font can read None under concurrent load (a
@@ -370,6 +375,7 @@ def op_test_reorder_without_dropping_proxy(args):
 
 OPS.update({
     'test_proxy_filter_count': op_test_proxy_filter_count,
+    'test_proxy_ids': op_test_proxy_ids,
     'test_metadata_tag': op_test_metadata_tag,
     'test_nest_groups': op_test_nest_groups,
     'select_mask': op_test_select_mask,
