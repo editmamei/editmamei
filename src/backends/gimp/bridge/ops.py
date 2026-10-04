@@ -1000,11 +1000,13 @@ def op_effect(args):
 def _match_hist(drawable, channel):
     """(mean, std_dev, pixel count) of `channel` over `drawable` under the image's current
     selection, in 0-255. A selection-aware read (verified live): with no selection it covers the
-    whole drawable, so callers refuse an EMPTY selection before asking."""
+    whole drawable, so callers refuse an EMPTY selection before asking. GIMP reports the mean and
+    spread in 0-255 for 8-bit images and in 0-1 for every higher precision (verified live)."""
     ok, mean, std_dev, _median, _pixels, count, _pct = drawable.histogram(CHANNELS[channel], 0.0, 1.0)
     if not ok:
         raise lib.OpError('gimp_op_failed', 'GIMP could not read the %s histogram' % channel)
-    return mean, std_dev, int(round(count))
+    scale = lib.histogram_scale(drawable.get_image().get_precision().value_nick)
+    return mean * scale, std_dev * scale, int(round(count))
 
 
 def _match_select_visible(dup, target):
@@ -1017,10 +1019,10 @@ def _match_select_visible(dup, target):
 
 
 def _match_render(img, layer, roi, previous_filter_indexes, mode):
-    """A throwaway duplicate of `img`, cropped to `roi` (x, y, w, h), with the layer's previous
-    match filters removed. `mode` 'source' keeps only the layer (and its groups) visible; 'below'
-    hides it and everything above it. Returns (dup, target); the caller selects, flattens, and
-    deletes `dup`."""
+    """A throwaway duplicate of `img`, cropped to `roi` (x, y, w, h), scaled down by
+    `lib.match_measure_scale`, with the layer's previous match filters removed. `mode` 'source'
+    keeps only the layer (and its groups) visible; 'below' hides it and everything above it.
+    Returns (dup, target, factor); the caller selects, flattens, and deletes `dup`."""
     all_ids = [l.get_id() for l in _all_layers(img)]
     dup = img.duplicate()
     try:
@@ -1032,6 +1034,9 @@ def _match_render(img, layer, roi, previous_filter_indexes, mode):
         x, y, w, h = roi
         if (w, h) != (img.get_width(), img.get_height()):
             dup.crop(w, h, x, y)
+        factor = lib.match_measure_scale(w, h)
+        if factor < 1.0:
+            dup.scale(max(1, int(round(w * factor))), max(1, int(round(h * factor))))
         target_filters = target.get_filters()
         for i in previous_filter_indexes:
             target_filters[i].delete()
@@ -1048,33 +1053,42 @@ def _match_render(img, layer, roi, previous_filter_indexes, mode):
                     l.set_visible(False)
             if not any(l.get_visible() and not l.is_group() for l in dup_layers):
                 raise ValueError('there are no visible layers below this layer to match against')
-        return dup, target
+        return dup, target, factor
     except Exception:
         dup.delete()
         raise
 
 
+def _match_stats(flat, channels, factor):
+    """Per-channel (mean, std_dev, full-resolution pixel count) on a measuring copy."""
+    out = {}
+    for c in channels:
+        mean, std, count = _match_hist(flat, c)
+        out[c] = (mean, std, lib.match_full_res_count(count, factor))
+    return out
+
+
 def _match_measure_source(img, layer, roi, previous_filter_indexes, channels):
-    dup, target = _match_render(img, layer, roi, previous_filter_indexes, 'source')
+    dup, target, factor = _match_render(img, layer, roi, previous_filter_indexes, 'source')
     try:
         _match_select_visible(dup, target)
         if Gimp.Selection.is_empty(dup):
             raise ValueError('the layer has no visible pixels to measure')
         flat = dup.flatten()
-        return {c: _match_hist(flat, c) for c in channels}
+        return _match_stats(flat, channels, factor)
     finally:
         dup.delete()
 
 
 def _match_measure_reference(img, layer, roi, previous_filter_indexes, channels, opts):
-    dup, target = _match_render(img, layer, roi, previous_filter_indexes, 'below')
+    dup, target, factor = _match_render(img, layer, roi, previous_filter_indexes, 'below')
     try:
         if opts['reference'] == 'surround':
             _match_select_visible(dup, target)
             if Gimp.Selection.is_empty(dup):
                 raise ValueError('the layer has no visible pixels to measure')
             visible = Gimp.Selection.save(dup)
-            Gimp.Selection.grow(dup, opts['surround_px'])
+            Gimp.Selection.grow(dup, lib.match_scaled_px(opts['surround_px'], factor))
             dup.select_item(Gimp.ChannelOps.SUBTRACT, visible)
             Gimp.Selection.sharpen(dup)
             if Gimp.Selection.is_empty(dup):
@@ -1088,9 +1102,29 @@ def _match_measure_reference(img, layer, roi, previous_filter_indexes, channels,
             if Gimp.Selection.is_empty(dup):
                 raise ValueError('the layer has no visible pixels to measure')
         flat = dup.flatten()
-        return {c: _match_hist(flat, c) for c in channels}
+        return _match_stats(flat, channels, factor)
     finally:
         dup.delete()
+
+
+def _delete_filters(img, created):
+    """Remove filters this call just made (by id) and their ledger records; never raises."""
+    names = set()
+    for c in created:
+        try:
+            _layer, f = _find_filter(img, c['filter_id'])
+            names.add(f.get_name())
+            f.delete()
+        except Exception:
+            pass
+    if names:
+        try:
+            filters, unknown = _ledger_get(img)
+            for name in names:
+                filters.pop(name, None)
+            _ledger_put(img, filters, unknown, removed=names)
+        except Exception:
+            pass
 
 
 class _PreservedSelection(object):
@@ -1182,8 +1216,15 @@ def op_match_layer(args):
         raise ValueError('cannot match a text layer: bake it to pixels first (gimp_bake)')
     if layer.get_lock_content():
         raise ValueError('layer %r is locked; unlock it first' % layer.get_name())
+    if lib.is_linear_precision(img.get_precision().value_nick):
+        raise ValueError(
+            'this image stores linear light (%s); convert it to a non-linear precision first'
+            % img.get_precision().value_nick
+        )
     lw, lh = layer.get_width(), layer.get_height()
     opts = lib.validate_match_args(args, lw, lh)
+    if opts['match'] != 'tone' and img.get_base_type() != Gimp.ImageBaseType.RGB:
+        raise ValueError("this image is not RGB; use match 'tone' (or convert it to RGB first)")
     _ok, ox, oy = layer.get_offsets()
     pad = opts['surround_px'] if opts['reference'] == 'surround' else 0
     roi = lib.match_roi(ox, oy, lw, lh, img.get_width(), img.get_height(), pad)
@@ -1236,12 +1277,17 @@ def op_match_layer(args):
                 for name in names:
                     filters.pop(name, None)
                 _ledger_put(img, filters, unknown, removed=names)
-            for channel, _ms, _ss, _mr, _sr, _t, points in plans:
-                created.append(_apply_filter(
-                    img, {'layer_id': layer.get_id(), 'name': 'Match %s' % channel},
-                    'gimp:curves', {'channel': channel, 'points': points}, 'Match %s' % channel,
-                    type_='curves', tag=lib.MATCH_TAG,
-                ))
+            # All or nothing: a partial set would leave a colour cast.
+            try:
+                for channel, _ms, _ss, _mr, _sr, _t, points in plans:
+                    created.append(_apply_filter(
+                        img, {'layer_id': layer.get_id(), 'name': 'Match %s' % channel},
+                        'gimp:curves', {'channel': channel, 'points': points}, 'Match %s' % channel,
+                        type_='curves', tag=lib.MATCH_TAG,
+                    ))
+            except Exception:
+                _delete_filters(img, created)
+                raise
             if opts['edge_contract_px'] or opts['edge_feather_px']:
                 mask_created = _match_refine_edges(
                     img, layer, opts['edge_contract_px'], opts['edge_feather_px']

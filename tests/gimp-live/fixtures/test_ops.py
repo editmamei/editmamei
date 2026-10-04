@@ -608,3 +608,26 @@ def op_test_layer_mask_stats(args):
 
 OPS['test_lock_layer'] = op_test_lock_layer
 OPS['test_layer_mask_stats'] = op_test_layer_mask_stats
+
+
+def op_test_match_fail_second_curve(args):
+    """Runs match_layer with the second curves filter failing, so a live test can check that a
+    partial set is removed rather than left as a colour cast."""
+    global _apply_filter
+    original = _apply_filter
+    calls = {'n': 0}
+
+    def failing(*a, **kw):
+        calls['n'] += 1
+        if calls['n'] == 2:
+            raise lib.OpError('gimp_op_failed', 'injected failure on the second curve')
+        return original(*a, **kw)
+
+    _apply_filter = failing
+    try:
+        return op_match_layer(args)
+    finally:
+        _apply_filter = original
+
+
+OPS['test_match_fail_second_curve'] = op_test_match_fail_second_curve

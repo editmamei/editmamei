@@ -307,4 +307,98 @@ describe.skipIf(!install)('match_layer: pull a pasted layer toward its surround'
     );
     expect(await filterRows(image)).toHaveLength(0);
   });
+  async function imageIds(): Promise<Set<number>> {
+    const pinged = await session.call<{ images: number[] }>('ping', {});
+    return new Set(pinged.images);
+  }
+
+  /** No image id appears that wasn't already there: every measuring copy was deleted. */
+  async function expectNoNewImages(before: Set<number>) {
+    for (const id of await imageIds())
+      expect(before.has(id), `image ${id} was left behind`).toBe(true);
+  }
+
+  it('deletes every measuring copy, on success and on each refusal', async () => {
+    const { image, layerId } = await scene();
+    const before = await imageIds();
+    await session.call('match_layer', { image, layer_id: layerId });
+    await expectNoNewImages(before);
+
+    const tiny = await scene(tinyPath);
+    const beforeTiny = await imageIds();
+    await expect(
+      session.call('match_layer', { image: tiny.image, layer_id: tiny.layerId })
+    ).rejects.toThrow(/visible pixels/);
+    await expectNoNewImages(beforeTiny);
+
+    const layers = await session.call<{ layers: Array<{ layer_id: number }> }>('describe', {
+      image,
+      what: 'layers',
+    });
+    const bgId = layers.layers[layers.layers.length - 1]!.layer_id;
+    const beforeBelow = await imageIds();
+    await expect(
+      session.call('match_layer', { image, layer_id: bgId, reference: 'below' })
+    ).rejects.toThrow(/no visible layers below/);
+    await expectNoNewImages(beforeBelow);
+  });
+
+  it('removes a partial set of curves when one fails, leaving no colour cast', async () => {
+    const { image, layerId } = await scene();
+    const before = await imageIds();
+    await expect(
+      session.call('test_match_fail_second_curve', { image, layer_id: layerId })
+    ).rejects.toThrow(/injected failure/);
+    expect(await filterRows(image)).toHaveLength(0);
+    expect(subjectCenter(await render(image))).toEqual(WARM);
+    await expectNoNewImages(before);
+  });
+
+  for (const precision of ['16', '32'] as const) {
+    it(`matches the same way at ${precision}-bit precision`, async () => {
+      const opened = await session.call<{ image: number }>('open', { path: bgPath, precision });
+      const placed = await session.call<{ layer_id: number }>('place_image', {
+        image: opened.image,
+        path: subjectPath,
+        x: SUBJECT_X,
+        y: SUBJECT_Y,
+      });
+      const result = await session.call<MatchResult>('match_layer', {
+        image: opened.image,
+        layer_id: placed.layer_id,
+        strength: 70,
+      });
+      expect(result.channels.red!.before.mean).toBeCloseTo(WARM[0], 0);
+      expect(result.channels.red!.reference.mean).toBeCloseTo(BG[0], 0);
+      const after = subjectCenter(await render(opened.image));
+      for (let c = 0; c < 3; c++) {
+        const expected = WARM[c]! + (BG[c]! - WARM[c]!) * 0.7;
+        expect(
+          Math.abs(after[c]! - expected),
+          `channel ${c} at ${precision}-bit`
+        ).toBeLessThanOrEqual(3);
+      }
+    });
+  }
+
+  it('bounds the measuring cost on a large layer that fills the canvas', async () => {
+    const doc = await session.call<{ image: number }>('create_document', {
+      width: 6000,
+      height: 4000,
+      fill: 'white',
+    });
+    const layer = await session.call<{ layer_id: number }>('layer', {
+      image: doc.image,
+      op: 'create',
+      name: 'Cover',
+      fill: 'black',
+    });
+    const before = await imageIds();
+    const t0 = performance.now();
+    await expect(
+      session.call('match_layer', { image: doc.image, layer_id: layer.layer_id, surround_px: 400 })
+    ).rejects.toThrow(/fills the canvas/);
+    expect(performance.now() - t0).toBeLessThan(20_000);
+    await expectNoNewImages(before);
+  });
 });

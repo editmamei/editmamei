@@ -2973,5 +2973,35 @@ class TestMatchRoi(unittest.TestCase):
         self.assertIsNone(lib.match_roi(-60, 0, 50, 10, 100, 100, 50))
 
 
+
+class TestMatchMeasuring(unittest.TestCase):
+    def test_small_regions_are_measured_at_full_size(self):
+        self.assertEqual(lib.match_measure_scale(2048, 1000), 1.0)
+        self.assertEqual(lib.match_measure_scale(640, 480), 1.0)
+
+    def test_large_regions_scale_the_long_side_to_the_cap(self):
+        f = lib.match_measure_scale(6016, 4000)
+        self.assertAlmostEqual(6016 * f, lib.MATCH_MEASURE_MAX_SIDE)
+        self.assertAlmostEqual(lib.match_measure_scale(3000, 8000) * 8000, lib.MATCH_MEASURE_MAX_SIDE)
+
+    def test_scaled_distances_and_counts(self):
+        self.assertEqual(lib.match_scaled_px(400, 0.5), 200)
+        self.assertEqual(lib.match_scaled_px(1, 0.1), 1)
+        self.assertEqual(lib.match_scaled_px(0, 0.5), 0)
+        self.assertEqual(lib.match_full_res_count(250, 0.5), 1000)
+        self.assertEqual(lib.match_full_res_count(500, 1.0), 500)
+
+    def test_histogram_scale_by_precision(self):
+        self.assertEqual(lib.histogram_scale('u8-non-linear'), 1.0)
+        for nick in ('u16-non-linear', 'half-non-linear', 'float-non-linear', 'u32-non-linear'):
+            self.assertEqual(lib.histogram_scale(nick), 255.0, nick)
+
+    def test_linear_precisions_are_told_apart(self):
+        for nick in ('u8-linear', 'u16-linear', 'half-linear', 'float-linear', 'double-linear'):
+            self.assertTrue(lib.is_linear_precision(nick), nick)
+        for nick in ('u8-non-linear', 'u16-non-linear', 'float-non-linear', 'u8-perceptual', 'float-perceptual'):
+            self.assertFalse(lib.is_linear_precision(nick), nick)
+
+
 if __name__ == '__main__':
     unittest.main()

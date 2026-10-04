@@ -482,6 +482,9 @@ MATCH_SURROUND_MAX_PX = 400
 MATCH_FLAT_SD = 0.5
 # Spacing of the helper points that keep a clamped curve on its line (see match_curve_points).
 MATCH_CURVE_STEP = 16.0
+# Measuring runs on a copy of the layer's region scaled so its long side is at most this: means
+# and spreads survive the downscale, and growing the surround ring stays cheap at any size.
+MATCH_MEASURE_MAX_SIDE = 2048
 
 
 def default_surround_px(layer_width, layer_height):
@@ -568,6 +571,33 @@ def match_curve_points(mu_src, gain, shift):
             x += MATCH_CURVE_STEP
     xs = sorted(set(xs))
     return [[round(x, 2), round(clamp(y_at(x)), 2)] for x in xs]
+
+
+def match_measure_scale(width, height):
+    """The factor (0 < f <= 1) a measuring copy of a `width` x `height` region is scaled by."""
+    longest = max(width, height)
+    return 1.0 if longest <= MATCH_MEASURE_MAX_SIDE else MATCH_MEASURE_MAX_SIDE / float(longest)
+
+
+def match_scaled_px(px, factor):
+    """A pixel distance on a copy scaled by `factor`, never below 1 for a non-zero distance."""
+    return 0 if px <= 0 else max(1, int(round(px * factor)))
+
+
+def match_full_res_count(count, factor):
+    """A pixel count measured on a copy scaled by `factor`, as the full-resolution count."""
+    return int(round(count / (factor * factor)))
+
+
+def histogram_scale(nick):
+    """What a Drawable.histogram mean/std must be multiplied by to read 0-255: GIMP reports them
+    in 0-255 for 8-bit precisions and in 0-1 for every higher one."""
+    return 1.0 if nick.startswith('u8') else 255.0
+
+
+def is_linear_precision(nick):
+    """Whether a GIMP precision nick ('u8-non-linear', 'float-linear', ...) stores linear light."""
+    return nick.endswith('-linear') and not nick.endswith('-non-linear')
 
 
 def match_roi(layer_x, layer_y, layer_width, layer_height, canvas_width, canvas_height, pad):
