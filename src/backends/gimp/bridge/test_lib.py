@@ -2477,5 +2477,46 @@ class TestTextValidation(unittest.TestCase):
             lib.check_text_layer_size(20000, 20000)
 
 
+class TestTextEstimate(unittest.TestCase):
+    def test_scales_the_probe_with_headroom(self):
+        w, h = lib.estimate_text_extent(40, 10, 8, 80)
+        self.assertEqual((w, h), (math.ceil(400 * lib.TEXT_ESTIMATE_MARGIN), math.ceil(100 * lib.TEXT_ESTIMATE_MARGIN)))
+
+    def test_adds_unscaled_spacing_and_indent(self):
+        base_w, base_h = lib.estimate_text_extent(40, 10, 8, 80, chars=5, lines=3)
+        w, h = lib.estimate_text_extent(40, 10, 8, 80, chars=5, lines=3, letter_spacing=1000,
+                                        line_spacing=1000, indent=50)
+        self.assertEqual(w, base_w + 5 * 1000 + 50)
+        self.assertEqual(h, base_h + 2 * 1000)
+
+    def test_negative_spacing_never_shrinks_the_estimate(self):
+        self.assertEqual(
+            lib.estimate_text_extent(40, 10, 8, 80, chars=5, lines=3, letter_spacing=-50,
+                                     line_spacing=-50, indent=-50),
+            lib.estimate_text_extent(40, 10, 8, 80, chars=5, lines=3),
+        )
+
+    def test_an_empty_probe_estimates_at_least_one_pixel(self):
+        self.assertEqual(lib.estimate_text_extent(0, 0, 8, 80), (1, 1))
+
+    def test_estimated_refusal_has_its_own_wording(self):
+        lib.check_estimated_text_size(2000, 500)
+        with self.assertRaises(ValueError) as ctx:
+            lib.check_estimated_text_size(40000, 40000)
+        self.assertIn('would render as about 40000x40000', str(ctx.exception))
+
+    def test_report_caps_the_text(self):
+        self.assertEqual(lib.text_for_report('abc'), ('abc', 3, False))
+        self.assertEqual(lib.text_for_report(None), ('', 0, False))
+        long_text = 'x' * (lib.TEXT_REPORT_MAX_CHARS + 50)
+        text, length, truncated = lib.text_for_report(long_text)
+        self.assertEqual((len(text), length, truncated), (lib.TEXT_REPORT_MAX_CHARS, len(long_text), True))
+
+    def test_font_miss_echo_is_bounded(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.resolve_font('q' * 5000, ['Inter', 'Roboto'])
+        self.assertLess(len(str(ctx.exception)), 400)
+
+
 if __name__ == '__main__':
     unittest.main()

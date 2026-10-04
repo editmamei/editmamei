@@ -2256,9 +2256,9 @@ def resolve_font(query, names):
         return min(family, key=lambda n: (len(n), n.lower())), 'family'
     suggestions = font_suggestions(query, ordered)
     if not suggestions:
-        raise ValueError('no installed font matches %r (no fonts are installed)' % query)
+        raise ValueError('no installed font matches %r (no fonts are installed)' % query[:100])
     raise ValueError(
-        'no installed font matches %r. Closest installed names: %s' % (query, ', '.join(suggestions))
+        'no installed font matches %r. Closest installed names: %s' % (query[:100], ', '.join(suggestions))
     )
 
 
@@ -2280,6 +2280,45 @@ def list_fonts(names, substring=None):
         needle = substring.lower()
         ordered = [n for n in ordered if needle in n.lower()]
     return ordered[:TEXT_FONT_LIST_CAP], len(ordered)
+
+
+# Headroom on the small-size layout probe: glyph advances hinted at a few pixels round to whole
+# pixels, so scaling a probe up can undershoot the full-size layout.
+TEXT_ESTIMATE_MARGIN = 1.3
+
+
+def estimate_text_extent(probe_w, probe_h, probe_px, size_px, chars=0, lines=1, letter_spacing=0.0,
+                         line_spacing=0.0, indent=0.0):
+    """The (width, height) in px a text layer will render at `size_px`, from its layout measured
+    at `probe_px` (`probe_w` x `probe_h`), with headroom. Letter spacing, line spacing and indent
+    are absolute pixels that do not scale with the font, so each adds its full worst case: spacing
+    after every character and between every line, plus the indent. Never below 1x1."""
+    scale = size_px / float(probe_px)
+    width = math.ceil(probe_w * scale * TEXT_ESTIMATE_MARGIN) + chars * max(0.0, letter_spacing) + max(0.0, indent)
+    height = math.ceil(probe_h * scale * TEXT_ESTIMATE_MARGIN) + max(0, lines - 1) * max(0.0, line_spacing)
+    return max(1, int(math.ceil(width))), max(1, int(math.ceil(height)))
+
+
+def check_estimated_text_size(width, height):
+    """Refuses text whose estimated size (`estimate_text_extent`) is past the engine's size cap,
+    before anything is drawn at full size."""
+    try:
+        validate_resize_dims(width, height)
+    except ValueError as exc:
+        raise ValueError(
+            'the text would render as about %dx%d px, past the size limit (%s); use a smaller '
+            'font_size or less text' % (width, height, exc)
+        )
+
+
+TEXT_REPORT_MAX_CHARS = 200
+
+
+def text_for_report(text):
+    """(text, length, truncated) for reporting a layer's text: at most TEXT_REPORT_MAX_CHARS,
+    since a layer opened from a file can hold any amount."""
+    text = text or ''
+    return text[:TEXT_REPORT_MAX_CHARS], len(text), len(text) > TEXT_REPORT_MAX_CHARS
 
 
 def check_text_layer_size(width, height):

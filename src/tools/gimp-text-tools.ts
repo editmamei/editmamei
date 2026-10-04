@@ -175,7 +175,10 @@ export function createGimpTextTools(gimp: GimpBackend): ToolDefinition[] {
           properties: {
             layer_id: { type: 'number' },
             name: { type: 'string' },
-            text: { type: 'string' },
+            text: { type: 'string', description: 'Capped at 200 characters for reporting.' },
+            text_length: { type: 'integer' },
+            text_truncated: { type: 'boolean' },
+            has_markup: { type: 'boolean' },
             font: { type: ['string', 'null'] },
             font_size: { type: 'number', description: 'Points.' },
             color: {

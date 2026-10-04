@@ -167,7 +167,7 @@ async function gimpInspect(
             type: 'text' as const,
             text:
               `${result.total} font(s) installed` +
-              (args.filter ? ` matching "${args.filter as string}"` : '') +
+              (args.filter ? ` matching "${String(args.filter).slice(0, 100)}"` : '') +
               (shown < result.total ? `, showing the first ${shown}` : '') +
               `: ${result.fonts.join(', ') || '(none)'}.`,
           },

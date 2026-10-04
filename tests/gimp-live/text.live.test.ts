@@ -19,7 +19,13 @@ import { createGimpComposeTools } from '@editmamei/tools/gimp-compose-tools.ts';
 import { createGimpTextTools } from '@editmamei/tools/gimp-text-tools.ts';
 import type { ToolDefinition, ToolResult } from '@editmamei/core/tool-registry.ts';
 import { callTool } from '../fixtures/tool-helpers.ts';
-import { readPng, pixelAt, readyGimpRegistry, LIVE_READY_TIMEOUT_MS } from './support.ts';
+import {
+  readPng,
+  pixelAt,
+  readyGimpRegistry,
+  LIVE_READY_TIMEOUT_MS,
+  TEST_OPS_PY,
+} from './support.ts';
 
 vi.setConfig({ testTimeout: 60_000 });
 
@@ -74,7 +80,8 @@ describe.skipIf(!install)('gimp_text against real headless GIMP', () => {
   beforeAll(async () => {
     workDir = mkdtempSync(join(tmpdir(), 'em-gimp-text-'));
     backend = new GimpBackend(install, {
-      sessionOptions: { rootDir: join(workDir, 'session-root') },
+      // opsPyPath: TEST_OPS_PY -- adds test_set_text_markup, used below.
+      sessionOptions: { rootDir: join(workDir, 'session-root'), opsPyPath: TEST_OPS_PY },
     });
     tools = [
       ...createGimpCoreTools(backend),
@@ -366,7 +373,8 @@ describe.skipIf(!install)('gimp_text against real headless GIMP', () => {
       font_name: fontA,
     });
     expect(hugeFont.isError).toBe(true);
-    expect(errorText(hugeFont)).toMatch(/past the size limit/);
+    // Refused by the pre-render estimate, before anything is drawn at full size.
+    expect(errorText(hugeFont)).toMatch(/would render as about \d+x\d+ px, past the size limit/);
     expect(await layerTree(image)).toEqual(before);
 
     const tooLong = await text({ image, op: 'create', text: 'a'.repeat(2001) });
@@ -392,8 +400,51 @@ describe.skipIf(!install)('gimp_text against real headless GIMP', () => {
       text: 'W'.repeat(2000),
     });
     expect(hugeContent.isError).toBe(true);
-    expect(errorText(hugeContent)).toMatch(/past the size limit/);
+    expect(errorText(hugeContent)).toMatch(/would render as about \d+x\d+ px, past the size limit/);
     expect(await layerTree(image)).toEqual(treeWithText);
+  });
+
+  it('refuses set_* on a markup layer and reports it without its text', async () => {
+    const image = await newDoc();
+    const created = await text({ image, op: 'create', text: 'plain', font_name: fontA });
+    const id = (structuredOf(created) as unknown as TextResult).layer_id;
+    await backend.call('test_set_text_markup', { image, layer_id: id, markup: '<b>bold</b> rest' });
+    const node = await textNode(image, id);
+    expect(node.is_text_layer).toBe(true);
+    expect((node as unknown as { has_markup: boolean }).has_markup).toBe(true);
+    expect(node.text).toBe('');
+    const before = await layerTree(image);
+    for (const args of [
+      { op: 'set_content', text: 'x' },
+      { op: 'set_font', font_name: fontA },
+      { op: 'set_color', red: 1, green: 2, blue: 3 },
+      { op: 'set_alignment', alignment: 'LEFT' },
+    ]) {
+      const refused = await text({ image, layer_id: id, ...args });
+      expect(refused.isError, `${args.op} should be refused`).toBe(true);
+      expect(errorText(refused)).toMatch(/markup/);
+    }
+    expect(await layerTree(image)).toEqual(before);
+  });
+
+  it('caps the text describe and results report, with the full length alongside', async () => {
+    const image = await newDoc(2000, 1000);
+    const long = 'ab '.repeat(600).slice(0, 1500);
+    const created = await text({ image, op: 'create', text: long, font_size: 6, font_name: fontA });
+    expect(created.isError, errorText(created)).toBeFalsy();
+    const result = structuredOf(created) as unknown as TextResult & {
+      text_length: number;
+      text_truncated: boolean;
+    };
+    expect(result.text.length).toBe(200);
+    expect(result.text_length).toBe(1500);
+    expect(result.text_truncated).toBe(true);
+    const node = (await textNode(image, result.layer_id)) as unknown as {
+      text: string;
+      text_length: number;
+      text_truncated: boolean;
+    };
+    expect([node.text.length, node.text_length, node.text_truncated]).toEqual([200, 1500, true]);
   });
 
   it('refuses the alignments GIMP cannot do, and partial colours', async () => {
