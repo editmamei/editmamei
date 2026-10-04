@@ -36,6 +36,8 @@ vi.mock('node:os', async (importOriginal) => {
 
 import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { EditmameiServer } from '@editmamei/core/server.ts';
+import { TOOL_TIERS, isToolAllowedInEdition } from '@editmamei/core/tool-tiers.ts';
+import { EDITION } from '@editmamei/edition.ts';
 import type { ToolResult } from '@editmamei/core/tool-registry.ts';
 import { readyGimpRegistry, LIVE_READY_TIMEOUT_MS } from './support.ts';
 
@@ -137,9 +139,13 @@ describe.skipIf(!install)('gimp_* tools through the real server registry', () =>
     rmSync(fx.home, { recursive: true, force: true });
   });
 
-  it('the GIMP-only boot matrix registered exactly the 24 gimp_* tools plus the shared meta tools', () => {
+  it('the GIMP-only boot matrix registered exactly the gimp_* tools the edition allows plus the shared meta tools', () => {
     const names = registry.list().map((t) => t.name);
-    expect(names.filter((n) => n.startsWith('gimp_'))).toHaveLength(24);
+    const expectedGimp = Object.keys(TOOL_TIERS)
+      .filter((n) => n.startsWith('gimp_') && isToolAllowedInEdition(n, EDITION))
+      .sort();
+    expect(expectedGimp.length).toBeGreaterThanOrEqual(24);
+    expect(names.filter((n) => n.startsWith('gimp_')).sort()).toEqual(expectedGimp);
     expect(names).toContain('ps_list_capabilities');
     expect(names).toContain('ps_report_problem');
     expect(names).not.toContain('ps_ping');
