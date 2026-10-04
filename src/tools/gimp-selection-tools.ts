@@ -99,12 +99,16 @@ const selectSchema: JsonSchemaObject = {
     x: {
       type: 'number',
       description:
-        "rectangle/ellipse/magic_wand, or color_range's sample point: left edge or point x, document pixels.",
+        "rectangle/ellipse/magic_wand, or color_range's sample point: left edge or point x, in " +
+        'image pixels from the canvas origin, also when `layer` names a layer that sits at an ' +
+        "offset (never counted from that layer's own corner).",
     },
     y: {
       type: 'number',
       description:
-        "rectangle/ellipse/magic_wand, or color_range's sample point: top edge or point y, document pixels.",
+        "rectangle/ellipse/magic_wand, or color_range's sample point: top edge or point y, in " +
+        'image pixels from the canvas origin, also when `layer` names a layer that sits at an ' +
+        "offset (never counted from that layer's own corner).",
     },
     width: { type: 'number', description: 'rectangle/ellipse: width, document pixels.' },
     height: { type: 'number', description: 'rectangle/ellipse: height, document pixels.' },

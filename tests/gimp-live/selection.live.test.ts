@@ -535,6 +535,55 @@ describe.skipIf(!install)(
         }
       );
 
+      for (const mode of ['magic_wand', 'color_range'] as const) {
+        for (const sampleMerged of [true, false]) {
+          it(
+            `mode=${mode} with a layer on an offset reads x/y in image coordinates ` +
+              `(sample_merged:${sampleMerged})`,
+            async () => {
+              const image = await createDoc(150, 60, 'white');
+              try {
+                const swatchesPath = tempFile('png');
+                writeColorSwatches(swatchesPath);
+                const placed = await callTool(tools, 'gimp_place_image', {
+                  image,
+                  file_path: swatchesPath,
+                  name: 'Swatches',
+                  x: 20,
+                  y: 20,
+                });
+                expect(placed.isError, JSON.stringify(placed.content)).toBeFalsy();
+
+                // The 'green' swatch spans local x in [64, 80) and y in [0, 16), so image
+                // x in [84, 100) and y in [20, 36); this point is local (72, 8).
+                const docX = 92;
+                const docY = 28;
+                const result = await callTool(tools, 'gimp_select', {
+                  image,
+                  mode,
+                  x: docX,
+                  y: docY,
+                  layer: 'Swatches',
+                  sample_merged: sampleMerged,
+                  threshold: 5,
+                  name: 'FrameProbe',
+                });
+                expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+                expect(structuredOf(result)).toMatchObject({
+                  selected_pixels: SWATCH_SIZE * SWATCH_SIZE,
+                });
+                const pgm = await exportChannel(image, 'FrameProbe');
+                expect(pgm[docY * 150 + docX]).toBe(255);
+                // The same numbers read as layer-local would land on the neighbouring red swatch.
+                expect(pgm[docY * 150 + 70]).toBe(0);
+              } finally {
+                await callTool(tools, 'gimp_close_document', { image });
+              }
+            }
+          );
+        }
+      }
+
       it('mode=magic_wand with sample_merged:false refuses a point outside the named layer', async () => {
         const image = await createDoc(150, 60, 'white');
         try {
@@ -733,7 +782,7 @@ describe.skipIf(!install)(
         }
       });
 
-      it("color_range by sample point on an OFFSET layer reads that layer's own pixel, in its own local coordinates", async () => {
+      it("color_range by sample point on an OFFSET layer reads that layer's own pixel, the point given in image coordinates", async () => {
         const image = await createDoc(64, 64, 'black');
         try {
           const offset = await callTool(tools, 'gimp_layer', {
