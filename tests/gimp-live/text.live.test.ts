@@ -57,6 +57,8 @@ interface TextResult {
   text: string;
   font: string | null;
   font_size: number;
+  font_size_px: number;
+  ppi: number | null;
   color: { red: number; green: number; blue: number };
   alignment: string | null;
   bounds: { x: number; y: number; width: number; height: number };
@@ -201,6 +203,11 @@ describe.skipIf(!install)('gimp_text against real headless GIMP', () => {
     expect(r.bounds).toMatchObject({ x: 100, y: 100 });
     expect(r.font).toBe(fontA);
     expect(r.font_size).toBeCloseTo(24, 1);
+    expect(r.ppi).toBeGreaterThan(0);
+    expect(r.font_size_px).toBeCloseTo((24 * r.ppi!) / 72, 0);
+    expect(created.content[0]).toMatchObject({
+      text: expect.stringContaining(`24 pt = ${r.font_size_px} px at ${r.ppi} ppi`),
+    });
     expect(r.color).toEqual({ red: 0, green: 0, blue: 0 });
     expect(r.alignment).toBe('LEFT');
   });
@@ -239,6 +246,8 @@ describe.skipIf(!install)('gimp_text against real headless GIMP', () => {
       font_size: 40,
     });
     expect(font.isError, errorText(font)).toBeFalsy();
+    const sized = structuredOf(font) as unknown as TextResult;
+    expect(sized.font_size_px).toBeCloseTo((40 * sized.ppi!) / 72, 0);
     let node = await textNode(image, id);
     expect(node.font).toBe(fontB);
     expect(node.font_size).toBeCloseTo(40, 1);

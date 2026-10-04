@@ -2789,6 +2789,9 @@ def _text_record(layer):
     ok, off_x, off_y = layer.get_offsets()
     record = {'layer_id': layer.get_id(), 'name': layer.get_name()}
     record.update(_text_fields(layer))
+    ppi = _image_ppi(layer.get_image())
+    record['ppi'] = ppi
+    record['font_size_px'] = round(_text_size_px(layer), 1)
     record['bounds'] = {
         'x': off_x if ok else None, 'y': off_y if ok else None,
         'width': layer.get_width(), 'height': layer.get_height(),

@@ -13,6 +13,8 @@ const TEXT_RESULT = {
   text: 'Hello',
   font: 'Sans-serif',
   font_size: 24,
+  font_size_px: 100,
+  ppi: 300,
   color: { red: 0, green: 0, blue: 0 },
   alignment: 'LEFT',
   bounds: { x: 100, y: 100, width: 80, height: 30 },
@@ -126,6 +128,16 @@ describe('createGimpTextTools', () => {
       },
     });
     expect(result.structuredContent).toEqual(TEXT_RESULT);
+  });
+
+  it('reports the pixel size and ppi in the summary, and says newline character', async () => {
+    const gimp = makeGimpBackend({ result: TEXT_RESULT });
+    const tools = createGimpTextTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_text', { image: 1, op: 'create', text: 'Hello' });
+    expect(JSON.stringify(result.content)).toContain('24 pt = 100 px at 300 ppi');
+    const textProp = TEXT_SCHEMA_FOR_TESTS.properties!.text as { description: string };
+    expect(textProp.description).toContain('newline character');
+    expect(textProp.description).not.toContain('\n');
   });
 
   it('forwards layer_id and layer for the set_* ops', async () => {

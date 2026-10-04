@@ -64,7 +64,8 @@ const textSchema: JsonSchemaObject = {
       type: 'string',
       description:
         'create: initial text. set_content: the new text, replacing the existing text. At most ' +
-        '2000 characters; use \\n for line breaks.',
+        '2000 characters. For a line break, put a newline character in the string (not a backslash ' +
+        'followed by n).',
     },
     x: {
       type: 'integer',
@@ -125,6 +126,8 @@ interface TextBridgeResult {
   name: string;
   font: string | null;
   font_size: number;
+  font_size_px?: number;
+  ppi?: number | null;
   bounds: { x: number | null; y: number | null; width: number; height: number };
 }
 
@@ -136,13 +139,17 @@ async function gimpText(gimp: GimpBackend, rawArgs: Record<string, unknown>): Pr
       pickSchemaDeclaredKeys(textSchema, args)
     );
     const b = result.bounds;
+    const sizing =
+      result.font_size_px !== undefined && result.ppi
+        ? ` = ${result.font_size_px} px at ${result.ppi} ppi`
+        : '';
     return {
       content: [
         {
           type: 'text' as const,
           text:
             `Text layer "${result.name}" (id ${result.layer_id}): ${result.font ?? 'unknown font'} ` +
-            `${result.font_size}pt, ${b.width}x${b.height} px at (${b.x}, ${b.y}).`,
+            `${result.font_size} pt${sizing}, ${b.width}x${b.height} px at (${b.x}, ${b.y}).`,
         },
       ],
       structuredContent: result as unknown as Record<string, unknown>,
@@ -162,7 +169,7 @@ export function createGimpTextTools(gimp: GimpBackend): ToolDefinition[] {
           '(create, set_content, set_font, set_color, set_alignment) — the same ops and ' +
           'parameters as ps_text. create adds a layer at `x`/`y` with `text`, `font_size` in ' +
           'points, and optional font_name, red/green/blue and alignment; it reports layer_id, ' +
-          'name and bounds. The set_* ops change the text layer named by `layer_id` or `layer` ' +
+          'name, bounds, the image ppi and the font size in pixels. The set_* ops change the text layer named by `layer_id` or `layer` ' +
           '(a non-text layer is refused). Fonts accept a family ("Inter") or full name ("Inter ' +
           'Bold"), case-insensitive; a miss is refused with the closest installed names (list ' +
           'them with gimp_inspect what=fonts). Text is capped at 2000 characters, and a layer ' +
@@ -181,6 +188,12 @@ export function createGimpTextTools(gimp: GimpBackend): ToolDefinition[] {
             has_markup: { type: 'boolean' },
             font: { type: ['string', 'null'] },
             font_size: { type: 'number', description: 'Points.' },
+            font_size_px: {
+              type: 'number',
+              description:
+                'The font size in pixels at the image resolution (the height of a line).',
+            },
+            ppi: { type: ['number', 'null'], description: "The image's resolution." },
             color: {
               type: 'object',
               properties: {
