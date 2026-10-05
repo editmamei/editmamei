@@ -8,6 +8,7 @@ import {
   OPEN_DOCUMENT_REPROBE_TIMEOUT_MS,
 } from '../utils/operation-timeouts.js';
 import { toolErrorResult, runSnippetTool } from '../utils/tool-helpers.js';
+import { checkOutputPath, recordOutputPath, requireLocalPath } from '../utils/local-path.js';
 import { purgeSceneChannels } from '../perception/region-precompute.js';
 import { Logger } from '../utils/logger.js';
 
@@ -100,7 +101,8 @@ const openDocumentSchema: JsonSchemaObject = {
   properties: {
     file_path: {
       type: 'string',
-      description: 'Absolute path to the file to open',
+      description:
+        "Absolute path to the file to open, on this computer's own drives (network shares are refused).",
     },
     suppress_dialogs: {
       type: 'boolean',
@@ -126,7 +128,16 @@ const savePsdSchema: JsonSchemaObject = {
   properties: {
     output_path: {
       type: 'string',
-      description: 'Absolute output path including filename, e.g. E:\\Photos\\Edit\\shell_01.psd',
+      description:
+        'Absolute output path including filename, ending in .psd, e.g. E:\\Photos\\Edit\\shell_01.psd',
+    },
+    overwrite: {
+      type: 'boolean',
+      description:
+        'Replace an existing file at output_path that this session did not write. Default false: such a ' +
+        'save is refused, so an original is never replaced by accident. Set true only when the user asked ' +
+        'to replace that file. A file this session already wrote can be saved over without it.',
+      default: false,
     },
     maximize_compatibility: {
       type: 'boolean',
@@ -148,7 +159,15 @@ const exportJpegSchema: JsonSchemaObject = {
   properties: {
     output_path: {
       type: 'string',
-      description: 'Absolute output path including filename.',
+      description: 'Absolute output path including filename, ending in .jpg.',
+    },
+    overwrite: {
+      type: 'boolean',
+      description:
+        'Replace an existing file at output_path that this session did not write. Default false: such a ' +
+        'save is refused, so an original is never replaced by accident. Set true only when the user asked ' +
+        'to replace that file. A file this session already wrote can be saved over without it.',
+      default: false,
     },
     quality: {
       type: 'integer',
@@ -184,7 +203,15 @@ const exportPngSchema: JsonSchemaObject = {
   properties: {
     output_path: {
       type: 'string',
-      description: 'Absolute output path including filename.',
+      description: 'Absolute output path including filename, ending in .png.',
+    },
+    overwrite: {
+      type: 'boolean',
+      description:
+        'Replace an existing file at output_path that this session did not write. Default false: such a ' +
+        'save is refused, so an original is never replaced by accident. Set true only when the user asked ' +
+        'to replace that file. A file this session already wrote can be saved over without it.',
+      default: false,
     },
     transparent_background: {
       type: 'boolean',
@@ -722,7 +749,7 @@ async function openDocumentPipeline(
   let filePath: string | undefined;
   try {
     const args = validateArgs(openDocumentSchema, rawArgs);
-    filePath = args.file_path as string;
+    filePath = requireLocalPath('file_path', args.file_path);
     const suppressDialogs = args.suppress_dialogs as boolean;
     const bitDepth = args.bit_depth as number | undefined;
 
@@ -804,8 +831,13 @@ async function savePsdPipeline(
   // runSnippetTool re-validates below; validateArgs is pure, so paying for it
   // twice costs nothing and keeps the "reject before you mutate" order explicit.
   let args: Record<string, unknown>;
+  let outputPath: string;
   try {
     args = validateArgs(savePsdSchema, rawArgs);
+    outputPath = checkOutputPath('output_path', args.output_path, {
+      extensions: ['.psd'],
+      overwrite: args.overwrite === true,
+    });
   } catch (error) {
     return toolErrorResult('Error saving PSD', error);
   }
@@ -834,11 +866,12 @@ async function savePsdPipeline(
     snippet: 'savePsdAsCopy',
     errorPrefix: 'Error saving PSD',
     params: (args) => ({
-      outputPath: args.output_path as string,
+      outputPath,
       maximizeCompat: args.maximize_compatibility as boolean,
     }),
     successText: (result) => `PSD saved:\n${JSON.stringify(result, null, 2)}`,
   });
+  if (!res.isError) recordOutputPath(outputPath);
 
   // Report the purge rather than doing it silently — the channels are gone from
   // the OPEN document too, so the next select_by_reference re-derives.
@@ -859,7 +892,10 @@ async function exportJpegPipeline(
 ): Promise<ToolResult> {
   try {
     const args = validateArgs(exportJpegSchema, rawArgs);
-    const outputPath = args.output_path as string;
+    const outputPath = checkOutputPath('output_path', args.output_path, {
+      extensions: ['.jpg'],
+      overwrite: args.overwrite === true,
+    });
     // Public scale is 0-100 (the JPEG dialog humans + the LLM know); Photoshop's
     // JPEGSaveOptions scripting scale is 0-12. Normalize here so the Go core
     // snippet keeps its 0-12 contract unchanged. 90→11, 100→12, 50→6, 0→0.
@@ -878,6 +914,7 @@ async function exportJpegPipeline(
     // expose the 0-12 value actually sent to Photoshop as quality_ps_scale so
     // both scales are legible and the caller never sees a silent 90→11 swap.
     const structured = { ...result, quality: qualityPct, quality_ps_scale: quality };
+    recordOutputPath(outputPath);
 
     return {
       content: [
@@ -898,7 +935,8 @@ async function exportPngPipeline(
   snippetClient: SnippetClient,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
-  return runSnippetTool({
+  let outputPath: string | undefined;
+  const res = await runSnippetTool({
     connection,
     snippetClient,
     rawArgs,
@@ -907,8 +945,12 @@ async function exportPngPipeline(
     errorPrefix: 'Error exporting PNG',
     params: (args) => {
       const longEdgePx = args.long_edge_px as number | undefined;
+      outputPath = checkOutputPath('output_path', args.output_path, {
+        extensions: ['.png'],
+        overwrite: args.overwrite === true,
+      });
       const params: Record<string, unknown> = {
-        outputPath: args.output_path as string,
+        outputPath,
         transparentBg: args.transparent_background as boolean,
         compression: args.compression as number,
       };
@@ -917,4 +959,6 @@ async function exportPngPipeline(
     },
     successText: (result) => `PNG exported:\n${JSON.stringify(result, null, 2)}`,
   });
+  if (!res.isError && outputPath !== undefined) recordOutputPath(outputPath);
+  return res;
 }

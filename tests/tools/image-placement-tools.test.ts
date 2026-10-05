@@ -1,8 +1,13 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
 import { createImagePlacementTools } from '@editmamei/tools/image-placement-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
+import { setPathPlatformForTests } from '@editmamei/utils/local-path.ts';
+
+// Written with Windows paths: apply Windows path rules on every runner.
+beforeAll(() => setPathPlatformForTests('win32'));
+afterAll(() => setPathPlatformForTests(undefined));
 
 describe('createImagePlacementTools', () => {
   let conn: FakePhotoshopConnection;
@@ -29,6 +34,17 @@ describe('createImagePlacementTools', () => {
     expect(script).toContain('C:\\\\images\\\\shot.png');
     expect(script).toContain('100');
     expect(script).toContain('50');
+  });
+
+  it('place_image refuses a file on a network share before building a script', async () => {
+    const tools = createImagePlacementTools(conn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_place_image', {
+      file_path: '\\\\attacker.example\\share\\x.png',
+      x: 0,
+      y: 0,
+    });
+    expect(res.isError).toBe(true);
+    expect(snippetClient.allBuilds()).toEqual([]);
   });
 
   it('place_image omits Wdth/Hght scale keys when width_percent/height_percent not supplied', async () => {

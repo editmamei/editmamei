@@ -253,6 +253,33 @@ describe('createAdjustmentTools', () => {
     expect(conn.executions).toHaveLength(0);
   });
 
+  it('color_lookup takes a preset name as is, and refuses a LUT on a network share', async () => {
+    const tools = createAdjustmentTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_add_adjustment_layer', {
+      type: 'color_lookup',
+      cl_lut_name: 'TealOrangePlusContrast.3DL',
+    });
+    expect(snippetClient.lastBuild().params.cl_lut_name).toBe('TealOrangePlusContrast.3DL');
+    const builds = snippetClient.allBuilds().length;
+    for (const [tool, args] of [
+      [
+        'ps_add_adjustment_layer',
+        { type: 'color_lookup', cl_lut_name: '\\\\attacker.example\\luts\\x.cube' },
+      ],
+      [
+        'ps_apply_adjustment',
+        { type: 'color_lookup', cl_lut_name: '\\\\attacker.example\\luts\\x.cube' },
+      ],
+    ] as const) {
+      const result = await callTool(tools, tool, args);
+      expect(result.isError, tool).toBe(true);
+      expect((result.content?.[0] as { text?: string }).text ?? '').toMatch(
+        /"cl_lut_name" must be a file on this computer's own drives/
+      );
+    }
+    expect(snippetClient.allBuilds()).toHaveLength(builds);
+  });
+
   // ===========================================================================
   // Auto-duplicate-first for destructive adjustment tools.
   // The __opOriginal/__opCopy/.duplicate() body assertions are Go binary tests.

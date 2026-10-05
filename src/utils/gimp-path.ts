@@ -1,21 +1,13 @@
 /**
  * The one absolute-path rule every `gimp_*` path goes through (tool arguments, and the
  * `gimp_path` setting at load). Its own module, dependency-light, so `core/settings.ts` can use
- * it without importing the tool layer.
+ * it without importing the tool layer. The rule itself is `localPathProblem` (local-path.ts),
+ * shared with the Photoshop tools; this module words it for GIMP.
  */
 
 import { win32 as pathWin32, posix as pathPosix } from 'node:path';
 import { GimpError } from '../backends/gimp/errors.js';
-
-// Two leading slashes/backslashes in any combination — covers a UNC share
-// (`\\server\share\...`), and the `\\?\` / `\\.\` device-path prefixes
-// (`\\?\C:\...`, `\\?\UNC\...`, `\\.\PhysicalDrive0`). None of these name an
-// ordinary local file the way the bridge's plain `open()`/`os.path.exists()`
-// calls expect, and several (`\\.\...`) can address a device rather than a
-// file at all.
-const UNC_OR_DEVICE_PATH_RE = /^[\\/]{2}/;
-// A Windows path rooted at a specific drive letter: `C:\...` or `C:/...`.
-const WIN32_DRIVE_ROOTED_RE = /^[A-Za-z]:[\\/]/;
+import { localPathProblem } from './local-path.js';
 
 /**
  * Every `file_path` / region-export / mask path a `gimp_*` tool accepts is
@@ -34,7 +26,7 @@ const WIN32_DRIVE_ROOTED_RE = /^[A-Za-z]:[\\/]/;
  * asserting Windows-path behavior must pass `platform: 'win32'` explicitly
  * and get the same answer on a macOS runner as on a Windows one.
  *
- * Refuses, in order:
+ * Refuses, in order (see localPathProblem):
  *  1. Anything not a non-empty string.
  *  2. UNC shares and `\\?\` / `\\.\` device-path prefixes — `path.isAbsolute`
  *     happily accepts these as "absolute", but the bridge has no reason to
@@ -55,45 +47,37 @@ export function requireAbsoluteGimpPath(
   value: unknown,
   platform: string = process.platform
 ): string {
-  const pathImpl = platform === 'win32' ? pathWin32 : pathPosix;
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new GimpError(
-      'invalid_argument',
-      `"${field}" is required and must be a non-empty string`
-    );
+  switch (localPathProblem(value, platform)) {
+    case undefined:
+      return value as string;
+    case 'not_string':
+      throw new GimpError(
+        'invalid_argument',
+        `"${field}" is required and must be a non-empty string`
+      );
+    case 'unc_or_device':
+      throw new GimpError(
+        'invalid_argument',
+        `"${field}" must be a plain local path — UNC shares and \\\\?\\ / \\\\.\\ device paths are ` +
+          `refused, got "${value as string}". Pass a path on a local drive, e.g. C:/Users/you/photo.jpg.`
+      );
+    case 'relative':
+      throw new GimpError(
+        'invalid_argument',
+        `"${field}" must be an absolute path, got "${value as string}" — pass a full filesystem path, not one relative to a working directory the GIMP session doesn't share.`
+      );
+    case 'no_drive':
+      throw new GimpError(
+        'invalid_argument',
+        `"${field}" must include a drive letter, got "${value as string}" — a path rooted at "\\" alone is ` +
+          `ambiguous about which drive it resolves on. Pass e.g. C:/Users/you/photo.jpg.`
+      );
+    case 'unstable': {
+      const resolved = (platform === 'win32' ? pathWin32 : pathPosix).resolve(value as string);
+      throw new GimpError(
+        'invalid_argument',
+        `"${field}" does not resolve to a stable absolute path ("${value as string}" -> "${resolved}") — pass a plain, fully-qualified path.`
+      );
+    }
   }
-  if (UNC_OR_DEVICE_PATH_RE.test(value)) {
-    throw new GimpError(
-      'invalid_argument',
-      `"${field}" must be a plain local path — UNC shares and \\\\?\\ / \\\\.\\ device paths are ` +
-        `refused, got "${value}". Pass a path on a local drive, e.g. C:/Users/you/photo.jpg.`
-    );
-  }
-  if (!pathImpl.isAbsolute(value)) {
-    throw new GimpError(
-      'invalid_argument',
-      `"${field}" must be an absolute path, got "${value}" — pass a full filesystem path, not one relative to a working directory the GIMP session doesn't share.`
-    );
-  }
-  if (platform === 'win32' && !WIN32_DRIVE_ROOTED_RE.test(value)) {
-    throw new GimpError(
-      'invalid_argument',
-      `"${field}" must include a drive letter, got "${value}" — a path rooted at "\\" alone is ` +
-        `ambiguous about which drive it resolves on. Pass e.g. C:/Users/you/photo.jpg.`
-    );
-  }
-  // Slash direction alone must never trip this — `resolve` always
-  // normalizes to that platform's native separator, so an input written with
-  // forward slashes (`C:/photos/dog.jpg`, encouraged elsewhere in these
-  // tools' own schema examples) legitimately resolves to a backslash root
-  // (`C:\`) without anything actually being ambiguous.
-  const normalizeRoot = (root: string) => root.replace(/\//g, '\\').toLowerCase();
-  const resolved = pathImpl.resolve(value);
-  if (normalizeRoot(pathImpl.parse(resolved).root) !== normalizeRoot(pathImpl.parse(value).root)) {
-    throw new GimpError(
-      'invalid_argument',
-      `"${field}" does not resolve to a stable absolute path ("${value}" -> "${resolved}") — pass a plain, fully-qualified path.`
-    );
-  }
-  return value;
 }

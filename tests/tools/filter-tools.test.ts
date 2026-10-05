@@ -1,9 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
 import { createFilterTools } from '@editmamei/tools/filter-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { FakeDetectionClient, CANNED, EXPORT_RESULT } from '../fixtures/fake-detection-client.ts';
+import { setPathPlatformForTests } from '@editmamei/utils/local-path.ts';
+
+// Written with Windows paths: apply Windows path rules on every runner.
+beforeAll(() => setPathPlatformForTests('win32'));
+afterAll(() => setPathPlatformForTests(undefined));
 
 // 2026-06-20 — Phase 1 tool-surface consolidation. The thirteen
 // photoshop_apply_<filter> tools collapsed into ONE filter-apply tool with
@@ -136,6 +141,18 @@ describe('createFilterTools', () => {
     expect(build.params.horizontalScale).toBe(10);
     expect(build.params.displacementMap).toBe('stretch_to_fit');
     expect(build.params.undefinedAreas).toBe('repeat_edge');
+  });
+
+  it('type=displace refuses a map on a network share before building a script', async () => {
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_filter', {
+      type: 'displace',
+      map_path: String.raw`\\attacker.example\share\disp.psd`,
+      horizontal_scale: 10,
+      vertical_scale: 10,
+    });
+    expect(res.isError).toBe(true);
+    expect(snippetClient.allBuilds()).toEqual([]);
   });
 
   it('type=gaussian_blur passes the radius param', async () => {
