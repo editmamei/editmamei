@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +6,7 @@ import { createDocumentTools } from '@editmamei/tools/document-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool, indexTools, textOf } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
-import { setPathPlatformForTests } from '@editmamei/utils/local-path.ts';
+import { resetOutputPathsForTests, setPathPlatformForTests } from '@editmamei/utils/local-path.ts';
 
 // Written with Windows paths: apply Windows path rules on every runner.
 beforeAll(() => setPathPlatformForTests('win32'));
@@ -648,12 +648,40 @@ describe('file paths: local drives only, and no replacing a file this session di
     expect(conn.allScripts()).toEqual([]);
   });
 
+  afterEach(() => resetOutputPathsForTests());
+
+  it.each([
+    // ExtendScript decodes %5F to "_", so this would write C:/DCIM/IMG_0001.jpg.
+    ['a percent-escape', 'C:/DCIM/IMG%5F0001.jpg', 'percent-escape'],
+    // An NTFS alternate data stream on an original.
+    ['a ":" past the drive', 'C:/DCIM/IMG_0001.jpg:x.jpg', '":" after the drive letter'],
+    ['a Windows device name', 'C:/out/CON.jpg', 'names a Windows device'],
+  ])('ps_export refuses %s before any script is built', async (_what, outputPath, message) => {
+    const conn = makeConnection({ result: { ok: true } });
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_export',
+      {
+        format: 'jpeg',
+        output_path: outputPath,
+      }
+    );
+    expect(textOf(res)).toContain(message);
+    expect(conn.allScripts()).toEqual([]);
+  });
+
   it('ps_export and ps_save_psd refuse an output path without the format extension', async () => {
     const conn = makeConnection({ result: { ok: true } });
     const tools = createDocumentTools(conn.asConnection(), makeSnippetClient());
     expect(
       textOf(await callTool(tools, 'ps_export', { format: 'jpeg', output_path: 'C:/out/run.bat' }))
-    ).toContain('must end in .jpg or .jpeg');
+    ).toContain('must end in .jpg,');
+    // .jpg only: the checked path must be the one Photoshop writes.
+    expect(
+      textOf(
+        await callTool(tools, 'ps_export', { format: 'jpeg', output_path: 'C:/DCIM/IMG_0001.jpeg' })
+      )
+    ).toContain('must end in .jpg,');
     expect(textOf(await callTool(tools, 'ps_save_psd', { output_path: 'C:/out/a.jpg' }))).toContain(
       'must end in .psd'
     );

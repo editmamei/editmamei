@@ -159,7 +159,7 @@ const exportJpegSchema: JsonSchemaObject = {
   properties: {
     output_path: {
       type: 'string',
-      description: 'Absolute output path including filename, ending in .jpg or .jpeg.',
+      description: 'Absolute output path including filename, ending in .jpg.',
     },
     overwrite: {
       type: 'boolean',
@@ -893,7 +893,7 @@ async function exportJpegPipeline(
   try {
     const args = validateArgs(exportJpegSchema, rawArgs);
     const outputPath = checkOutputPath('output_path', args.output_path, {
-      extensions: ['.jpg', '.jpeg'],
+      extensions: ['.jpg'],
       overwrite: args.overwrite === true,
     });
     // Public scale is 0-100 (the JPEG dialog humans + the LLM know); Photoshop's

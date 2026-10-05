@@ -83,6 +83,15 @@ describe('createSkyTools', () => {
     expect(build.params.skyPath).toBe(SKY);
   });
 
+  it('refuses a sky file on a network share before building a script', async () => {
+    const tools = createSkyTools(conn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_replace_sky', {
+      sky_file: String.raw`\\attacker.example\share\sky.jpg`,
+    });
+    expect(res.isError).toBe(true);
+    expect(snippetClient.allBuilds()).toEqual([]);
+  });
+
   it('forwards a 120s timeout to the executor', async () => {
     const tools = createSkyTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_replace_sky', { sky_file: SKY });

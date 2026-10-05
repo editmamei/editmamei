@@ -143,6 +143,18 @@ describe('createFilterTools', () => {
     expect(build.params.undefinedAreas).toBe('repeat_edge');
   });
 
+  it('type=displace refuses a map on a network share before building a script', async () => {
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_filter', {
+      type: 'displace',
+      map_path: String.raw`\\attacker.example\share\disp.psd`,
+      horizontal_scale: 10,
+      vertical_scale: 10,
+    });
+    expect(res.isError).toBe(true);
+    expect(snippetClient.allBuilds()).toEqual([]);
+  });
+
   it('type=gaussian_blur passes the radius param', async () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_filter', { type: 'gaussian_blur', radius: 12 });

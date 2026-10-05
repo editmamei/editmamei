@@ -77,6 +77,33 @@ describe('requireLocalPath', () => {
       requireLocalPath('file_path', '~/x.jpg', { platform: 'win32', home: '\\\\server\\home\\me' })
     ).toThrow(/own drives/);
   });
+
+  it('refuses what ExtendScript would read differently from Node', () => {
+    const win = { platform: 'win32' } as const;
+    expect(() => requireLocalPath('output_path', 'C:/DCIM/IMG%5F0001.jpg', win)).toThrow(
+      /percent-escape/
+    );
+    expect(() =>
+      requireLocalPath('output_path', '/DCIM/IMG%5f0001.jpg', { platform: 'darwin' })
+    ).toThrow(/percent-escape/);
+    expect(requireLocalPath('output_path', 'C:/out/100% done.jpg', win)).toBe(
+      'C:/out/100% done.jpg'
+    );
+    expect(() => requireLocalPath('output_path', 'C:/DCIM/IMG.jpg:hidden.jpg', win)).toThrow(
+      /":" after the drive letter/
+    );
+    expect(() => requireLocalPath('output_path', 'C:/out/nul.psd', win)).toThrow(
+      /names a Windows device/
+    );
+    expect(() => requireLocalPath('output_path', 'C:/out/COM1.png', win)).toThrow(
+      /names a Windows device/
+    );
+    expect(requireLocalPath('output_path', 'C:/out/console.png', win)).toBe('C:/out/console.png');
+    // Not special on macOS.
+    expect(requireLocalPath('output_path', '/out/a:b/CON.jpg', { platform: 'darwin' })).toBe(
+      '/out/a:b/CON.jpg'
+    );
+  });
 });
 
 describe('looksLikePath', () => {
@@ -86,6 +113,7 @@ describe('looksLikePath', () => {
     expect(looksLikePath('C:/LUTs/x.cube')).toBe(true);
     expect(looksLikePath('\\\\server\\luts\\x.cube')).toBe(true);
     expect(looksLikePath('~/luts/x.cube')).toBe(true);
+    expect(looksLikePath('C:x.cube')).toBe(true); // drive-relative
   });
 });
 

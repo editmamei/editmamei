@@ -19,6 +19,10 @@ const WIN32_DRIVE_ROOTED_RE = /^[A-Za-z]:[\\/]/;
 // `~/...` or `~\...`: the user's home directory, as ExtendScript's File reads it.
 const HOME_RELATIVE_RE = /^~[\\/]/;
 
+/** Why a path isn't a plain local absolute path (see localPathProblem). */
+export type LocalPathProblem =
+  'not_string' | 'unc_or_device' | 'relative' | 'no_drive' | 'unstable';
+
 /**
  * Why `value` isn't a plain local absolute path, or undefined when it is. In order:
  *  - `not_string`: not a non-empty string.
@@ -33,9 +37,6 @@ const HOME_RELATIVE_RE = /^~[\\/]/;
  * the host's implicitly: a path is data about a target machine, and a test of Windows paths
  * must get the same answer on a macOS runner.
  */
-export type LocalPathProblem =
-  'not_string' | 'unc_or_device' | 'relative' | 'no_drive' | 'unstable';
-
 export function localPathProblem(
   value: unknown,
   platform: string = process.platform
@@ -95,7 +96,7 @@ export function requireLocalPath(
       : value;
   switch (localPathProblem(path, platform)) {
     case undefined:
-      return path as string;
+      return refuseExtendScriptAmbiguity(field, path as string, platform);
     case 'not_string':
       throw new PathArgumentError(`"${field}" is required and must be a non-empty string.`);
     case 'unc_or_device':
@@ -120,9 +121,41 @@ export function requireLocalPath(
   }
 }
 
+// A `%` followed by two hex digits: ExtendScript's File decodes it, Node's fs does not.
+const PERCENT_ESCAPE_RE = /%[0-9A-Fa-f]{2}/;
+// A Windows device name as a file's base name (`CON.jpg`, `nul.psd`, `COM1.png`).
+const WIN32_DEVICE_NAME_RE = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
+
+/**
+ * The checks a Photoshop path needs beyond localPathProblem, because ExtendScript's File and
+ * Node's fs would read it differently: a percent-escape (File decodes `%5F` to `_`, so Node would
+ * check a different file than Photoshop writes), and on Windows a `:` past the drive (an NTFS
+ * alternate data stream) or a device name.
+ */
+function refuseExtendScriptAmbiguity(field: string, path: string, platform: string): string {
+  if (PERCENT_ESCAPE_RE.test(path)) {
+    throw new PathArgumentError(
+      `"${field}" must not contain a percent-escape such as %20 or %5F, got "${path}". Write the characters themselves.`
+    );
+  }
+  if (platform === 'win32') {
+    if (path.indexOf(':', 2) !== -1) {
+      throw new PathArgumentError(
+        `"${field}" must not contain ":" after the drive letter, got "${path}".`
+      );
+    }
+    if (WIN32_DEVICE_NAME_RE.test(pathWin32.basename(path))) {
+      throw new PathArgumentError(
+        `"${field}" names a Windows device (${pathWin32.basename(path)}), not a file.`
+      );
+    }
+  }
+  return path;
+}
+
 /** Whether a name-or-path argument (e.g. a LUT preset name) is written as a path. */
 export function looksLikePath(value: string): boolean {
-  return /[\\/]/.test(value) || HOME_RELATIVE_RE.test(value);
+  return /[\\/]/.test(value) || /^[A-Za-z]:/.test(value) || HOME_RELATIVE_RE.test(value);
 }
 
 /**
@@ -137,7 +170,7 @@ function outputKey(path: string, platform: string): string {
 }
 
 export interface OutputPathOptions extends LocalPathOptions {
-  /** Accepted extensions, lower case with the dot (e.g. ['.jpg', '.jpeg']). */
+  /** Accepted extensions, lower case with the dot (e.g. ['.png']). */
   extensions: readonly string[];
   /** The caller said to replace an existing file. */
   overwrite?: boolean;
@@ -161,6 +194,7 @@ export function checkOutputPath(field: string, value: unknown, opts: OutputPathO
       `"${field}" must end in ${opts.extensions.join(' or ')}, got "${path}".`
     );
   }
+  // A check, not a lock: a local process could create the file between this and the write.
   const exists = opts.exists ?? existsSync;
   if (opts.overwrite !== true && exists(path) && !written.has(outputKey(path, platform))) {
     throw new PathArgumentError(
