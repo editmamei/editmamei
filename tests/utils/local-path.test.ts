@@ -95,6 +95,11 @@ describe('requireLocalPath', () => {
     expect(() => requireLocalPath('output_path', 'C:/out/nul.psd', win)).toThrow(
       /names a Windows device/
     );
+    for (const name of ['CONIN$.jpg', 'conout$.png', 'COM¹.png', 'CON .jpg']) {
+      expect(() => requireLocalPath('output_path', `C:/out/${name}`, win), name).toThrow(
+        /names a Windows device/
+      );
+    }
     expect(() => requireLocalPath('output_path', 'C:/out/COM1.png', win)).toThrow(
       /names a Windows device/
     );

@@ -123,8 +123,10 @@ export function requireLocalPath(
 
 // A `%` followed by two hex digits: ExtendScript's File decodes it, Node's fs does not.
 const PERCENT_ESCAPE_RE = /%[0-9A-Fa-f]{2}/;
-// A Windows device name as a file's base name (`CON.jpg`, `nul.psd`, `COM1.png`).
-const WIN32_DEVICE_NAME_RE = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
+// A Windows device name as a file's base name (`CON.jpg`, `nul.psd`, `COM1.png`, `CONIN$.jpg`,
+// `COM¹.png`), with or without spaces before the extension.
+const WIN32_DEVICE_NAME_RE =
+  /^(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])\s*(\..*)?$/i;
 
 /**
  * The checks a Photoshop path needs beyond localPathProblem, because ExtendScript's File and
