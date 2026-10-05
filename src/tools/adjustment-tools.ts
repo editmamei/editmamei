@@ -4,6 +4,7 @@ import type { SnippetClient } from '../api/snippet-client.js';
 import { runScript } from '../utils/run-script.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolErrorResult, runSnippetTool, applyToActiveLayerProp } from '../utils/tool-helpers.js';
+import { looksLikePath, requireLocalPath } from '../utils/local-path.js';
 import { getPendingRawDevelop } from '../core/raw-develop-state.js';
 import { CAMERA_RAW_TOOL } from '../core/tool-activity.js';
 
@@ -947,6 +948,13 @@ const FORWARDED_KEYS = new Set<string>([
   'thr_level',
 ]);
 
+/** A 3DLUT given by preset leaf name passes as is; one given as a path is held to the local-path rule. */
+function lutNameOrPath(value: unknown): string {
+  return typeof value === 'string' && looksLikePath(value)
+    ? requireLocalPath('cl_lut_name', value)
+    : (value as string);
+}
+
 async function addAdjustmentLayer(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
@@ -965,6 +973,8 @@ async function addAdjustmentLayer(
     for (const key of FORWARDED_KEYS) {
       if (args[key] !== undefined) params[key] = args[key];
     }
+    if (typeof params.cl_lut_name === 'string')
+      params.cl_lut_name = lutNameOrPath(params.cl_lut_name);
 
     // Conditional-required check: color_lookup without a LUT
     // name would create an empty / do-nothing CL adjustment layer. JSON
@@ -1041,7 +1051,7 @@ async function applyColorLookup(
     snippet: 'applyColorLookup',
     errorPrefix: 'Error applying color lookup',
     params: (args) => ({
-      lutName: args.cl_lut_name as string,
+      lutName: lutNameOrPath(args.cl_lut_name),
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
     }),
     successText: (result) =>

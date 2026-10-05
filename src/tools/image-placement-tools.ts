@@ -3,6 +3,7 @@ import { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
 import { type JsonSchemaObject } from '../utils/validate.js';
 import { runSnippetTool } from '../utils/tool-helpers.js';
+import { requireLocalPath } from '../utils/local-path.js';
 
 // Coordinate cap matches Photoshop's max document dimension. We allow
 // negative coords so a layer can sit partially off-canvas (Photoshop
@@ -95,7 +96,11 @@ async function placeImage(
     snippet: 'placeImage',
     errorPrefix: 'Error placing image',
     params: (args) => {
-      const params: Record<string, unknown> = { filePath: args.file_path, x: args.x, y: args.y };
+      const params: Record<string, unknown> = {
+        filePath: requireLocalPath('file_path', args.file_path),
+        x: args.x,
+        y: args.y,
+      };
       if (args.width_percent !== undefined) params.widthPercent = args.width_percent;
       if (args.height_percent !== undefined) params.heightPercent = args.height_percent;
       return params;

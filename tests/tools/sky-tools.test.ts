@@ -14,11 +14,16 @@
  * hardcodes a field Photoshop ignores. Tool ships at dev tier.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
 import { createSkyTools } from '@editmamei/tools/sky-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
+import { setPathPlatformForTests } from '@editmamei/utils/local-path.ts';
+
+// Written with Windows paths: apply Windows path rules on every runner.
+beforeAll(() => setPathPlatformForTests('win32'));
+afterAll(() => setPathPlatformForTests(undefined));
 
 const SKY = 'C:\\skies\\dramatic-sunset.jpg';
 

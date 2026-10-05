@@ -2,6 +2,7 @@ import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
 import { runSnippetTool } from '../utils/tool-helpers.js';
+import { requireLocalPath } from '../utils/local-path.js';
 import { type JsonSchemaObject } from '../utils/validate.js';
 import { SKY_REPLACEMENT_TIMEOUT_MS } from '../utils/operation-timeouts.js';
 
@@ -128,7 +129,7 @@ async function replaceSky(
     errorPrefix: 'Error running Sky Replacement',
     timeoutMs: SKY_REPLACEMENT_TIMEOUT_MS,
     params: (args) => ({
-      skyPath: args.sky_file as string,
+      skyPath: requireLocalPath('sky_file', args.sky_file),
       skyName: (args.sky_name as string) ?? 'Custom Sky',
       // See PLACEHOLDER_SKY_ID — the sky_file path drives the composite, not this.
       skyId: PLACEHOLDER_SKY_ID,

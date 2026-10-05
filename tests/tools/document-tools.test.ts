@@ -1,8 +1,16 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createDocumentTools } from '@editmamei/tools/document-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool, indexTools, textOf } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
+import { setPathPlatformForTests } from '@editmamei/utils/local-path.ts';
+
+// Written with Windows paths: apply Windows path rules on every runner.
+beforeAll(() => setPathPlatformForTests('win32'));
+afterAll(() => setPathPlatformForTests(undefined));
 
 describe('createDocumentTools', () => {
   let conn: FakePhotoshopConnection;
@@ -618,5 +626,72 @@ describe('ps_save_psd scene-channel purge (2026-08-01)', () => {
     // Best-effort: a failed cleanup must never block the save the user asked for.
     expect(res.isError).not.toBe(true);
     expect(conn.allScripts().some((x) => x.includes('savePsdAsCopy'))).toBe(true);
+  });
+});
+
+describe('file paths: local drives only, and no replacing a file this session did not write', () => {
+  const UNC = String.raw`\\attacker.example\share\x.jpg`;
+  const WEBDAV = String.raw`\\attacker.example@SSL\drop\out.jpg`;
+
+  it.each([
+    ['ps_open_document', { file_path: UNC }],
+    ['ps_save_psd', { output_path: String.raw`\\attacker.example\share\out.psd` }],
+    ['ps_export', { format: 'jpeg', output_path: WEBDAV }],
+    ['ps_export', { format: 'png', output_path: String.raw`\\attacker.example\share\out.png` }],
+  ])('%s refuses a network path before any script is built', async (tool, args) => {
+    const conn = makeConnection({ result: { ok: true } });
+    const client = makeSnippetClient();
+    const res = await callTool(createDocumentTools(conn.asConnection(), client), tool, args);
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('own drives');
+    expect(client.allBuilds()).toEqual([]);
+    expect(conn.allScripts()).toEqual([]);
+  });
+
+  it('ps_export and ps_save_psd refuse an output path without the format extension', async () => {
+    const conn = makeConnection({ result: { ok: true } });
+    const tools = createDocumentTools(conn.asConnection(), makeSnippetClient());
+    expect(
+      textOf(await callTool(tools, 'ps_export', { format: 'jpeg', output_path: 'C:/out/run.bat' }))
+    ).toContain('must end in .jpg or .jpeg');
+    expect(textOf(await callTool(tools, 'ps_save_psd', { output_path: 'C:/out/a.jpg' }))).toContain(
+      'must end in .psd'
+    );
+    expect(conn.allScripts()).toEqual([]);
+  });
+
+  it("refuses to replace an existing file, allows overwrite: true, and allows re-saving this session's own output", async () => {
+    // A real file in a real temp folder, so this test uses the runner's own path rules.
+    setPathPlatformForTests(undefined);
+    const dir = mkdtempSync(join(tmpdir(), 'em-out-'));
+    try {
+      const original = join(dir, 'IMG_001.jpg');
+      writeFileSync(original, 'original');
+      const conn = makeConnection({ result: { success: true } });
+      const tools = createDocumentTools(conn.asConnection(), makeSnippetClient());
+
+      const refused = await callTool(tools, 'ps_export', { format: 'jpeg', output_path: original });
+      expect(textOf(refused)).toContain('was not written in this session');
+      expect(conn.allScripts()).toEqual([]);
+      const forced = await callTool(tools, 'ps_export', {
+        format: 'jpeg',
+        output_path: original,
+        overwrite: true,
+      });
+      expect(forced.isError).not.toBe(true);
+
+      // A file this session wrote (the fake doesn't write; stand one in) can be saved again.
+      const own = join(dir, 'final.png');
+      expect(
+        (await callTool(tools, 'ps_export', { format: 'png', output_path: own })).isError
+      ).not.toBe(true);
+      writeFileSync(own, 'written');
+      expect(
+        (await callTool(tools, 'ps_export', { format: 'png', output_path: own })).isError
+      ).not.toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      setPathPlatformForTests('win32');
+    }
   });
 });
