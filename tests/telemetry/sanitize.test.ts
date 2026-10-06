@@ -123,6 +123,31 @@ describe('sanitizeMessage', () => {
     expect(out).toContain('PS error 1302 at line 55');
     expect(out).toContain('stack: doApply');
   });
+
+  describe('paths whose folder names contain spaces', () => {
+    const cases: Array<[string, string]> = [
+      ['Windows drive', 'C:\\Projects\\Acme Corp\\Brand\\x.psd'],
+      ['Windows drive, forward slashes', 'D:/Projects/Acme Corp/Brand Kit/x.psd'],
+      ['UNC', '\\\\fileserver\\Shared Drive\\Acme Corp\\x.psd'],
+      ['macOS user dir', '/Users/a b/Acme Corp/Brand/x.psd'],
+      ['tilde home', '~/My Photos/Acme Corp/x.psd'],
+    ];
+    for (const [label, path] of cases) {
+      it(`keeps only the file name: ${label}`, () => {
+        const out = sanitizeMessage(`failed reading ${path} while opening`);
+        expect(out).toBe('failed reading x.psd while opening');
+      });
+    }
+
+    it('keeps only the file name when the path ends the message', () => {
+      expect(sanitizeMessage('open C:\\Projects\\Acme Corp\\x.psd')).toBe('open x.psd');
+    });
+  });
+
+  it('leaves non-path text with spaces untouched', () => {
+    const text = 'Acme Corp layer failed: read/write error and/or timeout, retry in 5 s';
+    expect(sanitizeMessage(text)).toBe(text);
+  });
 });
 
 describe('sanitizeSnippet', () => {
