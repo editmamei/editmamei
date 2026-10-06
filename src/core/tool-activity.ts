@@ -254,6 +254,8 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'gimp_layer_mask',
   // gimp_transform_layer: every op repositions, resizes, or reshapes the target layer's pixels.
   'gimp_transform_layer',
+  // gimp_match_layer: adds curves filters to a layer (and optionally edits its layer mask).
+  'gimp_match_layer',
 ]);
 
 /*

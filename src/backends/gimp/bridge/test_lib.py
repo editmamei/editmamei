@@ -2849,5 +2849,159 @@ class TestRejectForeignTransformFields(unittest.TestCase):
         lib.reject_foreign_transform_fields('rotate', {'degrees': 10, 'skew_h_degrees': None})
 
 
+class TestMatchTransfer(unittest.TestCase):
+    def test_strength_zero_is_identity(self):
+        t = lib.match_transfer(200.0, 30.0, 80.0, 60.0, 0.0)
+        self.assertEqual(t['gain'], 1.0)
+        self.assertEqual(t['shift'], 0.0)
+        self.assertEqual(lib.match_curve_points(200.0, t['gain'], t['shift']), [[0.0, 0.0], [255.0, 255.0]])
+
+    def test_full_strength_matches_mean_and_std(self):
+        t = lib.match_transfer(120.0, 40.0, 90.0, 60.0, 1.0)
+        self.assertAlmostEqual(t['gain'], 1.5)
+        self.assertAlmostEqual(t['mean_after'], 90.0)
+        self.assertAlmostEqual(t['std_after'], 60.0)
+        # the curve maps the source mean onto the reference mean
+        pts = lib.match_curve_points(120.0, t['gain'], t['shift'])
+        self.assertAlmostEqual(self._eval(pts, 120.0), 90.0, places=1)
+
+    def test_partial_strength_moves_part_of_the_way(self):
+        t = lib.match_transfer(200.0, 20.0, 100.0, 20.0, 0.7)
+        self.assertAlmostEqual(t['shift'], -70.0)
+        self.assertAlmostEqual(t['mean_after'], 130.0)
+        self.assertEqual(t['gain'], 1.0)
+
+    def test_gain_is_clamped(self):
+        high = lib.match_transfer(100.0, 5.0, 100.0, 100.0, 1.0)
+        low = lib.match_transfer(100.0, 100.0, 100.0, 5.0, 1.0)
+        self.assertEqual(high['gain'], lib.MATCH_GAIN_MAX)
+        self.assertEqual(low['gain'], lib.MATCH_GAIN_MIN)
+        # the reported std follows the clamped gain, not the requested ratio
+        self.assertAlmostEqual(high['std_after'], 10.0)
+
+    def test_flat_source_or_reference_keeps_gain_one(self):
+        self.assertEqual(lib.match_transfer(100.0, 0.0, 100.0, 50.0, 1.0)['gain'], 1.0)
+        self.assertEqual(lib.match_transfer(100.0, 50.0, 100.0, 0.0, 1.0)['gain'], 1.0)
+
+    @staticmethod
+    def _eval(points, x):
+        for (x0, y0), (x1, y1) in zip(points, points[1:]):
+            if x0 <= x <= x1:
+                return y0 if x1 == x0 else y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+        raise AssertionError('x outside the curve')
+
+
+class TestMatchCurvePoints(unittest.TestCase):
+    def test_unclamped_line_is_two_points(self):
+        pts = lib.match_curve_points(128.0, 0.5, 0.0)  # y = 0.5x + 64
+        self.assertEqual(pts, [[0.0, 64.0], [255.0, 191.5]])
+
+    def test_clamp_at_zero_adds_an_interior_knot(self):
+        pts = lib.match_curve_points(220.0, 1.0, -98.0)  # y = x - 98
+        self.assertEqual(pts[0], [0.0, 0.0])
+        self.assertIn([98.0, 0.0], pts)
+        self.assertEqual(pts[-1], [255.0, 157.0])
+
+    def test_clamp_at_top_adds_an_interior_knot(self):
+        pts = lib.match_curve_points(30.0, 2.0, 90.0)  # y = 2x + 30
+        self.assertIn([97.5, 255.0], pts)
+        self.assertEqual(pts[0], [0.0, 60.0])
+        self.assertEqual(pts[-1], [255.0, 255.0])
+
+    def test_both_clamps(self):
+        pts = lib.match_curve_points(128.0, 2.0, 0.0)  # y = 2x - 128
+        self.assertEqual(pts[0], [0.0, 0.0])
+        self.assertIn([64.0, 0.0], pts)
+        self.assertIn([191.5, 255.0], pts)
+        self.assertEqual(pts[-1], [255.0, 255.0])
+
+    def test_points_are_in_range_and_strictly_ascending(self):
+        for mu in (10.0, 100.0, 240.0):
+            for gain in (0.5, 1.0, 2.0):
+                for shift in (-200.0, -40.0, 0.0, 40.0, 200.0):
+                    pts = lib.match_curve_points(mu, gain, shift)
+                    xs = [x for x, _y in pts]
+                    self.assertEqual(xs, sorted(set(xs)), (mu, gain, shift))
+                    self.assertEqual(xs[0], 0.0)
+                    self.assertEqual(xs[-1], 255.0)
+                    for x, y in pts:
+                        self.assertTrue(0.0 <= x <= 255.0 and 0.0 <= y <= 255.0, (mu, gain, shift, pts))
+
+    def test_helper_points_track_the_clamped_line(self):
+        pts = lib.match_curve_points(220.0, 1.0, -98.0)
+        for x, y in pts:
+            self.assertAlmostEqual(y, max(0.0, min(255.0, x - 98.0)), places=1)
+
+
+class TestMatchArgs(unittest.TestCase):
+    def test_defaults(self):
+        o = lib.validate_match_args({}, 1000, 600)
+        self.assertEqual((o['match'], o['reference'], o['strength']), ('both', 'surround', 70.0))
+        self.assertAlmostEqual(o['s'], 0.7)
+        self.assertEqual(o['surround_px'], 120)
+        self.assertEqual((o['edge_contract_px'], o['edge_feather_px']), (0, 0))
+
+    def test_none_values_take_the_default(self):
+        o = lib.validate_match_args({'match': None, 'strength': None, 'surround_px': None}, 100, 100)
+        self.assertEqual((o['match'], o['strength'], o['surround_px']), ('both', 70.0, 16))
+
+    def test_surround_default_is_clamped(self):
+        self.assertEqual(lib.default_surround_px(50, 40), 16)
+        self.assertEqual(lib.default_surround_px(1000, 800), 120)
+        self.assertEqual(lib.default_surround_px(6000, 4000), 400)
+
+    def test_rejects_out_of_range_and_unknown_values(self):
+        for bad in (
+            {'match': 'hue'}, {'reference': 'above'}, {'strength': 101}, {'strength': -1},
+            {'surround_px': 0}, {'surround_px': 401}, {'edge_contract_px': 21},
+            {'edge_feather_px': 51}, {'edge_feather_px': -1},
+        ):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                lib.validate_match_args(bad, 100, 100)
+
+
+class TestMatchRoi(unittest.TestCase):
+    def test_box_grown_by_pad(self):
+        self.assertEqual(lib.match_roi(100, 100, 50, 40, 400, 300, 20), (80, 80, 90, 80))
+
+    def test_clipped_to_the_canvas(self):
+        self.assertEqual(lib.match_roi(-10, 5, 50, 40, 100, 100, 20), (0, 0, 60, 65))
+        self.assertEqual(lib.match_roi(60, 60, 100, 100, 100, 100, 30), (30, 30, 70, 70))
+
+    def test_layer_outside_the_canvas_has_no_roi(self):
+        self.assertIsNone(lib.match_roi(120, 0, 10, 10, 100, 100, 50))
+        self.assertIsNone(lib.match_roi(-60, 0, 50, 10, 100, 100, 50))
+
+
+
+class TestMatchMeasuring(unittest.TestCase):
+    def test_small_regions_are_measured_at_full_size(self):
+        self.assertEqual(lib.match_measure_scale(2048, 1000), 1.0)
+        self.assertEqual(lib.match_measure_scale(640, 480), 1.0)
+
+    def test_large_regions_scale_the_long_side_to_the_cap(self):
+        f = lib.match_measure_scale(6016, 4000)
+        self.assertAlmostEqual(6016 * f, lib.MATCH_MEASURE_MAX_SIDE)
+        self.assertAlmostEqual(lib.match_measure_scale(3000, 8000) * 8000, lib.MATCH_MEASURE_MAX_SIDE)
+
+    def test_scaled_distances_and_counts(self):
+        self.assertEqual(lib.match_scaled_px(400, 0.5), 200)
+        self.assertEqual(lib.match_scaled_px(1, 0.1), 1)
+        self.assertEqual(lib.match_scaled_px(0, 0.5), 0)
+        self.assertEqual(lib.match_full_res_count(250, 0.5), 1000)
+        self.assertEqual(lib.match_full_res_count(500, 1.0), 500)
+
+    def test_histogram_scale_by_precision(self):
+        self.assertEqual(lib.histogram_scale('u8-non-linear'), 1.0)
+        for nick in ('u16-non-linear', 'half-non-linear', 'float-non-linear', 'u32-non-linear'):
+            self.assertEqual(lib.histogram_scale(nick), 255.0, nick)
+
+    def test_linear_precisions_are_told_apart(self):
+        for nick in ('u8-linear', 'u16-linear', 'half-linear', 'float-linear', 'double-linear'):
+            self.assertTrue(lib.is_linear_precision(nick), nick)
+        for nick in ('u8-non-linear', 'u16-non-linear', 'float-non-linear', 'u8-perceptual', 'float-perceptual'):
+            self.assertFalse(lib.is_linear_precision(nick), nick)
+
+
 if __name__ == '__main__':
     unittest.main()

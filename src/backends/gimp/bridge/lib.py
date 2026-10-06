@@ -461,6 +461,158 @@ def validate_feather_px(value):
     return validate_range('feather_px', value, 0.0, MAX_FEATHER_PX)
 
 
+# ---- match_layer: statistics transfer as per-channel curves ---------------------------------
+#
+# Everything here is pure (no gi). Means and standard deviations are in GIMP's own histogram
+# units (0-255 in the image's perceptual encoding, the same space a gimp:curves filter works in).
+
+MATCH_TAG = 'match_layer'
+MATCH_MODES = ('both', 'color', 'tone')
+MATCH_REFERENCES = ('surround', 'below')
+MATCH_DEFAULT_STRENGTH = 70.0
+MATCH_MIN_PIXELS = 500
+MATCH_GAIN_MIN = 0.5
+MATCH_GAIN_MAX = 2.0
+MATCH_MAX_EDGE_CONTRACT_PX = 20
+MATCH_MAX_EDGE_FEATHER_PX = 50
+MATCH_SURROUND_MIN_PX = 16
+MATCH_SURROUND_MAX_PX = 400
+# A std-dev below this (0-255 units) is treated as a flat region: its contrast ratio is
+# meaningless, so the gain stays 1 and only the mean moves.
+MATCH_FLAT_SD = 0.5
+# Spacing of the helper points that keep a clamped curve on its line (see match_curve_points).
+MATCH_CURVE_STEP = 16.0
+# Measuring runs on a copy of the layer's region scaled so its long side is at most this: means
+# and spreads survive the downscale, and growing the surround ring stays cheap at any size.
+MATCH_MEASURE_MAX_SIDE = 2048
+
+
+def default_surround_px(layer_width, layer_height):
+    """About 12% of the layer's longer side, clamped to 16..400 px."""
+    px = int(round(0.12 * max(layer_width, layer_height)))
+    return max(MATCH_SURROUND_MIN_PX, min(MATCH_SURROUND_MAX_PX, px))
+
+
+def validate_match_args(args, layer_width, layer_height):
+    """The validated, defaulted `match_layer` options as a dict:
+    match/strength/reference/surround_px/edge_contract_px/edge_feather_px. `strength` is returned
+    as a 0..1 fraction under `s` as well."""
+    match = validate_choice('match', args.get('match') or 'both', MATCH_MODES)
+    reference = validate_choice('reference', args.get('reference') or 'surround', MATCH_REFERENCES)
+    strength = args.get('strength')
+    strength = validate_range(
+        'strength', MATCH_DEFAULT_STRENGTH if strength is None else strength, 0.0, 100.0
+    )
+    surround = args.get('surround_px')
+    surround = (
+        default_surround_px(layer_width, layer_height)
+        if surround is None
+        else validate_int_range('surround_px', surround, 1, MATCH_SURROUND_MAX_PX)
+    )
+    contract = args.get('edge_contract_px')
+    contract = validate_int_range(
+        'edge_contract_px', 0 if contract is None else contract, 0, MATCH_MAX_EDGE_CONTRACT_PX
+    )
+    feather = args.get('edge_feather_px')
+    feather = validate_int_range(
+        'edge_feather_px', 0 if feather is None else feather, 0, MATCH_MAX_EDGE_FEATHER_PX
+    )
+    return {
+        'match': match, 'reference': reference, 'strength': strength, 's': strength / 100.0,
+        'surround_px': surround, 'edge_contract_px': contract, 'edge_feather_px': feather,
+    }
+
+
+def match_transfer(mu_src, sd_src, mu_ref, sd_ref, s):
+    """The Reinhard-style linear map moving the source's mean/std toward the reference's, scaled
+    by `s` (0..1): out = (in - mu_src) * gain + mu_src + shift, with
+    gain = clamp(1 + (sd_ref / sd_src - 1) * s, 0.5, 2.0) and shift = (mu_ref - mu_src) * s.
+    A flat source (or reference) keeps gain 1. Returns {gain, shift, mean_after, std_after};
+    the `_after` values ignore the 0-255 clamp of the curve."""
+    if sd_src < MATCH_FLAT_SD or sd_ref < MATCH_FLAT_SD:
+        ratio = 1.0
+    else:
+        ratio = sd_ref / sd_src
+    gain = max(MATCH_GAIN_MIN, min(MATCH_GAIN_MAX, 1.0 + (ratio - 1.0) * s))
+    shift = (mu_ref - mu_src) * s
+    return {
+        'gain': gain, 'shift': shift,
+        'mean_after': mu_src + shift, 'std_after': sd_src * gain,
+    }
+
+
+def match_curve_points(mu_src, gain, shift):
+    """The transfer map as gimp:curves [input, output] points (0-255, strictly ascending input).
+    The line y = gain * (x - mu_src) + mu_src + shift is clamped to 0..255. Unclamped it is just
+    its two endpoints (a two-point curve is exactly straight; gain 1 and shift 0 gives
+    [[0, 0], [255, 255]]). Where the line meets the clamp, a point is added there and helper
+    points every MATCH_CURVE_STEP along the sloped part: GIMP draws a smooth spline through the
+    points, and without the helpers it bows away from the line (measured: ~6 levels at the
+    middle of a clamped curve)."""
+    def y_at(x):
+        return gain * (x - mu_src) + mu_src + shift
+
+    def clamp(y):
+        return max(0.0, min(255.0, y))
+
+    y0, y1 = y_at(0.0), y_at(255.0)
+    xs = [0.0, 255.0]
+    if y0 < 0.0 or y1 > 255.0:
+        # y is strictly increasing (gain > 0): it crosses 0 once and 255 once.
+        low = 0.0 if y0 >= 0.0 else mu_src - (mu_src + shift) / gain
+        high = 255.0 if y1 <= 255.0 else mu_src + (255.0 - mu_src - shift) / gain
+        knots = [x for x in (low, high) if MATCH_CURVE_STEP / 4 < x < 255.0 - MATCH_CURVE_STEP / 4]
+        xs.extend(knots)
+        # Helpers fill the sloped part [low, high] only, kept clear of the knots.
+        x = MATCH_CURVE_STEP * (int(low // MATCH_CURVE_STEP) + 1)
+        while x < 255.0:
+            if low + MATCH_CURVE_STEP / 4 < x < high - MATCH_CURVE_STEP / 4 and x > MATCH_CURVE_STEP / 4:
+                xs.append(float(x))
+            x += MATCH_CURVE_STEP
+    xs = sorted(set(xs))
+    return [[round(x, 2), round(clamp(y_at(x)), 2)] for x in xs]
+
+
+def match_measure_scale(width, height):
+    """The factor (0 < f <= 1) a measuring copy of a `width` x `height` region is scaled by."""
+    longest = max(width, height)
+    return 1.0 if longest <= MATCH_MEASURE_MAX_SIDE else MATCH_MEASURE_MAX_SIDE / float(longest)
+
+
+def match_scaled_px(px, factor):
+    """A pixel distance on a copy scaled by `factor`, never below 1 for a non-zero distance."""
+    return 0 if px <= 0 else max(1, int(round(px * factor)))
+
+
+def match_full_res_count(count, factor):
+    """A pixel count measured on a copy scaled by `factor`, as the full-resolution count."""
+    return int(round(count / (factor * factor)))
+
+
+def histogram_scale(nick):
+    """What a Drawable.histogram mean/std must be multiplied by to read 0-255: GIMP reports them
+    in 0-255 for 8-bit precisions and in 0-1 for every higher one."""
+    return 1.0 if nick.startswith('u8') else 255.0
+
+
+def is_linear_precision(nick):
+    """Whether a GIMP precision nick ('u8-non-linear', 'float-linear', ...) stores linear light."""
+    return nick.endswith('-linear') and not nick.endswith('-non-linear')
+
+
+def match_roi(layer_x, layer_y, layer_width, layer_height, canvas_width, canvas_height, pad):
+    """The layer's box grown by `pad` and clipped to the canvas, as (x, y, width, height); None
+    when the layer's own box does not touch the canvas."""
+    if (layer_x >= canvas_width or layer_y >= canvas_height
+            or layer_x + layer_width <= 0 or layer_y + layer_height <= 0):
+        return None
+    x0 = max(0, layer_x - pad)
+    y0 = max(0, layer_y - pad)
+    x1 = min(canvas_width, layer_x + layer_width + pad)
+    y1 = min(canvas_height, layer_y + layer_height + pad)
+    return x0, y0, x1 - x0, y1 - y0
+
+
 _HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
 
 # gimp_canvas's fill choices: the same white/black/transparent LAYER_FILLS a new layer gets, plus

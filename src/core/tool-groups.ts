@@ -327,6 +327,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   gimp_modify_selection: 'select',
   gimp_layer_mask: 'masks',
   gimp_get_selection_preview: 'verify',
+  gimp_match_layer: 'layers',
 };
 
 /**
