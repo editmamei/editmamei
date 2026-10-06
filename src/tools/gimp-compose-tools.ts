@@ -172,6 +172,7 @@ interface PlaceImageResult {
   y: number | null;
   parent_group: number | null;
   baked_filters?: string[];
+  orientation_applied?: number;
 }
 
 async function gimpPlaceImage(

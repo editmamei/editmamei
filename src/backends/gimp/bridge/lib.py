@@ -375,6 +375,69 @@ def canvas_anchor_offset(anchor, old_width, old_height, new_width, new_height):
     )
 
 
+# EXIF Orientation (1-8) -> the steps that turn the stored pixels upright, in order. Each step is
+# 'cw90' / 'cw180' / 'cw270' (clockwise rotation), 'flip_h' (mirror left-right) or 'flip_v'
+# (mirror top-bottom). 1 (normal) needs none.
+EXIF_ORIENTATION_STEPS = {
+    1: (),
+    2: ('flip_h',),
+    3: ('cw180',),
+    4: ('flip_v',),
+    5: ('cw90', 'flip_h'),
+    6: ('cw90',),
+    7: ('cw90', 'flip_v'),
+    8: ('cw270',),
+}
+
+
+def parse_exif_orientation(raw):
+    """The EXIF Orientation value (1-8) from a metadata tag's raw value, or None when it is
+    missing, non-numeric or out of range -- a broken tag is ignored, never an error."""
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value in EXIF_ORIENTATION_STEPS else None
+
+
+def exif_orientation_steps(orientation):
+    """The upright-making steps for an EXIF Orientation value; () for None, 1 or anything else."""
+    return EXIF_ORIENTATION_STEPS.get(orientation, ())
+
+
+EXIF_ORIENTATION_TAG = 'Exif.Image.Orientation'
+
+
+def read_exif_orientation(metadata):
+    """The orientation (1-8) a GimpMetadata-like object carries, or None when `metadata` is None,
+    has no usable tag, or reading it raises."""
+    if metadata is None:
+        return None
+    try:
+        return parse_exif_orientation(metadata.try_get_tag_string(EXIF_ORIENTATION_TAG))
+    except Exception:
+        return None
+
+
+# Every tag a viewer may read orientation from; the EXIF one is the one this bridge applies.
+ORIENTATION_TAGS = (EXIF_ORIENTATION_TAG, 'Xmp.tiff.Orientation', 'Exif.Thumbnail.Orientation')
+
+
+def clear_exif_orientation(metadata):
+    """Removes the orientation tags from `metadata` (absent reads as normal); True when the EXIF
+    one was cleared. Clearing is used rather than writing 1: GIMP's metadata object can silently
+    ignore a write of that tag while still reporting success."""
+    cleared = False
+    for tag in ORIENTATION_TAGS:
+        try:
+            ok = bool(metadata.try_clear_tag(tag))
+        except Exception:
+            ok = False
+        if tag == EXIF_ORIENTATION_TAG:
+            cleared = ok
+    return cleared
+
+
 def pct_to_unit(name, value, lo=-100.0, hi=100.0):
     """User-facing -100..100 (or a narrower lo..hi) percent-like value -> the -1..1 unit
     GEGL/GIMP properties in this family use."""

@@ -2203,5 +2203,112 @@ class TestVisibleImageIds(unittest.TestCase):
         self.assertEqual(lib.visible_image_ids([3, 4], []), [3, 4])
 
 
+class TestExifOrientation(unittest.TestCase):
+    # Pixel grid indexed [row][col]; the steps must turn the grid stored for each orientation
+    # into the upright 2x3 picture [[a, b, c], [d, e, f]].
+    UPRIGHT = [['a', 'b', 'c'], ['d', 'e', 'f']]
+
+    @staticmethod
+    def _stored(orientation):
+        # What a camera writes for `UPRIGHT` under each EXIF orientation (the EXIF spec's
+        # "0th row / 0th column" table), built from the spec's own definitions rather than lib.
+        up = TestExifOrientation.UPRIGHT
+        rows, cols = len(up), len(up[0])
+        if orientation == 1:
+            return [r[:] for r in up]
+        if orientation == 2:
+            return [r[::-1] for r in up]
+        if orientation == 3:
+            return [r[::-1] for r in up[::-1]]
+        if orientation == 4:
+            return up[::-1]
+        # 5-8 swap the axes: stored has `cols` rows of `rows` pixels; stored row i is a visual
+        # column and stored column j a visual row, per each orientation's own row/column sides.
+        if orientation == 5:   # 0th row = visual left, 0th column = visual top
+            return [[up[j][i] for j in range(rows)] for i in range(cols)]
+        if orientation == 6:   # 0th row = visual right, 0th column = visual top
+            return [[up[j][cols - 1 - i] for j in range(rows)] for i in range(cols)]
+        if orientation == 7:   # 0th row = visual right, 0th column = visual bottom
+            return [[up[rows - 1 - j][cols - 1 - i] for j in range(rows)] for i in range(cols)]
+        if orientation == 8:   # 0th row = visual left, 0th column = visual bottom
+            return [[up[rows - 1 - j][i] for j in range(rows)] for i in range(cols)]
+        raise AssertionError(orientation)
+
+    @staticmethod
+    def _apply(grid, step):
+        if step == 'flip_h':
+            return [r[::-1] for r in grid]
+        if step == 'flip_v':
+            return grid[::-1]
+        cw = {'cw90': 1, 'cw180': 2, 'cw270': 3}[step]
+        for _ in range(cw):
+            grid = [list(col) for col in zip(*grid[::-1])]
+        return grid
+
+    def test_every_orientation_steps_to_upright(self):
+        for orientation in range(1, 9):
+            grid = self._stored(orientation)
+            for step in lib.exif_orientation_steps(orientation):
+                grid = self._apply(grid, step)
+            self.assertEqual(grid, self.UPRIGHT, 'orientation %d' % orientation)
+
+    def test_normal_and_unknown_orientations_need_no_steps(self):
+        self.assertEqual(lib.exif_orientation_steps(1), ())
+        self.assertEqual(lib.exif_orientation_steps(None), ())
+        self.assertEqual(lib.exif_orientation_steps(9), ())
+
+    def test_parse_accepts_one_to_eight(self):
+        for n in range(1, 9):
+            self.assertEqual(lib.parse_exif_orientation(str(n)), n)
+        self.assertEqual(lib.parse_exif_orientation(' 6 '), 6)
+        self.assertEqual(lib.parse_exif_orientation(6), 6)
+
+    def test_parse_ignores_a_broken_tag(self):
+        for raw in (None, '', 'right, top', '0', '9', '-1', '6.5', object()):
+            self.assertIsNone(lib.parse_exif_orientation(raw), repr(raw))
+
+    def test_clear_drops_every_orientation_tag(self):
+        class FakeMetadata:
+            def __init__(self):
+                self.tags = {tag: '6' for tag in lib.ORIENTATION_TAGS}
+
+            def try_clear_tag(self, tag):
+                return self.tags.pop(tag, None) is not None
+
+        md = FakeMetadata()
+        self.assertTrue(lib.clear_exif_orientation(md))
+        self.assertEqual(md.tags, {})
+
+    def test_read_and_clear_through_a_metadata_object(self):
+        class FakeMetadata:
+            def __init__(self, value):
+                self.tags = {} if value is None else {lib.EXIF_ORIENTATION_TAG: value}
+
+            def try_get_tag_string(self, tag):
+                return self.tags.get(tag)
+
+            def try_clear_tag(self, tag):
+                return self.tags.pop(tag, None) is not None
+
+        md = FakeMetadata('6')
+        self.assertEqual(lib.read_exif_orientation(md), 6)
+        self.assertTrue(lib.clear_exif_orientation(md))
+        self.assertNotIn(lib.EXIF_ORIENTATION_TAG, md.tags)
+        self.assertIsNone(lib.read_exif_orientation(md))
+        self.assertIsNone(lib.read_exif_orientation(FakeMetadata(None)))
+        self.assertIsNone(lib.read_exif_orientation(None))
+
+    def test_read_and_clear_swallow_a_failing_metadata_object(self):
+        class Broken:
+            def try_get_tag_string(self, tag):
+                raise RuntimeError('boom')
+
+            def try_clear_tag(self, tag):
+                raise RuntimeError('boom')
+
+        self.assertIsNone(lib.read_exif_orientation(Broken()))
+        self.assertFalse(lib.clear_exif_orientation(Broken()))
+
+
 if __name__ == '__main__':
     unittest.main()
