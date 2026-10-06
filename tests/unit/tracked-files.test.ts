@@ -44,6 +44,25 @@ describe('trackedFiles', () => {
     expect(all).toEqual([tracked, nested].sort());
   });
 
+  it('includes files listed literally in info/exclude, not globs or unlisted ones', () => {
+    git('init', '-q');
+    const tracked = write('docs/a.md');
+    git('add', 'docs/a.md');
+    git('commit', '-q', '-m', 'init');
+    const hydrated = write('docs/x.md');
+    write('docs/notes/scratch.md');
+    write('docs/ignored.md');
+    write('docs/frames/f1.png');
+    writeFileSync(join(dir, '.gitignore'), 'docs/ignored.md\n');
+    writeFileSync(
+      join(dir, '.git', 'info', 'exclude'),
+      '# hydrated\n/docs/x.md\n/docs/notes/*\n/docs/frames/\n/docs/missing.md\n'
+    );
+
+    expect(trackedFiles(dir, 'docs').sort()).toEqual([tracked, hydrated].sort());
+    expect(trackedFiles(dir, 'other')).toEqual([]);
+  });
+
   it('skips a tracked file deleted from the work tree', () => {
     git('init', '-q');
     const keep = write('docs/keep.md');
