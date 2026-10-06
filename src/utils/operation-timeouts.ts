@@ -324,6 +324,9 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // gimp_convert_image_mode: a single base-type conversion pass over the whole image -- matched
   // to gimp_resize_image's budget for the same "full-image pass" class of cost.
   gimp_convert_image_mode: 30_000,
+  // gimp_text: a font-list read (retried while a fresh session loads its fonts) plus one text
+  // render, which scales with font size and text length.
+  gimp_text: 30_000,
 };
 
 /**

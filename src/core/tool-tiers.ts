@@ -338,6 +338,8 @@ export const TOOL_TIERS: Record<string, Tier> = {
   gimp_create_document: 'community',
   gimp_place_image: 'community',
   gimp_canvas: 'community',
+  // Live text layers (create/set_content/set_font/set_color/set_alignment), the GIMP twin of ps_text.
+  gimp_text: 'dev',
   gimp_convert_image_mode: 'community',
 };
 

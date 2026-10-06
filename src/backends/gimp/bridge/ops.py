@@ -1043,7 +1043,7 @@ def _layer_node_shallow(layer):
     `get_children()`, but is still checked rather than trusted blindly -- offsets fall back to
     null rather than reporting a wrong position."""
     ok, off_x, off_y = layer.get_offsets()
-    return {
+    node = {
         'layer_id': layer.get_id(),
         'name': layer.get_name(),
         'opacity': layer.get_opacity(),
@@ -1055,6 +1055,14 @@ def _layer_node_shallow(layer):
         'is_text_layer': layer.is_text_layer(),
         'children': [],
     }
+    if node['is_text_layer']:
+        # A text layer this engine can't read (an odd unit, a missing font) still describes as
+        # a text layer; it never fails the whole document.
+        try:
+            node.update(_text_fields(layer))
+        except Exception:
+            pass
+    return node
 
 
 def _build_layer_tree(top_layers, max_nodes=MAX_DESCRIBE_LAYER_NODES):
@@ -2694,6 +2702,333 @@ def op_layer(args):
     return fn(img, args)
 
 
+# ---- gimp_text / gimp_inspect what=fonts ------------------------------------------------------
+#
+# A text layer stays a live Gimp.TextLayer: text, font, size, colour and justification are
+# properties of the layer, re-rendered by GIMP on every change. Sizes are exchanged in points and
+# stored in pixels (pt * the image's vertical resolution / 72). A rendered layer past the engine's
+# size cap is refused: a new layer is discarded, an edit is rolled back to the previous values.
+
+_JUSTIFICATIONS = {
+    'left': Gimp.TextJustification.LEFT,
+    'right': Gimp.TextJustification.RIGHT,
+    'center': Gimp.TextJustification.CENTER,
+    'fill': Gimp.TextJustification.FILL,
+}
+
+
+def _font_list():
+    """Every installed font as `{name: Gimp.Font}`. A freshly started GIMP can report an empty
+    list while its font cache is still loading, so an empty result is retried briefly."""
+    for _ in range(20):
+        fonts = Gimp.fonts_get_list('')
+        if fonts:
+            return {f.get_name(): f for f in fonts}
+        time.sleep(0.25)
+    raise lib.OpError('gimp_op_failed', 'GIMP reports no installed fonts (the font list is empty)')
+
+
+def op_fonts(args):
+    """`gimp_inspect what=fonts`: installed font names, sorted, optionally narrowed by a
+    case-insensitive substring `filter`, capped (`total` counts every match)."""
+    flt = args.get('filter')
+    if flt is not None and not isinstance(flt, str):
+        raise ValueError('filter must be a string')
+    installed = list(_font_list())
+    names, total = lib.list_fonts(installed, flt)
+    return {'fonts': names, 'total': total, 'returned': len(names), 'truncated': len(names) < total,
+            'default': lib.pick_default_font(installed)}
+
+
+def _image_ppi(img):
+    ok, _xres, yres = img.get_resolution()
+    return yres if ok else None
+
+
+def _text_font_size_pt(layer):
+    size, unit = layer.get_font_size()
+    return lib.unit_size_to_pt(
+        size, unit.get_id() == Gimp.Unit.pixel().get_id(), unit.get_factor(),
+        _image_ppi(layer.get_image()),
+    )
+
+
+def _text_color_rgb(layer):
+    r, g, b, _a = layer.get_color().get_rgba()
+    return {'red': lib.linear_to_srgb_u8(r), 'green': lib.linear_to_srgb_u8(g),
+            'blue': lib.linear_to_srgb_u8(b)}
+
+
+def _has_markup(layer):
+    """Whether the layer's text is stored as markup (per-character styling from the GUI), in
+    which case it has no plain text."""
+    return bool(layer.get_markup())
+
+
+def _text_fields(layer):
+    """A text layer's own state, in gimp_text's units (points, 0-255 colour, ps_text-style
+    alignment names). Shared by `describe`'s layer nodes and gimp_text's results. The text is
+    capped for reporting (`text_length` is the full length); a markup layer reports '' with
+    `has_markup`."""
+    font = layer.get_font()
+    has_markup = _has_markup(layer)
+    text, length, truncated = lib.text_for_report('' if has_markup else layer.get_text())
+    return {
+        'text': text,
+        'text_length': length,
+        'text_truncated': truncated,
+        'has_markup': has_markup,
+        'font': font.get_name() if font is not None else None,
+        'font_size': _text_font_size_pt(layer),
+        'color': _text_color_rgb(layer),
+        'alignment': lib.alignment_name(layer.get_justification().value_nick),
+    }
+
+
+def _text_record(layer):
+    ok, off_x, off_y = layer.get_offsets()
+    record = {'layer_id': layer.get_id(), 'name': layer.get_name()}
+    record.update(_text_fields(layer))
+    ppi = _image_ppi(layer.get_image())
+    record['ppi'] = ppi
+    record['font_size_px'] = round(_text_size_px(layer), 1)
+    record['bounds'] = {
+        'x': off_x if ok else None, 'y': off_y if ok else None,
+        'width': layer.get_width(), 'height': layer.get_height(),
+    }
+    return record
+
+
+def _set_text_color(layer, rgb):
+    color = Gegl.Color.new('black')
+    color.set_rgba(lib.srgb_u8_to_linear(rgb[0]), lib.srgb_u8_to_linear(rgb[1]),
+                   lib.srgb_u8_to_linear(rgb[2]), 1.0)
+    layer.set_color(color)
+
+
+_TEXT_PROBE_PX = 8.0
+
+
+def _check_estimated_text_size(text, font, size_px, img, layer=None):
+    """Refuse text that would render past the size cap BEFORE rendering it at full size: lay it
+    out once on a throwaway layer at a tiny size and scale the measured extent up (with headroom,
+    plus `layer`'s own letter/line spacing and indent, which do not scale), so an absurd request
+    never makes GIMP allocate and draw an enormous layer just to be refused. Fails closed: when
+    no estimate can be made, the request is refused."""
+    if font is None:
+        font = _resolved_font(_font_list(), None)
+    probe = Gimp.TextLayer.new(img, text, font, _TEXT_PROBE_PX, Gimp.Unit.pixel())
+    if probe is None:
+        raise lib.OpError('gimp_op_failed', 'GIMP could not lay out the text to check its size')
+    try:
+        spacing = {}
+        if layer is not None:
+            spacing = {
+                'letter_spacing': layer.get_letter_spacing(),
+                'line_spacing': layer.get_line_spacing(),
+                'indent': layer.get_indent(),
+            }
+        width, height = lib.estimate_text_extent(
+            probe.get_width(), probe.get_height(), _TEXT_PROBE_PX, size_px,
+            chars=len(text), lines=text.count('\n') + 1, **spacing
+        )
+    finally:
+        probe.delete()
+    lib.check_estimated_text_size(width, height)
+
+
+def _text_size_px(layer):
+    """The layer's font size in pixels, whichever unit it is stored in."""
+    size, unit = layer.get_font_size()
+    if unit.get_id() == Gimp.Unit.pixel().get_id():
+        return size
+    return lib.pt_to_px(_text_font_size_pt(layer), _image_ppi(layer.get_image()))
+
+
+def _text_state(layer):
+    return {
+        'text': layer.get_text(), 'font': layer.get_font(), 'size': layer.get_font_size(),
+        'color': layer.get_color(), 'justification': layer.get_justification(),
+    }
+
+
+def _same_size(a, b):
+    return a[0] == b[0] and a[1].get_id() == b[1].get_id()
+
+
+def _text_restore(layer, state):
+    """Best-effort rollback to a `_text_state` snapshot, touching only what changed (each setter
+    re-renders the layer). When the size grew it is restored first, so the font and text go back
+    at the smaller size. Never raises (it runs while the original failure is propagating)."""
+    try:
+        current_font = layer.get_font()
+        size_changed = not _same_size(layer.get_font_size(), state['size'])
+        shrink_first = size_changed and _text_size_px(layer) > _size_px_of(layer, state['size'])
+        if shrink_first:
+            layer.set_font_size(state['size'][0], state['size'][1])
+        if state['font'] is not None and (
+            current_font is None or current_font.get_name() != state['font'].get_name()
+        ):
+            layer.set_font(state['font'])
+        if state['text'] is not None and layer.get_text() != state['text']:
+            layer.set_text(state['text'])
+        if size_changed and not shrink_first:
+            layer.set_font_size(state['size'][0], state['size'][1])
+        layer.set_color(state['color'])
+        if layer.get_justification() != state['justification']:
+            layer.set_justification(state['justification'])
+    except Exception:
+        pass
+
+
+def _size_px_of(layer, size):
+    """A stored (value, unit) font size in pixels."""
+    value, unit = size
+    if unit.get_id() == Gimp.Unit.pixel().get_id():
+        return value
+    pt = lib.unit_size_to_pt(value, False, unit.get_factor(), _image_ppi(layer.get_image()))
+    return lib.pt_to_px(pt, _image_ppi(layer.get_image()))
+
+
+def _resolved_font(fonts, font_name):
+    if font_name is None:
+        return fonts[lib.pick_default_font(list(fonts))]
+    name, _how = lib.resolve_font(font_name, list(fonts))
+    return fonts[name]
+
+
+def _op_text_create(img, args):
+    text = lib.validate_text_content(lib.require(args, 'text'))
+    size_pt = lib.validate_font_size_pt(args.get('font_size', lib.TEXT_DEFAULT_FONT_PT))
+    x = int(args.get('x', 100))
+    y = int(args.get('y', 100))
+    _validated_move_offset(img, x, y)
+    rgb = lib.validate_text_rgb(args)
+    justification = None
+    if args.get('alignment') is not None:
+        justification = _JUSTIFICATIONS[lib.justification_nick(args['alignment'])]
+    _layer_type_for(img)  # refuses image modes a text layer cannot be added to (indexed)
+    font = _resolved_font(_font_list(), args.get('font_name'))
+    size_px = lib.pt_to_px(size_pt, _image_ppi(img))
+    _check_estimated_text_size(text, font, size_px, img)
+    layer = Gimp.TextLayer.new(img, text, font, size_px, Gimp.Unit.pixel())
+    if layer is None:
+        raise lib.OpError('gimp_op_failed', 'GIMP could not create the text layer')
+    try:
+        img.insert_layer(layer, None, 0)
+        _assert_layer_attached(img, layer, 'the new text layer')
+        # Colour and justification only take effect once the layer is in the image.
+        if rgb is not None:
+            _set_text_color(layer, rgb)
+        if justification is not None:
+            layer.set_justification(justification)
+        lib.check_text_layer_size(layer.get_width(), layer.get_height())
+        layer.set_offsets(x, y)
+        record = _text_record(layer)
+    except Exception:
+        _discard_layer(img, layer)
+        raise
+    finally:
+        _drop_proxies(img.get_id())
+    return record
+
+
+def _text_target(img, args):
+    layer = _layer(img, args)
+    if not layer.is_text_layer():
+        raise ValueError(
+            'layer %r is not a text layer; address a text layer by layer_id (gimp_inspect '
+            'what=layers flags them with is_text_layer)' % layer.get_name()
+        )
+    if _has_markup(layer):
+        raise ValueError(
+            'layer %r has per-character styling (markup), which gimp_text cannot edit without '
+            'losing it; create a new text layer instead' % layer.get_name()
+        )
+    return layer
+
+
+def _op_text_edit(img, args, apply_fn, precheck_fn=None):
+    """Run `apply_fn(layer)` on the targeted text layer. `precheck_fn(layer)` runs first, before
+    anything changes, so a refusal there costs no re-render. On any failure in `apply_fn`, or if
+    the re-rendered layer is past the size cap, restore the previous values and re-raise."""
+    layer = _text_target(img, args)
+    if precheck_fn is not None:
+        precheck_fn(layer)
+    state = _text_state(layer)
+    try:
+        apply_fn(layer)
+        lib.check_text_layer_size(layer.get_width(), layer.get_height())
+    except Exception:
+        _text_restore(layer, state)
+        raise
+    finally:
+        _drop_proxies(img.get_id())
+    return _text_record(layer)
+
+
+def _op_text_set_content(img, args):
+    text = lib.validate_text_content(lib.require(args, 'text'))
+    return _op_text_edit(
+        img, args, lambda layer: layer.set_text(text),
+        precheck_fn=lambda layer: _check_estimated_text_size(
+            text, layer.get_font(), _text_size_px(layer), img, layer),
+    )
+
+
+def _op_text_set_font(img, args):
+    font_name = lib.require(args, 'font_name')
+    size_pt = lib.validate_font_size_pt(args['font_size']) if args.get('font_size') is not None else None
+    font = _resolved_font(_font_list(), font_name)
+    new_size_px = lib.pt_to_px(size_pt, _image_ppi(img)) if size_pt is not None else None
+
+    def precheck_fn(layer):
+        size_px = new_size_px if new_size_px is not None else _text_size_px(layer)
+        _check_estimated_text_size(layer.get_text(), font, size_px, img, layer)
+
+    def apply_fn(layer):
+        # Shrinking: size first, so the new font never renders at the larger old size.
+        if new_size_px is not None and new_size_px < _text_size_px(layer):
+            layer.set_font_size(new_size_px, Gimp.Unit.pixel())
+            layer.set_font(font)
+        else:
+            layer.set_font(font)
+            if new_size_px is not None:
+                layer.set_font_size(new_size_px, Gimp.Unit.pixel())
+
+    return _op_text_edit(img, args, apply_fn, precheck_fn=precheck_fn)
+
+
+def _op_text_set_color(img, args):
+    rgb = lib.validate_text_rgb(args)
+    if rgb is None:
+        raise ValueError('red, green and blue are required')
+    return _op_text_edit(img, args, lambda layer: _set_text_color(layer, rgb))
+
+
+def _op_text_set_alignment(img, args):
+    justification = _JUSTIFICATIONS[lib.justification_nick(lib.require(args, 'alignment'))]
+    return _op_text_edit(img, args, lambda layer: layer.set_justification(justification))
+
+
+TEXT_OPS = {
+    'create': _op_text_create,
+    'set_content': _op_text_set_content,
+    'set_font': _op_text_set_font,
+    'set_color': _op_text_set_color,
+    'set_alignment': _op_text_set_alignment,
+}
+
+
+def op_text(args):
+    img = _image(args)
+    top = args.get('op')
+    fn = TEXT_OPS.get(top)
+    if fn is None:
+        raise ValueError('op must be one of %s' % sorted(TEXT_OPS))
+    return fn(img, args)
+
+
 # ---- gimp_bake --------------------------------------------------------------------------------
 
 
@@ -3148,6 +3483,7 @@ OPS = {
     'select_none': op_select_none, 'layer': op_layer, 'bake': op_bake,
     'create_document': op_create_document, 'place_image': op_place_image,
     'canvas': op_canvas, 'convert_image_mode': op_convert_image_mode,
+    'text': op_text, 'fonts': op_fonts,
 }
 
 

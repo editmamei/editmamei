@@ -26,6 +26,7 @@ import { createGimpVerifyTools } from '../../tools/gimp-verify-tools.js';
 import { createGimpCheckpointTools } from '../../tools/gimp-checkpoint-tools.js';
 import { createGimpLayerTools } from '../../tools/gimp-layer-tools.js';
 import { createGimpComposeTools } from '../../tools/gimp-compose-tools.js';
+import { createGimpTextTools } from '../../tools/gimp-text-tools.js';
 
 // gimp_* tool factories; each takes (gimp: GimpBackend). Exported so tests
 // (the leak-guard / factory-wiring derivations, mirroring `ceFactories`) can
@@ -43,6 +44,7 @@ export const gimpFactories = [
   createGimpCheckpointTools,
   createGimpLayerTools,
   createGimpComposeTools,
+  createGimpTextTools,
 ];
 
 export const gimpModule: EditmameiModule = {

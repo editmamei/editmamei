@@ -321,6 +321,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   // grouped with gimp_layer/gimp_bake, not gimp_open_document/gimp_create_document.
   gimp_place_image: 'layers',
   gimp_canvas: 'document',
+  gimp_text: 'layers',
   gimp_convert_image_mode: 'document',
 };
 

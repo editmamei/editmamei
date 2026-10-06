@@ -246,6 +246,8 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'gimp_create_document',
   'gimp_place_image',
   'gimp_canvas',
+  // gimp_text: creates and restyles text layers.
+  'gimp_text',
   'gimp_convert_image_mode',
 ]);
 

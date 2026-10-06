@@ -2308,6 +2308,214 @@ class TestExifOrientation(unittest.TestCase):
 
         self.assertIsNone(lib.read_exif_orientation(Broken()))
         self.assertFalse(lib.clear_exif_orientation(Broken()))
+FONT_NAMES = [
+    'Sans-serif', 'Sans-serif Bold', 'Serif', 'Arial Regular', 'Arial Bold', 'Arial Narrow',
+    'Arial Black', 'Inter Regular', 'Inter Bold', 'Inter Bold Italic', 'Open Sans Regular',
+    'Open Sans Bold', 'Playfair Display Regular', 'Playfair Display Black Italic', 'Bebas Neue',
+    'Bahnschrift Light Condensed', 'Bahnschrift Regular', 'Consolas Italic', 'Zapfino Medium',
+]
+
+
+class TestResolveFont(unittest.TestCase):
+    def test_exact_full_name_is_case_insensitive(self):
+        self.assertEqual(lib.resolve_font('inter bold', FONT_NAMES), ('Inter Bold', 'name'))
+        self.assertEqual(lib.resolve_font('OPEN SANS BOLD', FONT_NAMES), ('Open Sans Bold', 'name'))
+
+    def test_family_with_a_space_resolves_to_its_regular_face(self):
+        self.assertEqual(lib.resolve_font('Open Sans', FONT_NAMES), ('Open Sans Regular', 'family+regular'))
+        self.assertEqual(lib.resolve_font('Playfair Display', FONT_NAMES),
+                         ('Playfair Display Regular', 'family+regular'))
+
+    def test_multi_word_style_names(self):
+        self.assertEqual(lib.resolve_font('Playfair Display Black Italic', FONT_NAMES)[0],
+                         'Playfair Display Black Italic')
+
+    def test_family_without_a_regular_face_uses_the_shortest_face(self):
+        name, how = lib.resolve_font('Consolas', FONT_NAMES)
+        self.assertEqual((name, how), ('Consolas Italic', 'family'))
+        name, how = lib.resolve_font('Zapfino', FONT_NAMES)
+        self.assertEqual((name, how), ('Zapfino Medium', 'family+regular'))
+
+    def test_family_prefers_regular_over_a_longer_style_name(self):
+        self.assertEqual(lib.resolve_font('Arial', FONT_NAMES)[0], 'Arial Regular')
+        self.assertEqual(lib.resolve_font('Bahnschrift', FONT_NAMES)[0], 'Bahnschrift Regular')
+
+    def test_a_name_listed_bare_matches_itself(self):
+        self.assertEqual(lib.resolve_font('Bebas Neue', FONT_NAMES), ('Bebas Neue', 'name'))
+        self.assertEqual(lib.resolve_font('Serif', FONT_NAMES), ('Serif', 'name'))
+
+    def test_style_word_order_and_punctuation_are_tolerated(self):
+        self.assertEqual(lib.resolve_font('Inter Italic Bold', FONT_NAMES)[0], 'Inter Bold Italic')
+        self.assertEqual(lib.resolve_font('Sans_serif', FONT_NAMES)[0], 'Sans-serif')
+
+    def test_a_prefix_of_an_unrelated_name_is_not_a_family(self):
+        with self.assertRaises(ValueError):
+            lib.resolve_font('Open', FONT_NAMES)
+
+    def test_a_miss_lists_up_to_eight_closest_names(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.resolve_font('Intr', FONT_NAMES)
+        message = str(ctx.exception)
+        self.assertIn("no installed font matches 'Intr'", message)
+        self.assertIn('Closest installed names:', message)
+        listed = message.split('Closest installed names: ')[1].split(', ')
+        self.assertLessEqual(len(listed), 8)
+        self.assertIn('Inter Regular', listed)
+
+    def test_suggestions_cap_at_the_limit_and_come_from_installed_names(self):
+        suggestions = lib.font_suggestions('Arial Condensed Bold', FONT_NAMES)
+        self.assertLessEqual(len(suggestions), lib.FONT_SUGGESTION_LIMIT)
+        self.assertTrue(all(s in FONT_NAMES for s in suggestions))
+        self.assertIn('Arial Bold', suggestions)
+        self.assertEqual(len(lib.font_suggestions('zzz', FONT_NAMES)), lib.FONT_SUGGESTION_LIMIT)
+
+    def test_an_empty_font_list_is_reported(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.resolve_font('Inter', [])
+        self.assertIn('no fonts are installed', str(ctx.exception))
+
+    def test_blank_or_non_string_names_are_refused(self):
+        for bad in ('', '   ', None, 5):
+            with self.assertRaises(ValueError):
+                lib.resolve_font(bad, FONT_NAMES)
+
+
+class TestDefaultFontAndList(unittest.TestCase):
+    def test_default_prefers_the_generic_sans(self):
+        self.assertEqual(lib.pick_default_font(FONT_NAMES), 'Sans-serif')
+
+    def test_default_falls_back_to_the_first_sorted_name(self):
+        self.assertEqual(lib.pick_default_font(['Zed', 'alpha', 'Beta']), 'alpha')
+        self.assertIsNone(lib.pick_default_font([]))
+
+    def test_list_is_sorted_case_insensitively_and_filterable(self):
+        page, total = lib.list_fonts(['b', 'A', 'c', 'B2'])
+        self.assertEqual((page, total), (['A', 'b', 'B2', 'c'], 4))
+        self.assertEqual(lib.list_fonts(['Inter Bold', 'Arial', 'inter regular'], 'INTER'),
+                         (['Inter Bold', 'inter regular'], 2))
+
+    def test_list_is_capped_but_total_counts_every_match(self):
+        names = ['Font %04d' % i for i in range(lib.TEXT_FONT_LIST_CAP + 37)]
+        page, total = lib.list_fonts(names)
+        self.assertEqual(len(page), lib.TEXT_FONT_LIST_CAP)
+        self.assertEqual(total, lib.TEXT_FONT_LIST_CAP + 37)
+
+
+class TestTextValidation(unittest.TestCase):
+    def test_alignment_mapping(self):
+        self.assertEqual(lib.justification_nick('LEFT'), 'left')
+        self.assertEqual(lib.justification_nick('CENTER'), 'center')
+        self.assertEqual(lib.justification_nick('RIGHT'), 'right')
+        self.assertEqual(lib.justification_nick('FULLYJUSTIFIED'), 'fill')
+
+    def test_unsupported_alignments_are_refused_with_the_supported_list(self):
+        for value in ('LEFTJUSTIFIED', 'CENTERJUSTIFIED', 'RIGHTJUSTIFIED'):
+            with self.assertRaises(ValueError) as ctx:
+                lib.justification_nick(value)
+            self.assertIn('not supported by GIMP text layers', str(ctx.exception))
+            self.assertIn('FULLYJUSTIFIED', str(ctx.exception))
+        with self.assertRaises(ValueError):
+            lib.justification_nick('diagonal')
+
+    def test_alignment_name_round_trips_every_supported_value(self):
+        for name, nick in lib.TEXT_ALIGNMENTS.items():
+            self.assertEqual(lib.alignment_name(nick), name)
+        self.assertIsNone(lib.alignment_name('nonsense'))
+
+    def test_text_cap_is_2000_characters(self):
+        self.assertEqual(lib.validate_text_content('a' * 2000), 'a' * 2000)
+        with self.assertRaises(ValueError) as ctx:
+            lib.validate_text_content('a' * 2001)
+        self.assertIn('at most 2000 characters', str(ctx.exception))
+
+    def test_text_must_be_a_non_empty_string(self):
+        for bad in ('', None, 5):
+            with self.assertRaises(ValueError):
+                lib.validate_text_content(bad)
+
+    def test_font_size_bounds(self):
+        self.assertEqual(lib.validate_font_size_pt(1), 1.0)
+        self.assertEqual(lib.validate_font_size_pt(1296), 1296.0)
+        for bad in (0.5, 1297, True, 'big'):
+            with self.assertRaises(ValueError):
+                lib.validate_font_size_pt(bad)
+
+    def test_rgb_all_or_nothing(self):
+        self.assertIsNone(lib.validate_text_rgb({}))
+        self.assertEqual(lib.validate_text_rgb({'red': 1, 'green': 2, 'blue': 3}), (1, 2, 3))
+        with self.assertRaises(ValueError) as ctx:
+            lib.validate_text_rgb({'red': 1})
+        self.assertIn('missing: green, blue', str(ctx.exception))
+        for bad in ({'red': 256, 'green': 0, 'blue': 0}, {'red': -1, 'green': 0, 'blue': 0},
+                    {'red': 1.5, 'green': 0, 'blue': 0}, {'red': True, 'green': 0, 'blue': 0}):
+            with self.assertRaises(ValueError):
+                lib.validate_text_rgb(bad)
+
+    def test_points_convert_through_the_image_resolution(self):
+        self.assertAlmostEqual(lib.pt_to_px(24, 72), 24)
+        self.assertAlmostEqual(lib.pt_to_px(24, 300), 100)
+        self.assertAlmostEqual(lib.pt_to_px(24, None), 24)
+        self.assertAlmostEqual(lib.pt_to_px(24, 0), 24)
+        self.assertEqual(lib.px_to_pt(100, 300), 24.0)
+        self.assertEqual(lib.unit_size_to_pt(100, True, 0.0, 300), 24.0)
+        self.assertEqual(lib.unit_size_to_pt(24, False, 72.0, 300), 24.0)
+        self.assertEqual(lib.unit_size_to_pt(1, False, 1.0, 300), 72.0)
+
+    def test_srgb_conversion_round_trips_every_8_bit_value(self):
+        for v in range(256):
+            self.assertEqual(lib.linear_to_srgb_u8(lib.srgb_u8_to_linear(v)), v)
+        self.assertAlmostEqual(lib.srgb_u8_to_linear(255), 1.0)
+        self.assertEqual(lib.linear_to_srgb_u8(-1), 0)
+        self.assertEqual(lib.linear_to_srgb_u8(2), 255)
+
+    def test_rendered_size_past_the_cap_is_refused(self):
+        lib.check_text_layer_size(2000, 500)
+        with self.assertRaises(ValueError) as ctx:
+            lib.check_text_layer_size(40000, 100)
+        self.assertIn('past the size limit', str(ctx.exception))
+        with self.assertRaises(ValueError):
+            lib.check_text_layer_size(20000, 20000)
+
+
+class TestTextEstimate(unittest.TestCase):
+    def test_scales_the_probe_with_headroom(self):
+        w, h = lib.estimate_text_extent(40, 10, 8, 80)
+        self.assertEqual((w, h), (math.ceil(400 * lib.TEXT_ESTIMATE_MARGIN), math.ceil(100 * lib.TEXT_ESTIMATE_MARGIN)))
+
+    def test_adds_unscaled_spacing_and_indent(self):
+        base_w, base_h = lib.estimate_text_extent(40, 10, 8, 80, chars=5, lines=3)
+        w, h = lib.estimate_text_extent(40, 10, 8, 80, chars=5, lines=3, letter_spacing=1000,
+                                        line_spacing=1000, indent=50)
+        self.assertEqual(w, base_w + 5 * 1000 + 50)
+        self.assertEqual(h, base_h + 2 * 1000)
+
+    def test_negative_spacing_never_shrinks_the_estimate(self):
+        self.assertEqual(
+            lib.estimate_text_extent(40, 10, 8, 80, chars=5, lines=3, letter_spacing=-50,
+                                     line_spacing=-50, indent=-50),
+            lib.estimate_text_extent(40, 10, 8, 80, chars=5, lines=3),
+        )
+
+    def test_an_empty_probe_estimates_at_least_one_pixel(self):
+        self.assertEqual(lib.estimate_text_extent(0, 0, 8, 80), (1, 1))
+
+    def test_estimated_refusal_has_its_own_wording(self):
+        lib.check_estimated_text_size(2000, 500)
+        with self.assertRaises(ValueError) as ctx:
+            lib.check_estimated_text_size(40000, 40000)
+        self.assertIn('would render as about 40000x40000', str(ctx.exception))
+
+    def test_report_caps_the_text(self):
+        self.assertEqual(lib.text_for_report('abc'), ('abc', 3, False))
+        self.assertEqual(lib.text_for_report(None), ('', 0, False))
+        long_text = 'x' * (lib.TEXT_REPORT_MAX_CHARS + 50)
+        text, length, truncated = lib.text_for_report(long_text)
+        self.assertEqual((len(text), length, truncated), (lib.TEXT_REPORT_MAX_CHARS, len(long_text), True))
+
+    def test_font_miss_echo_is_bounded(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.resolve_font('q' * 5000, ['Inter', 'Roboto'])
+        self.assertLess(len(str(ctx.exception)), 400)
 
 
 if __name__ == '__main__':

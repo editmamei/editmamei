@@ -2081,3 +2081,252 @@ def metadata_strip_settings(fmt, prop_names):
     if fmt == 'tiff' and 'save-geotiff' in names:
         settings.append('save-geotiff')
     return settings
+
+
+# ---- text layers (gimp_text) -----------------------------------------------------------------
+
+TEXT_MAX_CHARS = 2000
+TEXT_MIN_FONT_PT = 1
+TEXT_MAX_FONT_PT = 1296
+TEXT_DEFAULT_FONT_PT = 24
+TEXT_FONT_LIST_CAP = 200
+FONT_SUGGESTION_LIMIT = 8
+DEFAULT_TEXT_FONT = 'Sans-serif'
+DEFAULT_RESOLUTION_PPI = 72.0
+
+# gimp_text's `alignment` enum is ps_text's. GIMP's own justification has only left / right /
+# center / fill, so the three "last line" variants Photoshop adds are refused rather than
+# approximated.
+TEXT_ALIGNMENTS = {'LEFT': 'left', 'CENTER': 'center', 'RIGHT': 'right', 'FULLYJUSTIFIED': 'fill'}
+TEXT_UNSUPPORTED_ALIGNMENTS = ('LEFTJUSTIFIED', 'CENTERJUSTIFIED', 'RIGHTJUSTIFIED')
+_JUSTIFICATION_TO_ALIGNMENT = {nick: name for name, nick in TEXT_ALIGNMENTS.items()}
+
+# Words that describe a face of a family rather than the family itself, used to tell "Arial" +
+# "Narrow Bold" (a face of the family) from an unrelated font whose name merely starts the same.
+_FONT_STYLE_WORDS = frozenset((
+    'regular', 'book', 'roman', 'normal', 'medium', 'bold', 'italic', 'oblique', 'light', 'thin',
+    'extralight', 'ultralight', 'semilight', 'semibold', 'demibold', 'extrabold', 'ultrabold',
+    'black', 'heavy', 'condensed', 'semicondensed', 'extracondensed', 'narrow', 'cond', 'expanded',
+    'semiexpanded', 'extra', 'ultra', 'semi', 'demi', 'variable',
+))
+_FONT_REGULAR_ORDER = ('regular', 'book', 'roman', 'normal', 'medium')
+
+
+def validate_text_content(value):
+    if not isinstance(value, str):
+        raise ValueError('text must be a string')
+    if value == '':
+        raise ValueError('text must not be empty')
+    if len(value) > TEXT_MAX_CHARS:
+        raise ValueError('text must be at most %d characters (got %d)' % (TEXT_MAX_CHARS, len(value)))
+    return value
+
+
+def validate_font_size_pt(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError('font_size must be a number')
+    return validate_range('font_size', value, TEXT_MIN_FONT_PT, TEXT_MAX_FONT_PT)
+
+
+def validate_text_rgb(args):
+    """(r, g, b) ints 0..255 from `red`/`green`/`blue`, or None when none of the three is given.
+    Giving only some of them is refused rather than guessing the rest."""
+    given = [k for k in ('red', 'green', 'blue') if args.get(k) is not None]
+    if not given:
+        return None
+    if len(given) != 3:
+        raise ValueError('red, green and blue must all be given together (missing: %s)'
+                         % ', '.join(k for k in ('red', 'green', 'blue') if k not in given))
+    out = []
+    for key in ('red', 'green', 'blue'):
+        value = args[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
+            raise ValueError('%s must be an integer 0..255' % key)
+        out.append(validate_int_range(key, value, 0, 255))
+    return tuple(out)
+
+
+def srgb_u8_to_linear(value):
+    """An 8-bit sRGB channel as the linear-light float GEGL's set_rgba expects."""
+    c = value / 255.0
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def linear_to_srgb_u8(value):
+    """A linear-light float channel (GEGL's get_rgba) as an 8-bit sRGB integer."""
+    v = min(1.0, max(0.0, value))
+    c = v * 12.92 if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055
+    return int(round(c * 255))
+
+
+def justification_nick(alignment):
+    """GIMP's justification nick ('left' | 'right' | 'center' | 'fill') for a ps_text-style
+    `alignment`; refuses the variants GIMP has no equivalent for, naming what is supported."""
+    if alignment in TEXT_UNSUPPORTED_ALIGNMENTS:
+        raise ValueError(
+            'alignment %s is not supported by GIMP text layers; use one of %s'
+            % (alignment, ', '.join(TEXT_ALIGNMENTS))
+        )
+    if alignment not in TEXT_ALIGNMENTS:
+        raise ValueError('alignment must be one of %s'
+                         % ', '.join(list(TEXT_ALIGNMENTS) + list(TEXT_UNSUPPORTED_ALIGNMENTS)))
+    return TEXT_ALIGNMENTS[alignment]
+
+
+def alignment_name(nick):
+    """The ps_text-style alignment name for a GIMP justification nick (None when unknown)."""
+    return _JUSTIFICATION_TO_ALIGNMENT.get(nick)
+
+
+def _resolution_ppi(ppi):
+    return float(ppi) if ppi and ppi > 0 else DEFAULT_RESOLUTION_PPI
+
+
+def pt_to_px(pt, ppi):
+    """Points -> pixels at the image's vertical resolution (1 pt = 1/72 in)."""
+    return pt * _resolution_ppi(ppi) / 72.0
+
+
+def px_to_pt(px, ppi):
+    return round(px * 72.0 / _resolution_ppi(ppi), 2)
+
+
+def unit_size_to_pt(size, unit_is_pixel, units_per_inch, ppi):
+    """A text layer's font size in points, whichever unit it is stored in: pixels convert through
+    the image resolution; any other unit through its own units-per-inch factor."""
+    if unit_is_pixel or not units_per_inch:
+        return px_to_pt(size, ppi)
+    return round(size / units_per_inch * 72.0, 2)
+
+
+def _font_tokens(name):
+    return re.sub(r'[-_]+', ' ', name).lower().split()
+
+
+def _font_key(name):
+    return ' '.join(_font_tokens(name))
+
+
+def font_suggestions(query, names, limit=FONT_SUGGESTION_LIMIT):
+    """Up to `limit` installed font names closest to `query`: names containing it (or contained
+    by it) first, then the nearest by spelling."""
+    import difflib
+    q = _font_key(query)
+    ordered = sorted(set(names), key=lambda n: n.lower())
+    out = [n for n in ordered if q and (q in _font_key(n) or _font_key(n) in q)][:limit]
+    if len(out) < limit:
+        by_key = {}
+        for n in ordered:
+            by_key.setdefault(_font_key(n), n)
+        for key in difflib.get_close_matches(q, list(by_key), n=limit, cutoff=0.0):
+            if by_key[key] not in out:
+                out.append(by_key[key])
+            if len(out) >= limit:
+                break
+    return out[:limit]
+
+
+def resolve_font(query, names):
+    """Resolve a family ("Inter", "Open Sans") or full name ("Inter Bold") to an installed font
+    name, case- and spacing-insensitively. Returns (name, matched_by) with matched_by in
+    'name' | 'family+regular' | 'family'. Raises ValueError listing the closest installed names
+    when nothing matches."""
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError('font_name must be a non-empty string')
+    ordered = sorted(set(names), key=lambda n: n.lower())
+    q = _font_key(query)
+    for n in ordered:
+        if _font_key(n) == q:
+            return n, 'name'
+    q_sorted = sorted(q.split())
+    for n in ordered:
+        if sorted(_font_tokens(n)) == q_sorted:
+            return n, 'name'
+    for style in _FONT_REGULAR_ORDER:
+        wanted = q + ' ' + style
+        for n in ordered:
+            if _font_key(n) == wanted:
+                return n, 'family+regular'
+    family = [
+        n for n in ordered
+        if _font_key(n).startswith(q + ' ')
+        and all(t in _FONT_STYLE_WORDS for t in _font_key(n)[len(q) + 1:].split())
+    ]
+    if family:
+        return min(family, key=lambda n: (len(n), n.lower())), 'family'
+    suggestions = font_suggestions(query, ordered)
+    if not suggestions:
+        raise ValueError('no installed font matches %r (no fonts are installed)' % query[:100])
+    raise ValueError(
+        'no installed font matches %r. Closest installed names: %s' % (query[:100], ', '.join(suggestions))
+    )
+
+
+def pick_default_font(names):
+    """The font a text layer gets when none is named: GIMP's built-in generic sans if listed,
+    else the first installed name (None when there are none)."""
+    ordered = sorted(set(names), key=lambda n: n.lower())
+    for n in ordered:
+        if _font_key(n) == _font_key(DEFAULT_TEXT_FONT):
+            return n
+    return ordered[0] if ordered else None
+
+
+def list_fonts(names, substring=None):
+    """(page, total) for gimp_inspect what=fonts: names sorted case-insensitively, filtered by a
+    case-insensitive substring, capped at TEXT_FONT_LIST_CAP; `total` counts every match."""
+    ordered = sorted(set(names), key=lambda n: n.lower())
+    if substring:
+        needle = substring.lower()
+        ordered = [n for n in ordered if needle in n.lower()]
+    return ordered[:TEXT_FONT_LIST_CAP], len(ordered)
+
+
+# Headroom on the small-size layout probe: glyph advances hinted at a few pixels round to whole
+# pixels, so scaling a probe up can undershoot the full-size layout.
+TEXT_ESTIMATE_MARGIN = 1.3
+
+
+def estimate_text_extent(probe_w, probe_h, probe_px, size_px, chars=0, lines=1, letter_spacing=0.0,
+                         line_spacing=0.0, indent=0.0):
+    """The (width, height) in px a text layer will render at `size_px`, from its layout measured
+    at `probe_px` (`probe_w` x `probe_h`), with headroom. Letter spacing, line spacing and indent
+    are absolute pixels that do not scale with the font, so each adds its full worst case: spacing
+    after every character and between every line, plus the indent. Never below 1x1."""
+    scale = size_px / float(probe_px)
+    width = math.ceil(probe_w * scale * TEXT_ESTIMATE_MARGIN) + chars * max(0.0, letter_spacing) + max(0.0, indent)
+    height = math.ceil(probe_h * scale * TEXT_ESTIMATE_MARGIN) + max(0, lines - 1) * max(0.0, line_spacing)
+    return max(1, int(math.ceil(width))), max(1, int(math.ceil(height)))
+
+
+def check_estimated_text_size(width, height):
+    """Refuses text whose estimated size (`estimate_text_extent`) is past the engine's size cap,
+    before anything is drawn at full size."""
+    try:
+        validate_resize_dims(width, height)
+    except ValueError as exc:
+        raise ValueError(
+            'the text would render as about %dx%d px, past the size limit (%s); use a smaller '
+            'font_size or less text' % (width, height, exc)
+        )
+
+
+TEXT_REPORT_MAX_CHARS = 200
+
+
+def text_for_report(text):
+    """(text, length, truncated) for reporting a layer's text: at most TEXT_REPORT_MAX_CHARS,
+    since a layer opened from a file can hold any amount."""
+    text = text or ''
+    return text[:TEXT_REPORT_MAX_CHARS], len(text), len(text) > TEXT_REPORT_MAX_CHARS
+
+
+def check_text_layer_size(width, height):
+    """Refuses a rendered text layer past the engine's size cap (`validate_resize_dims`)."""
+    try:
+        validate_resize_dims(width, height)
+    except ValueError as exc:
+        raise ValueError(
+            'the text would render as a %dx%d px layer, past the size limit (%s); use a smaller '
+            'font_size or less text' % (width, height, exc)
+        )

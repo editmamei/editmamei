@@ -418,3 +418,16 @@ def op_test_set_orientation_tag(args):
 OPS['test_save_unstripped'] = op_test_save_unstripped
 OPS['test_set_orientation_tag'] = op_test_set_orientation_tag
 
+
+def op_test_set_text_markup(args):
+    """Replaces a text layer's content with Pango `markup` (per-character styling, as GIMP's GUI
+    stores it), so a live test can check how gimp_text treats a styled layer."""
+    img = _image(args)
+    layer = Gimp.Item.get_by_id(int(args['layer_id']))
+    if layer is None or not layer.is_text_layer():
+        raise ValueError('test_set_text_markup needs a text layer_id')
+    layer.set_markup(args['markup'])
+    return {'ok': bool(layer.get_markup()), 'image': img.get_id()}
+
+
+OPS['test_set_text_markup'] = op_test_set_text_markup

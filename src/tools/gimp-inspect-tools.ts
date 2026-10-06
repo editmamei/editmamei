@@ -22,8 +22,14 @@ import { pickSchemaDeclaredKeys } from './gimp-shared.js';
  * are enforced by the bridge (`lib.require`), not this schema, the same posture `gimp_filter`'s
  * own op-conditional fields take.
  *
+ * `what: 'fonts'` needs no image: it lists the installed font names (sorted, optionally narrowed
+ * by a case-insensitive `filter` substring, capped at 200 with the true `total`), the names a text
+ * layer's font accepts.
+ *
  * Layer tree nodes address by `layer_id`, not name — GIMP allows duplicate layer names, so a name
- * can't tell two layers apart the way an id always can. Every node also flags `is_text_layer`.
+ * can't tell two layers apart the way an id always can. Every node also flags `is_text_layer`, and a text layer's node
+ * also carries its `text`, `font`, `font_size` (points), `color` ({red, green, blue}) and
+ * `alignment`.
  * `document`/`layers` cap the tree at 2000 nodes total (`ops.py`'s `MAX_DESCRIBE_LAYER_NODES`) and
  * report `truncated: true` if the cap was hit, rather than risk unbounded output on a
  * pathologically large or deep document — alongside `top_level_count` (the image's real top-level
@@ -38,7 +44,7 @@ import { pickSchemaDeclaredKeys } from './gimp-shared.js';
  * image's unsaved work.
  */
 
-const INSPECT_WHATS = ['documents', 'document', 'layers', 'channels', 'filter'] as const;
+const INSPECT_WHATS = ['documents', 'document', 'layers', 'channels', 'filter', 'fonts'] as const;
 
 const inspectSchema: JsonSchemaObject = {
   type: 'object',
@@ -59,13 +65,21 @@ const inspectSchema: JsonSchemaObject = {
         "allows duplicate layer names) and flag `is_text_layer`. 'document'/'layers' cap the tree " +
         'at 2000 nodes total and report `truncated: true` if the cap was hit, alongside ' +
         '`top_level_count` and `total_nodes`; if it times out the GIMP session restarts and ' +
-        'unsaved work is lost, so save (gimp_save_xcf) first.',
+        "unsaved work is lost, so save (gimp_save_xcf) first. A text layer's node also reports " +
+        "its text, font, font_size (points), color and alignment. 'fonts' lists the installed " +
+        'font names (no image needed), optionally narrowed by `filter`.',
     },
     image: {
       type: 'integer',
       description:
         'Image id, as returned by gimp_open_document. Required for every `what` except ' +
-        "'documents'.",
+        "'documents' and 'fonts'.",
+    },
+    filter: {
+      type: 'string',
+      description:
+        "what='fonts' only: case-insensitive substring to narrow the font names by. The list is " +
+        'sorted and capped at 200 names; `total` counts every match.',
     },
     filter_id: {
       type: 'integer',
@@ -76,6 +90,11 @@ const inspectSchema: JsonSchemaObject = {
   },
   required: ['what'],
 };
+
+interface FontsBridgeResult {
+  fonts: string[];
+  total: number;
+}
 
 interface PingBridgeResult {
   images: number[];
@@ -136,6 +155,26 @@ async function gimpInspect(
         structuredContent: { what, documents },
       };
     }
+    if (what === 'fonts') {
+      const result = await gimp.call<FontsBridgeResult & Record<string, unknown>>(
+        'fonts',
+        pickSchemaDeclaredKeys(inspectSchema, args)
+      );
+      const shown = result.fonts.length;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text:
+              `${result.total} font(s) installed` +
+              (args.filter ? ` matching "${String(args.filter).slice(0, 100)}"` : '') +
+              (shown < result.total ? `, showing the first ${shown}` : '') +
+              `: ${result.fonts.join(', ') || '(none)'}.`,
+          },
+        ],
+        structuredContent: { what, ...result },
+      };
+    }
     if (what === 'document' || what === 'layers' || what === 'channels' || what === 'filter') {
       const result = await gimp.call<Record<string, unknown>>(
         'describe',
@@ -168,8 +207,11 @@ export function createGimpInspectTools(gimp: GimpBackend): ToolDefinition[] {
           "WITH coverage (selected_pixels/fraction), the cost 'document' skips, and can stop " +
           'early on a document with many named channels (`truncated: true`, `channels_skipped`). ' +
           "'filter' describes one filter by filter_id, in the same shape gimp_filter (op=list) " +
-          'reports it in. Layer tree nodes are addressed by `layer_id` (canonical — GIMP allows ' +
-          "duplicate layer names) and flag `is_text_layer`. 'document'/'layers' cap the tree at " +
+          "reports it in. 'fonts' lists the installed font names (no image needed), sorted, " +
+          'optionally narrowed by `filter` (substring), capped at 200 with a `total`. Layer tree ' +
+          'nodes are addressed by `layer_id` (canonical — GIMP allows duplicate layer names) and ' +
+          "flag `is_text_layer`; a text layer's node also reports its text, font, font_size " +
+          "(points), color and alignment. 'document'/'layers' cap the tree at " +
           '2000 nodes total and report `truncated: true` if the cap was hit, alongside ' +
           '`top_level_count` and `total_nodes`; if it times out the GIMP session restarts and ' +
           'unsaved work is lost, so save (gimp_save_xcf) first.',
@@ -178,6 +220,10 @@ export function createGimpInspectTools(gimp: GimpBackend): ToolDefinition[] {
           type: 'object',
           properties: {
             what: { type: 'string' },
+            fonts: { type: 'array', items: { type: 'string' } },
+            total: { type: 'number' },
+            returned: { type: 'number' },
+            default: { type: ['string', 'null'] },
             documents: {
               type: 'array',
               items: { type: 'object', properties: { image: { type: 'number' } } },
