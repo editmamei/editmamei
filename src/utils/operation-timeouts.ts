@@ -339,8 +339,8 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // below MORPHOLOGY_BASELINE_MP (24). Measured live, border (the most expensive of the three) at
   // its EFFECTIVE cap: ~30s at 150px on a ~24MP image, ~11.8s at the scaled 36px cap on ~100MP,
   // ~27.2s at the scaled 17px cap on ~216.8MP (this bridge's own largest allowed document) -- all
-  // inside this budget, though the ~24MP case has the thinnest margin of the three.
-  gimp_modify_selection: 45_000,
+  // inside this budget, with headroom for a slower host.
+  gimp_modify_selection: 90_000,
   // gimp_layer_mask: op=create from a channel measured live at ~34ms on a ~24MP image (a mask
   // attach, not a full-canvas pixel scan) -- delete/apply/invert are all cheaper still. Budgeted
   // in the same class as gimp_create_document/gimp_close_document for headroom on a slower
