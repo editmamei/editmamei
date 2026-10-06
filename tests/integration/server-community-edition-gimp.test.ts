@@ -55,7 +55,7 @@ describe('community edition, GIMP detected, unpinned', () => {
     const expectedGimp = toolsInTier('community')
       .filter((n) => n.startsWith('gimp_'))
       .sort();
-    expect(expectedGimp).toHaveLength(23);
+    expect(expectedGimp).toHaveLength(29);
     expect(names.filter((n) => n.startsWith('gimp_')).sort()).toEqual(expectedGimp);
   });
 });

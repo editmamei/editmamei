@@ -335,20 +335,20 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // Layer-level affine transform (fit/scale/move/rotate/flip/skew/free) — a sibling of
   // gimp_layer, not an op on it: tool-tiers.ts classifies per TOOL, so a distinct tool name is
   // what gives this its own dev-default-then-promote gate, the same as any other tool here.
-  gimp_transform_layer: 'dev',
+  gimp_transform_layer: 'community',
   // First-class multi-layer documents: build one from scratch, composite another file into it,
   // extend its canvas, and change its color mode.
   gimp_create_document: 'community',
   gimp_place_image: 'community',
   gimp_canvas: 'community',
   // Live text layers (create/set_content/set_font/set_color/set_alignment), the GIMP twin of ps_text.
-  gimp_text: 'dev',
+  gimp_text: 'community',
   gimp_convert_image_mode: 'community',
   // Selections and masks: build a saved selection, refine it, and attach it as a layer mask.
-  gimp_select: 'dev',
-  gimp_modify_selection: 'dev',
-  gimp_layer_mask: 'dev',
-  gimp_get_selection_preview: 'dev',
+  gimp_select: 'community',
+  gimp_modify_selection: 'community',
+  gimp_layer_mask: 'community',
+  gimp_get_selection_preview: 'community',
   // New tools start at 'dev'; promotion is the owner's call.
   gimp_match_layer: 'dev',
 };
