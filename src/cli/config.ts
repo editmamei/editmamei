@@ -93,6 +93,13 @@ const KEYS: Record<string, KeySpec> = {
     },
     coerce: coerceBool,
   },
+  'automation.allow_execute_script': {
+    get: (s) => s.automation.allow_execute_script,
+    set: (s, v) => {
+      s.automation.allow_execute_script = v as boolean;
+    },
+    coerce: coerceBool,
+  },
   ps_path: {
     get: (s) => s.ps_path,
     set: (s, v) => {

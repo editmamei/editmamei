@@ -88,6 +88,9 @@ Three equivalent ways, all writing the same `~/.editmamei/settings.json`:
   "privacy": {
     "send_previews_to_llm": true
   },
+  "automation": {
+    "allow_execute_script": true
+  },
   "update_check": true,
   "ps_path": null,
   "editor": "auto",
@@ -105,6 +108,8 @@ editmamei config set telemetry.diagnostics true  # opt in to diagnostic detail
 ```
 
 Boolean values accept `true`/`false`, `on`/`off`, `yes`/`no`, or `1`/`0`.
+
+`automation.allow_execute_script` (default `true`): set to `false` to make tools that run script code refuse.
 
 **In Claude Desktop.** The one-click extension has no terminal, so the same two switches appear in
 the extension's own settings (Settings → Extensions → Editmamei): **Share usage stats**

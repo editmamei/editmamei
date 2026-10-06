@@ -36,12 +36,18 @@ export interface PrivacySettings {
   send_previews_to_llm: boolean;
 }
 
+export interface AutomationSettings {
+  /** When false, tools that run arbitrary script code refuse. Only the user can change it (CLI or settings.json), never a tool. Defaults true. */
+  allow_execute_script: boolean;
+}
+
 /** Which editor(s) `detectEditors()` + boot registration should honor. `'auto'` (default) is the detection-driven matrix. */
 export type EditorPin = 'auto' | 'photoshop' | 'gimp';
 
 export interface Settings {
   telemetry: TelemetrySettings;
   privacy: PrivacySettings;
+  automation: AutomationSettings;
   /** Absolute path to the Photoshop binary; null = auto-detect (PHOTOSHOP_PATH still wins). */
   ps_path: string | null;
   /**
@@ -94,6 +100,7 @@ function defaults(installId: string): Settings {
   return {
     telemetry: { usage: true, diagnostics: false, install_id: installId },
     privacy: { send_previews_to_llm: true },
+    automation: { allow_execute_script: true },
     ps_path: null,
     update_check: true,
     editor: 'auto',
@@ -113,6 +120,7 @@ function coerce(raw: unknown, installId: string): Settings {
   const r = raw as Record<string, unknown>;
   const t = (r.telemetry ?? {}) as Record<string, unknown>;
   const p = (r.privacy ?? {}) as Record<string, unknown>;
+  const a = (r.automation ?? {}) as Record<string, unknown>;
   return {
     telemetry: {
       usage: typeof t.usage === 'boolean' ? t.usage : base.telemetry.usage,
@@ -128,6 +136,12 @@ function coerce(raw: unknown, installId: string): Settings {
         typeof p.send_previews_to_llm === 'boolean'
           ? p.send_previews_to_llm
           : base.privacy.send_previews_to_llm,
+    },
+    automation: {
+      allow_execute_script:
+        typeof a.allow_execute_script === 'boolean'
+          ? a.allow_execute_script
+          : base.automation.allow_execute_script,
     },
     ps_path: typeof r.ps_path === 'string' ? r.ps_path : null,
     update_check: typeof r.update_check === 'boolean' ? r.update_check : base.update_check,

@@ -69,6 +69,7 @@ describe('loadSettings — existing / malformed', () => {
     expect(settings.telemetry.diagnostics).toBe(false); // defaulted
     expect(settings.telemetry.install_id).toBe('abc123def456'); // preserved
     expect(settings.privacy.send_previews_to_llm).toBe(true); // defaulted
+    expect(settings.automation.allow_execute_script).toBe(true); // defaulted
     expect(settings.update_check).toBe(true); // defaulted for an older file lacking the key
     expect(settings.editor).toBe('auto'); // defaulted for an older file lacking the key
     expect(settings.gimp_path).toBeNull();
@@ -156,6 +157,7 @@ describe('applyTelemetryEnvOverrides (Claude Desktop manifest toggles)', () => {
   const base: Settings = {
     telemetry: { usage: true, diagnostics: false, install_id: 'x'.repeat(32) },
     privacy: { send_previews_to_llm: true },
+    automation: { allow_execute_script: true },
     ps_path: null,
     update_check: true,
     editor: 'auto',
@@ -198,6 +200,7 @@ describe('applyUpdateCheckEnvOverride (Claude Desktop manifest toggle)', () => {
   const base: Settings = {
     telemetry: { usage: true, diagnostics: false, install_id: 'y'.repeat(32) },
     privacy: { send_previews_to_llm: true },
+    automation: { allow_execute_script: true },
     ps_path: null,
     update_check: true,
     editor: 'auto',
@@ -225,6 +228,7 @@ describe('applyEditorEnvOverride (Claude Desktop manifest toggle)', () => {
   const base: Settings = {
     telemetry: { usage: true, diagnostics: false, install_id: 'z'.repeat(32) },
     privacy: { send_previews_to_llm: true },
+    automation: { allow_execute_script: true },
     ps_path: null,
     update_check: true,
     editor: 'auto',
@@ -252,11 +256,34 @@ describe('applyEditorEnvOverride (Claude Desktop manifest toggle)', () => {
   });
 });
 
+describe('automation.allow_execute_script', () => {
+  it('defaults to true on first run', () => {
+    expect(loadSettings({ dir }).settings.automation.allow_execute_script).toBe(true);
+  });
+
+  it('survives a load/save round trip when false', () => {
+    const { settings } = loadSettings({ dir });
+    settings.automation.allow_execute_script = false;
+    saveSettings(settings, { dir });
+    expect(loadSettings({ dir }).settings.automation.allow_execute_script).toBe(false);
+  });
+
+  it('coerces a non-boolean to the default', async () => {
+    await writeFile(
+      settingsPath({ dir }),
+      JSON.stringify({ automation: { allow_execute_script: 'no' } }),
+      'utf8'
+    );
+    expect(loadSettings({ dir }).settings.automation.allow_execute_script).toBe(true);
+  });
+});
+
 describe('saveSettings', () => {
   it('round-trips and leaves no tmp file behind', async () => {
     const s: Settings = {
       telemetry: { usage: false, diagnostics: true, install_id: mintInstallId() },
       privacy: { send_previews_to_llm: false },
+      automation: { allow_execute_script: true },
       ps_path: '/Applications/Adobe Photoshop 2026/Photoshop.app',
       update_check: false,
       editor: 'auto',
