@@ -2195,5 +2195,13 @@ class TestRejectForeignFields(unittest.TestCase):
         lib.reject_foreign_fields('saturation', {'type': 'saturation', 'scale': 2, 'hue': None})
 
 
+class TestVisibleImageIds(unittest.TestCase):
+    def test_drops_hidden_ids_and_keeps_order(self):
+        self.assertEqual(lib.visible_image_ids([1, 8, 2, 9], [8, 9]), [1, 2])
+
+    def test_no_hidden_ids_is_identity(self):
+        self.assertEqual(lib.visible_image_ids([3, 4], []), [3, 4])
+
+
 if __name__ == '__main__':
     unittest.main()

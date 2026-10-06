@@ -1395,6 +1395,13 @@ def region_to_proxy_px(region, scale):
     return x, y, w, h
 
 
+def visible_image_ids(all_ids, hidden_ids):
+    """The ids in `all_ids` that are real documents: every id in `hidden_ids` (the bridge's own
+    preview-proxy images, which are live GIMP images but not the user's) is dropped, order kept."""
+    hidden = set(hidden_ids)
+    return [i for i in all_ids if i not in hidden]
+
+
 def read_pgm(raw):
     """Decode minimal binary PGM (P5, maxval 255) bytes. Returns (width, height, data).
 
