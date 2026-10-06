@@ -8,13 +8,14 @@ import * as activity from '../../src/core/tool-activity.js';
 import { TOOL_TIERS } from '../../src/core/tool-tiers.js';
 
 describe('core/tool-activity exports', () => {
-  it('exports exactly the three activity sets and the tracked tool names', () => {
+  it('exports exactly the activity sets and the tracked tool names', () => {
     expect(Object.keys(activity).sort()).toEqual([
       'CAMERA_RAW_TOOL',
       'KEPT_WORK_TOOLS',
       'MUTATING_TOOLS',
       'RAW_DEVELOP_TOOL',
       'READ_ONLY_TOOLS',
+      'RECIPE_TOOLS',
     ]);
   });
 
@@ -23,11 +24,27 @@ describe('core/tool-activity exports', () => {
       ...activity.READ_ONLY_TOOLS,
       ...activity.KEPT_WORK_TOOLS,
       ...activity.MUTATING_TOOLS,
+      ...activity.RECIPE_TOOLS,
       activity.RAW_DEVELOP_TOOL,
       activity.CAMERA_RAW_TOOL,
     ];
     const unknown = names.filter((n) => !(n in TOOL_TIERS));
     expect(unknown).toEqual([]);
+  });
+
+  it('pins RECIPE_TOOLS membership (mirrored by the telemetry service)', () => {
+    expect([...activity.RECIPE_TOOLS].sort()).toEqual([
+      'ps_batch',
+      'ps_play_action',
+      'ps_sequence',
+      'ps_template_apply',
+    ]);
+  });
+
+  it('every recipe tool is also classified as read-only or mutating', () => {
+    for (const tool of activity.RECIPE_TOOLS) {
+      expect(activity.READ_ONLY_TOOLS.has(tool) || activity.MUTATING_TOOLS.has(tool)).toBe(true);
+    }
   });
 
   it('the tracked tools are the raw-develop pair the server keys its advisory on', () => {
