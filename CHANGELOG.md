@@ -10,6 +10,28 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+### Added
+
+- **GIMP gains selections, layer masks, text and layer transforms.** Five more `gimp_*` tools move
+  from development into the Community set.
+  - `gimp_select` builds a selection from a shape, a color range, a magic-wand region, a layer's
+    opaque pixels or a gradient, and saves it under a name.
+  - `gimp_layer_mask` adds, removes, applies or inverts a layer mask from a saved selection, and
+    `gimp_get_selection_preview` shows what is selected.
+  - `gimp_text` creates and restyles live text layers.
+  - `gimp_transform_layer` fits, scales, moves, rotates, flips, skews or free-transforms one layer.
+
+### Changed
+
+- **Layer masks and moving layers have new homes in GIMP.** `gimp_create_mask` is replaced by
+  `gimp_select` plus `gimp_layer_mask`, and `gimp_layer` no longer has a move operation: use
+  `gimp_transform_layer` with `op: "move"`.
+
+### Fixed
+
+- **Shrinking a GIMP selection no longer eats into the canvas edge.** A selection touching the edge
+  of the image keeps its hold on that edge when it is contracted.
+
 ## [1.7.1] — 2026-10-02
 
 ### Added

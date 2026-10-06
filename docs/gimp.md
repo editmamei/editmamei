@@ -129,6 +129,16 @@ metadata (including any GPS location); only `gimp_export` removes it.
 - **Effects** (`gimp_add_effect`): vignette, black and white, motion blur, lens blur, noise, and
   drop shadow, live and re-editable the same way. `gimp_bake` merges a layer's live filters into its
   pixels when you want them fixed.
+- **Selections and masks:** build a selection from a rectangle, ellipse, polygon, color range, magic
+  wand, a layer's opaque pixels or a gradient, and save it under a name (`gimp_select`). Attach
+  one as a layer mask, or remove, apply or invert a mask (`gimp_layer_mask`), and check the result
+  in a rendered preview (`gimp_get_selection_preview`). A saved selection also confines a filter
+  when you pass its name as `mask`.
+- **Text:** live text layers you can create and restyle later, with content, font, color and
+  alignment (`gimp_text`).
+- **Moving and transforming layers:** fit, scale, move, rotate, flip, skew or free-transform a single
+  layer (`gimp_transform_layer`). Moving a layer used to be a `gimp_layer` operation; it lives here
+  now.
 - **Geometry:** crop, resize, rotate (arbitrary angle, for straightening), flip.
 - **Verification:** preview render, per-channel histogram (mean, median, percentiles, full 256-bin
   histogram), before/after and region comparison.
@@ -140,8 +150,7 @@ metadata (including any GPS location); only `gimp_export` removes it.
 ## What it can't do yet
 
 - No heal, clone, or content-aware retouch.
-- No masking or selection tools yet, AI-backed or otherwise (GIMP has no Sensei-equivalent built in).
-- No text layers.
+- No AI-backed selection (subject, sky, object): GIMP has no Sensei-equivalent built in, so selections are geometric, color-based or gradient.
 - No step-by-step undo: use checkpoints instead (see below).
 - Raw camera files (DNG, CR2, CR3, NEF, ARW, and the like) need a raw-develop plug-in installed in
   GIMP (darktable, RawTherapee, or ART). Without one, opening a raw file is refused with a message

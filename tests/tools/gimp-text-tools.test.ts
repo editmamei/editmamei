@@ -28,11 +28,11 @@ describe('createGimpTextTools', () => {
     assertToolShape(tools);
   });
 
-  it('is registered with the gimp module at tier dev', () => {
+  it('is registered with the gimp module at tier community', () => {
     const gimp = makeGimpBackend();
     const names = gimpFactories.flatMap((f) => f(gimp.asBackend())).map((d) => d.tool.name);
     expect(names).toContain('gimp_text');
-    expect(tierOf('gimp_text')).toBe('dev');
+    expect(tierOf('gimp_text')).toBe('community');
   });
 
   it('mirrors ps_text: the same op names and parameter names', () => {

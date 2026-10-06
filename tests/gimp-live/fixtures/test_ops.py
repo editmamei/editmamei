@@ -468,8 +468,8 @@ def op_test_add_layer_mask(args):
     """Attach a REAL GIMP layer mask (`Gimp.Layer.create_mask` + `add_mask`) to the target layer
     and paint the LEFT HALF of it black (hidden), leaving the right half at the mask's own WHITE
     default (visible) -- the test probe for proving a layer's own mask transforms along with it
-    through `Item.transform_*` (`gimp_transform_layer`), which no shipped gimp_* tool creates
-    (`gimp_create_mask` builds an unrelated filter-confinement channel, not a real layer mask)."""
+    through `Item.transform_*` (`gimp_transform_layer`), with a half-hidden pattern a plain
+    `gimp_layer_mask` would not produce."""
     img = _image(args)
     layer = _layer(img, args)
     mask = layer.create_mask(Gimp.AddMaskType.WHITE)

@@ -1166,7 +1166,7 @@ def _match_refine_edges(img, layer, contract_px, feather_px):
     try:
         img.select_item(Gimp.ChannelOps.REPLACE, mask)
         if contract_px:
-            Gimp.Selection.shrink(img, contract_px)
+            _shrink_edge_locked(img, contract_px)
         if feather_px:
             Gimp.Selection.feather(img, feather_px)
         _ok, ox, oy = layer.get_offsets()
@@ -4397,6 +4397,16 @@ def _capture_selection(img, w, h, scratch):
     scratch.update(0, 0, w, h)
 
 
+def _shrink_edge_locked(img, px):
+    """`Gimp.Selection.shrink` that does not erode from the canvas edge. GIMP's own shrink treats
+    the area outside the canvas as unselected (its PDB call hardcodes edge-lock off), so a
+    selection touching the edge lost a strip there. Shrinking is the inverse of growing the
+    inverse, and a grow never reaches past the canvas, so shrink = invert, grow, invert."""
+    Gimp.Selection.invert(img)
+    Gimp.Selection.grow(img, px)
+    Gimp.Selection.invert(img)
+
+
 def _color_arg(img, drawable, args, sample_merged):
     """The target color for mode=color_range: an explicit `color` hex, or the color AT a sample
     point (x, y), always in document pixels. `Gimp.Image.pick_color` takes document coordinates
@@ -4599,7 +4609,7 @@ def op_modify_mask(args):
             if how == 'expand':
                 Gimp.Selection.grow(img, px)
             elif how == 'contract':
-                Gimp.Selection.shrink(img, px)
+                _shrink_edge_locked(img, px)
             else:
                 Gimp.Selection.border(img, px)
         elif how == 'feather':

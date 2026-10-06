@@ -1603,6 +1603,35 @@ describe.skipIf(!install)(
         }
       });
 
+      it('contract does not erode a selection from the canvas edge it touches', async () => {
+        const image = await createDoc(64, 64);
+        try {
+          await callTool(tools, 'gimp_select', {
+            image,
+            mode: 'rectangle',
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 64,
+            name: 'Edge',
+          });
+          const shrunk = await callTool(tools, 'gimp_modify_selection', {
+            image,
+            channel: 'Edge',
+            op: 'contract',
+            px: 4,
+          });
+          expect(shrunk.isError, JSON.stringify(shrunk.content)).toBeFalsy();
+          const pgm = await exportChannel(image, 'Edge');
+          // Eroded from the free edge (x=32), kept at the canvas edges (x=0, y=0).
+          expect(pgm[32 * 64 + 0], 'x=0 stays selected').toBe(255);
+          expect(pgm[0 * 64 + 10], 'y=0 stays selected').toBe(255);
+          expect(pgm[32 * 64 + 30], 'x=30 is eroded').toBe(0);
+        } finally {
+          await callTool(tools, 'gimp_close_document', { image });
+        }
+      });
+
       it('smooth measurably rounds a jagged (staircase) selection edge', async () => {
         const image = await createDoc(64, 64);
         try {
