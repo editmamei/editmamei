@@ -3,13 +3,15 @@
  * real `GimpBackend`/`GimpSession` — the same "drive the TOOLS, not the bridge" posture
  * `checkpoint.live.test.ts` takes (gimp_checkpoint sits alongside gimp_layer here since one test
  * exercises checkpoint -> flatten -> restore for the layer structure and its live filter).
+ * `gimp_transform_layer` (move op) sits alongside it too, for the same reason: its masked-filter
+ * refusal reuses the exact scoped check gimp_layer's own structural ops rely on.
  *
  * Verified-live assumptions this file pins as regression tests (see `bridge/ops.py`'s own
  * "layer management" section comment for the full probe record):
  *  - `layer.copy()` copies a layer's live filters under the SAME names, so `duplicate` refuses
  *    outright when the source (or, for a group, any descendant) carries an Editmamei filter.
  *  - `Item.set_offsets` is an ABSOLUTE move that does not carry a masked filter's confinement with
- *    it — `move` refuses under the same conditions gimp_transform_canvas already does.
+ *    it — move refuses under the same conditions gimp_transform_canvas already does.
  *  - `Image.merge_down` merges into the first VISIBLE layer below (a hidden one in between is
  *    skipped, not merged) and refuses on a group target or no visible target at all.
  *  - `Image.merge_down` / `Image.flatten` both bake every live filter they touch into real pixels
@@ -38,6 +40,7 @@ import { createGimpGeometryTools } from '@editmamei/tools/gimp-geometry-tools.ts
 import { createGimpSelectionTools } from '@editmamei/tools/gimp-selection-tools.ts';
 import { createGimpVerifyTools } from '@editmamei/tools/gimp-verify-tools.ts';
 import { createGimpLayerTools } from '@editmamei/tools/gimp-layer-tools.ts';
+import { createGimpTransformLayerTools } from '@editmamei/tools/gimp-transform-layer-tools.ts';
 import { createGimpCheckpointTools } from '@editmamei/tools/gimp-checkpoint-tools.ts';
 import type { ToolDefinition, ToolResult } from '@editmamei/core/tool-registry.ts';
 import { callTool } from '../fixtures/tool-helpers.ts';
@@ -105,6 +108,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       ...createGimpSelectionTools(backend),
       ...createGimpVerifyTools(backend),
       ...createGimpLayerTools(backend),
+      ...createGimpTransformLayerTools(backend),
       ...createGimpCheckpointTools(backend),
     ];
     await readyGimpRegistry((name, args) => callTool(tools, name, args));
@@ -450,7 +454,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
-  it('move on a GROUP layer moves every descendant by the same delta', async () => {
+  it('gimp_transform_layer move on a GROUP layer moves every descendant by the same delta', async () => {
     const image = await openRamp();
     try {
       const group = await callTool(tools, 'gimp_layer', { image, op: 'create_group', name: 'G' });
@@ -464,15 +468,14 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       });
       const childId = structuredOf(child).layer_id as number;
 
-      const moved = await callTool(tools, 'gimp_layer', {
+      const moved = await callTool(tools, 'gimp_transform_layer', {
         image,
         op: 'move',
         layer_id: groupId,
-        x: 5,
-        y: 7,
+        absolute: { x: 5, y: 7 },
       });
       expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
-      expect(structuredOf(moved)).toMatchObject({ layer_id: groupId, x: 5, y: 7 });
+      expect(structuredOf(moved)).toMatchObject({ layer_id: groupId, bounds: { x: 5, y: 7 } });
 
       const tree = await layerTree(image);
       const groupNode = tree.find((n) => n.layer_id === groupId)!;
@@ -484,14 +487,13 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
-  it('move refuses when the layer carries a masked filter (image unchanged); baking clears the refusal', async () => {
+  it('gimp_transform_layer move refuses when the layer carries a masked filter (image unchanged); baking clears the refusal', async () => {
     const image = await openRamp();
     try {
-      const unmaskedMove = await callTool(tools, 'gimp_layer', {
+      const unmaskedMove = await callTool(tools, 'gimp_transform_layer', {
         image,
         op: 'move',
-        x: 3,
-        y: 3,
+        absolute: { x: 3, y: 3 },
       });
       expect(unmaskedMove.isError, JSON.stringify(unmaskedMove.content)).toBeFalsy();
 
@@ -511,7 +513,11 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
         mask: 'MoveMask',
       });
       const before = await snapshot(image);
-      const refused = await callTool(tools, 'gimp_layer', { image, op: 'move', x: 5, y: 5 });
+      const refused = await callTool(tools, 'gimp_transform_layer', {
+        image,
+        op: 'move',
+        absolute: { x: 5, y: 5 },
+      });
       expect(refused.isError).toBe(true);
       expect((refused.content?.[0] as { text: string }).text).toContain('masked adjustment');
       expect(await snapshot(image)).toEqual(before);
@@ -520,14 +526,18 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       expect(baked.isError, JSON.stringify(baked.content)).toBeFalsy();
       expect(structuredOf(baked).baked).toBe(true);
 
-      const movedAfterBake = await callTool(tools, 'gimp_layer', { image, op: 'move', x: 7, y: 7 });
+      const movedAfterBake = await callTool(tools, 'gimp_transform_layer', {
+        image,
+        op: 'move',
+        absolute: { x: 7, y: 7 },
+      });
       expect(movedAfterBake.isError, JSON.stringify(movedAfterBake.content)).toBeFalsy();
     } finally {
       await callTool(tools, 'gimp_close_document', { image });
     }
   });
 
-  it('move refuses when a filter on another layer shares its name with a ledgered filter here (cross-layer duplicate name)', async () => {
+  it('gimp_transform_layer move refuses when a filter on another layer shares its name with a ledgered filter here (cross-layer duplicate name)', async () => {
     const image = await openRamp();
     try {
       const other = await callTool(tools, 'gimp_layer', { image, op: 'create', name: 'Other' });
@@ -553,12 +563,11 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       });
 
       const before = await snapshot(image);
-      const refused = await callTool(tools, 'gimp_layer', {
+      const refused = await callTool(tools, 'gimp_transform_layer', {
         image,
         op: 'move',
         layer: 'Background',
-        x: 5,
-        y: 5,
+        absolute: { x: 5, y: 5 },
       });
       expect(refused.isError).toBe(true);
       const text = (refused.content?.[0] as { text: string }).text;
@@ -572,7 +581,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
-  it('move refuses on a genuinely foreign filter with a UNIQUE name (no duplicate anywhere), naming it unrecognized', async () => {
+  it('gimp_transform_layer move refuses on a genuinely foreign filter with a UNIQUE name (no duplicate anywhere), naming it unrecognized', async () => {
     const image = await openRamp();
     try {
       await backend.call('test_add_foreign_filter', {
@@ -583,7 +592,11 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       });
 
       const before = await snapshot(image);
-      const refused = await callTool(tools, 'gimp_layer', { image, op: 'move', x: 5, y: 5 });
+      const refused = await callTool(tools, 'gimp_transform_layer', {
+        image,
+        op: 'move',
+        absolute: { x: 5, y: 5 },
+      });
       expect(refused.isError).toBe(true);
       const text = (refused.content?.[0] as { text: string }).text;
       expect(text).toContain("'OnlyOneOfMe'");
@@ -595,7 +608,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
-  it('move is NOT blocked by a masked filter on an UNRELATED layer (a sibling, neither ancestor nor descendant)', async () => {
+  it('gimp_transform_layer move is NOT blocked by a masked filter on an UNRELATED layer (a sibling, neither ancestor nor descendant)', async () => {
     const image = await openRamp();
     try {
       const other = await callTool(tools, 'gimp_layer', { image, op: 'create', name: 'Other' });
@@ -621,12 +634,11 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
 
       // 'Background' is neither an ancestor nor a descendant of 'Other' -- a sibling at the same
       // top level -- so 'Other's masked filter must not be in scope for this move at all.
-      const moved = await callTool(tools, 'gimp_layer', {
+      const moved = await callTool(tools, 'gimp_transform_layer', {
         image,
         op: 'move',
         layer: 'Background',
-        x: 5,
-        y: 5,
+        absolute: { x: 5, y: 5 },
       });
       expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
       const background = (await snapshot(image)).find((n) => n.name === 'Background');
@@ -636,7 +648,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
-  it('move refuses when an ANCESTOR group carries a masked filter, not just the moving layer itself', async () => {
+  it('gimp_transform_layer move refuses when an ANCESTOR group carries a masked filter, not just the moving layer itself', async () => {
     const image = await openRamp();
     try {
       const group = await callTool(tools, 'gimp_layer', {
@@ -675,12 +687,11 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       expect(onGroup.isError, JSON.stringify(onGroup.content)).toBeFalsy();
 
       const before = await snapshot(image);
-      const refused = await callTool(tools, 'gimp_layer', {
+      const refused = await callTool(tools, 'gimp_transform_layer', {
         image,
         op: 'move',
         layer_id: childId,
-        x: 4,
-        y: 4,
+        absolute: { x: 4, y: 4 },
       });
       expect(refused.isError).toBe(true);
       expect((refused.content?.[0] as { text: string }).text).toContain('masked adjustment');
@@ -1280,11 +1291,15 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     }
   });
 
-  it('move refuses beyond the offset bound, image unchanged', async () => {
+  it('gimp_transform_layer move refuses beyond the offset bound, image unchanged', async () => {
     const image = await openRamp();
     try {
       const before = await snapshot(image);
-      const tooFar = await callTool(tools, 'gimp_layer', { image, op: 'move', x: 999_999, y: 0 });
+      const tooFar = await callTool(tools, 'gimp_transform_layer', {
+        image,
+        op: 'move',
+        absolute: { x: 999_999, y: 0 },
+      });
       expect(tooFar.isError).toBe(true);
       expect(await snapshot(image)).toEqual(before);
     } finally {
@@ -1299,12 +1314,11 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       const extraId = structuredOf(extra).layer_id as number;
       // Within move's own bound (canvas width + MAX_RESIZE_SIDE_PX = 64 + 30000), but far enough
       // that merging it with Background's own 0..64 extent unions to a width over 30000px.
-      const moved = await callTool(tools, 'gimp_layer', {
+      const moved = await callTool(tools, 'gimp_transform_layer', {
         image,
         op: 'move',
         layer_id: extraId,
-        x: 30_000,
-        y: 0,
+        absolute: { x: 30_000, y: 0 },
       });
       expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
 
@@ -1460,7 +1474,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
   // of this section is new bridge behaviour; it exists to prove that generic treatment actually
   // holds for the effect family too, not just gimp_add_adjustment's own filters.
 
-  it('move with a vignette effect present keeps the vignette locked to the LAYER content, not the canvas', async () => {
+  it('gimp_transform_layer move with a vignette effect present keeps the vignette locked to the LAYER content, not the canvas', async () => {
     // The ramp fixture is 64x64 with one layer the same size as the canvas -- moving it by (dx,
     // dy) shifts what the canvas shows at every point (a plain, expected consequence of moving a
     // same-size layer, nothing to do with the vignette), so comparing the two WHOLE-CANVAS exports
@@ -1480,7 +1494,11 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
 
       const dx = 5;
       const dy = 5;
-      const moved = await callTool(tools, 'gimp_layer', { image, op: 'move', x: dx, y: dy });
+      const moved = await callTool(tools, 'gimp_transform_layer', {
+        image,
+        op: 'move',
+        absolute: { x: dx, y: dy },
+      });
       expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
 
       const afterPath = join(workDir, 'vignette-move-after.png');
@@ -1887,12 +1905,11 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       expect(await previewVsExport(image, 'create-group-after')).toBeLessThanOrEqual(1);
 
       const extraId = structuredOf(created).layer_id as number;
-      const moved = await callTool(tools, 'gimp_layer', {
+      const moved = await callTool(tools, 'gimp_transform_layer', {
         image,
         op: 'move',
         layer_id: extraId,
-        x: 4,
-        y: 4,
+        absolute: { x: 4, y: 4 },
       });
       expect(moved.isError, JSON.stringify(moved.content)).toBeFalsy();
       expect(await previewVsExport(image, 'move-after')).toBeLessThanOrEqual(1);

@@ -202,36 +202,6 @@ describe('createGimpLayerTools', () => {
       expect(gimp.calls).toHaveLength(0);
     });
 
-    it('op=move dispatches x/y as absolute offsets', async () => {
-      const gimp = makeGimpBackend({ result: { layer_id: 2, x: 10, y: 20 } });
-      const tools = createGimpLayerTools(gimp.asBackend());
-      await callTool(tools, 'gimp_layer', { image: 1, op: 'move', layer_id: 2, x: 10, y: 20 });
-      expect(gimp.lastCall()).toEqual({
-        op: 'layer',
-        args: { ...LAYER_DEFAULTS, image: 1, op: 'move', layer_id: 2, x: 10, y: 20 },
-      });
-    });
-
-    it('op=move refusal (masked filter) surfaces as an error result', async () => {
-      const gimp = makeGimpBackend({
-        throwFor: () =>
-          new Error(
-            "invalid_argument: move would misalign the masked adjustment(s) 'Brightness Contrast': " +
-              "a filter's mask does not travel with the layer it is on."
-          ),
-      });
-      const tools = createGimpLayerTools(gimp.asBackend());
-      const result = await callTool(tools, 'gimp_layer', {
-        image: 1,
-        op: 'move',
-        layer_id: 2,
-        x: 1,
-        y: 1,
-      });
-      expect(result.isError).toBe(true);
-      expect((result.content?.[0] as { text: string }).text).toContain('masked adjustment');
-    });
-
     it('op=reorder forwards parent_group and position', async () => {
       const gimp = makeGimpBackend({ result: { layer_id: 3, parent_group: 6 } });
       const tools = createGimpLayerTools(gimp.asBackend());

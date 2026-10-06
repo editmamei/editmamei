@@ -1104,6 +1104,30 @@ class TestValidateDocumentDims(unittest.TestCase):
         with self.assertRaises(ValueError):
             lib.validate_document_dims(0, 100)
 
+    def test_message_uses_the_right_article(self):
+        with self.assertRaisesRegex(ValueError, r'^an 8-bit document'):
+            lib.validate_document_dims(20000, 20000, '8')
+        with self.assertRaisesRegex(ValueError, r'^a 16-bit document'):
+            lib.validate_document_dims(20000, 20000, '16')
+
+
+class TestValidateGroupTotalPixels(unittest.TestCase):
+    def test_accepts_a_total_at_or_under_the_cap(self):
+        lib.validate_group_total_pixels([(5000, 5000)] * 10, '8')
+
+    def test_rejects_when_the_sum_exceeds_the_cap_though_each_layer_fits(self):
+        sizes = [(9000, 9000)] * 4  # 81 MP each, 324 MP total
+        for size in sizes:
+            lib.validate_document_dims(*size, precision='8')
+        with self.assertRaisesRegex(ValueError, 'total'):
+            lib.validate_group_total_pixels(sizes, '8')
+
+    def test_cap_is_precision_aware(self):
+        sizes = [(5000, 5000)] * 3  # 75 MP
+        lib.validate_group_total_pixels(sizes, '16')
+        with self.assertRaises(ValueError):
+            lib.validate_group_total_pixels(sizes, '32')
+
 
 class TestValidateCanvasFill(unittest.TestCase):
     def test_accepts_every_layer_fill(self):
@@ -2635,6 +2659,194 @@ class TestTextEstimate(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             lib.resolve_font('q' * 5000, ['Inter', 'Roboto'])
         self.assertLess(len(str(ctx.exception)), 400)
+
+
+class TestFitScaleFraction(unittest.TestCase):
+    def test_fit_letterboxes_on_the_shorter_axis_ratio(self):
+        # A 100x50 layer into a 200x200 canvas: width ratio 2.0, height ratio 4.0 -- fit takes
+        # the smaller (2.0), leaving the result inside the canvas on both axes.
+        self.assertEqual(lib.fit_scale_fraction(100, 50, 200, 200, 'fit'), 2.0)
+
+    def test_fill_covers_on_the_larger_axis_ratio(self):
+        self.assertEqual(lib.fit_scale_fraction(100, 50, 200, 200, 'fill'), 4.0)
+
+    def test_fit_and_fill_agree_when_aspect_already_matches(self):
+        self.assertEqual(lib.fit_scale_fraction(100, 100, 300, 300, 'fit'), 3.0)
+        self.assertEqual(lib.fit_scale_fraction(100, 100, 300, 300, 'fill'), 3.0)
+
+    def test_already_fitted_layer_scales_by_exactly_1_0(self):
+        # The idempotency `op_transform_layer`'s `fit` relies on: re-fitting a layer already
+        # sized to the canvas computes a no-op scale.
+        self.assertEqual(lib.fit_scale_fraction(200, 200, 200, 200, 'fit'), 1.0)
+
+    def test_rejects_an_unknown_mode(self):
+        with self.assertRaises(ValueError):
+            lib.fit_scale_fraction(100, 100, 200, 200, 'stretch')
+
+
+class TestComposeLayerMatrix(unittest.TestCase):
+    def test_identity_when_every_param_is_a_no_op(self):
+        m = lib.compose_layer_matrix(50, 50, 100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        self.assertEqual([round(c, 9) for c in m], [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+
+    def test_pure_offset_translates_every_point_by_the_same_amount(self):
+        m = lib.compose_layer_matrix(50, 50, 100.0, 100.0, 0.0, 0.0, 0.0, 10.0, -5.0)
+        x, y, w, h = lib.transformed_bounds(m, 0, 0, 100, 100)
+        self.assertEqual((round(x, 6), round(y, 6), round(w, 6), round(h, 6)), (10.0, -5.0, 100.0, 100.0))
+
+    def test_scale_grows_the_layer_around_its_own_center(self):
+        # A 100x100 layer at (0,0), center (50,50), scaled 200%: doubles to 200x200, re-centered
+        # on the SAME point (50,50) -- new top-left (-50,-50).
+        m = lib.compose_layer_matrix(50, 50, 200.0, 200.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        x, y, w, h = lib.transformed_bounds(m, 0, 0, 100, 100)
+        self.assertEqual((round(x, 6), round(y, 6), round(w, 6), round(h, 6)), (-50.0, -50.0, 200.0, 200.0))
+
+    def test_rotate_90_about_center_swaps_width_and_height(self):
+        m = lib.compose_layer_matrix(50, 25, 100.0, 100.0, 90.0, 0.0, 0.0, 0.0, 0.0)
+        x, y, w, h = lib.transformed_bounds(m, 0, 0, 100, 50)
+        self.assertEqual((round(w, 6), round(h, 6)), (50.0, 100.0))
+        # Same center (50, 25) before and after.
+        self.assertEqual((round(x + w / 2, 6), round(y + h / 2, 6)), (50.0, 25.0))
+
+    def test_shear_leaves_a_point_at_the_center_fixed(self):
+        # A shear's own fixed point is the center it's anchored at (translate-to-origin,
+        # shear, translate-back) -- the center of the pre-transform rect maps to itself.
+        cx, cy = 40.0, 60.0
+        m = lib.compose_layer_matrix(cx, cy, 100.0, 100.0, 0.0, 30.0, 0.0, 0.0, 0.0)
+        new_x = m[0] * cx + m[1] * cy + m[2]
+        new_y = m[3] * cx + m[4] * cy + m[5]
+        self.assertAlmostEqual(new_x, cx, places=9)
+        self.assertAlmostEqual(new_y, cy, places=9)
+
+    def test_positive_skew_h_slants_the_top_edge_right(self):
+        cx, cy = 50.0, 50.0
+        m = lib.compose_layer_matrix(cx, cy, 100.0, 100.0, 0.0, 45.0, 0.0, 0.0, 0.0)
+        # A point 10px ABOVE center (smaller y): horizontal shear at 45 degrees (tan(45)=1)
+        # moves it sideways toward +x by that same 10px, with y unchanged.
+        px, py = cx, cy - 10.0
+        new_x = m[0] * px + m[1] * py + m[2]
+        new_y = m[3] * px + m[4] * py + m[5]
+        self.assertAlmostEqual(new_x, cx + 10.0, places=6)
+        self.assertAlmostEqual(new_y, cy - 10.0, places=6)
+
+    def test_positive_skew_v_slants_the_left_edge_down(self):
+        cx, cy = 50.0, 50.0
+        m = lib.compose_layer_matrix(cx, cy, 100.0, 100.0, 0.0, 0.0, 45.0, 0.0, 0.0)
+        # A point 10px LEFT of center (smaller x): vertical shear at 45 degrees moves it toward
+        # +y (down) by that same 10px, with x unchanged.
+        px, py = cx - 10.0, cy
+        new_x = m[0] * px + m[1] * py + m[2]
+        new_y = m[3] * px + m[4] * py + m[5]
+        self.assertAlmostEqual(new_x, cx - 10.0, places=6)
+        self.assertAlmostEqual(new_y, cy + 10.0, places=6)
+
+    def test_h_45_v_45_determinant_stays_exactly_1_not_0(self):
+        # Regression pin: the single combined-shear matrix [[1,-tan(h)],[-tan(v),1]] this used to
+        # be built from has determinant 1 - tan(h)*tan(v), which is EXACTLY 0 at h=v=45 --
+        # collapsing the whole rectangle to a line. Composed as two independent shears instead,
+        # the determinant is exactly 1 for ANY h/v, so this must not raise.
+        m = lib.compose_layer_matrix(50, 50, 100.0, 100.0, 0.0, 45.0, 45.0, 0.0, 0.0)
+        det = m[0] * m[4] - m[1] * m[3]
+        self.assertAlmostEqual(det, 1.0, places=9)
+
+    def test_h_60_v_60_determinant_stays_exactly_1_not_negative(self):
+        # Regression pin: the old single-matrix determinant 1 - tan(h)*tan(v) at h=v=60 is
+        # 1 - 3 = -2 (tan(60) ~= 1.732) -- NEGATIVE, silently mirroring the layer instead of
+        # shearing it. The two-shear composition keeps it at exactly 1 regardless.
+        m = lib.compose_layer_matrix(50, 50, 100.0, 100.0, 0.0, 60.0, 60.0, 0.0, 0.0)
+        det = m[0] * m[4] - m[1] * m[3]
+        self.assertAlmostEqual(det, 1.0, places=9)
+
+    def test_refuses_a_negative_scale_that_would_mirror_instead_of_transform(self):
+        # Out of gimp_transform_layer's own schema range (1..10000%), but the pure function
+        # itself must still refuse a composed matrix with a negative determinant on its own
+        # terms, as defense in depth against ever silently mirroring a layer.
+        with self.assertRaises(ValueError):
+            lib.compose_layer_matrix(50, 50, -100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    def test_refuses_a_near_zero_scale_that_would_collapse_to_a_line(self):
+        with self.assertRaises(ValueError):
+            lib.compose_layer_matrix(50, 50, 1e-9, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+class TestTransformedBounds(unittest.TestCase):
+    def test_identity_matrix_leaves_bounds_unchanged(self):
+        identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        self.assertEqual(lib.transformed_bounds(identity, 5, 10, 200, 100), (5, 10, 200, 100))
+
+    def test_pure_scale_matrix_scales_the_bounds_from_the_origin(self):
+        scale2x = [2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]
+        self.assertEqual(lib.transformed_bounds(scale2x, 10, 10, 50, 20), (20, 20, 100, 40))
+
+
+class TestCeilWithMargin(unittest.TestCase):
+    def test_exact_integer_still_gets_the_one_pixel_margin(self):
+        self.assertEqual(lib.ceil_with_margin(100.0), 101)
+
+    def test_rounds_up_before_adding_the_margin(self):
+        self.assertEqual(lib.ceil_with_margin(100.2), 102)
+
+    def test_a_value_just_under_a_whole_number_rounds_up_to_it_first(self):
+        self.assertEqual(lib.ceil_with_margin(99.9999), 101)
+
+
+class TestValidateTransformedLayerSize(unittest.TestCase):
+    def test_accepts_one_pixel_or_more(self):
+        lib.validate_transformed_layer_size(1, 1)
+        lib.validate_transformed_layer_size(400, 3)
+
+    def test_rejects_a_zero_dimension_with_a_size_message(self):
+        for w, h in ((0, 10), (10, 0), (0, 0)):
+            with self.assertRaisesRegex(ValueError, 'shrink the layer to %dx%d px' % (w, h)):
+                lib.validate_transformed_layer_size(w, h)
+
+
+class TestTransformLayerPrecisionBucket(unittest.TestCase):
+    def test_u8_variants_bucket_to_8(self):
+        for nick in ('u8-linear', 'u8-non-linear', 'u8-perceptual'):
+            self.assertEqual(lib.transform_layer_precision_bucket(nick), '8')
+
+    def test_u16_and_half_variants_bucket_to_16(self):
+        for nick in ('u16-non-linear', 'u16-perceptual', 'half-linear'):
+            self.assertEqual(lib.transform_layer_precision_bucket(nick), '16')
+
+    def test_u32_float_and_double_variants_bucket_to_32(self):
+        for nick in ('u32-linear', 'float-non-linear', 'double-perceptual'):
+            self.assertEqual(lib.transform_layer_precision_bucket(nick), '32')
+
+
+class TestRejectForeignTransformFields(unittest.TestCase):
+    def test_accepts_an_ops_own_fields(self):
+        lib.reject_foreign_transform_fields('skew', {'skew_h_degrees': 10, 'skew_v_degrees': 5})
+        lib.reject_foreign_transform_fields('free', {
+            'scale_x_percent': 110, 'degrees': 5, 'offset_x': 1, 'offset_y': 2,
+        })
+
+    def test_common_keys_are_always_allowed(self):
+        lib.reject_foreign_transform_fields('flip', {
+            'image': 1, 'op': 'flip', 'layer': 'L', 'layer_id': 2, 'interpolation': 'cubic',
+            'axis': 'horizontal',
+        })
+
+    def test_refuses_a_field_from_another_op(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.reject_foreign_transform_fields('scale', {'skew_h_degrees': 10})
+        self.assertIn(
+            "op 'scale' does not use field(s) skew_h_degrees; its fields are: "
+            "scale_percent, scale_x_percent, scale_y_percent",
+            str(ctx.exception),
+        )
+
+    def test_refuses_ps_style_flat_move_fields(self):
+        # gimp_transform_layer's own move takes nested {x, y} objects (delta/absolute/
+        # center_on); ps_transform_layer's flat delta_x/absolute_x names are foreign here.
+        with self.assertRaises(ValueError) as ctx:
+            lib.reject_foreign_transform_fields('move', {'delta_x': 5, 'delta_y': 5})
+        self.assertIn('delta_x', str(ctx.exception))
+        self.assertIn('delta_y', str(ctx.exception))
+
+    def test_none_values_are_treated_as_omitted(self):
+        lib.reject_foreign_transform_fields('rotate', {'degrees': 10, 'skew_h_degrees': None})
 
 
 if __name__ == '__main__':

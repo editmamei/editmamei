@@ -423,6 +423,16 @@ _TRANSFER_MODE_ENUM = {
     'highlights': Gimp.TransferMode.HIGHLIGHTS,
 }
 
+# gimp_transform_layer's `interpolation` choices, keyed the same way lib.TRANSFORM_LAYER_
+# INTERPOLATIONS validates them against.
+_INTERPOLATION_ENUM = {
+    'none': Gimp.InterpolationType.NONE,
+    'linear': Gimp.InterpolationType.LINEAR,
+    'cubic': Gimp.InterpolationType.CUBIC,
+    'nohalo': Gimp.InterpolationType.NOHALO,
+    'lohalo': Gimp.InterpolationType.LOHALO,
+}
+
 
 def _set_exposure(cfg, params):
     cfg.set_property('exposure', params['exposure'])
@@ -1315,7 +1325,7 @@ def _refuse_if_non_right_angle_with_tracked_effects(img, degrees, op_name):
         )
 
 
-def _snapshot_effect_transform(img, op_name, transform_fn):
+def _snapshot_effect_transform(img, op_name, transform_fn, layers=None):
     """Precompute every ledgered effect filter's new params from a SNAPSHOT of the current
     ledger, validate each against this bridge's own field ranges, and raise -- refusing `op_name`
     outright -- if anything would land out of range, ALL BEFORE anything is mutated. Working from
@@ -1330,13 +1340,18 @@ def _snapshot_effect_transform(img, op_name, transform_fn):
     actually changed -- callers apply these with `_apply_planned_effect_transform` AFTER the
     geometry mutation itself. A filter transform_fn has nothing to change for (black_white,
     add_noise, and every gimp_add_adjustment type -- out of scope for this table, see lib.py's own
-    comment) comes back with the SAME values (by `==`) and is simply absent from the result."""
+    comment) comes back with the SAME values (by `==`) and is simply absent from the result.
+
+    `layers`, when given, scopes the walk to exactly those layers instead of the whole image --
+    `gimp_transform_layer`'s own use, scoped to the target's subtree (`_layer_subtree`), since
+    that op only ever transforms one layer (or, for a group, its own descendants), never every
+    layer in the image the way the whole-canvas geometry ops below do."""
     filters, _unknown = _ledger_get(img)
     if not filters:
         return {}
     snapshot = {name: (rec['operation'], dict(rec['params'])) for name, rec in filters.items()}
     planned = {}
-    for layer in _all_layers(img):
+    for layer in (layers if layers is not None else _all_layers(img)):
         for f in layer.get_filters():
             entry = snapshot.get(f.get_name())
             if entry is None or entry[0] != f.get_operation_name():
@@ -2248,9 +2263,9 @@ def _layer_ancestors(layer):
 
 def _refuse_if_masked_filters_on(img, op_name, layer):
     """The same refuse-rather-than-corrupt check as `_refuse_if_masked_filters`, scoped to `layer`
-    itself, its own subtree (`_layer_subtree` -- moving a group takes its children with it), and
-    its containing groups (`_layer_ancestors`) -- moving `layer` cannot misalign a masked filter
-    that lives on some OTHER, unrelated part of the image.
+    itself, its own subtree (`_layer_subtree` -- transforming a group takes its children with
+    it), and its containing groups (`_layer_ancestors`) -- transforming `layer` cannot misalign a
+    masked filter that lives on some OTHER, unrelated part of the image.
 
     Duplicate-name classification runs over the WHOLE image's live filters, not just this scope: a
     name is ambiguous the moment it appears on more than one live filter ANYWHERE in the image,
@@ -2258,7 +2273,7 @@ def _refuse_if_masked_filters_on(img, op_name, layer):
     elsewhere hiding behind an unmasked one's ledger record in this scope (or the reverse) would
     otherwise slip through unnoticed. The refusal itself still only fires for a name that actually
     appears in `layer`'s own scope, so a masked filter on a completely unrelated layer never blocks
-    this move."""
+    this transform."""
     scope = set(_layer_subtree(layer)) | set(_layer_ancestors(layer))
     scoped_names = {f.get_name() for l in scope for f in l.get_filters()}
     filters = _prune_stale_ledger_records(img)
@@ -2286,8 +2301,8 @@ def _refuse_if_masked_filters_on(img, op_name, layer):
             reasons.append(
                 'filter(s) %s on this layer, or a group containing it, were not created by '
                 'Editmamei (no matching ledger record for their name and operation), so whether '
-                'they are masked cannot be checked -- delete them first, or move the layer before '
-                'adding them'
+                'they are masked cannot be checked -- delete them first, or transform the layer '
+                'before adding them'
                 % ', '.join(repr(n) for n in unrecognized)
             )
         if duplicated:
@@ -2311,8 +2326,8 @@ def _refuse_if_masked_filters_on(img, op_name, layer):
         raise ValueError(
             '%s would misalign the masked adjustment(s) %s: a filter\'s mask does not travel with '
             'content that moves beneath it, whether the filter is on this layer or a group that '
-            'contains it. Move the layer before adding masked adjustments, or delete those filters '
-            'first and re-create them afterwards.'
+            'contains it. Transform the layer before adding masked adjustments, or delete those '
+            'filters first and re-create them afterwards.'
             % (op_name, ', '.join(repr(n) for n in masked))
         )
 
@@ -2608,19 +2623,6 @@ def _op_layer_set(img, args):
     return {'layer_id': layer.get_id(), 'name': layer.get_name(), **changed}
 
 
-def _op_layer_move(img, args):
-    layer = _layer(img, args)
-    _refuse_if_masked_filters_on(img, 'move', layer)
-    x, y = int(lib.require(args, 'x')), int(lib.require(args, 'y'))
-    _validated_move_offset(img, x, y)
-    try:
-        layer.set_offsets(x, y)
-    finally:
-        _drop_proxies(img.get_id())
-    ok, off_x, off_y = layer.get_offsets()
-    return {'layer_id': layer.get_id(), 'x': off_x if ok else None, 'y': off_y if ok else None}
-
-
 def _op_layer_reorder(img, args):
     layer = _layer(img, args)
     parent = _resolve_parent_group(img, args) if 'parent_group' in args else layer.get_parent()
@@ -2733,7 +2735,6 @@ LAYER_OPS = {
     'duplicate': _op_layer_duplicate,
     'select': _op_layer_select,
     'set': _op_layer_set,
-    'move': _op_layer_move,
     'reorder': _op_layer_reorder,
     'merge_down': _op_layer_merge_down,
     'flatten': _op_layer_flatten,
@@ -3188,8 +3189,9 @@ def op_bake(args):
 #   - `Item.scale(width, height, local_origin)` resizes just that one layer; called here while its
 #     offset is still whatever `file_load_layer` gave it (verified: local_origin's own effect on
 #     the resulting offset only matters when the pre-scale offset is non-zero), and the caller's
-#     `x`/`y` are applied afterward via the same absolute `set_offsets` `gimp_layer op=move` uses --
-#     so the requested position is always exact regardless of local_origin's own math. Both
+#     `x`/`y` are applied afterward via the same absolute `set_offsets` call every layer-move op
+#     in this bridge uses -- so the requested position is always exact regardless of
+#     local_origin's own math. Both
 #     `Drawable.scale()` and `Drawable.fill()` report failure by returning `False` rather than
 #     raising (the same class `op_open`'s own `convert_precision` comment documents) -- checked
 #     everywhere this file calls either, including the pre-existing `_fill_new_layer` shared with
@@ -3506,6 +3508,485 @@ def op_convert_image_mode(args):
     finally:
         _drop_proxies(img.get_id())
     return {'mode': mode, 'converted': True}
+
+
+# ---- gimp_transform_layer ---------------------------------------------------------------------
+#
+# A per-LAYER affine transform (fit/scale/move/rotate/flip/skew/free) -- distinct from the
+# whole-CANVAS geometry ops above (crop/resize/rotate/flip), which move or resize every layer
+# together. Addressed the same way every other gimp_* layer op is (`_layer`): layer_id takes
+# priority over layer (name), neither given falls back to the selected layer, or the topmost one.
+#
+# Verified live (GIMP 3.2.6), the assumptions this section is built on:
+#   - `Item.transform_scale`/`transform_rotate`/`transform_flip_simple`/`transform_matrix` all
+#     carry the layer's own mask along automatically, repositioned and resized to match the
+#     layer's new bounds exactly -- no separate mask transform is needed.
+#   - Calling any of these on a GROUP layer transforms the whole group as a unit: every
+#     descendant's own offsets and size update too, in lockstep with the group's. No special-
+#     casing is needed for a group target beyond its own alpha (every non-group descendant gets
+#     one independently -- a group has no pixels of its own) and its predicted size caps: the
+#     group's own bounding box, each non-group descendant's own predicted size, and the SUM of
+#     those descendant sizes must all fit (GIMP allocates and transforms each descendant's own
+#     pixel buffer independently, so the group's bounding box fitting the cap guarantees
+#     neither a single descendant's buffer nor their combined memory does). A locked layer
+#     anywhere in the group's subtree refuses the whole transform up front.
+#   - `Context.transform_resize` set to ADJUST (rather than the default CLIP) is what makes
+#     `rotate`/`skew`/`free` grow the layer's own bounding box to its new, larger extent instead
+#     of clipping corners that rotate/shear outside the old one -- the same growth
+#     `gimp_transform_canvas`'s `expand` gives the whole canvas, but always-on here since a
+#     layer (unlike the canvas) has no reason to ever clip its own content.
+#   - `Context.interpolation` is read by the transform itself, not passed as an argument to any
+#     of the methods above -- set explicitly before every call (never left at whatever a PRIOR
+#     call happened to leave it at).
+#   - A layer with no alpha channel (e.g. a flattened base layer) would otherwise fill any area
+#     a transform exposes outside its old bounds with an opaque background color rather than
+#     transparency -- `add_alpha()` first avoids that, for every op, not only ones that grow the
+#     bounding box (harmless on one that doesn't need it).
+#   - `set_offsets`/every `transform_*` method reports a lock-position or lock-content layer it
+#     could not transform by returning a FALSY value (`False`/`None`) rather than raising --
+#     checked both proactively (`_refuse_if_layer_locked`, before alpha is ever added) and on the
+#     actual call's own return value (`_checked_transform`, defense in depth).
+#   - A text layer stays a text layer through every op here (verified live for scale, rotate,
+#     flip, skew and free; reported back as `text_layer`), never rasterized.
+#   - Refuses outright when the layer (or a containing group) carries a masked or unverifiable
+#     adjustment filter -- `_refuse_if_masked_filters_on` (the same scoped check the whole-image
+#     geometry ops' own `_refuse_if_masked_filters` is a sibling of). An UNMASKED adjustment
+#     filter, or an unmasked position/direction-dependent EFFECT filter (vignette, motion_blur,
+#     drop_shadow) under flip, an exact 90-degree-multiple rotate, or a uniform scale, is instead
+#     REMAPPED the same way the canvas geometry ops remap it (`_snapshot_effect_transform`,
+#     scoped to this layer's own subtree); an arbitrary-angle rotate, any skew or free transform,
+#     or a non-uniform scale is refused outright while such an effect is present, the same way
+#     the canvas ops refuse an arbitrary-angle rotate.
+
+
+def _transform_layer_center(layer):
+    ok, x, y = layer.get_offsets()
+    return (x if ok else 0) + layer.get_width() / 2.0, (y if ok else 0) + layer.get_height() / 2.0
+
+
+def _transform_layer_bounds(layer):
+    ok, x, y = layer.get_offsets()
+    return {
+        'x': x if ok else None, 'y': y if ok else None,
+        'width': layer.get_width(), 'height': layer.get_height(),
+    }
+
+
+def _set_transform_layer_interpolation(args):
+    choice = lib.validate_choice(
+        'interpolation', args.get('interpolation', 'cubic'), lib.TRANSFORM_LAYER_INTERPOLATIONS
+    )
+    Gimp.context_set_interpolation(_INTERPOLATION_ENUM[choice])
+    return choice
+
+
+def _snap_px(value):
+    """Round-half-up to the nearest whole pixel -- `floor(v + 0.5)`, not Python's own banker's
+    `round()` (which rounds a .5 to the nearest EVEN integer, silently snapping e.g. 2.5 down to
+    2). Every target rectangle `fit`/`scale` computes, and every `move` target, snaps to an
+    integer pixel this same, predictable way, so a layer already exactly sized/positioned for the
+    request is a true no-op -- never a half-pixel resample from float drift alone."""
+    return int(math.floor(value + 0.5))
+
+
+def _refuse_if_layer_locked(layer):
+    """Refuses outright, before anything else runs (including adding alpha), when `layer` -- or,
+    for a group, any layer in its subtree that the transform would move -- is lock-position or
+    lock-content. Verified live (GIMP 3.2.6): GIMP does not raise for either -- it silently
+    no-ops `set_offsets`/every `transform_*` method instead (`_checked_transform`'s own comment)
+    -- so this catches it earlier, naming the offending layer, rather than leave a group
+    half-transformed or fall through to that generic defense-in-depth check alone."""
+    for item in _layer_subtree(layer):
+        if item.get_lock_position():
+            raise ValueError(
+                'layer %r is lock-position and cannot be transformed; unlock it first'
+                % item.get_name()
+            )
+        if item.get_lock_content():
+            raise ValueError(
+                'layer %r is lock-content and cannot be transformed; unlock it first'
+                % item.get_name()
+            )
+
+
+def _checked_transform(layer, result):
+    """Verifies a `Item.transform_*`/`set_offsets` call's own return value actually did what it
+    claims. GIMP reports a layer it could not transform (lock-position, lock-content, or any
+    other reason `_refuse_if_layer_locked`'s own proactive check didn't already catch) by
+    returning a FALSY value instead of raising -- `False` for `set_offsets`, `None` for every
+    `transform_*` method (verified live, GIMP 3.2.6) -- so a caller that trusts the call
+    unconditionally would silently report success (and, worse, alpha_added: true) for a
+    transform that never actually happened. `result is True` (`set_offsets`' own success value)
+    is accepted without an id to compare; anything else truthy must be the SAME item this call
+    targeted, not some other one GIMP happened to return."""
+    if not result:
+        raise lib.OpError(
+            'gimp_op_failed',
+            'GIMP did not transform layer %r -- it may be lock-position or lock-content'
+            % layer.get_name()
+        )
+    if result is not True and result.get_id() != layer.get_id():
+        raise lib.OpError(
+            'gimp_op_failed', 'GIMP transformed a different item than layer %r' % layer.get_name()
+        )
+
+
+def _ensure_layer_alpha(layer):
+    """Adds an alpha channel to `layer` if it doesn't have one already. For a GROUP target, adds
+    one to every NON-GROUP descendant that lacks it instead (a group has no pixels of its own to
+    add a channel to, but transforming it cascades to every descendant, each of which can expose
+    a new area the same way a plain layer target can). Returns whether alpha was actually added
+    anywhere."""
+    if layer.is_group():
+        added = False
+        for descendant in _layer_subtree(layer):
+            if descendant.get_id() == layer.get_id() or descendant.is_group():
+                continue
+            if descendant.has_alpha():
+                continue
+            if not descendant.add_alpha():
+                raise lib.OpError(
+                    'gimp_op_failed',
+                    'GIMP could not add an alpha channel to layer %r' % descendant.get_name()
+                )
+            added = True
+        return added
+    if layer.has_alpha():
+        return False
+    if not layer.add_alpha():
+        raise lib.OpError('gimp_op_failed', 'GIMP could not add an alpha channel to this layer')
+    return True
+
+
+def _tracked_effect_names_on(img, layer):
+    """Live, ledgered position/direction-dependent EFFECT filter names (vignette, motion_blur,
+    drop_shadow -- `ROTATE_DEPENDENT_OPERATIONS`) anywhere in `layer`'s own subtree (itself, or
+    every descendant for a group target) -- NOT its ancestors: an ancestor group's own filter is
+    defined relative to the ANCESTOR's own extent, which transforming a descendant inside it
+    never changes, so it needs neither remapping nor refusing here (unlike a MASKED adjustment
+    filter's mask-channel alignment, which does -- see `_refuse_if_masked_filters_on`)."""
+    subtree = _layer_subtree(layer)
+    live_names = {f.get_name() for l in subtree for f in l.get_filters()}
+    filters, _unknown = _ledger_get(img)
+    return sorted(
+        name for name in live_names
+        if filters.get(name, {}).get('operation') in ROTATE_DEPENDENT_OPERATIONS
+    )
+
+
+def _refuse_if_tracked_effects_on(img, op_name, layer, reason):
+    tracked = _tracked_effect_names_on(img, layer)
+    if tracked:
+        raise ValueError(
+            '%s cannot proceed while effect filter(s) %s are present on this layer (or a group '
+            'containing it): %s. Delete these filters first and re-add them afterwards.'
+            % (op_name, ', '.join(repr(n) for n in tracked), reason)
+        )
+
+
+def _refuse_if_non_right_angle_tracked_effects_on(img, degrees, op_name, layer):
+    if lib.is_right_angle_degrees(degrees):
+        return
+    tracked = _tracked_effect_names_on(img, layer)
+    if tracked:
+        raise ValueError(
+            '%s cannot use an arbitrary angle (%.4g°) while effect filter(s) %s are present on '
+            'this layer (or a group containing it): only an exact 0/90/180/270-degree rotation '
+            'keeps them locked to the content. Rotate at a right angle instead, or delete these '
+            'filters first and re-add them afterwards.'
+            % (op_name, degrees, ', '.join(repr(n) for n in tracked))
+        )
+
+
+def _transform_layer_precision(img):
+    return lib.transform_layer_precision_bucket(img.get_precision().value_nick)
+
+
+def _validate_transform_sizes(img, layer, matrix, precision):
+    """Validates `layer`'s own PREDICTED size (via `lib.transformed_bounds`, mapping the
+    layer's current rect through `matrix`) against the engine's precision-aware size cap
+    (`lib.validate_document_dims`, the same one gimp_create_document uses) -- and, for a GROUP
+    target, every non-group descendant's own predicted size the same way, plus the descendants'
+    summed pixel count (`lib.validate_group_total_pixels`; see this section's own comment). Does NOT validate the predicted ORIGIN -- callers whose own target position
+    is exactly `transformed_bounds`' own (new_x, new_y) call `_validated_move_offset` on it
+    themselves (`_validate_transform_prediction`, below); `fit`'s own target is the canvas
+    center instead, validated separately. Returns the layer's own predicted
+    (new_x, new_y, new_w, new_h)."""
+    ok, ox, oy = layer.get_offsets()
+    ox, oy = (ox if ok else 0), (oy if ok else 0)
+    w, h = layer.get_width(), layer.get_height()
+    new_x, new_y, new_w, new_h = lib.transformed_bounds(matrix, ox, oy, w, h)
+    lib.validate_document_dims(
+        lib.ceil_with_margin(new_w), lib.ceil_with_margin(new_h), precision=precision
+    )
+    if layer.is_group():
+        sizes = []
+        for descendant in _layer_subtree(layer):
+            if descendant.get_id() == layer.get_id() or descendant.is_group():
+                continue
+            dok, dx, dy = descendant.get_offsets()
+            dx, dy = (dx if dok else 0), (dy if dok else 0)
+            dw, dh = descendant.get_width(), descendant.get_height()
+            _, _, pred_w, pred_h = lib.transformed_bounds(matrix, dx, dy, dw, dh)
+            pw, ph = lib.ceil_with_margin(pred_w), lib.ceil_with_margin(pred_h)
+            lib.validate_document_dims(pw, ph, precision=precision)
+            sizes.append((pw, ph))
+        lib.validate_group_total_pixels(sizes, precision)
+    return new_x, new_y, new_w, new_h
+
+
+def _validate_transform_prediction(img, layer, matrix, precision):
+    """`_validate_transform_sizes` plus the same predicted-ORIGIN bound `move` enforces
+    (`_validated_move_offset`) -- every op whose own target position IS `transformed_bounds`'
+    predicted (new_x, new_y): rotate, skew, free, and scale (`fit`'s own target is the canvas
+    center instead; see its own handler)."""
+    new_x, new_y, new_w, new_h = _validate_transform_sizes(img, layer, matrix, precision)
+    _validated_move_offset(img, new_x, new_y)
+    return new_x, new_y, new_w, new_h
+
+
+def _transform_layer_fit(layer, img, args):
+    mode = lib.validate_choice('mode', args.get('mode', 'fit'), ('fit', 'fill'))
+    w, h = layer.get_width(), layer.get_height()
+    fraction = lib.fit_scale_fraction(w, h, img.get_width(), img.get_height(), mode)
+    if abs(fraction - 1.0) > 1e-9:
+        _refuse_if_tracked_effects_on(
+            img, 'fit', layer, 'fit/fill cannot keep them locked to the content at this scale'
+        )
+    cx, cy = _transform_layer_center(layer)
+    matrix = lib.compose_layer_matrix(cx, cy, fraction * 100.0, fraction * 100.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    precision = _transform_layer_precision(img)
+    # fit's own target is centered on the CANVAS, not wherever a scale-about-its-own-center
+    # would leave it -- only `matrix`'s predicted SIZE is used below; its predicted origin is
+    # irrelevant and is never read.
+    _, _, new_w, new_h = _validate_transform_sizes(img, layer, matrix, precision)
+    new_w_i, new_h_i = _snap_px(new_w), _snap_px(new_h)
+    lib.validate_transformed_layer_size(new_w_i, new_h_i)
+    target_x = (img.get_width() - new_w_i) / 2.0
+    target_y = (img.get_height() - new_h_i) / 2.0
+    _validated_move_offset(img, target_x, target_y)
+    planned = _snapshot_effect_transform(
+        img, 'fit',
+        lambda operation, params, flayer: lib.resize_effect_params(operation, params, fraction, fraction),
+        layers=_layer_subtree(layer),
+    )
+    alpha_added = _ensure_layer_alpha(layer)
+    x0, y0 = _snap_px(target_x), _snap_px(target_y)
+    result = layer.transform_scale(float(x0), float(y0), float(x0 + new_w_i), float(y0 + new_h_i))
+    _checked_transform(layer, result)
+    failures = _apply_planned_effect_transform(img, planned)
+    extra = {'mode': mode, 'scale_percent': round(fraction * 100.0, 6), 'alpha_added': alpha_added}
+    if failures:
+        extra['effect_update_failures'] = failures
+    return extra
+
+
+def _transform_layer_scale(layer, img, args):
+    lo, hi = lib.TRANSFORM_LAYER_MIN_SCALE_PERCENT, lib.TRANSFORM_LAYER_MAX_SCALE_PERCENT
+    sp = args.get('scale_percent')
+    sx_in, sy_in = args.get('scale_x_percent'), args.get('scale_y_percent')
+    if sx_in is None and sy_in is None:
+        if sp is None:
+            raise ValueError('scale requires scale_percent, or scale_x_percent/scale_y_percent')
+        sx = sy = lib.validate_range('scale_percent', sp, lo, hi)
+    else:
+        sx = lib.validate_range('scale_x_percent', sx_in if sx_in is not None else (sp if sp is not None else 100.0), lo, hi)
+        sy = lib.validate_range('scale_y_percent', sy_in if sy_in is not None else (sp if sp is not None else 100.0), lo, hi)
+    if abs(sx - sy) > 1e-9:
+        _refuse_if_tracked_effects_on(
+            img, 'scale', layer, 'a non-uniform scale cannot keep them locked to the content'
+        )
+    cx, cy = _transform_layer_center(layer)
+    matrix = lib.compose_layer_matrix(cx, cy, sx, sy, 0.0, 0.0, 0.0, 0.0, 0.0)
+    precision = _transform_layer_precision(img)
+    new_x, new_y, new_w, new_h = _validate_transform_prediction(img, layer, matrix, precision)
+    planned = _snapshot_effect_transform(
+        img, 'scale',
+        lambda operation, params, flayer: lib.resize_effect_params(operation, params, sx / 100.0, sy / 100.0),
+        layers=_layer_subtree(layer),
+    )
+    alpha_added = _ensure_layer_alpha(layer)
+    x0, y0 = _snap_px(new_x), _snap_px(new_y)
+    x1, y1 = _snap_px(new_x + new_w), _snap_px(new_y + new_h)
+    lib.validate_transformed_layer_size(x1 - x0, y1 - y0)
+    result = layer.transform_scale(float(x0), float(y0), float(x1), float(y1))
+    _checked_transform(layer, result)
+    failures = _apply_planned_effect_transform(img, planned)
+    extra = {'scale_x_percent': sx, 'scale_y_percent': sy, 'alpha_added': alpha_added}
+    if failures:
+        extra['effect_update_failures'] = failures
+    return extra
+
+
+def _transform_layer_move(layer, img, args):
+    delta, absolute, center_on = args.get('delta'), args.get('absolute'), args.get('center_on')
+    given = [m for m in (delta, absolute, center_on) if m is not None]
+    if len(given) == 0:
+        raise ValueError(
+            'move requires exactly one of delta, absolute, center_on -- each a {x, y} object; '
+            'flat fields like delta_x/absolute_x are not accepted'
+        )
+    if len(given) > 1:
+        raise ValueError(
+            'move accepts only ONE of delta, absolute, center_on -- not more than one (each a '
+            '{x, y} object; flat fields like delta_x/absolute_x are not accepted)'
+        )
+    ok, ox, oy = layer.get_offsets()
+    ox, oy = (ox if ok else 0), (oy if ok else 0)
+    w, h = layer.get_width(), layer.get_height()
+    if delta is not None:
+        nx, ny = ox + float(lib.require(delta, 'x')), oy + float(lib.require(delta, 'y'))
+    elif absolute is not None:
+        nx, ny = float(lib.require(absolute, 'x')), float(lib.require(absolute, 'y'))
+    else:
+        nx = float(lib.require(center_on, 'x')) - w / 2.0
+        ny = float(lib.require(center_on, 'y')) - h / 2.0
+    _validated_move_offset(img, nx, ny)
+    alpha_added = _ensure_layer_alpha(layer)
+    result = layer.set_offsets(_snap_px(nx), _snap_px(ny))
+    _checked_transform(layer, result)
+    return {'alpha_added': alpha_added}
+
+
+def _transform_layer_rotate(layer, img, args):
+    degrees = float(lib.require(args, 'degrees'))
+    if not math.isfinite(degrees):
+        raise ValueError('degrees must be finite')
+    _refuse_if_non_right_angle_tracked_effects_on(img, degrees, 'rotate', layer)
+    cx, cy = _transform_layer_center(layer)
+    matrix = lib.compose_layer_matrix(cx, cy, 100.0, 100.0, degrees, 0.0, 0.0, 0.0, 0.0)
+    precision = _transform_layer_precision(img)
+    _validate_transform_prediction(img, layer, matrix, precision)
+    planned = _snapshot_effect_transform(
+        img, 'rotate',
+        lambda operation, params, flayer: lib.rotate_effect_params(
+            operation, params, degrees, flayer.get_width(), flayer.get_height()
+        ),
+        layers=_layer_subtree(layer),
+    )
+    alpha_added = _ensure_layer_alpha(layer)
+    Gimp.context_set_transform_resize(Gimp.TransformResize.ADJUST)
+    result = layer.transform_rotate(math.radians(degrees), True, 0.0, 0.0)
+    _checked_transform(layer, result)
+    failures = _apply_planned_effect_transform(img, planned)
+    extra = {'degrees': degrees, 'alpha_added': alpha_added}
+    if failures:
+        extra['effect_update_failures'] = failures
+    return extra
+
+
+def _transform_layer_flip(layer, img, args):
+    axis = args.get('axis')
+    if axis not in _FLIP_ORIENTATIONS:
+        raise ValueError('axis must be one of %s' % sorted(_FLIP_ORIENTATIONS))
+    planned = _snapshot_effect_transform(
+        img, 'flip',
+        lambda operation, params, flayer: lib.flip_effect_params(operation, params, axis),
+        layers=_layer_subtree(layer),
+    )
+    alpha_added = _ensure_layer_alpha(layer)
+    result = layer.transform_flip_simple(_FLIP_ORIENTATIONS[axis], True, 0.0)
+    _checked_transform(layer, result)
+    failures = _apply_planned_effect_transform(img, planned)
+    extra = {'axis': axis, 'alpha_added': alpha_added}
+    if failures:
+        extra['effect_update_failures'] = failures
+    return extra
+
+
+def _transform_layer_skew(layer, img, args):
+    skew_h, skew_v = args.get('skew_h_degrees'), args.get('skew_v_degrees')
+    if skew_h is None and skew_v is None:
+        raise ValueError('skew requires at least one of skew_h_degrees, skew_v_degrees')
+    skew_h = float(skew_h) if skew_h is not None else 0.0
+    skew_v = float(skew_v) if skew_v is not None else 0.0
+    if not (math.isfinite(skew_h) and math.isfinite(skew_v)):
+        raise ValueError('skew_h_degrees/skew_v_degrees must be finite')
+    _refuse_if_tracked_effects_on(
+        img, 'skew', layer, 'a skew cannot keep them locked to the content at any angle'
+    )
+    cx, cy = _transform_layer_center(layer)
+    matrix = lib.compose_layer_matrix(cx, cy, 100.0, 100.0, 0.0, skew_h, skew_v, 0.0, 0.0)
+    precision = _transform_layer_precision(img)
+    _validate_transform_prediction(img, layer, matrix, precision)
+    alpha_added = _ensure_layer_alpha(layer)
+    Gimp.context_set_transform_resize(Gimp.TransformResize.ADJUST)
+    result = layer.transform_matrix(*matrix)
+    _checked_transform(layer, result)
+    return {'skew_h_degrees': skew_h, 'skew_v_degrees': skew_v, 'alpha_added': alpha_added}
+
+
+def _transform_layer_free(layer, img, args):
+    lo, hi = lib.TRANSFORM_LAYER_MIN_SCALE_PERCENT, lib.TRANSFORM_LAYER_MAX_SCALE_PERCENT
+    sx = lib.validate_range('scale_x_percent', args.get('scale_x_percent', 100.0), lo, hi)
+    sy = lib.validate_range('scale_y_percent', args.get('scale_y_percent', 100.0), lo, hi)
+    degrees = float(args.get('degrees', 0.0))
+    off_lo, off_hi = -lib.TRANSFORM_LAYER_MAX_OFFSET_PX, lib.TRANSFORM_LAYER_MAX_OFFSET_PX
+    offset_x = lib.validate_range('offset_x', args.get('offset_x', 0.0), off_lo, off_hi)
+    offset_y = lib.validate_range('offset_y', args.get('offset_y', 0.0), off_lo, off_hi)
+    if not math.isfinite(degrees):
+        raise ValueError('degrees must be finite')
+    _refuse_if_tracked_effects_on(
+        img, 'free', layer, 'a combined free transform cannot keep them locked to the content'
+    )
+    cx, cy = _transform_layer_center(layer)
+    matrix = lib.compose_layer_matrix(cx, cy, sx, sy, degrees, 0.0, 0.0, offset_x, offset_y)
+    precision = _transform_layer_precision(img)
+    _validate_transform_prediction(img, layer, matrix, precision)
+    alpha_added = _ensure_layer_alpha(layer)
+    Gimp.context_set_transform_resize(Gimp.TransformResize.ADJUST)
+    result = layer.transform_matrix(*matrix)
+    _checked_transform(layer, result)
+    return {
+        'scale_x_percent': sx, 'scale_y_percent': sy, 'degrees': degrees,
+        'offset_x': offset_x, 'offset_y': offset_y, 'alpha_added': alpha_added,
+    }
+
+
+TRANSFORM_LAYER_OPS = {
+    'fit': _transform_layer_fit,
+    'scale': _transform_layer_scale,
+    'move': _transform_layer_move,
+    'rotate': _transform_layer_rotate,
+    'flip': _transform_layer_flip,
+    'skew': _transform_layer_skew,
+    'free': _transform_layer_free,
+}
+
+
+def op_transform_layer(args):
+    img = _image(args)
+    top = args.get('op')
+    fn = TRANSFORM_LAYER_OPS.get(top)
+    if fn is None:
+        raise ValueError('op must be one of %s' % sorted(TRANSFORM_LAYER_OPS))
+    lib.reject_foreign_transform_fields(top, args)
+    layer = _layer(img, args)
+    _refuse_if_masked_filters_on(img, top, layer)
+    _refuse_if_layer_locked(layer)
+    # Interpolation (and, for rotate/skew/free, the ADJUST transform-resize mode) are ambient
+    # Context settings the transform methods below read rather than take as arguments -- pushed
+    # and popped so this call's choice never leaks into a LATER, unrelated gimp_* call (the same
+    # bracket `_fill_new_layer` uses around its own context changes). Each op validates its own
+    # arguments, the predicted result, and any tracked effect in scope, and raises BEFORE calling
+    # `_ensure_layer_alpha` (own code) or mutating anything, so a rejected call never adds an
+    # alpha channel it then goes on to refuse.
+    Gimp.context_push()
+    try:
+        interpolation = _set_transform_layer_interpolation(args)
+        Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole layer
+        extra = fn(layer, img, args)
+    finally:
+        Gimp.context_pop()
+        _drop_proxies(img.get_id())
+    result = {
+        'layer_id': layer.get_id(),
+        'bounds': _transform_layer_bounds(layer),
+        'interpolation': interpolation,
+        'text_layer': layer.is_text_layer(),
+    }
+    result.update(extra)
+    return result
 
 
 def op_select_none(args):
@@ -4067,6 +4548,7 @@ OPS = {
     'text': op_text, 'fonts': op_fonts,
     'select': op_select, 'modify_mask': op_modify_mask, 'layer_mask': op_layer_mask,
     'mask_preview': op_mask_preview, 'load_mask': op_load_mask, 'render_layer': op_render_layer,
+    'transform_layer': op_transform_layer,
 }
 
 

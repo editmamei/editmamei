@@ -474,22 +474,6 @@ describe('gimp_layer op=duplicate refuses on an Editmamei filter', () => {
   });
 });
 
-describe('gimp_layer op=move refuses on a masked or unverifiable filter', () => {
-  // ops.py's _refuse_if_masked_filters_on: a filter's mask does not travel with set_offsets
-  // (verified live), the same physics gimp_transform_canvas already refuses on.
-  it('the tool description, op field, and x/y fields all say move is an ABSOLUTE offset that refuses on a masked filter, on the layer or a containing group', () => {
-    const desc = description('gimp_layer').replace(/\s+/g, ' ');
-    expect(desc).toMatch(/ABSOLUTE x\/y \(not a delta\)/);
-    expect(desc).toMatch(/does not travel with content that moves beneath it/);
-    const opField = field('gimp_layer', 'op').replace(/\s+/g, ' ');
-    expect(opField).toMatch(/ABSOLUTE x\/y \(not a delta\)/);
-    expect(opField).toMatch(/or a group containing it, carries a masked or unverifiable/);
-    expect(opField).toMatch(/does not travel with content that moves beneath it/);
-    expect(field('gimp_layer', 'x')).toMatch(/ABSOLUTE horizontal offset/);
-    expect(field('gimp_layer', 'y')).toMatch(/ABSOLUTE vertical offset/);
-  });
-});
-
 describe('gimp_layer merge_down/flatten bake filters and can rasterize a visible text layer', () => {
   it('the tool description says masked filters are baked, a VISIBLE text layer is rasterized, and flatten drops alpha', () => {
     const desc = description('gimp_layer').replace(/\s+/g, ' ');
@@ -541,11 +525,9 @@ describe('gimp_bake: bakes a masked filter correctly, never rasterizes text, cle
     expect(desc).toMatch(/A masked filter's confinement survives the bake exactly/);
     expect(desc).toMatch(/a text layer stays a text layer \(baking never rasterizes one\)/);
     expect(desc).toMatch(/Baking clears any masked-filter refusal/);
+    expect(desc).toMatch(/\(gimp_canvas, gimp_resize_image, gimp_transform_canvas\)/);
     expect(desc).toMatch(
-      /\(gimp_layer op=move, gimp_canvas, gimp_resize_image, gimp_transform_canvas\)/
-    );
-    expect(desc).toMatch(
-      /sanctioned way to make a masked adjustment safe to move, resize, rotate, or flip/
+      /sanctioned way to make a masked adjustment safe to resize, rotate, or flip/
     );
     expect(desc).not.toMatch(/verified live/i);
   });
@@ -592,7 +574,7 @@ describe('gimp_place_image: multi-layer sources, mode conversion, and no metadat
       /converted automatically on load, never refused/
     );
   });
-  it('says x/y are an ABSOLUTE offset, matching gimp_layer op=move', () => {
+  it('says x/y are an ABSOLUTE offset, not a delta', () => {
     expect(description('gimp_place_image').replace(/\s+/g, ' ')).toMatch(
       /ABSOLUTE document-pixel offset \(not a delta\)/
     );
@@ -737,5 +719,62 @@ describe('gimp_filter op=list reports layer/layer_id alongside the rest of the r
   it('the op field names layer and layer_id', () => {
     const text = field('gimp_filter', 'op').replace(/\s+/g, ' ');
     expect(text).toMatch(/`?layer`?\/`?layer_id`?/);
+  });
+});
+
+describe('gimp_transform_layer: description and field text pin the engine behaviour', () => {
+  it('the tool description is 100..400 characters and names layer_id', () => {
+    const desc = description('gimp_transform_layer');
+    expect(desc.length).toBeGreaterThanOrEqual(100);
+    expect(desc.length).toBeLessThanOrEqual(400);
+    expect(desc).toMatch(/layer_id/);
+  });
+
+  it('says a group target also refuses on its descendants’ masked filters', () => {
+    const desc = description('gimp_transform_layer').replace(/\s+/g, ' ');
+    expect(desc).toMatch(/group target.?s descendants/);
+    expect(desc).toMatch(/masked filter/);
+  });
+
+  it('says a layer with no alpha gets one (alpha_added)', () => {
+    expect(description('gimp_transform_layer')).toMatch(/alpha_added/);
+  });
+
+  it('says rotate/skew/free grow the layer so nothing clips', () => {
+    expect(description('gimp_transform_layer')).toMatch(/nothing clips/);
+  });
+
+  it('the op field documents every op, a non-uniform scale refusal, an arbitrary-angle rotate refusal, and that skew/free always refuse while an unmasked tracked effect is present', () => {
+    const text = field('gimp_transform_layer', 'op').replace(/\s+/g, ' ');
+    for (const op of ['fit', 'scale', 'move', 'rotate', 'flip', 'skew', 'free']) {
+      expect(text, op).toMatch(new RegExp(`'${op}'`));
+    }
+    expect(text).toMatch(/NON-uniform scale is refused/);
+    expect(text).toMatch(/arbitrary .*angle is refused/);
+    expect(text).toMatch(/skew and free are always refused/);
+  });
+
+  it('the op field says a text layer stays a text layer, never rasterized', () => {
+    expect(field('gimp_transform_layer', 'op').replace(/\s+/g, ' ')).toMatch(
+      /text layer stays a text layer.*never rasterized/
+    );
+  });
+
+  it('the op field says move’s three modes are {x, y} objects, and flat fields are not accepted', () => {
+    const text = field('gimp_transform_layer', 'op').replace(/\s+/g, ' ');
+    expect(text).toMatch(/\{x, y\} object/);
+    expect(text).toMatch(/delta_x\/absolute_x fields are not accepted/);
+  });
+
+  it('declares text_layer and effect_update_failures in the outputSchema', () => {
+    const schema = byName.get('gimp_transform_layer')!.outputSchema as unknown as {
+      properties: { text_layer: { type: string }; effect_update_failures: { type: string } };
+    };
+    expect(schema.properties.text_layer.type).toBe('boolean');
+    expect(schema.properties.effect_update_failures.type).toBe('array');
+  });
+
+  it('is marked destructive', () => {
+    expect(byName.get('gimp_transform_layer')!.annotations?.destructiveHint).toBe(true);
   });
 });

@@ -24,6 +24,7 @@ import { createGimpGeometryTools } from '../../tools/gimp-geometry-tools.js';
 import { createGimpVerifyTools } from '../../tools/gimp-verify-tools.js';
 import { createGimpCheckpointTools } from '../../tools/gimp-checkpoint-tools.js';
 import { createGimpLayerTools } from '../../tools/gimp-layer-tools.js';
+import { createGimpTransformLayerTools } from '../../tools/gimp-transform-layer-tools.js';
 import { createGimpComposeTools } from '../../tools/gimp-compose-tools.js';
 import { createGimpTextTools } from '../../tools/gimp-text-tools.js';
 import { createGimpSelectionTools } from '../../tools/gimp-selection-tools.js';
@@ -42,6 +43,7 @@ export const gimpFactories = [
   createGimpVerifyTools,
   createGimpCheckpointTools,
   createGimpLayerTools,
+  createGimpTransformLayerTools,
   createGimpComposeTools,
   createGimpTextTools,
   createGimpSelectionTools,

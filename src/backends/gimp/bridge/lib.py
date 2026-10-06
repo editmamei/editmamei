@@ -241,6 +241,87 @@ def effective_morphology_px(width, height):
     return max(MIN_MORPHOLOGY_PX, min(MAX_MORPHOLOGY_PX, round(scaled)))
 
 
+# gimp_transform_layer's scale/scale_x_percent/scale_y_percent bound -- generous enough for any
+# real use (100x in either direction) while still keeping a single call's resulting layer size
+# bounded alongside validate_resize_dims' own check on the actual pixel dimensions.
+TRANSFORM_LAYER_MIN_SCALE_PERCENT = 1
+TRANSFORM_LAYER_MAX_SCALE_PERCENT = 10_000
+
+# gimp_transform_layer's `interpolation` choices -- the GIMP resampling filters this bridge
+# exposes, by name. The gi-dependent mapping to the real `Gimp.InterpolationType` enum members
+# lives in ops.py (this module stays gi-free).
+TRANSFORM_LAYER_INTERPOLATIONS = ('none', 'linear', 'cubic', 'nohalo', 'lohalo')
+
+# gimp_transform_layer's `free` op: offset_x/offset_y bound -- a sanity ceiling on the final
+# absolute translation, well past MAX_RESIZE_SIDE_PX (30000) so any real placement fits, but
+# tight enough that a wildly out-of-range value is refused here rather than only by the derived
+# predicted-origin check (`_validated_move_offset`) it also feeds into.
+TRANSFORM_LAYER_MAX_OFFSET_PX = 100_000
+
+# gimp_transform_layer's own op -> the field names that op reads, the same role
+# `type_fields`/`FILTER_COMMON_KEYS` play for gimp_add_adjustment/gimp_add_effect above --
+# `reject_foreign_transform_fields` refuses any OTHER declared field a caller sent (e.g. a
+# PS-style flat `delta_x`, or `skew_h_degrees` on op=scale), so a typo validates instead of
+# silently being ignored by that op's own handler.
+TRANSFORM_LAYER_COMMON_KEYS = frozenset(('image', 'op', 'layer', 'layer_id', 'interpolation'))
+
+TRANSFORM_LAYER_OP_FIELDS = {
+    'fit': ('mode',),
+    'scale': ('scale_percent', 'scale_x_percent', 'scale_y_percent'),
+    'move': ('delta', 'absolute', 'center_on'),
+    'rotate': ('degrees',),
+    'flip': ('axis',),
+    'skew': ('skew_h_degrees', 'skew_v_degrees'),
+    'free': ('scale_x_percent', 'scale_y_percent', 'degrees', 'offset_x', 'offset_y'),
+}
+
+
+def reject_foreign_transform_fields(op, args):
+    """Refuse any field `op` does not read -- the gimp_transform_layer analogue of
+    `reject_foreign_fields` above, over `TRANSFORM_LAYER_OP_FIELDS` instead of the filter-type
+    tables. `op`'s own schema is flat (one property per name across every op), so without this a
+    field meant for a DIFFERENT op (`skew_h_degrees` on op=scale, or PS's flat `delta_x` instead
+    of this tool's nested `delta`) validates, is ignored by that op's own handler, and silently
+    does nothing. None values are ignored (an omitted field)."""
+    own = TRANSFORM_LAYER_OP_FIELDS.get(op, ())
+    foreign = sorted(
+        k for k, v in args.items()
+        if v is not None and k not in TRANSFORM_LAYER_COMMON_KEYS and k not in own
+    )
+    if foreign:
+        raise ValueError(
+            "op '%s' does not use field(s) %s; its fields are: %s"
+            % (op, ', '.join(foreign), ', '.join(own) or '(none)')
+        )
+
+
+def ceil_with_margin(value):
+    """`value` rounded UP to the next whole pixel, plus one more -- the conservative integer a
+    cap check validates against for a float `transformed_bounds` predicts, matching the extra
+    pixel GIMP's own ADJUST transform-resize can add by rounding each edge of a rotated/sheared
+    bounding box outward independently (floor the min edge, ceil the max edge), which can land
+    the ACTUAL resulting integer width/height one pixel past a plain `ceil` of the float width.
+    Never used for the transform's own corner coordinates (those stay exact floats) -- only for
+    deciding whether to refuse BEFORE any pixel moves."""
+    return int(math.ceil(value)) + 1
+
+
+def transform_layer_precision_bucket(precision_nick):
+    """`Gimp.Precision.value_nick` (e.g. 'u8-non-linear', 'u16-perceptual', 'float-linear')
+    bucketed into the '8'/'16'/'32' strings `validate_document_dims`'s own
+    `DOCUMENT_MEGAPIXEL_CAP` is keyed by -- gimp_transform_layer validates a layer's predicted
+    size against the SAME precision-aware cap gimp_create_document does, rather than always
+    assuming 8-bit. u16 and half bucket to '16' (2 bytes/channel); every other precision (u32,
+    float, double) buckets to '32' (4+ bytes/channel, the most conservative bucket) -- this
+    bridge has no DOCUMENT_MEGAPIXEL_CAP entry finer than that."""
+    nick = precision_nick.lower()
+    if nick.startswith('u8'):
+        return '8'
+    if nick.startswith('u16') or nick.startswith('half'):
+        return '16'
+    return '32'
+
+
 def require(args, name):
     """Fetch a required field from an op's `args`, raising ValueError naming it -- the
     classifier maps that to `invalid_argument`. A bare `args[name]` raises KeyError instead,
@@ -356,8 +437,24 @@ def validate_document_dims(width, height, precision='8'):
     cap = DOCUMENT_MEGAPIXEL_CAP[precision]
     megapixels = (width * height) / 1_000_000.0
     if megapixels > cap:
-        raise ValueError('a %s-bit document must be at most %g MP' % (precision, cap))
+        raise ValueError(
+            '%s %s-bit document must be at most %g MP'
+            % ('an' if precision == '8' else 'a', precision, cap)
+        )
     return width, height
+
+
+def validate_group_total_pixels(sizes, precision='8'):
+    """A GROUP transform allocates every non-group descendant's own result buffer, so the SUM of
+    their predicted pixel counts (`sizes`: (width, height) pairs) must fit the same
+    precision-aware megapixel ceiling `validate_document_dims` applies to a single layer."""
+    cap = DOCUMENT_MEGAPIXEL_CAP[precision]
+    megapixels = sum(w * h for w, h in sizes) / 1_000_000.0
+    if megapixels > cap:
+        raise ValueError(
+            "the group's layers would total %.1f MP after this transform; the %s-bit limit is %d MP"
+            % (megapixels, precision, cap)
+        )
 
 
 def validate_feather_px(value):
@@ -1531,6 +1628,155 @@ def validate_effect_transform(op_name, operation, filter_name, new_params):
                 'Delete it (gimp_filter op=delete) and re-add it after this geometry change.'
                 % (op_name, field, filter_name, value, lo, hi)
             )
+
+
+
+# ---- gimp_transform_layer: pure geometry math (fit/fill scale, matrix composition, bounds) ----
+#
+# A layer-level affine transform (scale/rotate/skew/free), distinct from the whole-CANVAS
+# geometry ops above and from the direction/position-dependent EFFECT param remapping above.
+# `Item.transform_matrix` (ops.py) applies the given 3x3 matrix directly in ABSOLUTE
+# document-pixel coordinates -- verified live (GIMP 3.2.6): a matrix built by
+# `compose_layer_matrix` below, applied to a layer at a known offset, moved it to exactly the
+# bounding box this module's own `transformed_bounds` predicts for the same matrix and corners
+# (within floating-point rounding). So every matrix built here already carries whatever
+# translation is needed to anchor the transform at the layer's own center; there is no separate
+# "local" coordinate frame to convert into or out of first.
+
+
+def fit_scale_fraction(layer_width, layer_height, canvas_width, canvas_height, mode):
+    """The uniform scale fraction (1.0 = 100%) that makes a `layer_width` x `layer_height`
+    rectangle fit inside (mode='fit', letterbox -- the SMALLER of the two axis ratios) or fill
+    (mode='fill', cover -- the LARGER) a `canvas_width` x `canvas_height` canvas, preserving
+    aspect. `op_transform_layer`'s `fit` scales by this fraction and centers the result; fitting
+    an already-fitted layer computes a fraction of 1.0, a no-op scale -- what makes that op
+    idempotent."""
+    if mode not in ('fit', 'fill'):
+        raise ValueError("mode must be one of 'fit', 'fill'")
+    width_ratio = canvas_width / float(layer_width)
+    height_ratio = canvas_height / float(layer_height)
+    return min(width_ratio, height_ratio) if mode == 'fit' else max(width_ratio, height_ratio)
+
+
+def _mat_mul(a, b):
+    """3x3 matrix product, both `a` and `b` flat row-major 9-lists (the same layout
+    `Item.transform_matrix`'s own 9 positional args use), applied to a column vector [x,y,1] as
+    p' = a*(b*p) -- `b` is the transform applied FIRST."""
+    return [
+        a[0] * b[0] + a[1] * b[3] + a[2] * b[6],
+        a[0] * b[1] + a[1] * b[4] + a[2] * b[7],
+        a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+        a[3] * b[0] + a[4] * b[3] + a[5] * b[6],
+        a[3] * b[1] + a[4] * b[4] + a[5] * b[7],
+        a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+        a[6] * b[0] + a[7] * b[3] + a[8] * b[6],
+        a[6] * b[1] + a[7] * b[4] + a[8] * b[7],
+        a[6] * b[2] + a[7] * b[5] + a[8] * b[8],
+    ]
+
+
+def _mat_translate(tx, ty):
+    return [1.0, 0.0, tx, 0.0, 1.0, ty, 0.0, 0.0, 1.0]
+
+
+def _mat_scale(sx, sy):
+    return [sx, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_rotate(degrees):
+    theta = math.radians(degrees)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    return [cos_t, -sin_t, 0.0, sin_t, cos_t, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_shear_h(skew_h_degrees):
+    """A pure horizontal shear: x' = x - tan(skew_h_degrees)*y, y' = y -- determinant exactly 1
+    for any angle. Positive `skew_h_degrees` slants the top edge right (a point above center,
+    smaller y, moves toward +x) -- the convention `gimp_transform_layer`'s own schema documents,
+    and the one `ps_transform_layer`'s op=skew uses."""
+    return [1.0, -math.tan(math.radians(skew_h_degrees)), 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_shear_v(skew_v_degrees):
+    """A pure vertical shear: x' = x, y' = -tan(skew_v_degrees)*x + y -- determinant exactly 1
+    for any angle. Positive `skew_v_degrees` slants the left edge down (a point left of center,
+    smaller x, moves toward +y)."""
+    return [1.0, 0.0, 0.0, -math.tan(math.radians(skew_v_degrees)), 1.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_determinant(m):
+    """The determinant of `m`'s linear (non-translation) 2x2 part -- the translation column
+    (indices 2, 5) never affects it. Zero means the transform collapses the rectangle to a line
+    or a point; negative means it mirrors (flips handedness) rather than purely scaling/
+    rotating/shearing it."""
+    return m[0] * m[4] - m[1] * m[3]
+
+
+# A composed matrix below this |determinant| is treated the same as an exact 0: numerically
+# indistinguishable from a transform that collapses the layer to a line, so refused outright
+# rather than handed to `Item.transform_matrix` to silently produce a degenerate result.
+TRANSFORM_LAYER_MIN_DETERMINANT = 1e-6
+
+
+def compose_layer_matrix(cx, cy, scale_x_percent, scale_y_percent, degrees,
+                          skew_h_degrees, skew_v_degrees, offset_x, offset_y):
+    """The 9 row-major coefficients for `Item.transform_matrix`: a scale (percent, 100 =
+    unchanged), then a skew (skew_h_degrees/skew_v_degrees, composed as two independent real
+    shears -- Sh_v . Sh_h, each with its OWN determinant of exactly 1, so the composed skew's
+    determinant is always exactly 1 too, for any angle), then a rotation (degrees, clockwise),
+    all anchored at the layer's own center (`cx`, `cy`, document pixels), followed by an absolute
+    translation (`offset_x`, `offset_y`). Never the single combined-shear matrix
+    [[1,-tan(h)],[-tan(v),1]] -- that matrix's OWN determinant is `1 - tan(h)*tan(v)`, which
+    reaches exactly 0 at h=v=45 (collapsing the rectangle to a line) and goes NEGATIVE past that
+    (silently mirroring it instead of shearing it). `op_transform_layer`'s `free` op calls this
+    directly (scale + degrees + offset, no skew); `skew` calls it with scale 100/100, degrees 0,
+    offset 0/0; `rotate`'s own bounds check (not its actual transform, which goes through
+    `Item.transform_rotate` instead -- see ops.py) reuses it with scale 100/100, skew 0/0, offset
+    0/0 purely to predict the post-rotation bounding box via `transformed_bounds`.
+
+    Raises if the FINAL composed matrix's determinant is below `TRANSFORM_LAYER_MIN_DETERMINANT`
+    or negative -- scale alone is already bounded away from both by its own 1..10000% range, but
+    this is the belt-and-braces check against the composed result as a whole, not just its own
+    skew component."""
+    m = _mat_translate(-cx, -cy)
+    m = _mat_mul(_mat_scale(scale_x_percent / 100.0, scale_y_percent / 100.0), m)
+    m = _mat_mul(_mat_shear_v(skew_v_degrees), _mat_mul(_mat_shear_h(skew_h_degrees), m))
+    m = _mat_mul(_mat_rotate(degrees), m)
+    m = _mat_mul(_mat_translate(cx, cy), m)
+    m = _mat_mul(_mat_translate(offset_x, offset_y), m)
+    det = _mat_determinant(m)
+    if not math.isfinite(det) or det < 0 or abs(det) < TRANSFORM_LAYER_MIN_DETERMINANT:
+        raise ValueError(
+            'this combination of scale/skew/rotate collapses or mirrors the layer (determinant '
+            '%.6g) instead of transforming it -- reduce the scale or skew and try again' % det
+        )
+    return m
+
+
+def transformed_bounds(matrix, x, y, width, height):
+    """The axis-aligned bounding box of a `width` x `height` rectangle at document-pixel origin
+    (`x`, `y`), after mapping each of its four corners through `matrix` (9 row-major
+    coefficients, `Item.transform_matrix`'s own layout) -- what the transformed layer's new
+    offsets/width/height will measure to. Used to validate a rotate/skew/free transform against
+    the same size cap `validate_resize_dims` enforces, BEFORE any pixel actually moves. Returns
+    (new_x, new_y, new_width, new_height)."""
+    corners = ((x, y), (x + width, y), (x, y + height), (x + width, y + height))
+    xs = [matrix[0] * cx + matrix[1] * cy + matrix[2] for cx, cy in corners]
+    ys = [matrix[3] * cx + matrix[4] * cy + matrix[5] for cx, cy in corners]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    return min_x, min_y, max_x - min_x, max_y - min_y
+
+
+def validate_transformed_layer_size(width, height):
+    """Refuses a scale/fit whose rounded target is under 1px in either dimension. Without this
+    GIMP is handed a zero-size rectangle, returns nothing, and the caller reports a misleading
+    "lock-position or lock-content" failure for a layer that was never locked."""
+    if width < 1 or height < 1:
+        raise ValueError(
+            'the transform would shrink the layer to %dx%d px after rounding; use a larger scale'
+            % (width, height)
+        )
 
 
 def region_to_proxy_px(region, scale):
