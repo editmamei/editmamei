@@ -25,6 +25,19 @@
  */
 
 /**
+ * Tools that run a saved recipe (a template, batch, sequence, or recorded Action). An overlay,
+ * not a fourth class: these also sit in READ_ONLY_TOOLS or MUTATING_TOOLS. The telemetry
+ * service counts successful calls to them as recipe runs and mirrors this list, so the two
+ * must change together.
+ */
+export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
+  'ps_template_apply',
+  'ps_batch',
+  'ps_sequence',
+  'ps_play_action',
+]);
+
+/**
  * Tools whose successful call reads state without changing the document — used to decide
  * `edits_ok` (a successful call outside this set). See the module doc comment above for the
  * server-sync + exhaustiveness discipline this list is held to.
