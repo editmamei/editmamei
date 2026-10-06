@@ -111,7 +111,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 | Group | Edition | Tools |
 | --- | --- | --- |
-| **GIMP** | Community (beta) | `gimp_ping` · `gimp_overview` · `gimp_open_document` · `gimp_close_document` · `gimp_save_xcf` · `gimp_export` · `gimp_inspect` · `gimp_add_adjustment` · `gimp_add_effect` · `gimp_filter` · `gimp_bake` · `gimp_layer` · `gimp_create_document` · `gimp_place_image` · `gimp_canvas` · `gimp_convert_image_mode` · `gimp_crop_document` · `gimp_resize_image` · `gimp_transform_canvas` · `gimp_create_mask` · `gimp_checkpoint` · `gimp_get_preview` · `gimp_get_histogram` · `gimp_compare` |
+| **GIMP** | Community (beta) | `gimp_ping` · `gimp_overview` · `gimp_open_document` · `gimp_close_document` · `gimp_save_xcf` · `gimp_export` · `gimp_inspect` · `gimp_add_adjustment` · `gimp_add_effect` · `gimp_filter` · `gimp_bake` · `gimp_layer` · `gimp_create_document` · `gimp_place_image` · `gimp_canvas` · `gimp_convert_image_mode` · `gimp_crop_document` · `gimp_resize_image` · `gimp_transform_canvas` · `gimp_checkpoint` · `gimp_get_preview` · `gimp_get_histogram` · `gimp_compare` |
 
 ## Editions
 

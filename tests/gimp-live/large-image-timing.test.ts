@@ -12,6 +12,13 @@
  * (several GB of RAM, tens of seconds), which is too heavy for every
  * `npm test` on a machine that happens to have GIMP installed.
  *
+ * Always excluded from `npm run test:gimp` (vitest.config.ts) -- even an idle, immediately-
+ * skipped describe block is a vitest worker file running alongside the REST of tests/gimp-live,
+ * each driving its own real headless GIMP, and the resulting CPU/memory contention both skews
+ * this file's own measurements and has pushed an unrelated file's live test past its own timeout.
+ * `npm run test:gimp:timing` runs this file alone (still gated by `EDITMAMEI_GIMP_PERF=1` for the
+ * heavy work itself); naming the file directly on the command line works the same way.
+ *
  * This does not assert exact numbers (real GIMP performance varies by
  * machine) — it asserts each measured operation stays comfortably under the
  * configured budget (with margin, so a legitimately slower CI runner
@@ -197,5 +204,197 @@ describe.skipIf(!install || !PERF)(
       const exportBudget = TOOL_TIMEOUT_BUDGETS_MS.gimp_export ?? DEFAULT_SCRIPT_TIMEOUT_MS;
       expect(exportMs, 'export').toBeLessThan(exportBudget * MARGIN);
     }, 180_000);
+
+    it('gimp_select / gimp_modify_selection / gimp_layer_mask / gimp_get_selection_preview, each within its configured budget (+ generous margin)', async () => {
+      const MEASUREMENT_TIMEOUT_MS = 120_000;
+
+      const pngPath = join(workDir, 'synthetic-24mp-selection.png');
+      writeSyntheticPng(pngPath, WIDTH, HEIGHT);
+      const opened = await session.call<{ image: number }>(
+        'open',
+        { path: pngPath },
+        { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+      );
+      const image = opened.image;
+
+      // Several live filters, stacked -- `color_range`'s sample_merged path reads the full
+      // COMPOSITE (a whole-image duplicate + flatten through every live filter), so this is the
+      // realistic worst case, not just a flat unfiltered image.
+      await session.call(
+        'adjust',
+        { image, type: 'exposure', exposure: 0.5 },
+        { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+      );
+      await session.call(
+        'adjust',
+        { image, type: 'brightness_contrast', brightness: 20, contrast: 10 },
+        { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+      );
+      await session.call(
+        'adjust',
+        { image, type: 'gaussian_blur', radius: 5 },
+        { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+      );
+
+      const { ms: selectRectMs } = await timed(
+        'gimp_select mode=rectangle (~24MP, 3 live filters)',
+        () =>
+          session.call(
+            'select',
+            {
+              image,
+              mode: 'rectangle',
+              x: 0,
+              y: 0,
+              width: WIDTH,
+              height: HEIGHT,
+              name: 'PerfRect',
+            },
+            { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+          )
+      );
+
+      // The worst case for color_range's sample-point path: sample_merged reads the full
+      // composite via `Image.pick_color` over every live filter (see ops.py's `_color_arg`).
+      const { ms: selectColorMs } = await timed(
+        'gimp_select mode=color_range by sample point, sample_merged (~24MP, 3 live filters)',
+        () =>
+          session.call(
+            'select',
+            { image, mode: 'color_range', x: 100, y: 100, sample_merged: true, name: 'PerfColor' },
+            { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+          )
+      );
+
+      // The worst case for expand/contract/border: `border` (the most expensive of the three,
+      // measured live) at px = MAX_MORPHOLOGY_PX (150, bridge/lib.py) -- the bridge's own cap,
+      // chosen specifically so this stays well inside the tool's budget (see
+      // operation-timeouts.ts's gimp_modify_selection comment for the scaling data behind it).
+      const { ms: modifyMs } = await timed('gimp_modify_selection op=border px=150 (~24MP)', () =>
+        session.call(
+          'modify_mask',
+          { image, channel: 'PerfRect', op: 'border', px: 150 },
+          { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+        )
+      );
+
+      const { ms: layerMaskMs } = await timed(
+        'gimp_layer_mask op=create from a channel (~24MP)',
+        () =>
+          session.call(
+            'layer_mask',
+            { image, op: 'create', source: 'channel', channel: 'PerfRect' },
+            { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+          )
+      );
+
+      const previewPath = join(workDir, 'selection-preview-perf.jpg');
+      const { ms: previewMs } = await timed(
+        'gimp_get_selection_preview at max_px=2048 (~24MP)',
+        () =>
+          session.call(
+            'mask_preview',
+            { image, channel: 'PerfRect', max_px: 2048, out_path: previewPath },
+            { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+          )
+      );
+
+      await session.call('close', { image }, { timeoutMs: MEASUREMENT_TIMEOUT_MS });
+
+      const MARGIN = 0.7;
+      const budget = (name: string) => TOOL_TIMEOUT_BUDGETS_MS[name] ?? DEFAULT_SCRIPT_TIMEOUT_MS;
+      expect(selectRectMs, 'gimp_select (rectangle)').toBeLessThan(budget('gimp_select') * MARGIN);
+      expect(selectColorMs, 'gimp_select (color_range sample_merged)').toBeLessThan(
+        budget('gimp_select') * MARGIN
+      );
+      expect(modifyMs, 'gimp_modify_selection').toBeLessThan(
+        budget('gimp_modify_selection') * MARGIN
+      );
+      expect(layerMaskMs, 'gimp_layer_mask').toBeLessThan(budget('gimp_layer_mask') * MARGIN);
+      expect(previewMs, 'gimp_get_selection_preview').toBeLessThan(
+        budget('gimp_get_selection_preview') * MARGIN
+      );
+    }, 180_000);
+
+    it(
+      'gimp_select (sample point) and gimp_modify_selection (border, the morphology cap) on the ' +
+        'largest document the bridge allows (~217MP)',
+      async () => {
+        const MEASUREMENT_TIMEOUT_MS = 180_000;
+
+        const pngPath = join(workDir, 'synthetic-24mp-for-resize.png');
+        writeSyntheticPng(pngPath, WIDTH, HEIGHT);
+        const opened = await session.call<{ image: number }>(
+          'open',
+          { path: pngPath },
+          { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+        );
+        const image = opened.image;
+        await session.call(
+          'resize',
+          { image, width: RESIZE_WIDTH, height: RESIZE_HEIGHT },
+          { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+        );
+
+        // Same worst case as the ~24MP measurement above: sample_merged reads the full composite.
+        const { ms: selectColorMs } = await timed(
+          'gimp_select mode=color_range by sample point, sample_merged (~217MP)',
+          () =>
+            session.call(
+              'select',
+              {
+                image,
+                mode: 'color_range',
+                x: 100,
+                y: 100,
+                sample_merged: true,
+                name: 'PerfColorBig',
+              },
+              { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+            )
+        );
+
+        await session.call(
+          'select',
+          {
+            image,
+            mode: 'rectangle',
+            x: 0,
+            y: 0,
+            width: RESIZE_WIDTH,
+            height: RESIZE_HEIGHT,
+            name: 'PerfRectBig',
+          },
+          { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+        );
+        // The most expensive morphological op (border, measured live), run at the bridge's OWN
+        // document-scaled cap for ~217MP (`lib.effective_morphology_px`, bridge/lib.py) -- 17px,
+        // not the flat 150 a smaller document gets. A flat 150px cap measured live at ~30s on
+        // ~24MP, ~73.5s on ~100MP, and an outright GIMP session timeout past 180s on this same
+        // ~217MP document -- the scaling fix is what keeps this call inside budget at all.
+        const SCALED_MORPHOLOGY_PX = 17;
+        const { ms: borderMs } = await timed(
+          `gimp_modify_selection op=border px=${SCALED_MORPHOLOGY_PX} (~217MP, the scaled morphology cap)`,
+          () =>
+            session.call(
+              'modify_mask',
+              { image, channel: 'PerfRectBig', op: 'border', px: SCALED_MORPHOLOGY_PX },
+              { timeoutMs: MEASUREMENT_TIMEOUT_MS }
+            )
+        );
+
+        await session.call('close', { image }, { timeoutMs: MEASUREMENT_TIMEOUT_MS });
+
+        const MARGIN = 0.7;
+        const budget = (name: string) => TOOL_TIMEOUT_BUDGETS_MS[name] ?? DEFAULT_SCRIPT_TIMEOUT_MS;
+        expect(selectColorMs, 'gimp_select (color_range sample_merged, ~217MP)').toBeLessThan(
+          budget('gimp_select') * MARGIN
+        );
+        expect(borderMs, 'gimp_modify_selection (border at the scaled cap, ~217MP)').toBeLessThan(
+          budget('gimp_modify_selection') * MARGIN
+        );
+      },
+      240_000
+    );
   }
 );

@@ -312,7 +312,6 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   // Vignette/blur/noise/shadow effects — the same "blur/sharpen/noise/stylize" family as
   // ps_filter, not a tonal adjustment.
   gimp_add_effect: 'filter',
-  gimp_create_mask: 'masks',
   gimp_checkpoint: 'document',
   gimp_layer: 'layers',
   gimp_bake: 'layers',
@@ -323,6 +322,10 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   gimp_canvas: 'document',
   gimp_text: 'layers',
   gimp_convert_image_mode: 'document',
+  gimp_select: 'select',
+  gimp_modify_selection: 'select',
+  gimp_layer_mask: 'masks',
+  gimp_get_selection_preview: 'verify',
 };
 
 /**

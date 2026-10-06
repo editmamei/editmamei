@@ -63,14 +63,15 @@ describe('every gimp_* description names its editor', () => {
 });
 
 describe('geometry refusals name BOTH conditions (masked filters and filters Editmamei did not create)', () => {
-  // ops.py _refuse_if_masked_filters refuses on either.
+  // ops.py _refuse_if_masked_filters refuses on either. gimp_select carries only a short pointer
+  // to this rule (see the next describe block) -- the full warning lives on the surfaces below
+  // plus gimp_add_effect's own mask field, so it isn't repeated a third time on gimp_select.
   const places: Array<[string, string]> = [
     ['gimp_resize_image', description('gimp_resize_image')],
     ['gimp_transform_canvas', description('gimp_transform_canvas')],
     ['gimp_canvas', description('gimp_canvas')],
     ['gimp_add_adjustment', description('gimp_add_adjustment')],
     ['gimp_add_adjustment mask', field('gimp_add_adjustment', 'mask')],
-    ['gimp_create_mask', description('gimp_create_mask')],
     [
       'overview Order matters',
       overviewSection('Order matters: geometry before masked adjustments'),
@@ -78,6 +79,14 @@ describe('geometry refusals name BOTH conditions (masked filters and filters Edi
   ];
   it.each(places)('%s', (_where, text) => {
     expect(text.replace(/\s+/g, ' ')).toMatch(/any filter not created by Editmamei/);
+  });
+});
+
+describe('gimp_select points to the geometry-order rule without repeating it in full', () => {
+  it('stays under 400 characters and tells the caller when to select', () => {
+    const text = description('gimp_select');
+    expect(text.length).toBeLessThanOrEqual(400);
+    expect(text).toMatch(/after straighten\/resize\/crop/);
   });
 });
 
@@ -304,12 +313,9 @@ describe('raw handling matches op_open (the load is always tried first)', () => 
 });
 
 describe('annotations', () => {
-  it.each(['gimp_filter', 'gimp_export', 'gimp_create_mask'])(
-    '%s is marked destructive',
-    (name) => {
-      expect(byName.get(name)!.annotations?.destructiveHint).toBe(true);
-    }
-  );
+  it.each(['gimp_filter', 'gimp_export', 'gimp_select'])('%s is marked destructive', (name) => {
+    expect(byName.get(name)!.annotations?.destructiveHint).toBe(true);
+  });
 });
 
 describe('levels input rules match lib.validate_levels', () => {

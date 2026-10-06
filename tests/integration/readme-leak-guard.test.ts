@@ -4,6 +4,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { OVERVIEW_MARKDOWN } from '@editmamei/tools/overview-tools.ts';
+import { GIMP_OVERVIEW_MARKDOWN } from '@editmamei/tools/gimp-core-tools.ts';
 import { HYDRATED_OVERLAY } from '../helpers/overlay-tree.ts';
 import { trackedFiles } from '../helpers/tracked-files.ts';
 
@@ -420,6 +421,71 @@ describe('overview tool markdown leak guard', () => {
       OVERVIEW_MARKDOWN,
       'overview must reference tools/list (the authoritative inventory) so the LLM knows where to enumerate available tools'
     ).toContain('tools/list');
+  });
+});
+
+/**
+ * GIMP_OVERVIEW_MARKDOWN is gimp_overview's own markdown body (community tier,
+ * ships whenever the GIMP module registers) -- the same invariant as
+ * ps_overview's OVERVIEW_MARKDOWN above, checked separately since the two are
+ * independent strings naming independent tool surfaces.
+ */
+describe('GIMP overview tool markdown leak guard', () => {
+  it("no 'dev'-tier tool name appears in GIMP_OVERVIEW_MARKDOWN", () => {
+    const devTools = Object.entries(TOOL_TIERS)
+      .filter(([, tier]) => tier === 'dev')
+      .map(([name]) => name);
+    const leaks = devTools.filter((name) => containsToolName(GIMP_OVERVIEW_MARKDOWN, name));
+    expect(
+      leaks,
+      `'dev'-tier tool names found in GIMP_OVERVIEW_MARKDOWN: ${leaks.join(', ')}. ` +
+        `Dev-tier tools are excluded from shipped CE + Pro bundles — ` +
+        `mentioning them in the overview tells the LLM about tools the ` +
+        `user can't actually invoke.`
+    ).toEqual([]);
+  });
+
+  it("no 'none'-tier tool name appears in GIMP_OVERVIEW_MARKDOWN", () => {
+    const noneTools = Object.entries(TOOL_TIERS)
+      .filter(([, tier]) => tier === 'none')
+      .map(([name]) => name);
+    const leaks = noneTools.filter((name) => containsToolName(GIMP_OVERVIEW_MARKDOWN, name));
+    expect(
+      leaks,
+      `'none'-tier tool names found in GIMP_OVERVIEW_MARKDOWN: ${leaks.join(', ')}.`
+    ).toEqual([]);
+  });
+
+  it("no 'pro'-tier tool name appears in GIMP_OVERVIEW_MARKDOWN", () => {
+    const proTools = Object.entries(TOOL_TIERS)
+      .filter(([, tier]) => tier === 'pro')
+      .map(([name]) => name);
+    const leaks = proTools.filter((name) => containsToolName(GIMP_OVERVIEW_MARKDOWN, name));
+    expect(
+      leaks,
+      `'pro'-tier tool names found in GIMP_OVERVIEW_MARKDOWN: ${leaks.join(', ')}. ` +
+        `The overview ships in CE — naming Pro tools tells CE users about ` +
+        `features they can't reach.`
+    ).toEqual([]);
+  });
+
+  it('no tier markers like "(Pro)" / "Pro-tier" appear in GIMP_OVERVIEW_MARKDOWN', () => {
+    const forbiddenMarkers = [
+      '(Pro)',
+      'Pro-tier',
+      'Pro tier',
+      'Community Edition',
+      'CE build',
+      'CE-only',
+      'Pro-only',
+    ];
+    const leaks = forbiddenMarkers.filter((m) => GIMP_OVERVIEW_MARKDOWN.includes(m));
+    expect(
+      leaks,
+      `Tier markers in GIMP_OVERVIEW_MARKDOWN: ${leaks.join(', ')}. ` +
+        `Overview is workflow guidance; tools/list is inventory. ` +
+        `Tier annotations belong in neither.`
+    ).toEqual([]);
   });
 });
 

@@ -1058,6 +1058,23 @@ class TestMegapixelCapEnv(unittest.TestCase):
                 self.assertEqual(m.DOCUMENT_MEGAPIXEL_CAP['16'], 125, big)
 
 
+class TestValidateLoadedMaskDims(unittest.TestCase):
+    # A loaded mask image has no tool of its own -- load_mask reuses validate_resize_dims's own
+    # DoS floor (checked once the file is decoded, since GdkPixbuf isn't bound in this
+    # environment to peek at the header first) so a mask file can't bypass the same cap a direct
+    # resize would hit.
+    def test_accepts_reasonable_dims(self):
+        self.assertEqual(lib.validate_loaded_mask_dims(1920, 1080), (1920, 1080))
+
+    def test_rejects_a_side_over_the_cap(self):
+        with self.assertRaises(ValueError):
+            lib.validate_loaded_mask_dims(lib.MAX_RESIZE_SIDE_PX + 1, 100)
+
+    def test_rejects_non_positive(self):
+        with self.assertRaises(ValueError):
+            lib.validate_loaded_mask_dims(0, 100)
+
+
 class TestValidateDocumentDims(unittest.TestCase):
     def test_defaults_to_the_8_bit_cap(self):
         self.assertEqual(lib.validate_document_dims(1920, 1080), (1920, 1080))
@@ -1156,6 +1173,108 @@ class TestValidateFeatherPx(unittest.TestCase):
     def test_rejects_negative(self):
         with self.assertRaises(ValueError):
             lib.validate_feather_px(-1)
+
+
+class TestValidateHexColor(unittest.TestCase):
+    def test_accepts_a_wellformed_hex_color(self):
+        self.assertEqual(lib.validate_hex_color('color', '#c0392b'), '#c0392b')
+        self.assertEqual(lib.validate_hex_color('color', '#FFFFFF'), '#FFFFFF')
+
+    def test_rejects_a_short_or_unprefixed_or_non_hex_string(self):
+        for bad in ('c0392b', '#fff', '#gggggg', '#12345', 'red', ''):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    lib.validate_hex_color('color', bad)
+
+    def test_rejects_a_non_string(self):
+        with self.assertRaises(ValueError):
+            lib.validate_hex_color('color', None)
+        with self.assertRaises(ValueError):
+            lib.validate_hex_color('color', 123456)
+
+
+class TestValidatePositivePx(unittest.TestCase):
+    def test_accepts_a_positive_value_within_the_cap(self):
+        self.assertEqual(lib.validate_positive_px('px', 4), 4)
+        self.assertEqual(lib.validate_positive_px('px', lib.MAX_FEATHER_PX), lib.MAX_FEATHER_PX)
+
+    def test_rounds_rather_than_truncates(self):
+        self.assertEqual(lib.validate_positive_px('px', 4.6), 5)
+        self.assertEqual(lib.validate_positive_px('px', 4.4), 4)
+
+    def test_rounds_half_up_not_half_to_even(self):
+        # Python's builtin round() is round-half-to-even (round(2.5) == 2); this must round
+        # every .5 AWAY from zero instead, so 2.5 becomes 3.
+        self.assertEqual(lib.validate_positive_px('px', 2.5), 3)
+        self.assertEqual(lib.validate_positive_px('px', 0.5), 1)
+
+    def test_rejects_a_value_that_rounds_to_zero(self):
+        with self.assertRaises(ValueError):
+            lib.validate_positive_px('px', 0.3)
+        with self.assertRaises(ValueError):
+            lib.validate_positive_px('px', 0.49)
+
+    def test_rejects_zero_and_negative(self):
+        with self.assertRaises(ValueError):
+            lib.validate_positive_px('px', 0)
+        with self.assertRaises(ValueError):
+            lib.validate_positive_px('px', -1)
+
+    def test_rejects_over_the_cap(self):
+        with self.assertRaises(ValueError):
+            lib.validate_positive_px('px', lib.MAX_FEATHER_PX + 1)
+
+
+class TestComputeMaskPasteRect(unittest.TestCase):
+    """`op_load_mask`'s crop/slice math, pulled out pure so every off-canvas case is checked
+    without needing a real GIMP image."""
+
+    def test_whole_image_target_is_the_full_canvas(self):
+        self.assertEqual(lib.compute_mask_paste_rect(0, 0, 64, 64, 64, 64), (0, 0, 64, 64))
+
+    def test_a_layer_fully_inside_the_canvas_is_unclipped(self):
+        self.assertEqual(lib.compute_mask_paste_rect(5, 8, 20, 10, 64, 64), (5, 8, 25, 18))
+
+    def test_a_layer_with_a_negative_offset_is_clipped_at_the_origin(self):
+        self.assertEqual(lib.compute_mask_paste_rect(-10, -4, 20, 10, 64, 64), (0, 0, 10, 6))
+
+    def test_a_layer_hanging_off_the_right_and_bottom_is_clipped_at_the_far_edge(self):
+        self.assertEqual(lib.compute_mask_paste_rect(50, 60, 20, 10, 64, 64), (50, 60, 64, 64))
+
+    def test_a_layer_entirely_off_canvas_to_the_left_yields_an_empty_rect(self):
+        x0, y0, x1, y1 = lib.compute_mask_paste_rect(-30, 0, 20, 10, 64, 64)
+        self.assertTrue(x1 <= x0 or y1 <= y0)
+
+
+class TestEffectiveMorphologyPx(unittest.TestCase):
+    """The expand/contract/border cap shrinks above MORPHOLOGY_BASELINE_MP -- live-measured
+    numbers (ops.py's `op_modify_mask` comment) showed the flat 150px cap taking ~73.5s at ~100MP
+    and timing out a whole GIMP session past ~217MP, both far past gimp_modify_selection's 45s
+    budget."""
+
+    def test_at_or_below_the_baseline_keeps_the_full_cap(self):
+        # 6016x4000 ~= 24.06MP, the live-measured baseline itself.
+        self.assertEqual(lib.effective_morphology_px(6016, 4000), lib.MAX_MORPHOLOGY_PX)
+        self.assertEqual(lib.effective_morphology_px(100, 100), lib.MAX_MORPHOLOGY_PX)
+
+    def test_shrinks_for_a_document_above_the_baseline(self):
+        # ~100MP (14000x7143) -- measured live at the scaled cap: ~11.8s, comfortably under budget.
+        self.assertEqual(lib.effective_morphology_px(14_000, 7_143), 36)
+
+    def test_shrinks_further_for_the_largest_allowed_document(self):
+        # ~216.8MP (30000x7228, this bridge's own MAX_RESIZE_SIDE_PX/MAX_RESIZE_MEGAPIXELS cap) --
+        # measured live at the scaled cap: ~27.2s, still under gimp_modify_selection's 45s budget.
+        self.assertEqual(lib.effective_morphology_px(30_000, 7_228), 17)
+
+    def test_never_exceeds_the_flat_cap_or_drops_below_the_floor(self):
+        self.assertLessEqual(lib.effective_morphology_px(1, 1), lib.MAX_MORPHOLOGY_PX)
+        self.assertGreaterEqual(
+            lib.effective_morphology_px(30_000, 30_000), lib.MIN_MORPHOLOGY_PX
+        )
+
+    def test_a_layer_entirely_off_canvas_past_the_bottom_yields_an_empty_rect(self):
+        x0, y0, x1, y1 = lib.compute_mask_paste_rect(0, 100, 20, 10, 64, 64)
+        self.assertTrue(x1 <= x0 or y1 <= y0)
 
 
 class TestMergedLedgerForWriteRemoval(unittest.TestCase):

@@ -31,7 +31,7 @@ import { createGimpAdjustmentTools } from '@editmamei/tools/gimp-adjustment-tool
 import { createGimpEffectTools } from '@editmamei/tools/gimp-effect-tools.ts';
 import { createGimpFilterTools } from '@editmamei/tools/gimp-filter-tools.ts';
 import { createGimpGeometryTools } from '@editmamei/tools/gimp-geometry-tools.ts';
-import { createGimpMaskTools } from '@editmamei/tools/gimp-mask-tools.ts';
+import { createGimpSelectionTools } from '@editmamei/tools/gimp-selection-tools.ts';
 import { createGimpVerifyTools } from '@editmamei/tools/gimp-verify-tools.ts';
 import { createGimpLayerTools } from '@editmamei/tools/gimp-layer-tools.ts';
 import { createGimpCheckpointTools } from '@editmamei/tools/gimp-checkpoint-tools.ts';
@@ -141,7 +141,7 @@ describe.skipIf(!install)(
         ...createGimpEffectTools(backend),
         ...createGimpFilterTools(backend),
         ...createGimpGeometryTools(backend),
-        ...createGimpMaskTools(backend),
+        ...createGimpSelectionTools(backend),
         ...createGimpVerifyTools(backend),
         ...createGimpLayerTools(backend),
         ...createGimpCheckpointTools(backend),
@@ -1127,9 +1127,9 @@ describe.skipIf(!install)(
         const opened = await callTool(tools, 'gimp_create_document', { width: 20, height: 20 });
         const image = (structuredOf(opened) as { image: number }).image;
         try {
-          await callTool(tools, 'gimp_create_mask', {
+          await callTool(tools, 'gimp_select', {
             image,
-            type: 'rectangle',
+            mode: 'rectangle',
             x: 0,
             y: 0,
             width: 10,
@@ -1162,9 +1162,9 @@ describe.skipIf(!install)(
         const opened = await callTool(tools, 'gimp_create_document', { width: 20, height: 20 });
         const image = (structuredOf(opened) as { image: number }).image;
         try {
-          await callTool(tools, 'gimp_create_mask', {
+          await callTool(tools, 'gimp_select', {
             image,
-            type: 'rectangle',
+            mode: 'rectangle',
             x: 0,
             y: 0,
             width: 10,
@@ -1495,9 +1495,9 @@ describe.skipIf(!install)(
           expect(placed.isError, JSON.stringify(placed.content)).toBeFalsy();
           const placedId = structuredOf(placed).layer_id as number;
 
-          await callTool(tools, 'gimp_create_mask', {
+          await callTool(tools, 'gimp_select', {
             image,
-            type: 'rectangle',
+            mode: 'rectangle',
             x: 2,
             y: 2,
             width: 8,

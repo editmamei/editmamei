@@ -1,18 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers.js';
-import { loadSettings } from '../core/settings.js';
 import { Logger } from '../utils/logger.js';
-import { GimpError } from '../backends/gimp/errors.js';
 import {
   GIMP_IMAGE_PROP,
   GIMP_REGION_PROP,
   GIMP_MAX_PX_PROP,
   pickSchemaDeclaredKeys,
+  readRender,
+  defaultPreviewsAllowed,
+  type GimpPreviewDeps,
 } from './gimp-shared.js';
 
 /**
@@ -37,28 +38,11 @@ const logger = new Logger('GimpVerifyTools');
 
 const CHANNELS = ['luminance', 'red', 'green', 'blue'] as const;
 
-/**
- * Read a render GIMP was asked to write. A missing file becomes a plain `gimp_op_failed`: Node's
- * own error would name the temp path, which sits under the user's home folder.
- */
-async function readRender(path: string): Promise<Buffer> {
-  try {
-    return await readFile(path);
-  } catch {
-    throw new GimpError('gimp_op_failed', 'GIMP reported success but the render was not written');
-  }
-}
-
 /** `lib.channel_stats`'s histogram: one bin per 8-bit level, index = the 0-255 value. */
 export const HISTOGRAM_BIN_COUNT = 256;
 
 /** Injectable seam so tests never depend on the developer machine's real settings.json. */
-export interface GimpVerifyToolsDeps {
-  /** Defaults to reading `privacy.send_previews_to_llm` from the real settings.json. */
-  previewsAllowed?: () => boolean;
-}
-
-const defaultPreviewsAllowed = (): boolean => loadSettings().settings.privacy.send_previews_to_llm;
+export type GimpVerifyToolsDeps = GimpPreviewDeps;
 
 // ---------- gimp_get_preview ----------
 

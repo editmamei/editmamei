@@ -21,12 +21,12 @@ import { createGimpAdjustmentTools } from '../../tools/gimp-adjustment-tools.js'
 import { createGimpEffectTools } from '../../tools/gimp-effect-tools.js';
 import { createGimpFilterTools } from '../../tools/gimp-filter-tools.js';
 import { createGimpGeometryTools } from '../../tools/gimp-geometry-tools.js';
-import { createGimpMaskTools } from '../../tools/gimp-mask-tools.js';
 import { createGimpVerifyTools } from '../../tools/gimp-verify-tools.js';
 import { createGimpCheckpointTools } from '../../tools/gimp-checkpoint-tools.js';
 import { createGimpLayerTools } from '../../tools/gimp-layer-tools.js';
 import { createGimpComposeTools } from '../../tools/gimp-compose-tools.js';
 import { createGimpTextTools } from '../../tools/gimp-text-tools.js';
+import { createGimpSelectionTools } from '../../tools/gimp-selection-tools.js';
 
 // gimp_* tool factories; each takes (gimp: GimpBackend). Exported so tests
 // (the leak-guard / factory-wiring derivations, mirroring `ceFactories`) can
@@ -39,12 +39,12 @@ export const gimpFactories = [
   createGimpEffectTools,
   createGimpFilterTools,
   createGimpGeometryTools,
-  createGimpMaskTools,
   createGimpVerifyTools,
   createGimpCheckpointTools,
   createGimpLayerTools,
   createGimpComposeTools,
   createGimpTextTools,
+  createGimpSelectionTools,
 ];
 
 export const gimpModule: EditmameiModule = {

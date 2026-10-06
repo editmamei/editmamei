@@ -322,7 +322,6 @@ export const TOOL_TIERS: Record<string, Tier> = {
   gimp_crop_document: 'community',
   gimp_resize_image: 'community',
   gimp_transform_canvas: 'community',
-  gimp_create_mask: 'community',
   gimp_get_preview: 'community',
   gimp_get_histogram: 'community',
   gimp_compare: 'community',
@@ -341,6 +340,11 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // Live text layers (create/set_content/set_font/set_color/set_alignment), the GIMP twin of ps_text.
   gimp_text: 'dev',
   gimp_convert_image_mode: 'community',
+  // Selections and masks: build a saved selection, refine it, and attach it as a layer mask.
+  gimp_select: 'dev',
+  gimp_modify_selection: 'dev',
+  gimp_layer_mask: 'dev',
+  gimp_get_selection_preview: 'dev',
 };
 
 /**

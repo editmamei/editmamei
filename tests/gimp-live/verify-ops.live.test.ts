@@ -530,7 +530,10 @@ describe.skipIf(!install)('verify ops: preview / histogram / compare', () => {
       maxAbsDiffPng(proxyAt075, proxyAt01),
       'both should clamp to the same floor and render identically'
     ).toBe(0);
-  });
+  }, 60_000); // five full open/filter/export-or-preview cycles on a 4096x4096 image, like the
+  // rest of this suite's heavier files (e.g. selection.live.test.ts) -- comfortable alone, but
+  // this file's 30s default can flake under the CPU/memory load of the rest of tests/gimp-live
+  // running in parallel.
 
   it('noise_reduction iterations are scaled by the proxy factor, not left at the unscaled count', async () => {
     // Same 2048x2048-class-fixture reasoning as the clamp test above: a genuinely 2D noisy field

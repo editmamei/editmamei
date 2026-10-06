@@ -129,8 +129,6 @@ metadata (including any GPS location); only `gimp_export` removes it.
 - **Effects** (`gimp_add_effect`): vignette, black and white, motion blur, lens blur, noise, and
   drop shadow, live and re-editable the same way. `gimp_bake` merges a layer's live filters into its
   pixels when you want them fixed.
-- **Masks:** `gimp_create_mask` builds a geometric mask (rectangle, ellipse, linear or radial
-  gradient) that a new adjustment can be confined to.
 - **Geometry:** crop, resize, rotate (arbitrary angle, for straightening), flip.
 - **Verification:** preview render, per-channel histogram (mean, median, percentiles, full 256-bin
   histogram), before/after and region comparison.
@@ -142,8 +140,7 @@ metadata (including any GPS location); only `gimp_export` removes it.
 ## What it can't do yet
 
 - No heal, clone, or content-aware retouch.
-- No AI subject or sky selection (GIMP has no Sensei-equivalent built in; masks here are geometric
-  only: rectangle, ellipse, or gradient).
+- No masking or selection tools yet, AI-backed or otherwise (GIMP has no Sensei-equivalent built in).
 - No text layers.
 - No step-by-step undo: use checkpoints instead (see below).
 - Raw camera files (DNG, CR2, CR3, NEF, ARW, and the like) need a raw-develop plug-in installed in

@@ -88,7 +88,7 @@ const effectSchema: JsonSchemaObject = {
     mask: {
       type: 'string',
       description:
-        'Name of a mask channel from gimp_create_mask, confining a NEW filter to it. Only valid ' +
+        'Name of a saved selection channel, confining a NEW filter to it. Only valid ' +
         "when creating (no filter_id) — a filter's mask is fixed at creation. ORDER MATTERS: " +
         'straighten / flip / resize the canvas first (gimp_transform_canvas, gimp_resize_image), ' +
         'then crop, THEN add masked effects — rotate, flip, and resize all refuse outright once ' +
@@ -309,7 +309,7 @@ export function createGimpEffectTools(gimp: GimpBackend): ToolDefinition[] {
           'or `layer`, else the selected or top layer), not to the flattened image. A re-edit ' +
           "(filter_id) MERGES: any field you omit keeps the filter's existing value. Only " +
           'filters Editmamei created can be re-edited; one added in the GIMP GUI is refused ' +
-          '(delete and re-create it). `mask` (a channel name from gimp_create_mask) confines a ' +
+          '(delete and re-create it). `mask` (a saved selection channel name) confines a ' +
           'NEW filter — fixed at creation, cannot change on a re-edit. ORDER MATTERS: straighten ' +
           '/ flip / resize the canvas first, then crop, THEN add any masked effect — rotate, ' +
           'flip, and resize all refuse outright once a masked filter exists, or any filter not ' +

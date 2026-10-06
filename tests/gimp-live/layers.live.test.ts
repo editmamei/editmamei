@@ -35,7 +35,7 @@ import { createGimpAdjustmentTools } from '@editmamei/tools/gimp-adjustment-tool
 import { createGimpEffectTools } from '@editmamei/tools/gimp-effect-tools.ts';
 import { createGimpFilterTools } from '@editmamei/tools/gimp-filter-tools.ts';
 import { createGimpGeometryTools } from '@editmamei/tools/gimp-geometry-tools.ts';
-import { createGimpMaskTools } from '@editmamei/tools/gimp-mask-tools.ts';
+import { createGimpSelectionTools } from '@editmamei/tools/gimp-selection-tools.ts';
 import { createGimpVerifyTools } from '@editmamei/tools/gimp-verify-tools.ts';
 import { createGimpLayerTools } from '@editmamei/tools/gimp-layer-tools.ts';
 import { createGimpCheckpointTools } from '@editmamei/tools/gimp-checkpoint-tools.ts';
@@ -102,7 +102,7 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       ...createGimpEffectTools(backend),
       ...createGimpFilterTools(backend),
       ...createGimpGeometryTools(backend),
-      ...createGimpMaskTools(backend),
+      ...createGimpSelectionTools(backend),
       ...createGimpVerifyTools(backend),
       ...createGimpLayerTools(backend),
       ...createGimpCheckpointTools(backend),
@@ -495,9 +495,9 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       });
       expect(unmaskedMove.isError, JSON.stringify(unmaskedMove.content)).toBeFalsy();
 
-      await callTool(tools, 'gimp_create_mask', {
+      await callTool(tools, 'gimp_select', {
         image,
-        type: 'rectangle',
+        mode: 'rectangle',
         x: 0,
         y: 0,
         width: 32,
@@ -601,9 +601,9 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       const other = await callTool(tools, 'gimp_layer', { image, op: 'create', name: 'Other' });
       expect(other.isError, JSON.stringify(other.content)).toBeFalsy();
 
-      await callTool(tools, 'gimp_create_mask', {
+      await callTool(tools, 'gimp_select', {
         image,
-        type: 'rectangle',
+        mode: 'rectangle',
         x: 0,
         y: 0,
         width: 10,
@@ -656,9 +656,9 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
       expect(child.isError, JSON.stringify(child.content)).toBeFalsy();
       const childId = structuredOf(child).layer_id as number;
 
-      await callTool(tools, 'gimp_create_mask', {
+      await callTool(tools, 'gimp_select', {
         image,
-        type: 'rectangle',
+        mode: 'rectangle',
         x: 0,
         y: 0,
         width: 32,
@@ -703,9 +703,9 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
         fill: 'white',
       });
       const topId = structuredOf(top).layer_id as number;
-      await callTool(tools, 'gimp_create_mask', {
+      await callTool(tools, 'gimp_select', {
         image,
-        type: 'rectangle',
+        mode: 'rectangle',
         x: 0,
         y: 0,
         width: 32,
@@ -1186,9 +1186,9 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
   it('bake removes every filter from gimp_filter listing and leaves pixels identical to the pre-bake render', async () => {
     const image = await openRamp();
     try {
-      await callTool(tools, 'gimp_create_mask', {
+      await callTool(tools, 'gimp_select', {
         image,
-        type: 'rectangle',
+        mode: 'rectangle',
         x: 0,
         y: 0,
         width: 32,
@@ -1669,9 +1669,9 @@ describe.skipIf(!install)('gimp_layer / gimp_bake against real headless GIMP', (
     const opened = await callTool(tools, 'gimp_open_document', { file_path: swatchesPath });
     const image = structuredOf(opened).image as number;
     try {
-      await callTool(tools, 'gimp_create_mask', {
+      await callTool(tools, 'gimp_select', {
         image,
-        type: 'rectangle',
+        mode: 'rectangle',
         x: 0,
         y: 0,
         width: 16,
