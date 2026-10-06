@@ -1,16 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { OVERVIEW_MARKDOWN } from '@editmamei/tools/overview-tools.ts';
 import { HYDRATED_OVERLAY } from '../helpers/overlay-tree.ts';
+import { trackedFiles } from '../helpers/tracked-files.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
 /**
- * Walks a directory and returns every regular file path under it.
+ * Returns every git-tracked regular file path under a directory.
  * Used to enumerate all SKILL.md / companion docs inside plugin/skills/.
  */
 function listFilesRecursive(start: string): string[] {
@@ -18,11 +19,7 @@ function listFilesRecursive(start: string): string[] {
   const stat = statSync(start);
   if (stat.isFile()) return [start];
   if (!stat.isDirectory()) return [];
-  const out: string[] = [];
-  for (const entry of readdirSync(start)) {
-    out.push(...listFilesRecursive(join(start, entry)));
-  }
-  return out;
+  return trackedFiles(REPO_ROOT, relative(REPO_ROOT, start));
 }
 
 /**
