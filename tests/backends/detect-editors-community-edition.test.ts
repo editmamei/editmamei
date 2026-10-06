@@ -37,6 +37,7 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
   return {
     telemetry: { usage: true, diagnostics: false, install_id: 'a'.repeat(32) },
     privacy: { send_previews_to_llm: true },
+    automation: { allow_execute_script: true },
     ps_path: null,
     update_check: true,
     editor: 'auto',

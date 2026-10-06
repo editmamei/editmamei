@@ -81,6 +81,17 @@ describe('config set', () => {
     expect(out.join('').trim()).toBe('false');
   });
 
+  it('turns off automation.allow_execute_script and reads it back', () => {
+    runConfig(['get', 'automation.allow_execute_script'], io());
+    expect(out.join('').trim()).toBe('true'); // default
+    out.length = 0;
+    runConfig(['set', 'automation.allow_execute_script', 'off'], io());
+    expect(loadSettings({ dir }).settings.automation.allow_execute_script).toBe(false);
+    out.length = 0;
+    runConfig(['get', 'automation.allow_execute_script'], io());
+    expect(out.join('').trim()).toBe('false');
+  });
+
   it('sets ps_path and clears it with "null" or empty string', () => {
     runConfig(['set', 'ps_path', '/Applications/PS/Photoshop.app'], io());
     expect(loadSettings({ dir }).settings.ps_path).toBe('/Applications/PS/Photoshop.app');
