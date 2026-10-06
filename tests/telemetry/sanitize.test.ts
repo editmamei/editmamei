@@ -131,6 +131,9 @@ describe('sanitizeMessage', () => {
       ['UNC', '\\\\fileserver\\Shared Drive\\Acme Corp\\x.psd'],
       ['macOS user dir', '/Users/a b/Acme Corp/Brand/x.psd'],
       ['tilde home', '~/My Photos/Acme Corp/x.psd'],
+      ['macOS folder with a colon', '/Users/a/Acme:Brand/sub/x.psd'],
+      ['macOS folder with a colon and a space', '/Users/a/Acme: Brand Kit/x.psd'],
+      ['tilde folder with a colon', '~/Acme:Brand/x.psd'],
     ];
     for (const [label, path] of cases) {
       it(`keeps only the file name: ${label}`, () => {

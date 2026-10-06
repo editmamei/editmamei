@@ -59,15 +59,22 @@ const SINGLE_SEG_POSIX = /(^|\s)\/[^\s"'/]+(?=$|\s)/;
 // A directory segment may hold single spaces ("Acme Corp") as long as a separator follows it,
 // so a match always runs to the LAST separator and only the file name survives. The final
 // token takes no spaces: text after a path ("... failed") is not part of it.
+// Segment characters depend on the path style: Windows names can't hold `:`, but a POSIX name
+// can hold `:` and `\` (Finder shows a `/` in a folder name as `:`), and `~` paths take either
+// separator.
 const WORD = String.raw`[^\s"'\\/:]+`;
 const DIR = String.raw`${WORD}(?: ${WORD})*`;
+const TILDE_WORD = String.raw`[^\s"'\\/]+`;
+const TILDE_DIR = String.raw`${TILDE_WORD}(?: ${TILDE_WORD})*`;
+const POSIX_WORD = String.raw`[^\s"'/]+`;
+const POSIX_DIR = String.raw`${POSIX_WORD}(?: ${POSIX_WORD})*`;
 const PATH_TOKEN = new RegExp(
   [
     String.raw`[A-Za-z]:[\\/](?:${DIR}[\\/])*[^\s"']*`,
     String.raw`\\\\(?:${DIR}[\\/])*[^\s"']+`,
     String.raw`file:\/\/[^\s"']*`,
-    String.raw`(?<![\w~])~(?:[\\/]${DIR}(?=[\\/]))*[\\/]${WORD}[\\/]?`,
-    String.raw`\/${WORD}(?:\/${DIR}(?=\/))*\/${WORD}\/?`,
+    String.raw`(?<![\w~])~(?:[\\/]${TILDE_DIR}(?=[\\/]))*[\\/]${TILDE_WORD}[\\/]?`,
+    String.raw`\/${POSIX_WORD}(?:\/${POSIX_DIR}(?=\/))*\/${POSIX_WORD}\/?`,
     String.raw`(?:^|\s)\/[^\s"'/]+(?=$|\s)`,
   ].join('|'),
   'gi'
