@@ -181,7 +181,26 @@ BIT_DEPTHS = (8, 16)
 # SOURCE document already is (crop/rotate/flip only ever shrink-or-preserve the existing canvas,
 # so they don't need this; resize is the one op that can grow it arbitrarily from a tiny source).
 MAX_RESIZE_SIDE_PX = 30_000
-MAX_RESIZE_MEGAPIXELS = 250
+_DEFAULT_MAX_RESIZE_MEGAPIXELS = 250
+
+
+def megapixel_cap_from_env(raw, default=_DEFAULT_MAX_RESIZE_MEGAPIXELS):
+    """A host-supplied (`EM_GIMP_MAX_MEGAPIXELS`) ceiling that can only LOWER `default` -- a memory-
+    constrained host (e.g. a small container) tightens every pixel-growing op's cap this way. Anything
+    that is not a finite positive number below `default` (unset, empty, junk, NaN/inf, zero/negative,
+    or an attempt to RAISE it) is ignored and `default` is returned unchanged."""
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value) or value <= 0 or value >= default:
+        return default
+    return value
+
+
+MAX_RESIZE_MEGAPIXELS = megapixel_cap_from_env(os.environ.get('EM_GIMP_MAX_MEGAPIXELS'))
 
 MAX_FEATHER_PX = 1000
 
@@ -270,7 +289,7 @@ def validate_resize_dims(width, height):
         raise ValueError('width and height must each be at most %d px' % MAX_RESIZE_SIDE_PX)
     megapixels = (width * height) / 1_000_000.0
     if megapixels > MAX_RESIZE_MEGAPIXELS:
-        raise ValueError('resize target must be at most %d MP' % MAX_RESIZE_MEGAPIXELS)
+        raise ValueError('resize target must be at most %g MP' % MAX_RESIZE_MEGAPIXELS)
     return width, height
 
 
@@ -281,7 +300,13 @@ def validate_resize_dims(width, height):
 # that picks its own bit depth up front (`open`/`resize`/etc. all work on whatever precision an
 # already-open image happens to be), so it is the one place this DoS floor needs to vary by
 # precision rather than assuming 8-bit throughout.
-DOCUMENT_MEGAPIXEL_CAP = {'8': MAX_RESIZE_MEGAPIXELS, '16': 125, '32': 60}
+# A lowered EM_GIMP_MAX_MEGAPIXELS scales the 16/32-bit caps down with the 8-bit one, never above
+# their own defaults.
+DOCUMENT_MEGAPIXEL_CAP = {
+    '8': MAX_RESIZE_MEGAPIXELS,
+    '16': min(125, MAX_RESIZE_MEGAPIXELS / 2),
+    '32': min(60, MAX_RESIZE_MEGAPIXELS / 4),
+}
 
 
 def validate_document_dims(width, height, precision='8'):
@@ -295,7 +320,7 @@ def validate_document_dims(width, height, precision='8'):
     cap = DOCUMENT_MEGAPIXEL_CAP[precision]
     megapixels = (width * height) / 1_000_000.0
     if megapixels > cap:
-        raise ValueError('a %s-bit document must be at most %d MP' % (precision, cap))
+        raise ValueError('a %s-bit document must be at most %g MP' % (precision, cap))
     return width, height
 
 
