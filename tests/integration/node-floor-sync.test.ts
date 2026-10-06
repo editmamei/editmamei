@@ -1,9 +1,12 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { isArchived } from '../helpers/archived-docs.ts';
+import { trackedFiles } from '../helpers/tracked-files.ts';
 
 // The sibling of macos-floor-sync: same failure class, different requirement.
 // `engines.node` in package.json is the real Node floor, and every prose
@@ -33,21 +36,19 @@ const CLAIM_PATTERNS = [
 ];
 
 /** Every stated Node floor across the docs a user or contributor reads. */
-function claims(): { file: string; major: number }[] {
+function claims(root = ROOT): { file: string; major: number }[] {
   const files = [
-    join(ROOT, 'README.md'),
-    join(ROOT, 'CONTRIBUTING.md'),
-    ...readdirSync(join(ROOT, 'docs'), { recursive: true, encoding: 'utf8' })
+    ...(root === ROOT ? [join(root, 'README.md'), join(root, 'CONTRIBUTING.md')] : []),
+    ...trackedFiles(root, 'docs')
       .filter((f) => f.endsWith('.md'))
-      .filter((f) => !isArchived(f))
-      .map((f) => join(ROOT, 'docs', f)),
+      .filter((f) => !isArchived(relative(join(root, 'docs'), f))),
   ];
   const found: { file: string; major: number }[] = [];
   for (const path of files) {
     const text = readFileSync(path, 'utf8');
     for (const pattern of CLAIM_PATTERNS) {
       for (const match of text.matchAll(pattern)) {
-        found.push({ file: relative(ROOT, path), major: Number(match[1]) });
+        found.push({ file: relative(root, path), major: Number(match[1]) });
       }
     }
   }
@@ -66,6 +67,32 @@ describe('Node floor sync', () => {
           `npm only warns on an engines mismatch, so a reader who follows this ` +
           `installs something that fails at runtime instead.`
       ).toBe(required);
+    }
+  });
+});
+
+describe('Node floor sync scope', () => {
+  it('flags a tracked doc with a wrong floor and ignores an untracked one', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'node-floor-'));
+    try {
+      const git = (...args: string[]) =>
+        execFileSync(
+          'git',
+          ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args],
+          { stdio: 'ignore' }
+        );
+      git('init', '-q');
+      mkdirSync(join(dir, 'docs'));
+      writeFileSync(join(dir, 'docs', 'tracked.md'), 'Requires Node 18+.\n');
+      git('add', 'docs/tracked.md');
+      git('commit', '-q', '-m', 'init');
+      writeFileSync(join(dir, 'docs', 'scratch.md'), 'Requires Node 16+.\n');
+
+      const found = claims(dir);
+      expect(found).toEqual([{ file: join('docs', 'tracked.md'), major: 18 }]);
+      expect(found[0].major).not.toBe(requiredMajor());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

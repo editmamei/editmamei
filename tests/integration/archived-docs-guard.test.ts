@@ -1,10 +1,10 @@
-import { readdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { isArchived } from '../helpers/archived-docs.ts';
 import { HYDRATED_OVERLAY } from '../helpers/overlay-tree.ts';
+import { trackedFiles } from '../helpers/tracked-files.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -43,7 +43,7 @@ describe('isArchived', () => {
     () => {
       // If an archive ever lands here, that is a deliberate decision worth
       // making explicitly rather than discovering as a silently-unchecked doc.
-      const entries = readdirSync(join(ROOT, 'docs'), { recursive: true, encoding: 'utf8' });
+      const entries = trackedFiles(ROOT, 'docs').map((f) => relative(join(ROOT, 'docs'), f));
       expect(entries.filter((f) => isArchived(f))).toEqual([]);
     }
   );

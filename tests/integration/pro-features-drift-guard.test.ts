@@ -1,10 +1,11 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { TOOL_TIERS } from '@editmamei/core/tool-tiers.js';
 import { HYDRATED_OVERLAY } from '../helpers/overlay-tree.ts';
+import { trackedFiles } from '../helpers/tracked-files.ts';
 
 // docs/ is user-facing and edition-labeled, so it gets the same drift guard the
 // wiki used to have. This used to be wiki-tier-drift-guard.test.ts, checked
@@ -35,13 +36,7 @@ const PS_NAME = /\bps_[a-z0-9_]+\b/g;
 const NON_TOOL_PS_NAMES = new Set(['ps_version', 'ps_path', 'ps_locale']);
 
 function docFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...docFiles(full));
-    else if (entry.name.endsWith('.md')) out.push(full);
-  }
-  return out;
+  return trackedFiles(ROOT, relative(ROOT, dir)).filter((f) => f.endsWith('.md'));
 }
 
 describe('docs tier drift guard', () => {
