@@ -57,8 +57,10 @@ earlier versions are preserved in the archived wiki repository's
 
 ### Security
 
-- **Dependency updates close four advisories**, including an IP-spoofing issue in `proxy-addr`
+- **Dependency updates close five advisories**, including an IP-spoofing issue in `proxy-addr`
   (critical) and a denial-of-service issue in `source-map-js`.
+  - The MCP SDK moves to 1.32.1 for an advisory about its OAuth client sending credentials to an
+    authorization server the MCP server chooses (GHSA-6qxp-vccf-f47h).
 
 ## [1.7.1] — 2026-10-02
 
