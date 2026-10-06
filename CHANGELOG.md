@@ -10,6 +10,8 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-10-06
+
 ### Added
 
 - **GIMP gains selections, layer masks, text and layer transforms.** Five more `gimp_*` tools move
@@ -20,17 +22,43 @@ earlier versions are preserved in the archived wiki repository's
     `gimp_get_selection_preview` shows what is selected.
   - `gimp_text` creates and restyles live text layers.
   - `gimp_transform_layer` fits, scales, moves, rotates, flips, skews or free-transforms one layer.
+- **You can turn off tools that run script code.** Set `automation.allow_execute_script` to
+  `false` with `editmamei config set` or in settings.json, and those tools refuse. Only you can
+  change it; no tool can.
+- **Hosts can lower GIMP's image size limit.** The `EM_GIMP_MAX_MEGAPIXELS` environment variable
+  lowers the largest document the GIMP engine will create or grow to. It can never raise it.
 
 ### Changed
 
 - **Layer masks and moving layers have new homes in GIMP.** `gimp_create_mask` is replaced by
   `gimp_select` plus `gimp_layer_mask`, and `gimp_layer` no longer has a move operation: use
   `gimp_transform_layer` with `op: "move"`.
+- **Photoshop file paths must be on a local drive, and saves no longer overwrite unasked.** File
+  paths follow the same rule as the GIMP tools, and saving over a file you didn't create in this
+  session needs `overwrite: true`.
+  - `ps_open_document`, `ps_place_image`, `ps_replace_sky` and the filter file paths refuse
+    network shares, device paths and drive-less Windows paths. A leading `~/` means your home
+    folder.
+  - `ps_save_psd` and `ps_export` require the format's extension (`.psd`, `.jpg`, `.png`); JPEG
+    export no longer accepts `.jpeg`.
 
 ### Fixed
 
+- **Phone photos open upright in GIMP.** JPEGs that store their rotation in EXIF, as most phone
+  portraits do, are now rotated on open and place, and the rotation tag is cleared so nothing
+  rotates them twice.
+- **GIMP's open-document list shows only your documents.** Internal preview copies no longer
+  appear in it or count toward the open-document limit.
 - **Shrinking a GIMP selection no longer eats into the canvas edge.** A selection touching the edge
   of the image keeps its hold on that edge when it is contracted.
+- **Usage data no longer carries folder names that contain spaces.** The path cleaner now reduces
+  paths like `C:\Projects\Acme Corp\x.psd` to the file name, as it already did for paths without
+  spaces.
+
+### Security
+
+- **Dependency updates close four advisories**, including an IP-spoofing issue in `proxy-addr`
+  (critical) and a denial-of-service issue in `source-map-js`.
 
 ## [1.7.1] — 2026-10-02
 
