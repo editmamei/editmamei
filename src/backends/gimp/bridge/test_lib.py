@@ -2790,6 +2790,17 @@ class TestCeilWithMargin(unittest.TestCase):
         self.assertEqual(lib.ceil_with_margin(99.9999), 101)
 
 
+class TestValidateTransformedLayerSize(unittest.TestCase):
+    def test_accepts_one_pixel_or_more(self):
+        lib.validate_transformed_layer_size(1, 1)
+        lib.validate_transformed_layer_size(400, 3)
+
+    def test_rejects_a_zero_dimension_with_a_size_message(self):
+        for w, h in ((0, 10), (10, 0), (0, 0)):
+            with self.assertRaisesRegex(ValueError, 'shrink the layer to %dx%d px' % (w, h)):
+                lib.validate_transformed_layer_size(w, h)
+
+
 class TestTransformLayerPrecisionBucket(unittest.TestCase):
     def test_u8_variants_bucket_to_8(self):
         for nick in ('u8-linear', 'u8-non-linear', 'u8-perceptual'):

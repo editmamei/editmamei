@@ -1769,6 +1769,17 @@ def transformed_bounds(matrix, x, y, width, height):
     return min_x, min_y, max_x - min_x, max_y - min_y
 
 
+def validate_transformed_layer_size(width, height):
+    """Refuses a scale/fit whose rounded target is under 1px in either dimension. Without this
+    GIMP is handed a zero-size rectangle, returns nothing, and the caller reports a misleading
+    "lock-position or lock-content" failure for a layer that was never locked."""
+    if width < 1 or height < 1:
+        raise ValueError(
+            'the transform would shrink the layer to %dx%d px after rounding; use a larger scale'
+            % (width, height)
+        )
+
+
 def region_to_proxy_px(region, scale):
     """Map a document-pixel `region` dict into proxy-pixel integer bounds at the proxy's
     `scale` factor (0 < scale <= 1). Returns (x, y, width, height); width/height are at least

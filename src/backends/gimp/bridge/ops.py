@@ -3761,6 +3761,7 @@ def _transform_layer_fit(layer, img, args):
     # irrelevant and is never read.
     _, _, new_w, new_h = _validate_transform_sizes(img, layer, matrix, precision)
     new_w_i, new_h_i = _snap_px(new_w), _snap_px(new_h)
+    lib.validate_transformed_layer_size(new_w_i, new_h_i)
     target_x = (img.get_width() - new_w_i) / 2.0
     target_y = (img.get_height() - new_h_i) / 2.0
     _validated_move_offset(img, target_x, target_y)
@@ -3807,6 +3808,7 @@ def _transform_layer_scale(layer, img, args):
     alpha_added = _ensure_layer_alpha(layer)
     x0, y0 = _snap_px(new_x), _snap_px(new_y)
     x1, y1 = _snap_px(new_x + new_w), _snap_px(new_y + new_h)
+    lib.validate_transformed_layer_size(x1 - x0, y1 - y0)
     result = layer.transform_scale(float(x0), float(y0), float(x1), float(y1))
     _checked_transform(layer, result)
     failures = _apply_planned_effect_transform(img, planned)
