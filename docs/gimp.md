@@ -124,7 +124,6 @@ metadata (including any GPS location); only `gimp_export` removes it.
 =======
   jpg/jpeg/png/webp/tif/tiff. Convert between colour and grayscale.
 - **Layers:** create, delete, duplicate, group, reorder, rename, set opacity, blend mode and
->>>>>>> a8aa87d (feat(gimp): add gimp_transform_layer, move layer geometry out of gimp_layer)
   visibility, merge down, flatten (`gimp_layer`). Place another photo into the document as a new
   layer (`gimp_place_image`) to build a composite, and extend the canvas for borders and frames
   (`gimp_canvas`).
