@@ -38,7 +38,7 @@ Not supported: LM Studio (the model does not receive images that tools return, s
 
 ## Known limits across clients
 
-**Tool count.** Editmamei registers up to 62 tools for Photoshop in Community, 83 with Pro. When GIMP 3.2 is detected, its tools register too, which brings the totals to 91 and 112. Some clients cap the number of tools:
+**Tool count.** Editmamei registers up to 62 tools for Photoshop in Community, 83 with Pro. When GIMP 3.2 is detected, its tools register too, which brings the totals to 90 and 111. Some clients cap the number of tools:
 
 - Cursor: commonly reported as 40. This figure is not in Cursor's documentation.
 - Windsurf / Devin Desktop: 100 ([docs](https://docs.devin.ai/desktop/cascade/mcp)).

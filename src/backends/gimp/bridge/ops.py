@@ -1168,7 +1168,7 @@ def _match_refine_edges(img, layer, contract_px, feather_px):
         if contract_px:
             _shrink_edge_locked(img, contract_px)
         if feather_px:
-            _feather_edge_locked(img, feather_px)
+            Gimp.Selection.feather(img, feather_px)
         _ok, ox, oy = layer.get_offsets()
         cw, ch = img.get_width(), img.get_height()
         x0, y0 = max(0, ox), max(0, oy)
@@ -2366,7 +2366,7 @@ def op_create_mask(args):
             if invert:
                 Gimp.Selection.invert(img)
             if feather_px > 0:
-                _feather_edge_locked(img, feather_px)
+                Gimp.Selection.feather(img, feather_px)
             ch = _replace_named_channel(img, name, w, h)
             # "Y' u8" (perceptual), not "Y u8" (linear) -- see `_channel_coverage`'s comment. A
             # hard selection is 0/255 either way, but a FEATHERED one has a real falloff whose
@@ -4397,31 +4397,6 @@ def _capture_selection(img, w, h, scratch):
     scratch.update(0, 0, w, h)
 
 
-def _feather_edge_locked(img, radius):
-    """`Gimp.Selection.feather`, with a selection that touches the canvas edge kept selected AT
-    that edge. GIMP's feather is meant to clamp at the canvas border, but how well the blur
-    honours that differs by platform: on macOS the border pixels of an edge-touching selection
-    came out below 50%, so a later harden left an unselected strip along the canvas edge.
-    Afterwards the original selection is put back inside a frame as wide as the blur reaches
-    (radius / 3.5 std-dev, at least 1px), which makes the result the same on every platform."""
-    w, h = img.get_width(), img.get_height()
-    band = max(1, int(math.ceil(radius / 3.5)))
-    if w <= 2 * band or h <= 2 * band:
-        Gimp.Selection.feather(img, radius)
-        return
-
-    def _outer(before):
-        def _inner(after):
-            _capture_selection(img, w, h, before)
-            Gimp.Selection.feather(img, radius)
-            _capture_selection(img, w, h, after)
-            img.select_item(Gimp.ChannelOps.REPLACE, before)
-            img.select_rectangle(Gimp.ChannelOps.SUBTRACT, band, band, w - 2 * band, h - 2 * band)
-            img.select_item(Gimp.ChannelOps.ADD, after)
-        _with_scratch_channel(img, w, h, _inner)
-    _with_scratch_channel(img, w, h, _outer)
-
-
 def _shrink_edge_locked(img, px):
     """`Gimp.Selection.shrink` that does not erode from the canvas edge. GIMP's own shrink treats
     the area outside the canvas as unselected (its PDB call hardcodes edge-lock off), so a
@@ -4599,7 +4574,7 @@ def op_select(args):
             if invert:
                 Gimp.Selection.invert(img)
             if feather_px > 0:
-                _feather_edge_locked(img, feather_px)
+                Gimp.Selection.feather(img, feather_px)
 
         # The active selection is now the new shape ALONE, already invert/feathered -- never yet
         # combined with whatever `name` previously held.
@@ -4639,7 +4614,7 @@ def op_modify_mask(args):
                 Gimp.Selection.border(img, px)
         elif how == 'feather':
             px = lib.validate_positive_px('px', lib.require(args, 'px'))
-            _feather_edge_locked(img, px)
+            Gimp.Selection.feather(img, px)
         elif how == 'invert':
             Gimp.Selection.invert(img)
         elif how == 'harden':
@@ -4649,7 +4624,7 @@ def op_modify_mask(args):
             # the four ops above) -- a plain smoothing pass with no caller-chosen radius is still
             # meaningful, so it floors at 1.0 rather than requiring one.
             px = lib.validate_range('px', args.get('px', 0), 0, lib.MAX_FEATHER_PX)
-            _feather_edge_locked(img, max(px, 1.0))
+            Gimp.Selection.feather(img, max(px, 1.0))
             Gimp.Selection.sharpen(img)
         else:
             raise ValueError('unknown op %r' % how)
