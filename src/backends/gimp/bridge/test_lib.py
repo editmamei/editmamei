@@ -1051,6 +1051,15 @@ class TestMegapixelCapEnv(unittest.TestCase):
                 for bucket, default in (('8', 250), ('16', 125), ('32', 60)):
                     self.assertLessEqual(m.DOCUMENT_MEGAPIXEL_CAP[bucket], default, (value, bucket))
 
+    def test_transform_precision_buckets_scale_the_env_cap_by_bytes_per_channel(self):
+        with self._env('25') as m:
+            cap = lambda nick: m.DOCUMENT_MEGAPIXEL_CAP[m.transform_layer_precision_bucket(nick)]
+            self.assertEqual(cap('u8-non-linear'), 25)
+            self.assertEqual(cap('u16-linear'), 12.5)
+            self.assertEqual(cap('half-perceptual'), 12.5)
+            self.assertEqual(cap('float-linear'), 6.25)
+            self.assertEqual(cap('u32-non-linear'), 6.25)
+
     def test_raising_ignored(self):
         for big in ('250', '500', '100000'):
             with self._env(big) as m:
