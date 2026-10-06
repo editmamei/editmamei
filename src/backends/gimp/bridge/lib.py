@@ -437,9 +437,8 @@ def validate_document_dims(width, height, precision='8'):
     cap = DOCUMENT_MEGAPIXEL_CAP[precision]
     megapixels = (width * height) / 1_000_000.0
     if megapixels > cap:
-        raise ValueError('a %s-bit document must be at most %g MP' % (precision, cap))
         raise ValueError(
-            '%s %s-bit document must be at most %d MP'
+            '%s %s-bit document must be at most %g MP'
             % ('an' if precision == '8' else 'a', precision, cap)
         )
     return width, height
