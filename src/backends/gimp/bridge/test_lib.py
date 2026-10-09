@@ -3282,6 +3282,77 @@ class TestRejectForeignTransformFields(unittest.TestCase):
 
     def test_none_values_are_treated_as_omitted(self):
         lib.reject_foreign_transform_fields('rotate', {'degrees': 10, 'skew_h_degrees': None})
+class TestTextBoxAndFit(unittest.TestCase):
+    def test_box_accepts_width_with_optional_height(self):
+        self.assertEqual(lib.validate_text_box({'width': 400}), (400, None))
+        self.assertEqual(lib.validate_text_box({'width': 400, 'height': 150}), (400, 150))
+        self.assertEqual(lib.validate_text_box({'width': 1, 'height': 1}), (1, 1))
+
+    def test_box_refuses_bad_shapes_and_ranges(self):
+        for bad in (None, 'x', [], {}, {'height': 10}, {'width': 0}, {'width': -5},
+                    {'width': 10, 'height': 0}, {'width': 1.5}, {'width': True},
+                    {'width': lib.MAX_RESIZE_SIDE_PX + 1}, {'width': 10, 'depth': 3},
+                    {'width': lib.MAX_RESIZE_SIDE_PX, 'height': lib.MAX_RESIZE_SIDE_PX}):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                lib.validate_text_box(bad)
+
+    def test_fit_needs_a_box_with_both_sides(self):
+        self.assertEqual(lib.validate_text_fit({}, None), (False, None))
+        self.assertEqual(lib.validate_text_fit({'fit': False}, (400, None)), (False, None))
+        self.assertEqual(lib.validate_text_fit({'fit': True}, (400, 150)), (True, lib.TEXT_FIT_DEFAULT_MIN_PX))
+        self.assertEqual(lib.validate_text_fit({'fit': True, 'min_size': 12}, (400, 150)), (True, 12.0))
+        for args, box in (({'fit': True}, None), ({'fit': True}, (400, None)),
+                          ({'fit': 'yes'}, (400, 150)), ({'min_size': 10}, (400, 150)),
+                          ({'fit': True, 'min_size': 0}, (400, 150)),
+                          ({'fit': True, 'min_size': True}, (400, 150)),
+                          ({'fit': True, 'min_size': lib.TEXT_FIT_MAX_MIN_PX + 1}, (400, 150))):
+            with self.assertRaises(ValueError, msg=repr((args, box))):
+                lib.validate_text_fit(args, box)
+
+    def test_fit_search_finds_the_largest_fitting_size(self):
+        for limit in (8, 9, 57, 100, 399, 400):
+            calls = []
+
+            def fits(size, limit=limit, calls=calls):
+                calls.append(size)
+                return size <= limit
+
+            size, fitted, probes = lib.fit_font_size(400, 8, fits)
+            self.assertEqual((size, fitted), (limit, True), msg=limit)
+            self.assertEqual(probes, len(calls))
+            self.assertLessEqual(probes, lib.TEXT_FIT_MAX_PROBES)
+
+    def test_fit_takes_the_requested_size_when_it_fits(self):
+        calls = []
+        size, fitted, probes = lib.fit_font_size(41.67, 8, lambda s: calls.append(s) or True)
+        self.assertEqual((size, fitted, probes, calls), (41.67, True, 1, [41.67]))
+
+    def test_fit_reports_overflow_at_min_size(self):
+        size, fitted, probes = lib.fit_font_size(300, 12, lambda s: False)
+        self.assertEqual((size, fitted, probes), (12, False, 2))
+
+    def test_fit_with_min_above_max_clamps_to_max(self):
+        self.assertEqual(lib.fit_font_size(10, 50, lambda s: False), (10, False, 1))
+
+    def test_fit_search_is_bounded_on_a_huge_range(self):
+        calls = []
+
+        def fits(size):
+            calls.append(size)
+            return size <= 1234
+
+        size, fitted, probes = lib.fit_font_size(5000, 1, fits)
+        self.assertLessEqual(probes, lib.TEXT_FIT_MAX_PROBES)
+        self.assertTrue(fitted)
+        self.assertLessEqual(size, 1234)
+        self.assertGreater(size, 1000)
+
+    def test_wrapped_line_count(self):
+        self.assertEqual(lib.wrapped_line_count(-1, 50.0, 1), 1)
+        self.assertEqual(lib.wrapped_line_count(48, 50.0, 1), 1)
+        self.assertEqual(lib.wrapped_line_count(198, 50.0, 1), 4)
+        self.assertEqual(lib.wrapped_line_count(10, 50.0, 3), 3)
+        self.assertEqual(lib.wrapped_line_count(290, 50.0, 3), 6)
 
 
 class TestMatchTransfer(unittest.TestCase):

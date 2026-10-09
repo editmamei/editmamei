@@ -43,6 +43,7 @@ describe('createGimpTextTools', () => {
       'set_font',
       'set_color',
       'set_alignment',
+      'set_box',
     ]);
     for (const key of [
       'text',
@@ -69,6 +70,37 @@ describe('createGimpTextTools', () => {
       'RIGHTJUSTIFIED',
     ]);
     expect(TEXT_SCHEMA_FOR_TESTS.required).toEqual(['image', 'op']);
+  });
+
+  it('declares box, fit and min_size with bounded ranges', () => {
+    const props = TEXT_SCHEMA_FOR_TESTS.properties!;
+    const box = props.box as {
+      type: string;
+      required: string[];
+      properties: Record<string, unknown>;
+    };
+    expect(box.type).toBe('object');
+    expect(box.required).toEqual(['width']);
+    expect(box.properties.width).toMatchObject({ type: 'integer', minimum: 1, maximum: 30000 });
+    expect(box.properties.height).toMatchObject({ type: 'integer', minimum: 1, maximum: 30000 });
+    expect(props.fit).toMatchObject({ type: 'boolean' });
+    expect(props.min_size).toMatchObject({ type: 'number', minimum: 1 });
+  });
+
+  it('rejects a bad box before reaching the bridge and passes a good one through', async () => {
+    const gimp = makeGimpBackend();
+    const tools = createGimpTextTools(gimp.asBackend());
+    const base = { image: 1, op: 'create', text: 'x' };
+    for (const box of [{ width: 0 }, { width: 30001 }, { height: 10 }, { width: 5, height: 0 }]) {
+      expect(
+        (await callTool(tools, 'gimp_text', { ...base, box })).isError,
+        JSON.stringify(box)
+      ).toBe(true);
+    }
+    expect(gimp.calls).toHaveLength(0);
+    await callTool(tools, 'gimp_text', { ...base, box: { width: 400, height: 150 }, fit: true });
+    expect(gimp.calls).toHaveLength(1);
+    expect(gimp.calls[0]!.args).toMatchObject({ box: { width: 400, height: 150 }, fit: true });
   });
 
   it('declares no font_size default, so set_font without a size leaves the size alone', () => {
