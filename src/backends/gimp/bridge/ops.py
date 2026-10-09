@@ -1329,6 +1329,225 @@ def op_match_layer(args):
     }
 
 
+# ---- retouch ----------------------------------------------------------------------------
+
+# A generated (parametric) round brush: its size and hardness come from the context, so the
+# result does not depend on any brush file.
+_RETOUCH_BRUSH = '2. Hardness 050'
+
+
+def _retouch_marked(layer):
+    """Whether `layer` is a retouch layer this tool made (carries the retouch parasite)."""
+    return not layer.is_group() and layer.get_parasite(lib.RETOUCH_TAG) is not None
+
+
+def _retouch_layer_above(img, layer):
+    """The retouch layer sitting directly above `layer` among its siblings, or None."""
+    parent = layer.get_parent()
+    idx = _sibling_index(layer, parent)
+    if not idx:
+        return None
+    siblings = list(parent.get_children()) if parent is not None else list(img.get_layers())
+    above = siblings[idx - 1]
+    return above if _retouch_marked(above) else None
+
+
+def _retouch_make_layer(img, layer):
+    """A copy of `layer` named 'Retouch', directly above it and marked as ours."""
+    ledgered = _ledgered_filter_names_on(img, [layer])
+    if ledgered:
+        raise ValueError(
+            'cannot retouch %r on a copy: it carries Editmamei filter(s) %s, which a copy cannot '
+            "take along safely. Bake it first (gimp_bake) or use target 'in_place'."
+            % (layer.get_name(), ', '.join(repr(n) for n in sorted(set(ledgered))))
+        )
+    copy = layer.copy()
+    if copy is None:
+        raise lib.OpError('gimp_op_failed', 'GIMP could not duplicate this layer')
+    try:
+        copy.set_name(_unique_layer_name(img, 'Retouch'))
+        parent = layer.get_parent()
+        position = _sibling_index(layer, parent)
+        img.insert_layer(copy, parent, position if position is not None else 0)
+        _assert_layer_attached(img, copy, 'the retouch layer')
+        copy.attach_parasite(Gimp.Parasite.new(lib.RETOUCH_TAG, Gimp.PARASITE_PERSISTENT, b'1'))
+    except Exception:
+        _discard_layer(img, copy)
+        raise
+    return copy
+
+
+def _retouch_paint(method, drawable, source, src_x, src_y, strokes, brush_size, hardness):
+    """One heal or clone stroke on `drawable`, sampling `source` from (src_x, src_y) -- image
+    pixels, for the first stroke point (verified live: both calls take image coordinates, not
+    layer ones). The context is pushed and popped so brush state never leaks between calls."""
+    brush = Gimp.Brush.get_by_name(_RETOUCH_BRUSH)
+    if brush is None:
+        raise lib.OpError('gimp_op_failed', 'GIMP has no %r brush' % _RETOUCH_BRUSH)
+    flat = [float(v) for p in strokes for v in p]
+    Gimp.context_push()
+    try:
+        Gimp.context_enable_dynamics(False)
+        Gimp.context_set_brush(brush)
+        Gimp.context_set_brush_size(float(brush_size))
+        Gimp.context_set_brush_hardness(float(hardness))
+        Gimp.context_set_brush_angle(0.0)
+        Gimp.context_set_brush_aspect_ratio(0.0)
+        Gimp.context_set_brush_force(1.0)
+        Gimp.context_set_opacity(100.0)
+        Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)
+        Gimp.context_set_antialias(True)
+        if method == 'clone':
+            ok = Gimp.clone(drawable, source, Gimp.CloneType.IMAGE, float(src_x), float(src_y), flat)
+        else:
+            ok = Gimp.heal(drawable, source, float(src_x), float(src_y), flat)
+    finally:
+        Gimp.context_pop()
+    if not ok:
+        raise lib.OpError('gimp_op_failed', 'GIMP %s did not paint' % method)
+
+
+def _retouch_disc_stats(img, drawable, cx, cy, r, inner=None):
+    """(mean, std, pixel count) of the value channel over a disc of radius `r` at (cx, cy), minus a
+    disc of radius `inner` when given; None when that region holds no pixels. Clobbers the
+    selection (the caller holds it)."""
+    Gimp.context_push()
+    try:
+        Gimp.context_set_feather(False)
+        Gimp.context_set_antialias(False)
+        img.select_ellipse(Gimp.ChannelOps.REPLACE, cx - r, cy - r, 2.0 * r, 2.0 * r)
+        if inner is not None:
+            img.select_ellipse(Gimp.ChannelOps.SUBTRACT, cx - inner, cy - inner, 2.0 * inner, 2.0 * inner)
+        # An empty selection reads as "everything" to the histogram, so refuse to measure it.
+        if Gimp.Selection.is_empty(img):
+            return None
+        mean, std, count = _match_hist(drawable, 'value')
+    finally:
+        Gimp.context_pop()
+    return (mean, std, count) if count > 0 else None
+
+
+def _retouch_pick_source(img, drawable, index, x, y, r, bounds):
+    """(dx, dy, score) of the best source offset for the spot: the candidate disc whose value
+    mean and spread are closest to the ring around the spot."""
+    candidates = lib.spot_candidates(x, y, r, bounds)
+    if not candidates:
+        raise ValueError(
+            'spot %d at (%g, %g) radius %g: no source area of that size fits inside the layer '
+            '(x %d..%d, y %d..%d); use a smaller radius or heal it by hand with a stroke'
+            % (index, x, y, r, bounds[0], bounds[2] - 1, bounds[1], bounds[3] - 1)
+        )
+    ring = _retouch_disc_stats(
+        img, drawable, x, y, max(lib.RETOUCH_SPOT_RING_OUTER * r, r + 3.0), inner=r
+    )
+    if ring is None:
+        raise ValueError('spot %d at (%g, %g): no surrounding pixels to compare against' % (index, x, y))
+    scored = []
+    for dx, dy in candidates:
+        stats = _retouch_disc_stats(img, drawable, x + dx, y + dy, r)
+        if stats is None:
+            continue
+        scored.append((dx, dy, lib.spot_score(stats[0], stats[1], ring[0], ring[1])))
+    best = lib.spot_pick_best(scored)
+    if best is None:
+        raise ValueError('spot %d at (%g, %g): no usable source area' % (index, x, y))
+    return best
+
+
+def op_retouch(args):
+    """Heal, clone or spot-heal pixels with a generated round brush.
+
+    Strokes and sources are image pixels (verified live: Gimp.heal / Gimp.clone take image
+    coordinates for both, whatever the layer offset). `target` 'retouch_layer' paints on a copy
+    named 'Retouch' directly above the layer (reused on a later call while it stays directly above;
+    it holds the original pixels, so sampling reads them); 'in_place' paints the layer itself. The
+    user's selection is saved, cleared while painting (it would clip the retouch) and restored."""
+    img = _image(args)
+    layer = _layer(img, args)
+    opts = lib.validate_retouch_args(args)
+    if layer.is_group():
+        raise ValueError('cannot retouch a layer group: pick a pixel layer inside it')
+    if layer.is_text_layer():
+        raise ValueError('cannot retouch a text layer: rasterize it first (gimp_bake)')
+    if layer.get_lock_content():
+        raise ValueError('layer %r is locked; unlock it first' % layer.get_name())
+    method = opts['method']
+    cw, ch = img.get_width(), img.get_height()
+
+    def bounds_of(item):
+        _ok, ox, oy = item.get_offsets()
+        b = lib.retouch_bounds(ox, oy, item.get_width(), item.get_height(), cw, ch)
+        if b is None:
+            raise ValueError('layer %r is entirely outside the canvas' % item.get_name())
+        return b
+
+    bounds = bounds_of(layer)
+    source_layer = None
+    if method == 'clone' and args.get('source_layer_id') is not None:
+        source_layer = _layer(img, {'layer_id': args['source_layer_id']})
+        if source_layer.is_group():
+            raise ValueError('source_layer_id names a layer group: pick a pixel layer')
+        source_bounds = bounds_of(source_layer)
+    else:
+        source_bounds = bounds
+    if method == 'spot_heal':
+        lib.retouch_check_points([[x, y] for x, y, _r in opts['spots']], bounds, 'spot')
+    else:
+        pts = opts['points']
+        dx, dy = opts['source_offset']
+        lib.retouch_check_points(pts, bounds, 'stroke')
+        lib.retouch_check_points([[x + dx, y + dy] for x, y in pts], source_bounds, 'source')
+
+    created = False
+    paint = layer
+    with _PreservedSelection(img):
+        Gimp.Selection.none(img)
+        if opts['target'] == 'retouch_layer' and not _retouch_marked(layer):
+            paint = _retouch_layer_above(img, layer)
+            if paint is None:
+                paint = _retouch_make_layer(img, layer)
+                created = True
+        try:
+            result = {
+                'layer_id': paint.get_id(), 'layer_name': paint.get_name(),
+                'created_layer': created, 'method': method, 'target': opts['target'],
+            }
+            if method == 'spot_heal':
+                spots, bbox = [], None
+                for i, (x, y, r) in enumerate(opts['spots']):
+                    dx, dy, score = _retouch_pick_source(img, paint, i, x, y, r, bounds)
+                    Gimp.Selection.none(img)  # measuring left a selection; it would clip the heal
+                    brush = lib.retouch_spot_brush(r)
+                    stroke = lib.retouch_cover_stroke(x, y, r, brush, bounds)
+                    _retouch_paint(
+                        'heal', paint, paint, stroke[0][0] + dx, stroke[0][1] + dy, stroke,
+                        brush, lib.RETOUCH_SPOT_HARDNESS,
+                    )
+                    bbox = lib.union_bbox_xywh(bbox, lib.retouch_painted_bbox(stroke, brush, bounds))
+                    spots.append({
+                        'x': x, 'y': y, 'radius': r, 'source_dx': dx, 'source_dy': dy,
+                        'score': round(score, 2),
+                    })
+                result['spots'] = spots
+                result['painted_bbox'] = bbox
+            else:
+                pts = opts['points']
+                dx, dy = opts['source_offset']
+                _retouch_paint(
+                    method, paint, source_layer if source_layer is not None else paint,
+                    pts[0][0] + dx, pts[0][1] + dy, pts, opts['brush_size'], opts['hardness'],
+                )
+                result['painted_bbox'] = lib.retouch_painted_bbox(pts, opts['brush_size'], bounds)
+                result['brush_size'] = opts['brush_size']
+                result['hardness'] = opts['hardness']
+        except Exception:
+            if created:
+                _discard_layer(img, paint)
+            raise
+    _drop_proxies(img.get_id())
+    return result
+
+
 def op_filter(args):
     """Stack management: `op` in list | set_visibility | delete. There is deliberately no
     `reorder` -- `Gimp.DrawableFilter` exposes only delete/set_visible/update, and the PDB has no
@@ -4922,7 +5141,7 @@ OPS = {
     'select': op_select, 'modify_mask': op_modify_mask, 'layer_mask': op_layer_mask,
     'mask_preview': op_mask_preview, 'load_mask': op_load_mask, 'render_layer': op_render_layer,
     'transform_layer': op_transform_layer,
-    'match_layer': op_match_layer,
+    'match_layer': op_match_layer, 'retouch': op_retouch,
 }
 
 

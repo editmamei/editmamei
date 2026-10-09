@@ -256,6 +256,8 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'gimp_transform_layer',
   // gimp_match_layer: adds curves filters to a layer (and optionally edits its layer mask).
   'gimp_match_layer',
+  // gimp_retouch: paints heal / clone strokes onto a layer (usually a new Retouch copy of it).
+  'gimp_retouch',
 ]);
 
 /*

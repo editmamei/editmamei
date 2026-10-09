@@ -631,3 +631,65 @@ def op_test_match_fail_second_curve(args):
 
 
 OPS['test_match_fail_second_curve'] = op_test_match_fail_second_curve
+
+
+def op_test_texture_image(args):
+    """An image `width` x `height` holding one RGBA layer `layer_width` x `layer_height` at
+    (`layer_x`, `layer_y`), filled with a seeded noise texture (`base` +/- `amplitude`, one
+    random value per pixel shared by R, G and B), then `dots` ({x, y, radius, value}, image
+    pixels) stamped over it. For the retouch tests."""
+    import random
+    width, height = int(args['width']), int(args['height'])
+    lw, lh = int(args.get('layer_width', width)), int(args.get('layer_height', height))
+    ox, oy = int(args.get('layer_x', 0)), int(args.get('layer_y', 0))
+    base, amp = int(args.get('base', 120)), int(args.get('amplitude', 20))
+    rng = random.Random(int(args.get('seed', 1)))
+    img = Gimp.Image.new(width, height, Gimp.ImageBaseType.RGB)
+    layer = Gimp.Layer.new(img, args.get('name', 'Texture'), lw, lh, Gimp.ImageType.RGBA_IMAGE,
+                           100.0, Gimp.LayerMode.NORMAL)
+    img.insert_layer(layer, None, 0)
+    layer.set_offsets(ox, oy)
+    data = bytearray(lw * lh * 4)
+    for y in range(lh):
+        for x in range(lw):
+            v = max(0, min(255, base + rng.randint(-amp, amp)))
+            for dot in args.get('dots', []):
+                if (x + ox - dot['x']) ** 2 + (y + oy - dot['y']) ** 2 <= dot['radius'] ** 2:
+                    v = int(dot['value'])
+            i = (y * lw + x) * 4
+            data[i] = data[i + 1] = data[i + 2] = v
+            data[i + 3] = 255
+    buf = layer.get_buffer()
+    buf.set(Gegl.Rectangle.new(0, 0, lw, lh), "R'G'B'A u8", bytes(data))
+    buf.flush()
+    layer.update(0, 0, lw, lh)
+    return {'image': img.get_id(), 'layer_id': layer.get_id()}
+
+
+def op_test_brush_state(args):
+    """The paint context's brush state, to prove a tool leaves it as it found it."""
+    return {
+        'brush': Gimp.context_get_brush().get_name(),
+        'size': Gimp.context_get_brush_size(),
+        'hardness': Gimp.context_get_brush_hardness(),
+        'force': Gimp.context_get_brush_force(),
+        'angle': Gimp.context_get_brush_angle(),
+        'dynamics_enabled': Gimp.context_are_dynamics_enabled(),
+        'opacity': Gimp.context_get_opacity(),
+    }
+
+
+OPS['test_texture_image'] = op_test_texture_image
+OPS['test_brush_state'] = op_test_brush_state
+
+
+def op_test_selection_bounds(args):
+    """The selection's bounding box (x, y, width, height), or None when nothing is selected."""
+    img = _image(args)
+    if Gimp.Selection.is_empty(img):
+        return {'x': None}
+    x1, y1, x2, y2 = Gimp.Selection.bounds(img)[-4:]
+    return {'x': x1, 'y': y1, 'width': x2 - x1, 'height': y2 - y1}
+
+
+OPS['test_selection_bounds'] = op_test_selection_bounds
