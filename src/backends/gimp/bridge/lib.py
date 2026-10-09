@@ -85,7 +85,9 @@ SPATIAL_SCALE_PROPS = {
     'gegl:gaussian-blur': ('std-dev-x', 'std-dev-y'),
     'gegl:motion-blur-linear': ('length',),
     'gegl:focus-blur': ('blur-radius',),
-    'gegl:dropshadow': ('x', 'y', 'radius'),
+    'gegl:dropshadow': ('x', 'y', 'radius', 'grow-radius'),
+    # surface_blur's blur-radius is a pixel neighbourhood, scaled like any other radius.
+    'gegl:bilateral-filter': ('blur-radius',),
     # gegl:vignette and gegl:mono-mixer are deliberately absent: vignette's radius/x/y are
     # proportional (fractions of the LAYER's own size, not absolute pixel lengths), and
     # mono-mixer is a per-pixel channel-weight filter with no spatial extent at all.
@@ -129,6 +131,7 @@ MASK_TYPES = ('rectangle', 'ellipse', 'gradient_linear', 'gradient_radial')
 #   hard_light=hardlight darken=darken-only lighten=lighten-only difference=difference
 #   exclusion=exclusion addition=addition subtract=subtract divide=divide dodge=dodge burn=burn
 #   hue=hsv-hue saturation=hsv-saturation color=hsl-color luminosity=luminance
+#   grain_extract=grain-extract grain_merge=grain-merge
 # hue/saturation/color/luminosity map to the HSV/HSL (not LCH) variants -- those are the ones
 # GIMP's own UI labels plainly "Hue"/"Saturation"/"Color"/"Luminosity" without a "(LCH)" suffix.
 LAYER_MODES = {
@@ -151,6 +154,8 @@ LAYER_MODES = {
     'saturation': 'HSV_SATURATION',
     'color': 'HSL_COLOR',
     'luminosity': 'LUMINANCE',
+    'grain_extract': 'GRAIN_EXTRACT',
+    'grain_merge': 'GRAIN_MERGE',
 }
 
 
@@ -1243,13 +1248,22 @@ EFFECT_OPERATIONS = {
     'lens_blur': 'gegl:focus-blur',
     'add_noise': 'gegl:noise-rgb',
     'drop_shadow': 'gegl:dropshadow',
+    # outline and outer_glow are also gegl:dropshadow (zero offset, grown by grow-radius): one
+    # operation, three types -- the ledger's `type` tells them apart, see OPERATION_TYPES below.
+    'outline': 'gegl:dropshadow',
+    'outer_glow': 'gegl:dropshadow',
+    'surface_blur': 'gegl:bilateral-filter',
 }
 
 # The inverse of ADJUST_OPERATIONS and EFFECT_OPERATIONS together, for a ledger record written
 # without a `type` field -- one shared map, since `op_list_filters` looks a record's operation up
-# here regardless of which tool (gimp_add_adjustment or gimp_add_effect) created it.
+# here regardless of which tool (gimp_add_adjustment or gimp_add_effect) created it. Where several
+# types share one operation (gegl:dropshadow), the first listed wins: a record with no `type` is
+# from before outline/outer_glow existed, so it can only be a drop_shadow.
 OPERATION_TYPES = {operation: type_ for type_, operation in ADJUST_OPERATIONS.items()}
-OPERATION_TYPES.update({operation: type_ for type_, operation in EFFECT_OPERATIONS.items()})
+for _type, _operation in EFFECT_OPERATIONS.items():
+    OPERATION_TYPES.setdefault(_operation, _type)
+del _type, _operation
 
 # Every validate_range/validate_int_range call below uses `val`, not `v`, as its lambda's
 # parameter name -- deliberately, so it is NOT matched by gimp-adjustment-tools.test.ts's own
@@ -1404,6 +1418,63 @@ def build_drop_shadow_params(args, defaults):
     }
 
 
+def build_outline_params(args, defaults):
+    # A solid ring around the layer's alpha: gegl:dropshadow with no offset and no blur, grown by
+    # `width` px (grow-radius, a circle) at full opacity. Only `grow-radius` and `color` are
+    # recorded; `_set_drop_shadow` fills the rest in (offset 0, blur 0, opacity 1). GEGL caps
+    # grow-radius at 100 on this GIMP (3.2.x) -- probed live -- so `width` stops there. The shadow
+    # is drawn under the layer's own pixels, so the interior is untouched.
+    return {
+        'grow-radius': resolve_field(
+            args, 'width', defaults, 'grow-radius', lambda val: validate_range('width', val, 1.0, 100.0)
+        ),
+        'color': resolve_field(
+            args, 'color', defaults, 'color', lambda val: validate_hex_color('color', val)
+        ),
+    }
+
+
+def build_outer_glow_params(args, defaults):
+    # The same gegl:dropshadow, centered (no offset, filled in by `_set_drop_shadow`): `spread`
+    # grows the glow's solid core, `radius` blurs it.
+    return {
+        'radius': resolve_field(
+            args, 'radius', defaults, 'radius', lambda val: validate_range('radius', val, 1.0, 250.0)
+        ),
+        'grow-radius': resolve_field(
+            args, 'spread', defaults, 'grow-radius',
+            lambda val: validate_range('spread', val, 0.0, 100.0),
+        ),
+        'opacity': resolve_field(
+            args, 'opacity', defaults, 'opacity', lambda val: validate_range('opacity', val, 0.0, 1.0)
+        ),
+        'color': resolve_field(
+            args, 'color', defaults, 'color', lambda val: validate_hex_color('color', val)
+        ),
+    }
+
+
+# gegl:bilateral-filter's `edge-preservation` runs 0..100 (default 8), where HIGHER keeps more of
+# the original, edges and noise alike -- probed live on a noisy patch beside a hard edge: 0 smooths
+# hard enough to blur the edge itself, 8 flattens the noise (stddev 17 -> 2) with the edge intact,
+# 100 barely smooths. The tool exposes it as 0..1 (this factor times the tool value).
+# gegl:mean-curvature-blur and gegl:snn-mean were not needed: GIMP attaches bilateral-filter fine.
+BILATERAL_EDGE_SCALE = 100.0
+
+
+def build_surface_blur_params(args, defaults):
+    return {
+        'blur-radius': resolve_field(
+            args, 'radius', defaults, 'blur-radius',
+            lambda val: validate_range('radius', val, 1.0, 50.0),
+        ),
+        'edge-preservation': resolve_field(
+            args, 'edge_preservation', defaults, 'edge-preservation',
+            lambda val: validate_range('edge_preservation', val, 0.0, 1.0),
+        ),
+    }
+
+
 EFFECT_PARAM_BUILDERS = {
     'vignette': build_vignette_params,
     'black_white': build_black_white_params,
@@ -1411,6 +1482,9 @@ EFFECT_PARAM_BUILDERS = {
     'lens_blur': build_lens_blur_params,
     'add_noise': build_add_noise_params,
     'drop_shadow': build_drop_shadow_params,
+    'outline': build_outline_params,
+    'outer_glow': build_outer_glow_params,
+    'surface_blur': build_surface_blur_params,
 }
 
 # Creation-time defaults, already in GEGL-property units -- probed live via `describe_operation`
@@ -1424,6 +1498,9 @@ EFFECT_CREATE_DEFAULTS = {
     'lens_blur': {'blur-radius': 25.0, 'highlight-factor': 0.0},
     'add_noise': {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 0},
     'drop_shadow': {'x': 20.0, 'y': 20.0, 'radius': 10.0, 'opacity': 0.5},
+    'outline': {'grow-radius': 4.0, 'color': '#000000'},
+    'outer_glow': {'radius': 20.0, 'grow-radius': 4.0, 'opacity': 0.75, 'color': '#ffffff'},
+    'surface_blur': {'blur-radius': 8.0, 'edge-preservation': 0.08},
 }
 
 
@@ -1523,6 +1600,20 @@ USER_FIELDS = {
         ('radius', 'radius', _same),
         ('opacity', 'opacity', _same),
     ),
+    'outline': (
+        ('width', 'grow-radius', _same),
+        ('color', 'color', _same),
+    ),
+    'outer_glow': (
+        ('spread', 'grow-radius', _same),
+        ('radius', 'radius', _same),
+        ('opacity', 'opacity', _same),
+        ('color', 'color', _same),
+    ),
+    'surface_blur': (
+        ('radius', 'blur-radius', _same),
+        ('edge_preservation', 'edge-preservation', _same),
+    ),
 }
 
 CURVES_USER_FIELDS = ('channel', 'points')
@@ -1608,7 +1699,6 @@ def json_safe(value):
 # text from GIMP's own PDB) for a probe whose only real job is confirming the schema of the
 # operations this engine actually uses.
 ALLOWED_DESCRIBE_OPERATIONS = frozenset(ADJUST_OPERATIONS.values()) | frozenset(EFFECT_OPERATIONS.values())
-
 
 # ---- geometry-op masked-filter detection (pure logic; ops.py supplies the live GIMP state) -----
 
@@ -1842,7 +1932,7 @@ def flip_effect_params(operation, params, orientation):
         else:
             params['angle'] = _round_transform_value(_wrap_angle_deg(-params['angle']))
         return params
-    if operation == 'gegl:dropshadow':
+    if operation == 'gegl:dropshadow' and 'x' in params:  # outline / outer_glow have no offset
         params = dict(params)
         if orientation == 'horizontal':
             params['x'] = _round_transform_value(-params['x'])
@@ -1879,7 +1969,7 @@ def rotate_effect_params(operation, params, degrees, layer_width, layer_height):
         canonical_degrees = _right_angle_k(degrees) * 90.0
         params['angle'] = _round_transform_value(_wrap_angle_deg(params['angle'] + canonical_degrees))
         return params
-    if operation == 'gegl:dropshadow':
+    if operation == 'gegl:dropshadow' and 'x' in params:
         params = dict(params)
         cos_t, sin_t = _right_angle_cos_sin(degrees)
         dx, dy = params['x'], params['y']
@@ -1929,9 +2019,18 @@ def resize_effect_params(operation, params, scale_x, scale_y):
     if operation == 'gegl:dropshadow':
         params = dict(params)
         isotropic_scale = math.sqrt(scale_x * scale_y)
-        params['x'] = _round_transform_value(params['x'] * scale_x)
-        params['y'] = _round_transform_value(params['y'] * scale_y)
-        params['radius'] = _round_transform_value(params['radius'] * isotropic_scale)
+        # outline has only grow-radius, outer_glow lacks the offset: scale what is recorded.
+        for prop, factor in (
+            ('x', scale_x), ('y', scale_y), ('radius', isotropic_scale),
+            ('grow-radius', isotropic_scale),
+        ):
+            if prop in params:
+                params[prop] = _round_transform_value(params[prop] * factor)
+        return params
+    if operation == 'gegl:bilateral-filter':
+        params = dict(params)
+        isotropic_scale = math.sqrt(scale_x * scale_y)
+        params['blur-radius'] = _round_transform_value(params['blur-radius'] * isotropic_scale)
         return params
     return params
 
@@ -1945,7 +2044,12 @@ EFFECT_TRANSFORM_BOUNDS = {
     'gegl:vignette': {'x': (0.0, 1.0), 'y': (0.0, 1.0)},
     'gegl:motion-blur-linear': {'length': (0.0, 1000.0), 'angle': (-180.0, 180.0)},
     'gegl:focus-blur': {'blur-radius': (0.0, 150.0)},
-    'gegl:dropshadow': {'x': (-500.0, 500.0), 'y': (-500.0, 500.0), 'radius': (0.0, 1500.0)},
+    'gegl:dropshadow': {
+        'x': (-500.0, 500.0), 'y': (-500.0, 500.0), 'radius': (0.0, 1500.0),
+        # outline's width and outer_glow's spread: GEGL's own cap, the widest either allows.
+        'grow-radius': (0.0, 100.0),
+    },
+    'gegl:bilateral-filter': {'blur-radius': (0.0, 50.0)},
 }
 
 # The user-facing (gimp_add_effect) field name for each EFFECT_TRANSFORM_BOUNDS entry -- so a
@@ -1962,6 +2066,8 @@ EFFECT_TRANSFORM_FIELD_NAMES = {
     ('gegl:dropshadow', 'x'): 'offset_x',
     ('gegl:dropshadow', 'y'): 'offset_y',
     ('gegl:dropshadow', 'radius'): 'radius',
+    ('gegl:dropshadow', 'grow-radius'): 'width/spread',
+    ('gegl:bilateral-filter', 'blur-radius'): 'radius',
 }
 
 
