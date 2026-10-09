@@ -163,6 +163,14 @@ const histogramSchema: JsonSchemaObject = {
         ' Computed on the proxy when it maps to a big-enough proxy area, else auto-falls back to a ' +
         'full-resolution crop; exact:true always forces the full-resolution crop.',
     },
+    mask: {
+      type: 'string',
+      description:
+        'The name of a selection channel: measure only the pixels it selects at ' +
+        '50% or more (a hard cut, no partial credit for soft edges), e.g. the mean lightness or ' +
+        'colour of a selected object. Combines with region and exact; pixels in the result is ' +
+        'the number of pixels counted.',
+    },
   },
   required: ['image'],
 };
@@ -178,6 +186,7 @@ async function gimpGetHistogram(
       width: number;
       height: number;
       pixels: number;
+      mask?: string | null;
       channels: Record<
         string,
         { mean: number; median: number; p1: number; p5: number; p95: number; p99: number }
@@ -198,7 +207,7 @@ async function gimpGetHistogram(
       content: [
         {
           type: 'text' as const,
-          text: `Histogram (${result.exact ? 'exact' : 'proxy'}, ${result.pixels.toLocaleString()} px): ${summary}${unmirroredNote}`,
+          text: `Histogram (${result.exact ? 'exact' : 'proxy'}${result.mask ? `, mask ${result.mask}` : ''}, ${result.pixels.toLocaleString()} px): ${summary}${unmirroredNote}`,
         },
       ],
       structuredContent: result as unknown as Record<string, unknown>,

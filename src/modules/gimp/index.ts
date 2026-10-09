@@ -30,6 +30,7 @@ import { createGimpTextTools } from '../../tools/gimp-text-tools.js';
 import { createGimpSelectionTools } from '../../tools/gimp-selection-tools.js';
 import { createGimpMatchTools } from '../../tools/gimp-match-tools.js';
 import { createGimpRetouchTools } from '../../tools/gimp-retouch-tools.js';
+import { createGimpFillTools } from '../../tools/gimp-fill-tools.js';
 
 // gimp_* tool factories; each takes (gimp: GimpBackend). Exported so tests
 // (the leak-guard / factory-wiring derivations, mirroring `ceFactories`) can
@@ -51,6 +52,7 @@ export const gimpFactories = [
   createGimpSelectionTools,
   createGimpMatchTools,
   createGimpRetouchTools,
+  createGimpFillTools,
 ];
 
 export const gimpModule: EditmameiModule = {
