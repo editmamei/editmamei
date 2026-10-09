@@ -112,7 +112,12 @@ describe.skipIf(!install)('fill: solid and gradient layers', () => {
   it('goes directly above a named layer, inside its group position', async () => {
     const image = await doc();
     const top = await fill(image, { op: 'solid', color: '#111111', name: 'Top' });
-    const mid = await fill(image, { op: 'solid', color: '#222222', name: 'Mid', layer: 'Background' });
+    const mid = await fill(image, {
+      op: 'solid',
+      color: '#222222',
+      name: 'Mid',
+      layer: 'Background',
+    });
     const names = (await layers(image)).map((l) => l.name);
     expect(names).toEqual(['Top', 'Mid', 'Background']);
     expect(top.layer_id).not.toBe(mid.layer_id);
@@ -280,11 +285,45 @@ describe.skipIf(!install)('fill: solid and gradient layers', () => {
     await fill(image, { op: 'radial_gradient', stops: BW });
     await fill(image, { op: 'solid', color: '#abcdef' });
     // A refused call must clean up too.
-    await expect(
-      fill(image, { op: 'linear_gradient', stops: BW, mask: 'Nope' })
-    ).rejects.toThrow();
+    await expect(fill(image, { op: 'linear_gradient', stops: BW, mask: 'Nope' })).rejects.toThrow();
     expect([await names(), await state()]).toEqual(before);
     expect(await layers(image)).toHaveLength(4);
+  });
+
+  it('a failure after the layer, mask and gradient exist leaves no trace', async () => {
+    const image = await doc();
+    await session.call('create_mask', {
+      image,
+      type: 'rectangle',
+      x: 0,
+      y: 0,
+      width: W / 2,
+      height: H,
+      name: 'Left',
+    });
+    await session.call('test_select_rect', { image, x: 10, y: 10, width: 20, height: 20 });
+    const snapshot = async () => ({
+      layers: (await layers(image)).map((l) => l.layer_id),
+      channels: (
+        await session.call<{ channels: Array<{ name: string }> }>('describe', {
+          image,
+          what: 'channels',
+        })
+      ).channels.map((c) => c.name),
+      gradients: await session.call('test_gradient_names', {}),
+      context: await session.call('test_context_state', {}),
+      selection: await session.call('test_selection_bounds', { image }),
+    });
+    const before = await snapshot();
+    await session.call('test_arm_fill_failure', {});
+    await expect(fill(image, { op: 'linear_gradient', stops: BW, mask: 'Left' })).rejects.toThrow(
+      /injected/
+    );
+    expect(await snapshot()).toEqual(before);
+    expect(before.selection).toMatchObject({ x: 10, y: 10, width: 20, height: 20 });
+    // The hook was one-shot: the same call now succeeds.
+    await fill(image, { op: 'linear_gradient', stops: BW, mask: 'Left' });
+    expect(await layers(image)).toHaveLength(before.layers.length + 1);
   });
 
   it('refuses an unknown layer_id without leaving a layer behind', async () => {
@@ -380,6 +419,123 @@ describe.skipIf(!install)('histogram mask: measure only the selected pixels', ()
         mask: 'Left',
         region: { x: 120, y: 0, width: 60, height: 60 },
         exact: true,
+      })
+    ).rejects.toThrow(/selects no pixels/);
+  });
+});
+
+describe.skipIf(!install)('histogram mask on a proxy-sized image (wider than 1024 px)', () => {
+  let workDir: string;
+  let session: GimpSession;
+  const BW_ = 2000;
+  const BH_ = 800;
+  /** The proxy is 1024 px on the long side, so areas shrink by this squared. */
+  const AREA = (1024 / BW_) ** 2;
+
+  beforeAll(async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-histproxy-'));
+    session = new GimpSession({
+      install: install!,
+      rootDir: join(workDir, 'session-root'),
+      opsPyPath: TEST_OPS_PY,
+    });
+    await readySession(session);
+  }, LIVE_READY_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await session.shutdown();
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  interface Hist {
+    exact: boolean;
+    pixels: number;
+    channels: Record<string, { mean: number }>;
+  }
+
+  /** White 2000x800; #404040 painted through each named rectangle channel. */
+  async function wide(rects: Record<string, [number, number, number, number]>): Promise<number> {
+    const d = await session.call<{ image: number }>('create_document', {
+      width: BW_,
+      height: BH_,
+      fill: 'white',
+    });
+    for (const [name, [x, y, width, height]] of Object.entries(rects)) {
+      await session.call('create_mask', {
+        image: d.image,
+        type: 'rectangle',
+        x,
+        y,
+        width,
+        height,
+        name,
+      });
+      await session.call('fill', { image: d.image, op: 'solid', color: '#404040', mask: name });
+    }
+    return d.image;
+  }
+
+  const near = (got: number, want: number, tol = 0.03) =>
+    expect(Math.abs(got - want) / want).toBeLessThanOrEqual(tol);
+
+  it('whole image on the proxy: the pixel count scales and the mean holds', async () => {
+    const image = await wide({ Left: [0, 0, 1000, 800] });
+    const h = await session.call<Hist>('histogram', { image, mask: 'Left' });
+    expect(h.exact).toBe(false);
+    near(h.pixels, 1000 * 800 * AREA);
+    expect(Math.abs(h.channels['luminance']!.mean - 64)).toBeLessThanOrEqual(1);
+  });
+
+  it('a proxy-eligible region keeps the same behaviour', async () => {
+    const image = await wide({ Left: [0, 0, 1000, 800] });
+    const h = await session.call<Hist>('histogram', {
+      image,
+      mask: 'Left',
+      region: { x: 200, y: 100, width: 1600, height: 600 },
+    });
+    expect(h.exact).toBe(false);
+    near(h.pixels, 800 * 600 * AREA);
+    expect(Math.abs(h.channels['luminance']!.mean - 64)).toBeLessThanOrEqual(1);
+  });
+
+  it('a speck too small to survive the scale-down is measured at full resolution', async () => {
+    const image = await wide({ Speck: [500, 400, 3, 2] });
+    const h = await session.call<Hist>('histogram', { image, mask: 'Speck' });
+    expect(h.exact).toBe(true);
+    expect(h.pixels).toBe(6);
+    expect(Math.abs(h.channels['luminance']!.mean - 64)).toBeLessThanOrEqual(1);
+    // The same through a region.
+    const r = await session.call<Hist>('histogram', {
+      image,
+      mask: 'Speck',
+      region: { x: 100, y: 100, width: 1800, height: 600 },
+    });
+    expect(r.pixels).toBe(6);
+  });
+
+  it('a one-pixel line is never refused, and its mean is right', async () => {
+    const image = await wide({ Line: [0, 400, BW_, 1] });
+    const h = await session.call<Hist>('histogram', { image, mask: 'Line' });
+    expect(h.pixels).toBeGreaterThan(0);
+    expect(Math.abs(h.channels['luminance']!.mean - 64)).toBeLessThanOrEqual(2);
+  });
+
+  it('a mask that is empty at full resolution is still refused', async () => {
+    const image = await wide({ Left: [0, 0, 1000, 800] });
+    await session.call('create_mask', {
+      image,
+      type: 'rectangle',
+      x: 1500,
+      y: 0,
+      width: 100,
+      height: 100,
+      name: 'Right',
+    });
+    await expect(
+      session.call('histogram', {
+        image,
+        mask: 'Left',
+        region: { x: 1200, y: 0, width: 800, height: 800 },
       })
     ).rejects.toThrow(/selects no pixels/);
   });

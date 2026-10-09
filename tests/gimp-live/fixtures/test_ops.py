@@ -742,3 +742,26 @@ def op_test_context_state(args):
 
 OPS['test_gradient_names'] = op_test_gradient_names
 OPS['test_context_state'] = op_test_context_state
+
+
+class _FailOnceModes(dict):
+    """lib.FILL_MODES that raises on the first value lookup and then puts the real table back."""
+
+    def __init__(self, real):
+        dict.__init__(self, real)
+        self.real = real
+
+    def __getitem__(self, key):
+        lib.FILL_MODES = self.real
+        raise RuntimeError('injected gimp_fill failure')
+
+
+def op_test_arm_fill_failure(args):
+    """Arm a one-shot failure in gimp_fill's last step -- the blend-mode lookup -- which runs after
+    the layer is inserted, the gradient is built and the layer mask is attached. Validation only
+    tests membership, so it still passes; the next gimp_fill then fails once and the table heals."""
+    lib.FILL_MODES = _FailOnceModes(lib.FILL_MODES)
+    return {'armed': True}
+
+
+OPS['test_arm_fill_failure'] = op_test_arm_fill_failure

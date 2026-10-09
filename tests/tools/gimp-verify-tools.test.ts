@@ -232,6 +232,33 @@ describe('createGimpVerifyTools', () => {
       expect(text).toContain('p1=5 p5=20 p95=240 p99=253');
     });
 
+    it('forwards mask and names it in the summary text', async () => {
+      const gimp = makeGimpBackend({
+        result: {
+          exact: false,
+          width: 100,
+          height: 100,
+          pixels: 2500,
+          mask: 'Shirt',
+          channels: { luminance: { mean: 64, median: 64, p1: 64, p5: 64, p95: 64, p99: 64 } },
+        },
+      });
+      const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_get_histogram', {
+        image: 1,
+        channels: ['luminance'],
+        mask: 'Shirt',
+      });
+      expect(result.isError).toBeFalsy();
+      expect(gimp.lastCall()).toEqual({
+        op: 'histogram',
+        args: { image: 1, channels: ['luminance'], exact: false, mask: 'Shirt' },
+      });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toContain('mask Shirt');
+      expect(text).toContain('2,500 px');
+    });
+
     it('states the bin count the bridge actually returns, and declares it in the outputSchema', async () => {
       // lib.channel_stats returns one bin per 8-bit value; test_lib.py pins that length, and the
       // live verify-ops suite pins it against a real GIMP. This pins the model-facing contract.
