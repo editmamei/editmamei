@@ -3149,6 +3149,61 @@ TEXT_FIT_DEFAULT_MIN_PX = 8
 TEXT_FIT_MAX_MIN_PX = 10000
 TEXT_FIT_MAX_PROBES = 12
 TEXT_BOX_SCAN_MAX_PIXELS = 16_000_000
+TEXT_OVERFLOW_LINES = 1_000_000  # "more lines than any box holds": what an overflowing probe reports
+TEXT_LINE_PITCH_SAMPLE_LINES = 10
+
+# A text box's own area ceiling, precision-aware like DOCUMENT_MEGAPIXEL_CAP but much tighter (a
+# text layer is a caption, not a canvas): 64 MP at 8-bit, halved for 16-bit and quartered for
+# 32-bit, and never above the matching document cap when EM_GIMP_MAX_MEGAPIXELS lowers those.
+TEXT_BOX_MEGAPIXEL_CAP = {
+    '8': min(64, MAX_RESIZE_MEGAPIXELS),
+    '16': min(32, MAX_RESIZE_MEGAPIXELS / 2),
+    '32': min(16, MAX_RESIZE_MEGAPIXELS / 4),
+}
+
+# Marks a text layer this tool put in a fixed box. GIMP cannot report a layer's box mode, so this
+# persistent layer parasite is how later edits know their size is bounded by the box.
+TEXT_BOX_TAG = 'editmamei-text-box'
+
+
+def check_text_box_area(width, height, precision='8'):
+    """Refuses a text box past the precision-aware text-box area cap (`TEXT_BOX_MEGAPIXEL_CAP`)."""
+    cap = TEXT_BOX_MEGAPIXEL_CAP[precision]
+    megapixels = (width * height) / 1_000_000.0
+    if megapixels > cap:
+        raise ValueError(
+            'a %dx%d px text box is %.1f MP, past the %g MP limit for a %s-bit text layer; use a '
+            'smaller box' % (width, height, megapixels, cap, precision)
+        )
+
+
+def check_text_fit_box(width, height):
+    """Refuses `fit` for a box too large to probe in one render (`TEXT_BOX_SCAN_MAX_PIXELS`)."""
+    if width * height > TEXT_BOX_SCAN_MAX_PIXELS:
+        raise ValueError(
+            'fit supports a box of at most %d MP (got %dx%d px); use a smaller box, or set the '
+            'box and font_size without fit' % (TEXT_BOX_SCAN_MAX_PIXELS // 1_000_000, width, height)
+        )
+
+
+def text_scan_cap(width):
+    """The tallest probe layer (px) the box scan renders at `width`."""
+    return max(1, min(MAX_RESIZE_SIDE_PX, TEXT_BOX_SCAN_MAX_PIXELS // max(1, width)))
+
+
+def fit_probe_plan(width, limit_h, pitch):
+    """(scan_h, clamped): the probe height for testing whether text fits `limit_h`, a little
+    taller than the limit so overflow shows as ink past it. `clamped` means the scan cap cut it
+    below that height, so ink on its last row only says "reaches the end of the probe"."""
+    ideal = int(math.ceil(limit_h + 2 * pitch)) + 1
+    scan_h = min(text_scan_cap(width), ideal)
+    return scan_h, scan_h < ideal
+
+
+def fit_probe_overflows(ink_bottom_row, scan_h, clamped):
+    """Whether a clamped probe (`fit_probe_plan`) with ink on its last row means the text
+    overflows. An unclamped probe is judged by its line count instead."""
+    return bool(clamped and ink_bottom_row >= scan_h - 1)
 
 
 def validate_text_box(box):
@@ -3169,7 +3224,8 @@ def validate_text_box(box):
 
 
 def _box_side(name, value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or (isinstance(value, float) and not math.isfinite(value)) or int(value) != value):
         raise ValueError('%s must be an integer' % name)
     return validate_int_range(name, value, 1, MAX_RESIZE_SIDE_PX)
 

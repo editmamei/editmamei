@@ -135,7 +135,7 @@ const textSchema: JsonSchemaObject = {
       required: ['width'],
       description:
         'create, set_box: a fixed text box {width, height?} in image pixels (each side 1 to ' +
-        '30000, area within the 250 MP engine cap). The text wraps at `width` (newlines in the ' +
+        '30000, area within the text-box cap: 64 MP at 8-bit, 32 MP at 16-bit, 16 MP at 32-bit). The text wraps at `width` (newlines in the ' +
         'text are kept) and is placed at the top of the box; GIMP has no vertical alignment, so ' +
         'a taller box leaves the space below. Omit `height` and the layer grows to the wrapped ' +
         "text's height. The box survives later set_content / set_font / set_alignment edits. " +
@@ -144,9 +144,10 @@ const textSchema: JsonSchemaObject = {
     fit: {
       type: 'boolean',
       description:
-        'create, set_box: with a `box` that has both width and height, shrink the text to the ' +
-        'largest size (at most font_size, or the current size for set_box) at which the ' +
-        'wrapped text fits inside the box, searched in at most 12 trial renders. The result ' +
+        'create, set_box: with a `box` that has both width and height (at most 16 MP), shrink the ' +
+        'text to approximately the largest size (at most font_size, or the current size for ' +
+        'set_box) at which the wrapped text fits inside the box, searched in at most 12 trial ' +
+        'renders. A word wider than the box counts as not fitting. The result ' +
         'reports `fitted`: false when even min_size overflows (the text is left at min_size).',
     },
     min_size: {
@@ -222,7 +223,7 @@ export function createGimpTextTools(gimp: GimpBackend): ToolDefinition[] {
           'that would render past the size limit is refused and leaves the document unchanged. ' +
           'GIMP supports LEFT, CENTER, RIGHT and FULLYJUSTIFIED alignment only. `box` {width, ' +
           'height?} (create, set_box) fixes the text box so text wraps at `width`; `fit` ' +
-          'shrinks the size so the wrapped text fits a box with both sides; the result then ' +
+          'shrinks the size to approximately the largest size at which the wrapped text fits a box with both sides; the result then ' +
           'carries `box` and, for fit, `fitted` and `fit_probes`. Text sits at the top of the ' +
           'box (no vertical alignment). There is no ' +
           'undo in this session: gimp_checkpoint or gimp_save_xcf first when in doubt.',
