@@ -241,6 +241,28 @@ describe.skipIf(!install)('outline, outer_glow, surface_blur, grain modes, text 
       }
     });
 
+    it('a shrinking resize stops at the 1 px floor a re-edit enforces, so the listed value stays re-editable', async () => {
+      const image = await open(whiteSquare);
+      try {
+        const created = await session.call<{ filter_id: number }>('effect', {
+          image,
+          type: 'outline',
+          width: 2,
+        });
+        await session.call('resize', { image, width: 32 }); // 128 -> 32: width 2 * 0.25 = 0.5
+        const rec = (await filters(image))[0]!;
+        expect(rec.params).toEqual({ width: 1, color: '#000000' });
+        await session.call('effect', {
+          image,
+          type: 'outline',
+          filter_id: created.filter_id,
+          ...rec.params,
+        });
+      } finally {
+        await session.call('close', { image });
+      }
+    });
+
     it('proxy preview matches a full-resolution render (width is scaled onto the proxy)', async () => {
       const W = 2048;
       const H = 512;
@@ -284,6 +306,74 @@ describe.skipIf(!install)('outline, outer_glow, surface_blur, grain modes, text 
         } finally {
           await session.call('close', { image: plain });
         }
+      } finally {
+        await session.call('close', { image });
+      }
+    });
+  });
+
+  describe('a drop_shadow record written before `type` was stored', () => {
+    it('lists, describes and re-edits as a drop_shadow, and refuses outline / outer_glow / an arbitrary rotate', async () => {
+      const image = await open(whiteSquare);
+      try {
+        const created = await session.call<{ filter_id: number }>('effect', {
+          image,
+          type: 'drop_shadow',
+          offset_x: 6,
+          offset_y: 4,
+          radius: 3,
+          opacity: 0.6,
+        });
+        await session.call('test_strip_ledger_type', { image });
+
+        const rec = (await filters(image))[0]!;
+        expect(rec).toMatchObject({ type: 'drop_shadow', source: 'editmamei' });
+        expect(rec.params).toEqual({ offset_x: 6, offset_y: 4, radius: 3, opacity: 0.6 });
+        const described = await session.call<FilterRec>('describe', {
+          image,
+          what: 'filter',
+          filter_id: created.filter_id,
+        });
+        expect(described.type).toBe('drop_shadow');
+
+        for (const type of ['outline', 'outer_glow']) {
+          await expect(
+            session.call('effect', { image, type, filter_id: created.filter_id })
+          ).rejects.toMatchObject({ code: 'invalid_argument' });
+        }
+        // An offset shadow still refuses an arbitrary-angle rotate...
+        await expect(
+          session.call('rotate', { image, degrees: 15, expand: true })
+        ).rejects.toMatchObject({ code: 'invalid_argument' });
+
+        // ...and a drop_shadow re-edit merges over what the record kept.
+        await session.call('effect', {
+          image,
+          type: 'drop_shadow',
+          filter_id: created.filter_id,
+          radius: 5,
+        });
+        expect((await filters(image))[0]!.params).toEqual({
+          offset_x: 6,
+          offset_y: 4,
+          radius: 5,
+          opacity: 0.6,
+        });
+      } finally {
+        await session.call('close', { image });
+      }
+    });
+
+    it('a zero-offset legacy record lists its 0,0 offset and still takes an arbitrary rotate', async () => {
+      const image = await open(whiteSquare);
+      try {
+        await session.call('effect', { image, type: 'drop_shadow', offset_x: 0, offset_y: 0 });
+        await session.call('test_strip_ledger_type', { image });
+        const rec = (await filters(image))[0]!;
+        expect(rec.type).toBe('drop_shadow');
+        expect(rec.params).toMatchObject({ offset_x: 0, offset_y: 0 });
+        await session.call('rotate', { image, degrees: 15, expand: true });
+        expect(await filters(image)).toHaveLength(1);
       } finally {
         await session.call('close', { image });
       }
@@ -372,7 +462,7 @@ describe.skipIf(!install)('outline, outer_glow, surface_blur, grain modes, text 
 
       const image = await open(noisyPatch);
       try {
-        await session.call('effect', { image, type: 'surface_blur', radius: 8 });
+        await session.call('effect', { image, type: 'surface_blur', radius: 6 });
         const out = await stats(image, 'sb-out');
         expect(out.sd, `sd ${baseline.sd} -> ${out.sd}`).toBeLessThan(baseline.sd * 0.25);
         // The step across the edge keeps (nearly) its original size.
@@ -392,7 +482,7 @@ describe.skipIf(!install)('outline, outer_glow, surface_blur, grain modes, text 
           await session.call('effect', {
             image,
             type: 'surface_blur',
-            radius: 8,
+            radius: 6,
             edge_preservation: ep,
           });
           results.push((await stats(image, `sb-ep-${ep}`)).sd);
@@ -406,7 +496,7 @@ describe.skipIf(!install)('outline, outer_glow, surface_blur, grain modes, text 
     it('list round trip, describe, re-edit unchanged, removal restores the noise', async () => {
       const image = await open(noisyPatch);
       try {
-        const args = { radius: 12, edge_preservation: 0.2 };
+        const args = { radius: 5, edge_preservation: 0.2 };
         const created = await session.call<{ filter_id: number }>('effect', {
           image,
           type: 'surface_blur',
@@ -437,7 +527,7 @@ describe.skipIf(!install)('outline, outer_glow, surface_blur, grain modes, text 
       writeNoisyPatchBesideEdge(big, W, H);
       const image = await open(big);
       try {
-        await session.call('effect', { image, type: 'surface_blur', radius: 40 });
+        await session.call('effect', { image, type: 'surface_blur', radius: 6 });
         const res = await session.call<{ unmirrored_filters?: string[] }>('preview', {
           image,
           max_px: 512,

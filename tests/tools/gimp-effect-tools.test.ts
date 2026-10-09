@@ -120,7 +120,7 @@ describe('createGimpEffectTools', () => {
     const cases: Array<Record<string, unknown>> = [
       { image: 1, type: 'outline', width: 6, color: '#ffffff' },
       { image: 1, type: 'outer_glow', spread: 3, radius: 40, opacity: 0.9, color: '#00ffcc' },
-      { image: 1, type: 'surface_blur', radius: 12, edge_preservation: 0.1 },
+      { image: 1, type: 'surface_blur', radius: 5, edge_preservation: 0.1 },
     ];
     for (const args of cases) {
       const result = await callTool(tools, 'gimp_add_effect', args);

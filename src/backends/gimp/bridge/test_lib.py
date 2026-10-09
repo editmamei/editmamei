@@ -930,16 +930,16 @@ class TestEffectParamBuilders(unittest.TestCase):
         defaults = _effect_create_defaults('surface_blur')
         self.assertEqual(
             lib.build_surface_blur_params({}, defaults),
-            {'blur-radius': 8.0, 'edge-preservation': 0.08},
+            {'blur-radius': 4.0, 'edge-preservation': 0.08},
         )
         self.assertEqual(
-            lib.build_surface_blur_params({'radius': 20, 'edge_preservation': 0.5}, defaults),
-            {'blur-radius': 20, 'edge-preservation': 0.5},
+            lib.build_surface_blur_params({'radius': 5, 'edge_preservation': 0.5}, defaults),
+            {'blur-radius': 5, 'edge-preservation': 0.5},
         )
 
     def test_build_surface_blur_params_bounds(self):
         defaults = _effect_create_defaults('surface_blur')
-        for field, lo, hi in (('radius', 1, 50), ('edge_preservation', 0, 1)):
+        for field, lo, hi in (('radius', 1, 6), ('edge_preservation', 0, 1)):
             lib.build_surface_blur_params({field: lo}, defaults)
             lib.build_surface_blur_params({field: hi}, defaults)
             for bad in (lo - 0.5, hi + 0.5):
@@ -1749,7 +1749,7 @@ EFFECT_USER_ARGS_BY_TYPE = {
     'drop_shadow': {'offset_x': -10.0, 'offset_y': 15.0, 'radius': 8.0, 'opacity': 0.7},
     'outline': {'width': 7.0, 'color': '#ff8800'},
     'outer_glow': {'spread': 3.0, 'radius': 30.0, 'opacity': 0.6, 'color': '#00ffcc'},
-    'surface_blur': {'radius': 12.0, 'edge_preservation': 0.2},
+    'surface_blur': {'radius': 5.0, 'edge_preservation': 0.2},
 }
 
 
@@ -2348,6 +2348,101 @@ class TestEffectTransformBoundsMatchBuilders(unittest.TestCase):
                 with self.subTest(operation=operation, field=user_field, edge='hi-eps'):
                     with self.assertRaises(ValueError):
                         builder({user_field: hi + eps}, defaults)
+
+
+class TestLegacyTypelessDropShadowRecord(unittest.TestCase):
+    """A ledger record written before `type` was stored (a plain gegl:dropshadow with
+    {x, y, radius, opacity}) must keep behaving as the drop_shadow it is: listed, re-editable as a
+    drop_shadow, refused as outline/outer_glow, and transformed by flip/rotate/resize."""
+
+    def _rec(self, x=20.0, y=20.0):
+        return {
+            'operation': 'gegl:dropshadow',
+            'params': {'x': x, 'y': y, 'radius': 10.0, 'opacity': 0.5},
+        }
+
+    def test_record_type_resolves_a_typeless_dropshadow_to_drop_shadow(self):
+        self.assertEqual(lib.record_type(self._rec()), 'drop_shadow')
+
+    def test_record_type_prefers_the_stored_type(self):
+        rec = self._rec()
+        rec['type'] = 'outer_glow'
+        self.assertEqual(lib.record_type(rec), 'outer_glow')
+
+    def test_record_type_covers_adjust_effect_and_unknown_operations(self):
+        self.assertEqual(
+            lib.record_type({'operation': 'gegl:vignette', 'params': {}}), 'vignette'
+        )
+        self.assertEqual(
+            lib.record_type({'operation': 'gegl:bilateral-filter', 'params': {}}), 'surface_blur'
+        )
+        self.assertIsNone(lib.record_type({'operation': 'gegl:unheard-of', 'params': {}}))
+        self.assertIsNone(lib.record_type(None))
+
+    def test_drop_shadow_is_listed_before_its_dropshadow_siblings(self):
+        # OPERATION_TYPES.setdefault keeps the first type per operation.
+        order = list(lib.EFFECT_OPERATIONS)
+        self.assertLess(order.index('drop_shadow'), order.index('outline'))
+        self.assertLess(order.index('drop_shadow'), order.index('outer_glow'))
+
+    def test_user_params_reports_a_typeless_record_including_a_zero_offset(self):
+        for x, y in ((20.0, 20.0), (0.0, 0.0)):
+            rec = self._rec(x, y)
+            reported = lib.user_params(lib.record_type(rec), rec['params'])
+            self.assertEqual(
+                reported, {'offset_x': x, 'offset_y': y, 'radius': 10.0, 'opacity': 0.5}
+            )
+
+    def test_flip_rotate_resize_transform_a_typeless_record(self):
+        params = self._rec(30.0, -10.0)['params']
+        self.assertEqual(
+            lib.flip_effect_params('gegl:dropshadow', params, 'horizontal')['x'], -30.0
+        )
+        rotated = lib.rotate_effect_params('gegl:dropshadow', params, 90.0, 200, 100)
+        self.assertEqual((rotated['x'], rotated['y']), (10.0, 30.0))
+        resized = lib.resize_effect_params('gegl:dropshadow', params, 2.0, 2.0)
+        self.assertEqual((resized['x'], resized['y'], resized['radius']), (60.0, -20.0, 20.0))
+        self.assertNotIn('grow-radius', resized)
+
+    def test_a_zero_offset_typeless_record_survives_every_transform(self):
+        params = self._rec(0.0, 0.0)['params']
+        self.assertEqual(lib.flip_effect_params('gegl:dropshadow', params, 'vertical'), params)
+        rotated = lib.rotate_effect_params('gegl:dropshadow', params, 270.0, 200, 100)
+        self.assertEqual((rotated['x'], rotated['y']), (0.0, 0.0))
+        resized = lib.resize_effect_params('gegl:dropshadow', params, 0.5, 0.5)
+        self.assertEqual((resized['x'], resized['y'], resized['radius']), (0.0, 0.0, 5.0))
+
+    def test_every_builder_reads_only_fields_its_create_defaults_carry(self):
+        # Re-editing a legacy record merges over the creation defaults (ops.py op_effect), so a
+        # builder must never read a field the defaults lack: that would be a KeyError.
+        for type_, builder in lib.EFFECT_PARAM_BUILDERS.items():
+            with self.subTest(type=type_):
+                builder({}, _effect_create_defaults(type_))
+
+
+class TestClampEffectTransform(unittest.TestCase):
+    def test_a_shrinking_resize_stops_at_the_builders_floor(self):
+        out = lib.clamp_effect_transform('outline', {'grow-radius': 0.4, 'color': '#000000'})
+        self.assertEqual(out, {'grow-radius': 1.0, 'color': '#000000'})
+        out = lib.clamp_effect_transform('outer_glow', {'radius': 0.2, 'grow-radius': 0.1})
+        self.assertEqual(out, {'radius': 1.0, 'grow-radius': 0.1})  # spread may reach 0
+        out = lib.clamp_effect_transform('surface_blur', {'blur-radius': 0.3})
+        self.assertEqual(out, {'blur-radius': 1.0})
+
+    def test_nothing_to_clamp_returns_the_same_object(self):
+        params = {'grow-radius': 3.0}
+        self.assertIs(lib.clamp_effect_transform('outline', params), params)
+
+    def test_drop_shadow_radius_has_no_floor(self):
+        params = {'x': 0.0, 'y': 0.0, 'radius': 0.0, 'opacity': 0.5}
+        self.assertIs(lib.clamp_effect_transform('drop_shadow', params), params)
+
+    def test_clamped_values_pass_the_transform_bounds_and_the_builder(self):
+        out = lib.clamp_effect_transform('outer_glow', {'radius': 0.2, 'grow-radius': 0.0})
+        lib.validate_effect_transform('resize', 'gegl:dropshadow', 'Outer Glow', out)
+        lib.build_outer_glow_params(
+            {'radius': out['radius']}, _effect_create_defaults('outer_glow')
+        )
 
 
 class TestJsonSafe(unittest.TestCase):
