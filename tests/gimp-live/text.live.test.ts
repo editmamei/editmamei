@@ -692,6 +692,220 @@ describe.skipIf(!install)('gimp_text against real headless GIMP', () => {
       expect((await textNode(image, id)).is_text_layer).toBe(true);
     });
 
+    const CAPTION_1500 = 'word '.repeat(300);
+    // 60 short lines: harmless at a small size, past the probe cap at a large one.
+    const LINES_60 = Array(60).fill('word').join(String.fromCharCode(10));
+
+    it('set_content with a 1500-char caption succeeds on a boxed 300 px layer and keeps the box', async () => {
+      const image = await newDoc(800, 600);
+      const created = await text({
+        image,
+        op: 'create',
+        text: 'short',
+        font_size: 30,
+        box: { width: 300, height: 400 },
+      });
+      const id = (structuredOf(created) as unknown as TextResult).layer_id;
+      const edited = await text({ image, op: 'set_content', layer_id: id, text: CAPTION_1500 });
+      expect(edited.isError, errorText(edited)).toBeFalsy();
+      expect((structuredOf(edited) as unknown as TextResult).bounds).toMatchObject({
+        width: 300,
+        height: 400,
+      });
+      const font = await text({ image, op: 'set_font', layer_id: id, font_name: fontB });
+      expect(font.isError, errorText(font)).toBeFalsy();
+      expect((structuredOf(font) as unknown as TextResult).bounds).toMatchObject({
+        width: 300,
+        height: 400,
+      });
+    });
+
+    it('a layer boxed by set_box is boxed for later edits too', async () => {
+      const image = await newDoc(800, 600);
+      const created = await text({ image, op: 'create', text: 'short', font_size: 30 });
+      const id = (structuredOf(created) as unknown as TextResult).layer_id;
+      const boxed = await text({ image, op: 'set_box', layer_id: id, box: { width: 300, height: 200 } });
+      expect(boxed.isError, errorText(boxed)).toBeFalsy();
+      const edited = await text({ image, op: 'set_content', layer_id: id, text: CAPTION_1500 });
+      expect(edited.isError, errorText(edited)).toBeFalsy();
+      expect((structuredOf(edited) as unknown as TextResult).bounds).toMatchObject({
+        width: 300,
+        height: 200,
+      });
+    });
+
+    it('a boxed layer is still treated as boxed after save and reopen', async () => {
+      const image = await newDoc(800, 600);
+      await text({
+        image,
+        op: 'create',
+        text: 'short',
+        font_size: 30,
+        box: { width: 300, height: 200 },
+      });
+      const xcf = join(workDir, 'boxed-text.xcf');
+      const saved = await callTool(tools, 'gimp_save_xcf', { image, file_path: xcf });
+      expect(saved.isError, errorText(saved)).toBeFalsy();
+      const opened = await callTool(tools, 'gimp_open_document', { file_path: xcf });
+      expect(opened.isError, errorText(opened)).toBeFalsy();
+      const reopened = structuredOf(opened).image as number;
+      const node = (await layerTree(reopened)).find((n) => n.is_text_layer);
+      expect(node).toBeDefined();
+      const edited = await text({
+        image: reopened,
+        op: 'set_content',
+        layer_id: node!.layer_id,
+        text: CAPTION_1500,
+      });
+      expect(edited.isError, errorText(edited)).toBeFalsy();
+      expect((structuredOf(edited) as unknown as TextResult).bounds).toMatchObject({
+        width: 300,
+        height: 200,
+      });
+    });
+
+    it('a set_box that fails leaves a previously dynamic layer dynamic and unchanged', async () => {
+      const image = await newDoc(800, 600);
+      const created = await text({
+        image,
+        op: 'create',
+        text: LINES_60,
+        font_size: 12,
+        x: 20,
+        y: 30,
+      });
+      const before = structuredOf(created) as unknown as TextResult;
+      // One character per line at this size runs past the scan cap: refused mid-way.
+      const failed = await text({
+        image,
+        op: 'set_box',
+        layer_id: before.layer_id,
+        box: { width: 400 },
+        font_size: 200,
+      });
+      expect(failed.isError).toBe(true);
+      const after = await textNode(image, before.layer_id);
+      expect(after.text).toBe(before.text);
+      expect(after.font_size).toBeCloseTo(before.font_size, 1);
+      expect(after.offsets).toEqual({ x: 20, y: 30 });
+      // Still dynamic: a longer text grows the layer instead of being clipped to a box.
+      const grown = await text({
+        image,
+        op: 'set_content',
+        layer_id: before.layer_id,
+        text: LINES_60 + '\nand a second, much wider line to widen the layer a lot',
+      });
+      expect(grown.isError, errorText(grown)).toBeFalsy();
+      const g = structuredOf(grown) as unknown as TextResult;
+      expect(g.bounds.width).toBeGreaterThan(0);
+      expect(g.bounds.height).toBeGreaterThan(before.bounds.height);
+    });
+
+    it('a set_box that fails leaves a previously boxed layer in its old box', async () => {
+      const image = await newDoc(800, 600);
+      const created = await text({
+        image,
+        op: 'create',
+        text: LINES_60,
+        font_size: 12,
+        box: { width: 400, height: 250 },
+      });
+      const before = structuredOf(created) as unknown as TextResult;
+      const failed = await text({
+        image,
+        op: 'set_box',
+        layer_id: before.layer_id,
+        box: { width: 400 },
+        font_size: 200,
+      });
+      expect(failed.isError).toBe(true);
+      const after = await textNode(image, before.layer_id);
+      expect(after.font_size).toBeCloseTo(before.font_size, 1);
+      const edited = await text({
+        image,
+        op: 'set_content',
+        layer_id: before.layer_id,
+        text: CAPTION_1500,
+      });
+      expect(edited.isError, errorText(edited)).toBeFalsy();
+      expect((structuredOf(edited) as unknown as TextResult).bounds).toMatchObject({
+        width: 400,
+        height: 250,
+      });
+    });
+
+    it('set_box with a huge font_size on a dynamic layer is refused, not rendered unwrapped', async () => {
+      const image = await newDoc(800, 600);
+      const created = await text({
+        image,
+        op: 'create',
+        text: LINES_60,
+        font_size: 8,
+        x: 5,
+        y: 5,
+      });
+      const before = structuredOf(created) as unknown as TextResult;
+      const started = Date.now();
+      const refused = await text({
+        image,
+        op: 'set_box',
+        layer_id: before.layer_id,
+        box: { width: 400 },
+        font_size: 1296,
+      });
+      expect(refused.isError).toBe(true);
+      expect(Date.now() - started).toBeLessThan(30_000);
+      const after = await textNode(image, before.layer_id);
+      expect(after.font_size).toBeCloseTo(before.font_size, 1);
+    });
+
+    it('fit refuses a box past 16 MP and the text-box area cap bounds create / set_box', async () => {
+      const image = await newDoc(400, 300);
+      const before = await layerTree(image);
+      const fit = await text({
+        image,
+        op: 'create',
+        text: 'x',
+        box: { width: 5000, height: 4000 },
+        fit: true,
+      });
+      expect(fit.isError).toBe(true);
+      expect(errorText(fit)).toMatch(/fit supports a box of at most 16 MP/);
+      const area = await text({ image, op: 'create', text: 'x', box: { width: 10000, height: 7000 } });
+      expect(area.isError).toBe(true);
+      expect(errorText(area)).toMatch(/text box|MP/);
+      expect(await layerTree(image)).toEqual(before);
+
+      const small = await text({ image, op: 'create', text: 'x', font_size: 12 });
+      const id = (structuredOf(small) as unknown as TextResult).layer_id;
+      const tree = await layerTree(image);
+      const setArea = await text({
+        image,
+        op: 'set_box',
+        layer_id: id,
+        box: { width: 10000, height: 7000 },
+      });
+      expect(setArea.isError).toBe(true);
+      expect(await layerTree(image)).toEqual(tree);
+    });
+
+    it('fit treats a glyph wider than the box as not fitting', async () => {
+      const image = await newDoc(400, 300);
+      const created = await text({
+        image,
+        op: 'create',
+        text: 'WWW',
+        font_size: 60,
+        box: { width: 8, height: 400 },
+        fit: true,
+        min_size: 40,
+      });
+      expect(created.isError, errorText(created)).toBeFalsy();
+      const r = structuredOf(created) as unknown as TextResult;
+      expect(r.fitted).toBe(false);
+      expect(r.font_size_px).toBeCloseTo(40, 0);
+    });
+
     it('refuses bad box and fit arguments without changing the document', async () => {
       const image = await newDoc();
       const before = await layerTree(image);

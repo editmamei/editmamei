@@ -3292,6 +3292,7 @@ class TestTextBoxAndFit(unittest.TestCase):
         for bad in (None, 'x', [], {}, {'height': 10}, {'width': 0}, {'width': -5},
                     {'width': 10, 'height': 0}, {'width': 1.5}, {'width': True},
                     {'width': lib.MAX_RESIZE_SIDE_PX + 1}, {'width': 10, 'depth': 3},
+                    {'width': float('inf')}, {'width': float('nan')}, {'width': 10, 'height': float('inf')},
                     {'width': lib.MAX_RESIZE_SIDE_PX, 'height': lib.MAX_RESIZE_SIDE_PX}):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 lib.validate_text_box(bad)
@@ -3345,7 +3346,8 @@ class TestTextBoxAndFit(unittest.TestCase):
         self.assertLessEqual(probes, lib.TEXT_FIT_MAX_PROBES)
         self.assertTrue(fitted)
         self.assertLessEqual(size, 1234)
-        self.assertGreater(size, 1000)
+        # 12 probes: max, min, then 10 bisections of 1..5000 leave a bracket under 5 px wide.
+        self.assertGreaterEqual(size, 1234 - 5)
 
     def test_wrapped_line_count(self):
         self.assertEqual(lib.wrapped_line_count(-1, 50.0, 1), 1)
@@ -3353,6 +3355,43 @@ class TestTextBoxAndFit(unittest.TestCase):
         self.assertEqual(lib.wrapped_line_count(198, 50.0, 1), 4)
         self.assertEqual(lib.wrapped_line_count(10, 50.0, 3), 3)
         self.assertEqual(lib.wrapped_line_count(290, 50.0, 3), 6)
+
+    def test_scan_cap_is_the_sixteen_megapixel_budget_per_width(self):
+        self.assertEqual(lib.text_scan_cap(1000), 16000)
+        self.assertEqual(lib.text_scan_cap(100), lib.MAX_RESIZE_SIDE_PX)
+        self.assertEqual(lib.text_scan_cap(lib.MAX_RESIZE_SIDE_PX), 533)
+
+    def test_fit_probe_plan_is_unclamped_for_a_small_limit(self):
+        self.assertEqual(lib.fit_probe_plan(600, 150, 50.0), (251, False))
+
+    def test_fit_probe_plan_clamps_at_the_scan_cap(self):
+        cap = lib.text_scan_cap(1000)  # 16000
+        self.assertEqual(lib.fit_probe_plan(1000, cap - 10, 50.0), (cap, True))
+        self.assertEqual(lib.fit_probe_plan(1000, cap + 5000, 50.0), (cap, True))
+        # Exactly enough room for the probe is not clamped.
+        self.assertEqual(lib.fit_probe_plan(1000, cap - 101, 50.0), (cap, False))
+
+    def test_a_clamped_probe_with_ink_on_its_last_row_overflows(self):
+        self.assertTrue(lib.fit_probe_overflows(15999, 16000, True))
+        self.assertTrue(lib.fit_probe_overflows(16100, 16000, True))
+        self.assertFalse(lib.fit_probe_overflows(15998, 16000, True))
+        self.assertFalse(lib.fit_probe_overflows(-1, 16000, True))
+        # Unclamped probes are judged by their line count, not by this.
+        self.assertFalse(lib.fit_probe_overflows(15999, 16000, False))
+
+    def test_text_box_area_cap_is_precision_aware(self):
+        self.assertEqual(lib.TEXT_BOX_MEGAPIXEL_CAP, {'8': 64, '16': 32, '32': 16})
+        lib.check_text_box_area(8000, 8000, '8')
+        lib.check_text_box_area(4000, 8000, '16')
+        lib.check_text_box_area(4000, 4000, '32')
+        for precision, w, h in (('8', 8001, 8000), ('16', 4001, 8000), ('32', 4001, 4000)):
+            with self.assertRaises(ValueError, msg=precision):
+                lib.check_text_box_area(w, h, precision)
+
+    def test_fit_box_is_limited_to_the_probe_budget(self):
+        lib.check_text_fit_box(4000, 4000)
+        with self.assertRaises(ValueError):
+            lib.check_text_fit_box(4001, 4000)
 
 
 class TestMatchTransfer(unittest.TestCase):
