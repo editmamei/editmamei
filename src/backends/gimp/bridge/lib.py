@@ -1259,11 +1259,24 @@ EFFECT_OPERATIONS = {
 # without a `type` field -- one shared map, since `op_list_filters` looks a record's operation up
 # here regardless of which tool (gimp_add_adjustment or gimp_add_effect) created it. Where several
 # types share one operation (gegl:dropshadow), the first listed wins: a record with no `type` is
-# from before outline/outer_glow existed, so it can only be a drop_shadow.
+# from before outline/outer_glow existed, so it can only be a drop_shadow. THAT DEPENDS ON
+# INSERTION ORDER: `setdefault` keeps whichever type reached the map first, so 'drop_shadow' must
+# stay listed above 'outline' and 'outer_glow' in EFFECT_OPERATIONS (test_lib.py pins it).
 OPERATION_TYPES = {operation: type_ for type_, operation in ADJUST_OPERATIONS.items()}
 for _type, _operation in EFFECT_OPERATIONS.items():
     OPERATION_TYPES.setdefault(_operation, _type)
 del _type, _operation
+
+
+def record_type(rec):
+    """The tool `type` of a ledger filter record: its stored `type`, or -- for a record written
+    before `type` was stored -- the type its operation implies (`OPERATION_TYPES`). None for an
+    operation neither tool owns. The one place both the filter listing and the effect re-edit
+    type guard resolve a record's type, so a typeless legacy gegl:dropshadow reads as drop_shadow
+    in both."""
+    if not isinstance(rec, dict):
+        return None
+    return rec.get('type') or OPERATION_TYPES.get(rec.get('operation'))
 
 # Every validate_range/validate_int_range call below uses `val`, not `v`, as its lambda's
 # parameter name -- deliberately, so it is NOT matched by gimp-adjustment-tools.test.ts's own
@@ -1462,11 +1475,22 @@ def build_outer_glow_params(args, defaults):
 BILATERAL_EDGE_SCALE = 100.0
 
 
+# gegl:bilateral-filter's cost grows with the SQUARE of the radius times the pixel count. Measured
+# live (GIMP 3.2.6, this dev box, a noisy 6016x4000 = 24 MP layer; full export incl. a ~2 s
+# baseline export with no filter): radius 5 -> 12 s, 6 -> 17 s, 7 -> 23 s, 8 -> 28 s, 10 -> 41 s;
+# radius 25 and 50 were not finished inside a 400 s timeout (extrapolating the r^2 trend: ~4 and
+# ~16 minutes). The tool's ~20 s worst case on 24 MP therefore stops at radius 6, and the remote
+# box is slower still. A smaller image has headroom (cost scales with pixels) but the cap is a flat
+# per-filter number: it does not look at the layer. TS schema, EFFECT_TRANSFORM_BOUNDS and this
+# builder share it.
+SURFACE_BLUR_MAX_RADIUS = 6.0
+
+
 def build_surface_blur_params(args, defaults):
     return {
         'blur-radius': resolve_field(
             args, 'radius', defaults, 'blur-radius',
-            lambda val: validate_range('radius', val, 1.0, 50.0),
+            lambda val: validate_range('radius', val, 1.0, SURFACE_BLUR_MAX_RADIUS),
         ),
         'edge-preservation': resolve_field(
             args, 'edge_preservation', defaults, 'edge-preservation',
@@ -1500,7 +1524,7 @@ EFFECT_CREATE_DEFAULTS = {
     'drop_shadow': {'x': 20.0, 'y': 20.0, 'radius': 10.0, 'opacity': 0.5},
     'outline': {'grow-radius': 4.0, 'color': '#000000'},
     'outer_glow': {'radius': 20.0, 'grow-radius': 4.0, 'opacity': 0.75, 'color': '#ffffff'},
-    'surface_blur': {'blur-radius': 8.0, 'edge-preservation': 0.08},
+    'surface_blur': {'blur-radius': 4.0, 'edge-preservation': 0.08},
 }
 
 
@@ -2049,7 +2073,7 @@ EFFECT_TRANSFORM_BOUNDS = {
         # outline's width and outer_glow's spread: GEGL's own cap, the widest either allows.
         'grow-radius': (0.0, 100.0),
     },
-    'gegl:bilateral-filter': {'blur-radius': (0.0, 50.0)},
+    'gegl:bilateral-filter': {'blur-radius': (0.0, SURFACE_BLUR_MAX_RADIUS)},
 }
 
 # The user-facing (gimp_add_effect) field name for each EFFECT_TRANSFORM_BOUNDS entry -- so a
@@ -2069,6 +2093,29 @@ EFFECT_TRANSFORM_FIELD_NAMES = {
     ('gegl:dropshadow', 'grow-radius'): 'width/spread',
     ('gegl:bilateral-filter', 'blur-radius'): 'radius',
 }
+
+
+# Per-type floors a re-edit enforces above EFFECT_TRANSFORM_BOUNDS' own lower bound (those are
+# per operation, and gegl:dropshadow serves three types): shrinking resize would otherwise store a
+# value a re-edit of the same filter refuses. A resize that bottoms out is clamped to the floor
+# (the 1 px minimum the effect itself allows) instead of refused: the filter is still valid, only
+# no thinner than the tool can express.
+EFFECT_TRANSFORM_FLOORS = {
+    ('outline', 'grow-radius'): 1.0,
+    ('outer_glow', 'radius'): 1.0,
+    ('surface_blur', 'blur-radius'): 1.0,
+}
+
+
+def clamp_effect_transform(type_, new_params):
+    """`new_params` with every EFFECT_TRANSFORM_FLOORS entry for `type_` applied (the same dict
+    when nothing needed clamping, so callers' `==` change check stays honest)."""
+    clamped = None
+    for (floor_type, prop), floor in EFFECT_TRANSFORM_FLOORS.items():
+        if floor_type == type_ and prop in new_params and new_params[prop] < floor:
+            clamped = clamped if clamped is not None else dict(new_params)
+            clamped[prop] = floor
+    return new_params if clamped is None else clamped
 
 
 def validate_effect_transform(op_name, operation, filter_name, new_params):

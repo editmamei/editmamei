@@ -125,7 +125,8 @@ const effectSchema: JsonSchemaObject = {
         'live: expensive at full resolution). drop_shadow: blur radius in pixels at full ' +
         'resolution, 0..1500 (default 10 when creating), clipped to the layer bounds rather than ' +
         'growing it. outer_glow: glow blur in pixels, 1..250 (default 20 when creating). ' +
-        'surface_blur: smoothing radius in pixels, 1..50 (default 8 when creating). ' +
+        'surface_blur: smoothing radius in pixels, 1..6 (default 4 when creating) — capped low ' +
+        'because its cost grows with the square of the radius (a 24 MP export takes ~17 s at 6). ' +
         'lens_blur, drop_shadow, outer_glow and surface_blur are SPATIAL (radius-scaled on the ' +
         'proxy preview, see gimp_overview). The bridge enforces the precise range for whichever ' +
         '`type` you gave.',
@@ -361,8 +362,12 @@ export function createGimpEffectTools(gimp: GimpBackend): ToolDefinition[] {
           'created by Editmamei. vignette, motion_blur, and drop_shadow stay locked to the ' +
           'content through flip, resize, and an exact 90/180/270-degree rotate (their center/' +
           'angle/offset fields are updated automatically, and gimp_filter op=list reflects the ' +
-          'new values afterward) — rotating by any OTHER angle is refused while one of these ' +
-          'three is present, rather than letting it drift out of alignment. lens_blur is a ' +
+          'new values afterward) — rotating by any OTHER angle is refused while a vignette, a ' +
+          'motion_blur, or a drop_shadow with a non-zero offset is present, rather than letting ' +
+          'it drift out of alignment. outline, outer_glow, surface_blur, lens_blur and a ' +
+          'zero-offset drop_shadow have no direction, so they survive any rotation. Resizing ' +
+          'scales their pixel sizes with the image (never below the 1 px minimum of outline ' +
+          'width, outer_glow radius and surface_blur radius). lens_blur is a ' +
           'uniform soft-focus blur, not a depth-of-field falloff. outline puts a solid stroke ' +
           "around a layer's transparent edge (meme text, sticker cut-outs); outer_glow adds a " +
           'soft glow around it (glowing text); surface_blur smooths skin and other texture ' +

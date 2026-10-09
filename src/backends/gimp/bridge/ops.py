@@ -953,7 +953,7 @@ def _filter_record(filters, layer, f):
     rec = filters.get(f.get_name())
     if rec and rec['operation'] == f.get_operation_name():
         source = 'editmamei'
-        type_ = rec.get('type') or lib.OPERATION_TYPES.get(rec['operation'])
+        type_ = lib.record_type(rec)
         mask = rec['params'].get('mask')
         params = lib.user_params(type_, rec['params'])
     else:
@@ -1012,10 +1012,13 @@ def op_effect(args):
         # drop_shadow, outline and outer_glow are all gegl:dropshadow, which `_existing_filter`'s
         # operation check cannot tell apart; the ledger's `type` can.
         rec = _ledger_get(img)[0].get(_existing_filter(img, args, operation).get_name())
-        existing_type = rec and rec.get('type')
+        existing_type = lib.record_type(rec)
         if existing_type and existing_type != effect_type:
             raise ValueError('filter %s is %s, not %s' % (args['filter_id'], existing_type, effect_type))
-    defaults = _existing_ledger_params(img, args, operation) or lib.EFFECT_CREATE_DEFAULTS[effect_type]
+    # A re-edit merges over the creation defaults, so a field a legacy record never stored (and
+    # the builder reads) falls back to its default instead of raising KeyError.
+    defaults = dict(lib.EFFECT_CREATE_DEFAULTS[effect_type])
+    defaults.update(_existing_ledger_params(img, args, operation) or {})
     params = builder(args, defaults)
     default_name = effect_type.replace('_', ' ').title()
     return _apply_filter(img, args, operation, params, default_name, type_=effect_type)
@@ -2025,15 +2028,18 @@ def _snapshot_effect_transform(img, op_name, transform_fn, layers=None):
     filters, _unknown = _ledger_get(img)
     if not filters:
         return {}
-    snapshot = {name: (rec['operation'], dict(rec['params'])) for name, rec in filters.items()}
+    snapshot = {
+        name: (rec['operation'], dict(rec['params']), lib.record_type(rec))
+        for name, rec in filters.items()
+    }
     planned = {}
     for layer in (layers if layers is not None else _all_layers(img)):
         for f in layer.get_filters():
             entry = snapshot.get(f.get_name())
             if entry is None or entry[0] != f.get_operation_name():
                 continue
-            operation, params = entry
-            new_params = transform_fn(operation, params, layer)
+            operation, params, type_ = entry
+            new_params = lib.clamp_effect_transform(type_, transform_fn(operation, params, layer))
             if new_params == params:
                 continue
             lib.validate_effect_transform(op_name, operation, f.get_name(), new_params)
