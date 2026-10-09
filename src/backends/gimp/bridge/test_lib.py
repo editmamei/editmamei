@@ -3266,5 +3266,129 @@ class TestKeepAlpha(unittest.TestCase):
             lib.validate_keep_alpha({'keep_alpha': 'true'}, '/x/a.png')
 
 
+class TestFillArgs(unittest.TestCase):
+    STOPS = [{'offset': 0, 'color': '#000000'}, {'offset': 1, 'color': '#FFFFFF', 'opacity': 40}]
+
+    def test_hex_colour_is_strict(self):
+        self.assertEqual(lib.parse_hex_color('color', '#336699'), (0x33, 0x66, 0x99))
+        self.assertEqual(lib.parse_hex_color('color', '#AbCdEf'), (0xAB, 0xCD, 0xEF))
+        for bad in ('336699', '#369', '#33669', '#3366999', '#33669g', 'red', '', None, 123):
+            with self.assertRaisesRegex(ValueError, 'color must be a colour like #rrggbb'):
+                lib.parse_hex_color('color', bad)
+
+    def test_stops_normalise_to_offset_rgb_alpha(self):
+        self.assertEqual(
+            lib.validate_fill_stops(self.STOPS),
+            [(0.0, (0, 0, 0), 1.0), (1.0, (255, 255, 255), 0.4)],
+        )
+
+    def test_stop_count_bounds(self):
+        one = self.STOPS[:1]
+        nine = [{'offset': i / 10.0, 'color': '#000000'} for i in range(9)]
+        eight = [{'offset': i / 10.0, 'color': '#000000'} for i in range(8)]
+        for bad in (one, nine, [], None, 'x'):
+            with self.assertRaisesRegex(ValueError, 'stops must be a list of 2..8 stops'):
+                lib.validate_fill_stops(bad)
+        self.assertEqual(len(lib.validate_fill_stops(eight)), 8)
+
+    def test_unsorted_stops_are_refused_but_ties_are_allowed(self):
+        unsorted = [{'offset': 0.6, 'color': '#000000'}, {'offset': 0.4, 'color': '#ffffff'}]
+        with self.assertRaisesRegex(ValueError, 'sorted by offset'):
+            lib.validate_fill_stops(unsorted)
+        tie = [{'offset': 0.5, 'color': '#000000'}, {'offset': 0.5, 'color': '#ffffff'}]
+        self.assertEqual(len(lib.validate_fill_stops(tie)), 2)
+
+    def test_stop_fields_are_bounded(self):
+        for stop in ({'offset': -0.1, 'color': '#000000'}, {'offset': 1.1, 'color': '#000000'},
+                     {'offset': 'a', 'color': '#000000'}, {'offset': True, 'color': '#000000'},
+                     {'offset': 0, 'color': '#000000', 'opacity': 101},
+                     {'offset': 0, 'color': '#000000', 'opacity': -1}, {'offset': 0},
+                     'x'):
+            with self.assertRaises(ValueError):
+                lib.validate_fill_stops([stop, {'offset': 1, 'color': '#ffffff'}])
+
+    def test_ramp_extends_the_end_colours_to_0_and_1(self):
+        ramp = lib.gradient_ramp(lib.validate_fill_stops([
+            {'offset': 0.25, 'color': '#ff0000'}, {'offset': 0.75, 'color': '#0000ff'},
+        ]))
+        self.assertEqual([r[0] for r in ramp], [0.0, 0.25, 0.75, 1.0])
+        self.assertEqual(ramp[0][1:], ramp[1][1:])
+        self.assertEqual(ramp[-1][1:], ramp[-2][1:])
+
+    def test_ramp_leaves_full_range_stops_alone(self):
+        stops = lib.validate_fill_stops(self.STOPS)
+        self.assertEqual(lib.gradient_ramp(stops), stops)
+
+    def test_solid_needs_a_colour_and_refuses_gradient_fields(self):
+        opts = lib.validate_fill_args({'op': 'solid', 'color': '#102030'}, 100, 50)
+        self.assertEqual((opts['color'], opts['name'], opts['mode'], opts['opacity']),
+                         ((16, 32, 48), 'Fill', 'normal', 100.0))
+        with self.assertRaisesRegex(ValueError, 'color must be'):
+            lib.validate_fill_args({'op': 'solid'}, 100, 50)
+        with self.assertRaisesRegex(ValueError, 'stops does not apply'):
+            lib.validate_fill_args({'op': 'solid', 'color': '#102030', 'stops': self.STOPS}, 100, 50)
+
+    def test_linear_defaults_run_top_centre_to_bottom_centre(self):
+        opts = lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS}, 200, 80)
+        self.assertEqual((opts['start'], opts['end'], opts['name']), ((100.0, 0.0), (100.0, 80.0), 'Gradient'))
+        with self.assertRaisesRegex(ValueError, 'color applies to op solid'):
+            lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS, 'color': '#000000'}, 1, 1)
+        with self.assertRaisesRegex(ValueError, 'radius does not apply'):
+            lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS, 'radius': 5}, 200, 80)
+        with self.assertRaisesRegex(ValueError, 'different points'):
+            lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS,
+                                    'start': {'x': 1, 'y': 1}, 'end': {'x': 1, 'y': 1}}, 200, 80)
+
+    def test_radial_defaults_are_the_centre_and_half_the_diagonal(self):
+        opts = lib.validate_fill_args({'op': 'radial_gradient', 'stops': self.STOPS}, 300, 400)
+        self.assertEqual(opts['center'], (150.0, 200.0))
+        self.assertAlmostEqual(opts['radius'], 250.0)
+        for bad in (0, 0.5, -3, 'x'):
+            with self.assertRaises(ValueError):
+                lib.validate_fill_args({'op': 'radial_gradient', 'stops': self.STOPS, 'radius': bad}, 300, 400)
+        with self.assertRaisesRegex(ValueError, 'start does not apply'):
+            lib.validate_fill_args({'op': 'radial_gradient', 'stops': self.STOPS,
+                                    'start': {'x': 0, 'y': 0}}, 300, 400)
+
+    def test_points_must_be_finite_xy(self):
+        for bad in ({'x': 1}, {'x': 'a', 'y': 2}, [1, 2], {'x': float('inf'), 'y': 0}):
+            with self.assertRaisesRegex(ValueError, 'center must be'):
+                lib.validate_fill_args({'op': 'radial_gradient', 'stops': self.STOPS, 'center': bad}, 9, 9)
+
+    def test_op_mode_opacity_and_mask_are_checked(self):
+        with self.assertRaisesRegex(ValueError, 'op must be one of'):
+            lib.validate_fill_args({'op': 'spiral', 'color': '#000000'}, 9, 9)
+        with self.assertRaisesRegex(ValueError, 'mode must be one of'):
+            lib.validate_fill_args({'op': 'solid', 'color': '#000000', 'mode': 'hsl-color'}, 9, 9)
+        for bad in (-1, 101, 'x', True):
+            with self.assertRaisesRegex(ValueError, 'opacity must be'):
+                lib.validate_fill_args({'op': 'solid', 'color': '#000000', 'opacity': bad}, 9, 9)
+        with self.assertRaisesRegex(ValueError, 'mask must be a channel name'):
+            lib.validate_fill_args({'op': 'solid', 'color': '#000000', 'mask': ''}, 9, 9)
+
+    def test_fill_modes_extend_layer_modes_without_changing_them(self):
+        self.assertEqual(lib.LAYER_MODES['color'], 'HSL_COLOR')
+        self.assertEqual(lib.FILL_MODES['color'], 'HSL_COLOR')
+        self.assertEqual(lib.FILL_MODES['lch_color'], 'LCH_COLOR')
+        self.assertNotIn('lch_color', lib.LAYER_MODES)
+        self.assertEqual({k: v for k, v in lib.FILL_MODES.items() if k != 'lch_color'}, lib.LAYER_MODES)
+
+
+class TestMaskedMeasurement(unittest.TestCase):
+    def test_flags_mark_pixels_at_50_percent_or_more(self):
+        self.assertEqual(lib.mask_flags(bytes([0, 127, 128, 255])), bytes([0, 0, 1, 1]))
+
+    def test_select_masked_keeps_only_flagged_positions(self):
+        data = bytes([10, 20, 30, 40, 50])
+        self.assertEqual(lib.select_masked(data, bytes([1, 0, 1, 0, 1])), bytes([10, 30, 50]))
+        self.assertEqual(lib.select_masked(data, bytes(5)), b'')
+
+    def test_stats_over_the_selected_half_ignore_the_rest(self):
+        data = bytes([50] * 4 + [250] * 4)
+        flags = lib.mask_flags(bytes([255] * 4 + [0] * 4))
+        self.assertEqual(lib.channel_stats(lib.select_masked(data, flags))['mean'], 50.0)
+        self.assertEqual(lib.channel_stats(data)['mean'], 150.0)
+
+
 if __name__ == '__main__':
     unittest.main()

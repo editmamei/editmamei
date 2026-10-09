@@ -2272,16 +2272,29 @@ def op_preview(args):
         dup.delete()
 
 
-def _channel_stats_from(dup, layer, channels):
+def _channel_stats_from(dup, layer, channels, mask=None):
+    """Per-channel stats of `layer` (in `dup`). With `mask` (a channel name that `dup` carries --
+    every render here is a duplicate of the document, so its channels came along, scaled or
+    cropped with it), only the pixels the channel selects at 50% or more are counted."""
     w, h = dup.get_width(), dup.get_height()
     buf = layer.get_buffer()
     rect = Gegl.Rectangle.new(0, 0, w, h)
     rgb = buf.get(rect, 1.0, "R'G'B' u8", Gegl.AbyssPolicy.NONE) if set(channels) - {'luminance'} else None
     lum = buf.get(rect, 1.0, "Y' u8", Gegl.AbyssPolicy.NONE) if 'luminance' in channels else None
+    flags = None
+    if mask is not None:
+        ch = _find_channel(dup, mask)
+        if ch is None:
+            raise lib.OpError('gimp_op_failed', 'the render lost the mask channel %r' % mask)
+        flags = lib.mask_flags(ch.get_buffer().get(rect, 1.0, "Y' u8", Gegl.AbyssPolicy.NONE))
+        if not any(flags):
+            raise ValueError('mask %r selects no pixels in the measured area' % mask)
     out = {}
     for ch in channels:
-        out[ch] = lib.channel_stats(lum if ch == 'luminance' else rgb[('red', 'green', 'blue').index(ch)::3])
-    return w, h, out
+        data = lum if ch == 'luminance' else rgb[('red', 'green', 'blue').index(ch)::3]
+        out[ch] = lib.channel_stats(lib.select_masked(data, flags) if flags is not None else data)
+    selected = sum(flags) if flags is not None else w * h
+    return w, h, out, selected
 
 
 def op_histogram(args):
@@ -2290,13 +2303,22 @@ def op_histogram(args):
     filters). `region`: computed on the (mirrored) proxy when the region maps to at least
     `lib.MIN_PROXY_REGION_PX` on a side there, else a full-res crop -- same "too few proxy
     samples to mean anything" reasoning as `lib.MIN_PROXY_REGION_PX`'s own docstring; exact=True
-    always forces the full-res crop regardless of size."""
+    always forces the full-res crop regardless of size.
+
+    `mask` (a channel name): only the pixels that channel selects at 50% or more (an unweighted,
+    thresholded count -- no partial credit for feathered edges) enter the stats, and `pixels` is
+    that count. The channel travels with the measurement copy, so it is read at the copy's scale."""
     img = _image(args)
     channels = args.get('channels') or list(lib.HIST_CHANNELS)
     bad = [c for c in channels if c not in lib.HIST_CHANNELS]
     if bad:
         raise ValueError('channels must be drawn from %s, got %s' % (list(lib.HIST_CHANNELS), bad))
     exact = bool(args.get('exact', False))
+    mask = args.get('mask')
+    if mask is not None:
+        if not isinstance(mask, str) or not mask:
+            raise ValueError('mask must be a channel name')
+        _require_channel(img, mask)
     region = args.get('region')
     if region:
         lib.validate_region(region, img.get_width(), img.get_height())
@@ -2314,11 +2336,11 @@ def op_histogram(args):
                 ph = min(ph, dup.get_height() - py)
                 dup.crop(pw, ph, px, py)
                 layer = dup.flatten()
-                w, h, out = _channel_stats_from(dup, layer, channels)
+                w, h, out, selected = _channel_stats_from(dup, layer, channels, mask)
             finally:
                 dup.delete()
-            return {'exact': False, 'width': w, 'height': h, 'pixels': w * h, 'channels': out,
-                    'unmirrored_filters': unmirrored}
+            return {'exact': False, 'width': w, 'height': h, 'pixels': selected, 'channels': out,
+                    'unmirrored_filters': unmirrored, 'mask': mask}
         region = dict(region)  # fall through to the full-res path below
         exact = True
 
@@ -2331,10 +2353,10 @@ def op_histogram(args):
         dup, unmirrored = _proxy_render(img, 1024)
         layer = dup.get_layers()[0]
     try:
-        w, h, out = _channel_stats_from(dup, layer, channels)
+        w, h, out, selected = _channel_stats_from(dup, layer, channels, mask)
     finally:
         dup.delete()
-    result = {'exact': exact, 'width': w, 'height': h, 'pixels': w * h, 'channels': out}
+    result = {'exact': exact, 'width': w, 'height': h, 'pixels': selected, 'channels': out, 'mask': mask}
     if not region and not exact:
         result['unmirrored_filters'] = unmirrored
     return result
@@ -2378,8 +2400,8 @@ def op_compare(args):
                     h = min(ph, dup.get_height() - y)
                     dup.crop(w, h, x, y)
             base_layer, after_layer = base.flatten(), after.flatten()
-            _bw, _bh, before_stats = _channel_stats_from(base, base_layer, channels)
-            _aw, _ah, after_stats = _channel_stats_from(after, after_layer, channels)
+            _bw, _bh, before_stats, _bn = _channel_stats_from(base, base_layer, channels)
+            _aw, _ah, after_stats, _an = _channel_stats_from(after, after_layer, channels)
             deltas = {}
             for ch in channels:
                 b, a = before_stats[ch], after_stats[ch]
@@ -2408,12 +2430,12 @@ def op_compare(args):
             raise ValueError('regions mode needs both region_a and region_b')
         dup_a, layer_a = _region_full_res(img, region_a)
         try:
-            _wa, _ha, stats_a = _channel_stats_from(dup_a, layer_a, channels)
+            _wa, _ha, stats_a, _na = _channel_stats_from(dup_a, layer_a, channels)
         finally:
             dup_a.delete()
         dup_b, layer_b = _region_full_res(img, region_b)
         try:
-            _wb, _hb, stats_b = _channel_stats_from(dup_b, layer_b, channels)
+            _wb, _hb, stats_b, _nb = _channel_stats_from(dup_b, layer_b, channels)
         finally:
             dup_b.delete()
         return {'region_a': stats_a, 'region_b': stats_b, 'proxy': False}
@@ -5105,6 +5127,118 @@ def op_layer_mask(args):
             'has_mask': layer.get_mask() is not None}
 
 
+def _fill_color(rgb, alpha=1.0):
+    return Gegl.Color.new('#%02x%02x%02x%02x' % (rgb[0], rgb[1], rgb[2], int(round(alpha * 255))))
+
+
+def _build_fill_gradient(stops):
+    """A temporary custom gradient through `stops`: one linear segment between each pair of
+    neighbours of `lib.gradient_ramp`. The caller deletes it (`Gimp.Gradient` is a resource that
+    would otherwise outlive the call)."""
+    ramp = lib.gradient_ramp(stops)
+    count = len(ramp) - 1
+    gradient = Gimp.Gradient.new('editmamei-fill-tmp')
+    try:
+        if count > 1:
+            gradient.segment_range_split_uniform(0, 0, count)
+        for i in range(count):
+            (_lo, lrgb, la), (_hi, rrgb, ra) = ramp[i], ramp[i + 1]
+            gradient.segment_set_left_color(i, _fill_color(lrgb, la))
+            gradient.segment_set_right_color(i, _fill_color(rrgb, ra))
+        gradient.segment_range_set_blending_function(0, count - 1, Gimp.GradientSegmentType.LINEAR)
+        gradient.segment_range_set_coloring_type(0, count - 1, Gimp.GradientSegmentColor.RGB)
+        # Positions last, left to right: moving a segment's right edge also moves its neighbour's
+        # left edge, so setting each interior boundary once lines everything up.
+        for i in range(count - 1):
+            gradient.segment_set_right_pos(i, ramp[i + 1][0])
+        # Segment midpoints (the blend's bias) are re-centred last: moving an edge leaves them where they were.
+        for i in range(count):
+            lo, hi = gradient.segment_get_left_pos(i)[-1], gradient.segment_get_right_pos(i)[-1]
+            gradient.segment_set_middle_pos(i, (lo + hi) / 2.0)
+    except Exception:
+        gradient.delete()
+        raise
+    return gradient
+
+
+def op_fill(args):
+    """Add a new canvas-sized layer filled with a solid colour or a linear/radial gradient.
+
+    The layer goes directly above the target layer (`layer` / `layer_id`, else the selected one),
+    inside its group. A gradient is rendered by GIMP's own gradient engine through a temporary
+    custom gradient (one linear RGB segment per pair of stops, interpolated in perceptual sRGB
+    -- see the context set-up below) that is deleted again; the gradient context is pushed and
+    popped. The selection is saved, cleared while painting (it would clip the fill) and restored.
+    `mask` names a channel that becomes the new layer's layer mask (white where selected)."""
+    img = _image(args)
+    if img.get_base_type() == Gimp.ImageBaseType.INDEXED:
+        raise ValueError('cannot fill on an indexed image: convert it to RGB first (gimp_convert_image_mode)')
+    width, height = lib.validate_resize_dims(img.get_width(), img.get_height())
+    opts = lib.validate_fill_args(args, width, height)
+    mask_channel = _require_channel(img, opts['mask']) if opts['mask'] is not None else None
+    layers = img.get_layers()
+    if layers:
+        target = _layer(img, args)
+        parent = target.get_parent()
+        position = _sibling_index(target, parent)
+    else:
+        parent, position = None, 0
+    name = _unique_layer_name(img, opts['name'])
+    layer = Gimp.Layer.new(img, name, width, height, _layer_type_for(img), 100.0, Gimp.LayerMode.NORMAL)
+    gradient = None
+    try:
+        img.insert_layer(layer, parent, position or 0)
+        _assert_layer_attached(img, layer, 'the fill layer')
+        with _PreservedSelection(img):
+            Gimp.Selection.none(img)
+            if opts['op'] == 'solid':
+                Gimp.context_push()
+                try:
+                    Gimp.context_set_foreground(_fill_color(opts['color']))
+                    ok = layer.fill(Gimp.FillType.FOREGROUND)
+                finally:
+                    Gimp.context_pop()
+                if not ok:
+                    raise lib.OpError('gimp_op_failed', 'GIMP could not fill the new layer')
+            else:
+                layer.fill(Gimp.FillType.TRANSPARENT)
+                gradient = _build_fill_gradient(opts['stops'])
+                if opts['op'] == 'linear_gradient':
+                    (x1, y1), (x2, y2) = opts['start'], opts['end']
+                    gtype = Gimp.GradientType.LINEAR
+                else:
+                    x1, y1 = opts['center']
+                    x2, y2 = x1 + opts['radius'], y1
+                    gtype = Gimp.GradientType.RADIAL
+                Gimp.context_push()
+                try:
+                    Gimp.context_set_gradient(gradient)
+                    Gimp.context_set_gradient_reverse(False)
+                    Gimp.context_set_gradient_repeat_mode(Gimp.RepeatMode.NONE)
+                    Gimp.context_set_gradient_blend_color_space(Gimp.GradientBlendColorSpace.RGB_PERCEPTUAL)
+                    Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)
+                    Gimp.context_set_opacity(100.0)
+                    layer.edit_gradient_fill(gtype, 0.0, False, 1, 0, False, x1, y1, x2, y2)
+                finally:
+                    Gimp.context_pop()
+            if mask_channel is not None:
+                img.select_item(Gimp.ChannelOps.REPLACE, mask_channel)
+                mask = layer.create_mask(Gimp.AddMaskType.SELECTION)
+                if not layer.add_mask(mask):
+                    raise lib.OpError('gimp_op_failed', 'GIMP could not attach the mask to the new layer')
+        layer.set_mode(getattr(Gimp.LayerMode, lib.FILL_MODES[opts['mode']]))
+        layer.set_opacity(opts['opacity'])
+    except Exception:
+        _discard_layer(img, layer)
+        raise
+    finally:
+        if gradient is not None:
+            gradient.delete()
+        _drop_proxies(img.get_id())
+    return {'layer_id': layer.get_id(), 'layer_name': layer.get_name(), 'op': opts['op'],
+            'mode': opts['mode'], 'opacity': opts['opacity'], 'masked': mask_channel is not None}
+
+
 def _gray_bytes_image(data, w, h):
     """A new GRAY image carrying `data` as its one layer's pixels. Caller deletes it. `tmp` is torn
     down on any failure after its own creation (layer build, insert, or buffer write) -- otherwise
@@ -5312,7 +5446,7 @@ OPS = {
     'select': op_select, 'modify_mask': op_modify_mask, 'layer_mask': op_layer_mask,
     'mask_preview': op_mask_preview, 'load_mask': op_load_mask, 'render_layer': op_render_layer,
     'transform_layer': op_transform_layer,
-    'match_layer': op_match_layer, 'retouch': op_retouch, 'render_region': op_render_region,
+    'match_layer': op_match_layer, 'retouch': op_retouch, 'fill': op_fill, 'render_region': op_render_region,
 }
 
 

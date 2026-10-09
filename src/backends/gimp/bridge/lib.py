@@ -13,6 +13,7 @@
 # helpers below do real file I/O, same as any other stdlib code would.
 
 import collections
+import itertools
 import json
 import math
 import os
@@ -157,6 +158,132 @@ def validate_layer_mode(value):
     if value not in LAYER_MODES:
         raise ValueError('mode must be one of %s' % sorted(LAYER_MODES))
     return value
+
+
+# ---- gimp_fill ---------------------------------------------------------------------------------
+
+FILL_OPS = ('solid', 'linear_gradient', 'radial_gradient')
+FILL_MIN_STOPS = 2
+FILL_MAX_STOPS = 8
+# gimp_fill takes gimp_layer's blend-mode names plus 'lch_color': GIMP's LCh Color keeps the
+# layer underneath's lightness exactly and swaps only hue and chroma, which is what a recolour
+# wants. 'color' stays HSL Color (see LAYER_MODES), so existing callers are unchanged.
+FILL_MODES = dict(LAYER_MODES, lch_color='LCH_COLOR')
+_HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+
+def _is_number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def parse_hex_color(name, value):
+    """'#rrggbb' (strictly: a leading '#' and six hex digits) -> (r, g, b) ints 0..255."""
+    if not isinstance(value, str) or not _HEX_COLOR_RE.match(value):
+        raise ValueError('%s must be a colour like #rrggbb' % name)
+    return int(value[1:3], 16), int(value[3:5], 16), int(value[5:7], 16)
+
+
+def _fill_point(name, value, default):
+    if value is None:
+        return default
+    if not isinstance(value, dict) or not _is_number(value.get('x')) or not _is_number(value.get('y')):
+        raise ValueError('%s must be {x, y} with finite numbers' % name)
+    return float(value['x']), float(value['y'])
+
+
+def validate_fill_stops(stops):
+    """2..8 stops [{offset 0..1, color #rrggbb, opacity? 0..100}], offsets non-decreasing (they
+    must arrive sorted: a mis-ordered list is a caller mistake, not something to silently fix).
+    Returns [(offset, (r, g, b), alpha 0..1)]."""
+    if not isinstance(stops, list) or not FILL_MIN_STOPS <= len(stops) <= FILL_MAX_STOPS:
+        raise ValueError('stops must be a list of %d..%d stops' % (FILL_MIN_STOPS, FILL_MAX_STOPS))
+    out = []
+    for i, s in enumerate(stops):
+        if not isinstance(s, dict):
+            raise ValueError('stops[%d] must be an object {offset, color, opacity?}' % i)
+        offset = s.get('offset')
+        if not _is_number(offset) or not 0 <= offset <= 1:
+            raise ValueError('stops[%d].offset must be a number within 0..1' % i)
+        opacity = s.get('opacity', 100)
+        if not _is_number(opacity) or not 0 <= opacity <= 100:
+            raise ValueError('stops[%d].opacity must be within 0..100' % i)
+        if out and offset < out[-1][0]:
+            raise ValueError('stops must be sorted by offset: stops[%d] comes before stops[%d]' % (i, i - 1))
+        out.append((float(offset), parse_hex_color('stops[%d].color' % i, s.get('color')), opacity / 100.0))
+    return out
+
+
+def gradient_ramp(stops):
+    """The stops widened to cover the whole 0..1 range (the first colour holds back to 0, the last
+    holds on to 1), so the gradient is defined everywhere. Returns a new list."""
+    ramp = list(stops)
+    if ramp[0][0] > 0:
+        ramp.insert(0, (0.0,) + ramp[0][1:])
+    if ramp[-1][0] < 1:
+        ramp.append((1.0,) + ramp[-1][1:])
+    return ramp
+
+
+def validate_fill_args(args, width, height):
+    """Everything gimp_fill needs, validated before any GIMP call. Points are image pixels."""
+    op = validate_choice('op', args.get('op'), FILL_OPS)
+    opts = {
+        'op': op,
+        'name': str(args.get('name') or ('Fill' if op == 'solid' else 'Gradient')).strip() or 'Fill',
+        'mode': validate_choice('mode', args.get('mode', 'normal'), FILL_MODES),
+        'mask': args.get('mask'),
+    }
+    opacity = args.get('opacity', 100)
+    if not _is_number(opacity) or not 0 <= opacity <= 100:
+        raise ValueError('opacity must be within 0..100')
+    opts['opacity'] = float(opacity)
+    if opts['mask'] is not None and (not isinstance(opts['mask'], str) or not opts['mask']):
+        raise ValueError('mask must be a channel name')
+    if op == 'solid':
+        opts['color'] = parse_hex_color('color', args.get('color'))
+        for k in ('stops', 'start', 'end', 'center', 'radius'):
+            if args.get(k) is not None:
+                raise ValueError('%s does not apply to op solid' % k)
+        return opts
+    if args.get('color') is not None:
+        raise ValueError('color applies to op solid only; a gradient takes stops')
+    opts['stops'] = validate_fill_stops(args.get('stops'))
+    if op == 'linear_gradient':
+        for k in ('center', 'radius'):
+            if args.get(k) is not None:
+                raise ValueError('%s does not apply to op linear_gradient' % k)
+        opts['start'] = _fill_point('start', args.get('start'), (width / 2.0, 0.0))
+        opts['end'] = _fill_point('end', args.get('end'), (width / 2.0, float(height)))
+        if opts['start'] == opts['end']:
+            raise ValueError('start and end must be different points')
+    else:
+        for k in ('start', 'end'):
+            if args.get(k) is not None:
+                raise ValueError('%s does not apply to op radial_gradient' % k)
+        opts['center'] = _fill_point('center', args.get('center'), (width / 2.0, height / 2.0))
+        radius = args.get('radius')
+        if radius is None:
+            radius = math.hypot(width, height) / 2.0
+        if not _is_number(radius) or radius < 1:
+            raise ValueError('radius must be at least 1 pixel')
+        opts['radius'] = float(radius)
+    return opts
+
+
+# ---- masked measurement (gimp_get_histogram `mask`) ---------------------------------------------
+
+MASK_SELECTED_MIN = 128  # a mask pixel counts as selected at 50% or more (>= 128 of 255)
+_MASK_FLAG_TABLE = bytes(1 if v >= MASK_SELECTED_MIN else 0 for v in range(256))
+
+
+def mask_flags(mask_data):
+    """One byte per mask pixel: 1 where the pixel is selected (>= 50%), else 0."""
+    return bytes(mask_data).translate(_MASK_FLAG_TABLE)
+
+
+def select_masked(data, flags):
+    """The bytes of `data` (one value per pixel) at the positions `flags` marks 1."""
+    return bytes(itertools.compress(data, flags))
 
 
 # gimp_layer op=create's fill options -- verified live that `Gimp.FillType.TRANSPARENT` exists
