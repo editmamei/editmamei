@@ -21,6 +21,10 @@ export const RETOUCH_MAX_POINTS = 500;
 export const RETOUCH_MAX_SPOTS = 50;
 export const RETOUCH_MAX_BRUSH = 1000;
 export const RETOUCH_MAX_SPOT_RADIUS = 500;
+/** Work budgets (bridge/lib.py): a stroke costs (path length + one brush) x brush, spots cost the
+ * sum of radius squared. */
+export const RETOUCH_MAX_STROKE_WORK = 2000000;
+export const RETOUCH_MAX_SPOT_WORK = 200000;
 const METHODS = ['heal', 'clone', 'spot_heal'] as const;
 const TARGETS = ['retouch_layer', 'in_place'] as const;
 
@@ -80,7 +84,8 @@ const retouchSchema: JsonSchemaObject = {
       minimum: 0,
       maximum: 1,
       description:
-        'heal / clone: brush edge hardness, 0 soft to 1 hard. Default 0.5 for heal, 0.8 for clone.',
+        'heal / clone: brush edge hardness, 0 soft to 1 hard. Default 0.5 for heal, 0.8 for ' +
+        'clone. Not allowed with spot_heal.',
     },
     source_layer_id: {
       ...GIMP_LAYER_ID_PROP,
@@ -100,7 +105,8 @@ const retouchSchema: JsonSchemaObject = {
       description:
         'spot_heal: [{x, y, radius}] in image pixels (1-50 spots, radius 1-500). The source for ' +
         'each is picked from 8 directions at about 2.2x and 3.5x the radius, by how closely its ' +
-        'brightness and texture match the ring around the spot.',
+        'brightness and texture match the ring around the spot. Every source is chosen before ' +
+        'anything is painted, so a spot with no usable source fails the whole call unchanged.',
     },
     target: {
       type: 'string',
@@ -108,7 +114,8 @@ const retouchSchema: JsonSchemaObject = {
       default: 'retouch_layer',
       description:
         "'retouch_layer': paint on a 'Retouch' copy directly above the layer (made on the first " +
-        "call, reused while it stays directly above). 'in_place': paint the layer itself.",
+        'call, reused while it stays directly above the layer it was made from); needs a Normal ' +
+        "mode, 100% opacity layer without a layer mask. 'in_place': paint the layer itself.",
     },
   },
   required: ['image', 'method'],
@@ -160,8 +167,15 @@ export function validateRetouchArgs(args: Record<string, unknown>): void {
         bad(`spots[${i}].radius must be within 1..${RETOUCH_MAX_SPOT_RADIUS}`);
       }
     });
-    for (const k of ['points', 'source', 'source_offset', 'source_layer_id']) {
+    for (const k of ['points', 'source', 'source_offset', 'source_layer_id', 'hardness']) {
       if (args[k] !== undefined) bad(`${k} does not apply to method spot_heal`);
+    }
+    const spotWork = (spots as Array<{ radius: number }>).reduce((a, sp) => a + sp.radius ** 2, 0);
+    if (spotWork > RETOUCH_MAX_SPOT_WORK) {
+      bad(
+        'these spots are too large to heal in one call: split them into several calls or use ' +
+          `smaller radii (the sum of radius squared is ${spotWork}, the limit is ${RETOUCH_MAX_SPOT_WORK})`
+      );
     }
     return;
   }
@@ -182,6 +196,20 @@ export function validateRetouchArgs(args: Record<string, unknown>): void {
   if (hasSource) checkXY('source', args['source'], ['x', 'y']);
   else checkXY('source_offset', args['source_offset'], ['dx', 'dy']);
   if (args['spots'] !== undefined) bad(`spots does not apply to method ${String(method)}`);
+  const brush = (args['brush_size'] as number | undefined) ?? 20;
+  const pts = points as number[][];
+  let length = 0;
+  for (let i = 1; i < pts.length; i++) {
+    length += Math.hypot(pts[i]![0]! - pts[i - 1]![0]!, pts[i]![1]! - pts[i - 1]![1]!);
+  }
+  const strokeWork = (length + brush) * brush;
+  if (strokeWork > RETOUCH_MAX_STROKE_WORK) {
+    bad(
+      'this stroke is too long for its brush size to paint in one call: split the stroke into ' +
+        'several calls or use a smaller brush ' +
+        `(about ${Math.round(strokeWork)} px of path x brush, the limit is ${RETOUCH_MAX_STROKE_WORK})`
+    );
+  }
   if (method === 'heal' && args['source_layer_id'] !== undefined) {
     bad('source_layer_id applies to method clone only');
   }
@@ -199,11 +227,16 @@ export function createGimpRetouchTools(gimp: GimpBackend): ToolDefinition[] {
           "spot_heal takes round spots {x, y, radius} and picks each one's source automatically, " +
           'from the nearby area whose brightness and texture best match the ring around the spot. ' +
           'Everything is in image pixels. By default (target retouch_layer) the paint lands on a ' +
-          '"Retouch" copy of the layer directly above it, so the original stays untouched; later ' +
-          'calls reuse that copy while it stays directly above the layer, and target in_place ' +
-          'paints the layer itself. The current selection is kept and does not clip the retouch. ' +
-          'Refuses layer groups, text layers, locked layers, and any point or spot outside the ' +
-          'layer. Do NOT use for removing whole objects; a stroke or spot only blends in texture ' +
+          '"Retouch" copy of the layer directly above it, shown only where you painted, so the ' +
+          'original and the picture everywhere else stay untouched; later calls reuse that copy ' +
+          'while it stays directly above the layer it was made from. target in_place paints the ' +
+          'layer itself, and is required for a layer that is below 100% opacity, not in Normal ' +
+          'mode, or has a layer mask; a layer with semi-transparent pixels also shows its original ' +
+          'through the copy, so use in_place there. The current selection is kept and does not clip the ' +
+          'retouch. Refuses layer groups, text layers, locked or hidden layers, indexed images, ' +
+          'and any point or spot outside the layer. A call has a work limit (a long stroke with a ' +
+          'big brush, or many large spots): split it into several calls or use a smaller brush. ' +
+          'Do NOT use for removing whole objects; a stroke or spot only blends in texture ' +
           'at the size of the brush. Returns layer_id, layer_name, created_layer, painted_bbox ' +
           "[x, y, w, h] and, for spot_heal, each spot's chosen source offset and score (lower is " +
           'a closer match).',

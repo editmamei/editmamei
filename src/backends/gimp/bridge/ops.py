@@ -1341,19 +1341,36 @@ def _retouch_marked(layer):
     return not layer.is_group() and layer.get_parasite(lib.RETOUCH_TAG) is not None
 
 
+def _retouch_source_id(layer):
+    """The id of the layer a retouch layer was copied from (stored in its parasite), or None for a
+    layer without one or with a legacy marker."""
+    para = layer.get_parasite(lib.RETOUCH_TAG)
+    if para is None:
+        return None
+    try:
+        return int(bytes(para.get_data()).decode('ascii').strip('\x00'))
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return None
+
+
 def _retouch_layer_above(img, layer):
-    """The retouch layer sitting directly above `layer` among its siblings, or None."""
+    """The retouch layer sitting directly above `layer` among its siblings that was made from
+    `layer` itself, or None."""
     parent = layer.get_parent()
     idx = _sibling_index(layer, parent)
     if not idx:
         return None
     siblings = list(parent.get_children()) if parent is not None else list(img.get_layers())
     above = siblings[idx - 1]
-    return above if _retouch_marked(above) else None
+    if _retouch_marked(above) and _retouch_source_id(above) == layer.get_id():
+        return above
+    return None
 
 
 def _retouch_make_layer(img, layer):
-    """A copy of `layer` named 'Retouch', directly above it and marked as ours."""
+    """A copy of `layer` named 'Retouch', directly above it, marked as ours (the parasite names the
+    source layer) and hidden entirely by a black layer mask: only the footprint of each stroke is
+    later revealed, so the composite outside the painted areas is exactly what it was."""
     ledgered = _ledgered_filter_names_on(img, [layer])
     if ledgered:
         raise ValueError(
@@ -1370,7 +1387,10 @@ def _retouch_make_layer(img, layer):
         position = _sibling_index(layer, parent)
         img.insert_layer(copy, parent, position if position is not None else 0)
         _assert_layer_attached(img, copy, 'the retouch layer')
-        copy.attach_parasite(Gimp.Parasite.new(lib.RETOUCH_TAG, Gimp.PARASITE_PERSISTENT, b'1'))
+        copy.add_mask(copy.create_mask(Gimp.AddMaskType.BLACK))
+        copy.attach_parasite(Gimp.Parasite.new(
+            lib.RETOUCH_TAG, Gimp.PARASITE_PERSISTENT, str(layer.get_id()).encode('ascii')
+        ))
     except Exception:
         _discard_layer(img, copy)
         raise
@@ -1380,7 +1400,9 @@ def _retouch_make_layer(img, layer):
 def _retouch_paint(method, drawable, source, src_x, src_y, strokes, brush_size, hardness):
     """One heal or clone stroke on `drawable`, sampling `source` from (src_x, src_y) -- image
     pixels, for the first stroke point (verified live: both calls take image coordinates, not
-    layer ones). The context is pushed and popped so brush state never leaks between calls."""
+    layer ones). method 'reveal' instead paints white along the same strokes with the same brush
+    (on a layer mask: the footprint becomes visible). The context is pushed and popped so brush
+    state never leaks between calls."""
     brush = Gimp.Brush.get_by_name(_RETOUCH_BRUSH)
     if brush is None:
         raise lib.OpError('gimp_op_failed', 'GIMP has no %r brush' % _RETOUCH_BRUSH)
@@ -1397,7 +1419,10 @@ def _retouch_paint(method, drawable, source, src_x, src_y, strokes, brush_size, 
         Gimp.context_set_opacity(100.0)
         Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)
         Gimp.context_set_antialias(True)
-        if method == 'clone':
+        if method == 'reveal':
+            Gimp.context_set_foreground(Gegl.Color.new('white'))
+            ok = Gimp.paintbrush_default(drawable, flat)
+        elif method == 'clone':
             ok = Gimp.clone(drawable, source, Gimp.CloneType.IMAGE, float(src_x), float(src_y), flat)
         else:
             ok = Gimp.heal(drawable, source, float(src_x), float(src_y), flat)
@@ -1459,10 +1484,15 @@ def op_retouch(args):
 
     Strokes and sources are image pixels (verified live: Gimp.heal / Gimp.clone take image
     coordinates for both, whatever the layer offset). `target` 'retouch_layer' paints on a copy
-    named 'Retouch' directly above the layer (reused on a later call while it stays directly above;
-    it holds the original pixels, so sampling reads them); 'in_place' paints the layer itself. The
-    user's selection is saved, cleared while painting (it would clip the retouch) and restored."""
+    named 'Retouch' directly above the layer, hidden by a black layer mask that each stroke then
+    reveals (so nothing outside the painted areas changes in the composite); it is reused on a
+    later call while it stays directly above the layer it was made from, and holds the original
+    pixels, so sampling reads them. 'in_place' paints the layer itself. The user's selection is
+    saved, cleared while painting (it would clip the retouch) and restored. A spot_heal picks every
+    spot's source before painting anything."""
     img = _image(args)
+    if img.get_base_type() == Gimp.ImageBaseType.INDEXED:
+        raise ValueError('cannot retouch an indexed image: convert it to RGB first (gimp_convert_image_mode)')
     layer = _layer(img, args)
     opts = lib.validate_retouch_args(args)
     if layer.is_group():
@@ -1471,7 +1501,23 @@ def op_retouch(args):
         raise ValueError('cannot retouch a text layer: rasterize it first (gimp_bake)')
     if layer.get_lock_content():
         raise ValueError('layer %r is locked; unlock it first' % layer.get_name())
+    if not layer.get_visible():
+        raise ValueError('layer %r is hidden; make it visible first' % layer.get_name())
     method = opts['method']
+    on_copy = opts['target'] == 'retouch_layer' and not _retouch_marked(layer)
+    if on_copy:
+        normal = {Gimp.LayerMode.NORMAL, getattr(Gimp.LayerMode, 'NORMAL_LEGACY', Gimp.LayerMode.NORMAL)}
+        if layer.get_opacity() < 100.0 or layer.get_mode() not in normal:
+            raise ValueError(
+                "layer %r is not Normal mode at 100%% opacity, so a Retouch copy above it would "
+                "change the picture outside the painted areas: use target 'in_place'"
+                % layer.get_name()
+            )
+        if layer.get_mask() is not None:
+            raise ValueError(
+                "layer %r has a layer mask, which a Retouch copy cannot take along: use target "
+                "'in_place'" % layer.get_name()
+            )
     cw, ch = img.get_width(), img.get_height()
 
     def bounds_of(item):
@@ -1492,6 +1538,13 @@ def op_retouch(args):
         source_bounds = bounds
     if method == 'spot_heal':
         lib.retouch_check_points([[x, y] for x, y, _r in opts['spots']], bounds, 'spot')
+        for i, (x, y, r) in enumerate(opts['spots']):
+            if not lib.spot_candidates(x, y, r, bounds):
+                raise ValueError(
+                    'spot %d at (%g, %g) radius %g: no source area of that size fits inside the '
+                    'layer (x %d..%d, y %d..%d); use a smaller radius or heal it by hand with a '
+                    'stroke' % (i, x, y, r, bounds[0], bounds[2] - 1, bounds[1], bounds[3] - 1)
+                )
     else:
         pts = opts['points']
         dx, dy = opts['source_offset']
@@ -1500,51 +1553,71 @@ def op_retouch(args):
 
     created = False
     paint = layer
-    with _PreservedSelection(img):
-        Gimp.Selection.none(img)
-        if opts['target'] == 'retouch_layer' and not _retouch_marked(layer):
-            paint = _retouch_layer_above(img, layer)
-            if paint is None:
+    try:
+        with _PreservedSelection(img):
+            Gimp.Selection.none(img)
+            if on_copy:
+                paint = _retouch_layer_above(img, layer) or layer
+            picks = None
+            if method == 'spot_heal':
+                # Every source is chosen before anything is painted (or the copy made): a spot with
+                # no usable source then fails the whole call with nothing changed.
+                picks = [
+                    _retouch_pick_source(img, paint, i, x, y, r, bounds)
+                    for i, (x, y, r) in enumerate(opts['spots'])
+                ]
+                Gimp.Selection.none(img)  # measuring left a selection; it would clip the heal
+            if on_copy and paint is layer:
                 paint = _retouch_make_layer(img, layer)
                 created = True
-        try:
-            result = {
-                'layer_id': paint.get_id(), 'layer_name': paint.get_name(),
-                'created_layer': created, 'method': method, 'target': opts['target'],
-            }
-            if method == 'spot_heal':
-                spots, bbox = [], None
-                for i, (x, y, r) in enumerate(opts['spots']):
-                    dx, dy, score = _retouch_pick_source(img, paint, i, x, y, r, bounds)
-                    Gimp.Selection.none(img)  # measuring left a selection; it would clip the heal
-                    brush = lib.retouch_spot_brush(r)
-                    stroke = lib.retouch_cover_stroke(x, y, r, brush, bounds)
+            try:
+                mask = paint.get_mask() if _retouch_marked(paint) else None
+                result = {
+                    'layer_id': paint.get_id(), 'layer_name': paint.get_name(),
+                    'created_layer': created, 'method': method, 'target': opts['target'],
+                }
+                if method == 'spot_heal':
+                    spots, bbox = [], None
+                    for (x, y, r), (dx, dy, score) in zip(opts['spots'], picks):
+                        brush = lib.retouch_spot_brush(r)
+                        stroke = lib.retouch_cover_stroke(x, y, r, brush, bounds)
+                        _retouch_paint(
+                            'heal', paint, paint, stroke[0][0] + dx, stroke[0][1] + dy, stroke,
+                            brush, lib.RETOUCH_SPOT_HARDNESS,
+                        )
+                        if mask is not None:
+                            reach = r + brush / 2.0  # the heal footprint: 2.3 x r unless capped
+                            _retouch_paint(
+                                'reveal', mask, None, 0, 0, [[x, y]], 2.0 * reach,
+                                lib.RETOUCH_REVEAL_HARDNESS,
+                            )
+                        bbox = lib.union_bbox_xywh(bbox, lib.retouch_painted_bbox(stroke, brush, bounds))
+                        spots.append({
+                            'x': x, 'y': y, 'radius': r, 'source_dx': dx, 'source_dy': dy,
+                            'score': round(score, 2),
+                        })
+                    result['spots'] = spots
+                    result['painted_bbox'] = bbox
+                else:
+                    pts = opts['points']
+                    dx, dy = opts['source_offset']
                     _retouch_paint(
-                        'heal', paint, paint, stroke[0][0] + dx, stroke[0][1] + dy, stroke,
-                        brush, lib.RETOUCH_SPOT_HARDNESS,
+                        method, paint, source_layer if source_layer is not None else paint,
+                        pts[0][0] + dx, pts[0][1] + dy, pts, opts['brush_size'], opts['hardness'],
                     )
-                    bbox = lib.union_bbox_xywh(bbox, lib.retouch_painted_bbox(stroke, brush, bounds))
-                    spots.append({
-                        'x': x, 'y': y, 'radius': r, 'source_dx': dx, 'source_dy': dy,
-                        'score': round(score, 2),
-                    })
-                result['spots'] = spots
-                result['painted_bbox'] = bbox
-            else:
-                pts = opts['points']
-                dx, dy = opts['source_offset']
-                _retouch_paint(
-                    method, paint, source_layer if source_layer is not None else paint,
-                    pts[0][0] + dx, pts[0][1] + dy, pts, opts['brush_size'], opts['hardness'],
-                )
-                result['painted_bbox'] = lib.retouch_painted_bbox(pts, opts['brush_size'], bounds)
-                result['brush_size'] = opts['brush_size']
-                result['hardness'] = opts['hardness']
-        except Exception:
-            if created:
-                _discard_layer(img, paint)
-            raise
-    _drop_proxies(img.get_id())
+                    if mask is not None:
+                        _retouch_paint(
+                            'reveal', mask, None, 0, 0, pts, opts['brush_size'], opts['hardness']
+                        )
+                    result['painted_bbox'] = lib.retouch_painted_bbox(pts, opts['brush_size'], bounds)
+                    result['brush_size'] = opts['brush_size']
+                    result['hardness'] = opts['hardness']
+            except Exception:
+                if created:
+                    _discard_layer(img, paint)
+                raise
+    finally:
+        _drop_proxies(img.get_id())
     return result
 
 
@@ -2441,11 +2514,15 @@ def op_export(args):
     quality 0-100 default 90 + lossless; tiff compression, default 'none'; png/tiff bit_depth 8 or
     16, default 8).
 
+    `keep_alpha` (png / webp only) merges the visible layers onto a transparent canvas instead of
+    flattening onto the background colour, so the file keeps its transparency.
+
     Flat exports flatten a duplicate first and save that. Handing the live document to
     file_save lets the exporter render the filters itself, which measured 9.3 s for a 24 MP
     JPEG with three curves; flatten (3.0 s) + save of the flat copy (1.0 s) gives the same pixels."""
     img = _image(args)
     path = lib.require(args, 'path')
+    keep_alpha = lib.validate_keep_alpha(args, path)
     if path.lower().endswith('.xcf'):
         # file_save reports a failed write by returning False, not by raising (verified live).
         if not Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, img, Gio.File.new_for_path(path), None):
@@ -2455,12 +2532,100 @@ def op_export(args):
                 % os.path.basename(path),
             )
     else:
-        dup, _flat = _composite(img)
+        if keep_alpha:
+            dup = img.duplicate()
+            try:
+                _merge_visible_onto_transparent(dup)
+            except Exception:
+                dup.delete()
+                raise
+        else:
+            dup, _flat = _composite(img)
         try:
             _export_stripped(dup, path, args)
         finally:
             dup.delete()
     return {'path': path, 'bytes': os.path.getsize(path)}
+
+
+def _merge_visible_onto_transparent(dup):
+    """Merge `dup`'s visible layers onto a transparent canvas-sized layer, in place, and return the
+    one resulting RGBA layer (canvas-sized, at 0,0). Unlike `flatten`, nothing is composited onto the
+    context background, so empty areas stay transparent. An indexed or grayscale `dup` is converted
+    to RGB first."""
+    if dup.get_base_type() != Gimp.ImageBaseType.RGB:
+        dup.convert_rgb()
+    if not any(item.get_visible() for item in dup.get_layers()):
+        raise ValueError('the image has no visible layer to render')
+    w, h = dup.get_width(), dup.get_height()
+    bg = Gimp.Layer.new(dup, 'alpha-base', w, h, Gimp.ImageType.RGBA_IMAGE, 100.0, Gimp.LayerMode.NORMAL)
+    dup.insert_layer(bg, None, len(dup.get_layers()))
+    bg.fill(Gimp.FillType.TRANSPARENT)
+    return dup.merge_visible_layers(Gimp.MergeType.CLIP_TO_IMAGE)
+
+
+_INVERT_BYTES = bytes(255 - i for i in range(256))
+
+
+def op_render_region(args):
+    """Bridge-only (no tool): the pixels of `box` [x, y, w, h] (image pixels, clamped to the canvas)
+    as an 8-bit sRGB RGBA PNG at `out_path`, at full resolution, never downscaled -- the input an
+    inpainting model gets. The source is the visible composite, or with `layer` / `layer_id` that one
+    layer rendered as if fully visible at 100% opacity in Normal mode (its mask and filters included,
+    as `render_layer` does). `hole_channel` names a channel whose value becomes transparency: output
+    alpha is multiplied by 255 - value, so the channel's selected pixels turn transparent. Works on a
+    temporary image that is always deleted; refuses a box past 4096 px a side or 16 megapixels."""
+    img = _image(args)
+    x, y, w, h = lib.validate_render_box(args.get('box'), img.get_width(), img.get_height())
+    out_path = lib.require(args, 'out_path')
+    if os.path.splitext(out_path)[1].lower() != '.png':
+        raise ValueError('out_path must end in .png')
+    hole_alpha = None
+    if args.get('hole_channel') is not None:
+        channel = _require_channel(img, args['hole_channel'])
+        hole = channel.get_buffer().get(Gegl.Rectangle.new(x, y, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
+        hole_alpha = bytes(hole).translate(_INVERT_BYTES)
+
+    use_layer = args.get('layer_id') is not None or bool(args.get('layer'))
+    if use_layer:
+        layer = _layer(img, args)
+        if layer.is_group():
+            raise ValueError('cannot render a layer group: pick a pixel layer')
+        tmp = Gimp.Image.new(w, h, Gimp.ImageBaseType.RGB)
+    else:
+        tmp = img.duplicate()
+    try:
+        if use_layer:
+            nl = Gimp.Layer.new_from_drawable(layer, tmp)
+            tmp.insert_layer(nl, None, 0)
+            _ok, ox, oy = layer.get_offsets()
+            nl.set_offsets(ox - x, oy - y)
+            nl.set_visible(True)
+            nl.set_opacity(100.0)
+            nl.set_mode(Gimp.LayerMode.NORMAL)
+        else:
+            tmp.crop(w, h, x, y)
+        merged = _merge_visible_onto_transparent(tmp)
+        if tmp.get_color_profile() is not None:
+            tmp.convert_color_profile(
+                Gimp.ColorProfile.new_rgb_srgb(), Gimp.ColorRenderingIntent.RELATIVE_COLORIMETRIC, True
+            )
+        if tmp.get_width() != w or tmp.get_height() != h or merged.get_width() != w or merged.get_height() != h:
+            raise lib.OpError('gimp_op_failed', 'the rendered region came out the wrong size')
+        if hole_alpha is not None:
+            mask = merged.create_mask(Gimp.AddMaskType.WHITE)
+            merged.add_mask(mask)
+            buf = mask.get_buffer()
+            # "Y u8" (linear): a mask multiplies alpha by its linear value, so 255 - v lands on
+            # alpha as exactly (255 - v) / 255 -- the primed format would apply a gamma curve.
+            buf.set(Gegl.Rectangle.new(0, 0, w, h), "Y u8", hole_alpha)
+            buf.flush()
+            mask.update(0, 0, w, h)
+            merged.remove_mask(Gimp.MaskApplyMode.APPLY)
+        _export_stripped(tmp, out_path)
+        return {'path': out_path, 'width': w, 'height': h, 'box': [x, y, w, h]}
+    finally:
+        tmp.delete()
 
 
 def _replace_named_channel(img, name, w, h):
@@ -5141,7 +5306,7 @@ OPS = {
     'select': op_select, 'modify_mask': op_modify_mask, 'layer_mask': op_layer_mask,
     'mask_preview': op_mask_preview, 'load_mask': op_load_mask, 'render_layer': op_render_layer,
     'transform_layer': op_transform_layer,
-    'match_layer': op_match_layer, 'retouch': op_retouch,
+    'match_layer': op_match_layer, 'retouch': op_retouch, 'render_region': op_render_region,
 }
 
 

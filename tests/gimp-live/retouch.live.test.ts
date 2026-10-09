@@ -400,4 +400,242 @@ describe.skipIf(!install)('retouch: heal, clone and spot heal', () => {
       })
     ).rejects.toThrow(/x 90\.\.249, y 70\.\.209/);
   });
+
+  it('refuses retouch_layer on a layer below 100% opacity and points at in_place', async () => {
+    const { image, layer_id } = await texture();
+    await session.call('layer', { image, op: 'set', layer_id, opacity: 50 });
+    const call = (extra: Record<string, unknown>) =>
+      session.call<RetouchResult>('retouch', {
+        image,
+        layer_id,
+        method: 'spot_heal',
+        spots: [{ x: 80, y: 80, radius: 6 }],
+        ...extra,
+      });
+    await expect(call({})).rejects.toThrow(/in_place/);
+    expect(await layerNames(image)).toEqual(['Texture']);
+    const inPlace = await call({ target: 'in_place' });
+    expect(inPlace.layer_id).toBe(layer_id);
+  });
+
+  it('refuses retouch_layer on a layer that is not in Normal mode or has a layer mask', async () => {
+    const mode = await texture();
+    await session.call('layer', {
+      image: mode.image,
+      op: 'set',
+      layer_id: mode.layer_id,
+      mode: 'multiply',
+    });
+    const spot = [{ x: 80, y: 80, radius: 6 }];
+    await expect(
+      session.call('retouch', { ...mode, method: 'spot_heal', spots: spot })
+    ).rejects.toThrow(/in_place/);
+    const masked = await texture();
+    await session.call('test_add_layer_mask', { image: masked.image, layer_id: masked.layer_id });
+    await expect(
+      session.call('retouch', { ...masked, method: 'spot_heal', spots: spot })
+    ).rejects.toThrow(/layer mask.*in_place/);
+  });
+
+  it('a Retouch layer leaves the composite alone outside the painted areas', async () => {
+    // alpha 128 makes a stacked copy visible: without the mask, the copy would darken everything.
+    const { image, layer_id } = await texture({ alpha: 128 });
+    const before = await render(image);
+    const heal = await session.call<RetouchResult>('retouch', {
+      image,
+      layer_id,
+      method: 'heal',
+      points: [
+        [100, 150],
+        [130, 150],
+      ],
+      source_offset: { dx: 0, dy: -60 },
+      brush_size: 16,
+    });
+    const spot = await session.call<RetouchResult>('retouch', {
+      image,
+      layer_id,
+      method: 'spot_heal',
+      spots: [{ x: 220, y: 90, radius: 8 }],
+    });
+    expect(heal.created_layer).toBe(true);
+    expect(spot.created_layer).toBe(false);
+    const boxes = [heal.painted_bbox, spot.painted_bbox];
+    const after = await render(image);
+    let changedInside = 0;
+    for (let y = 0; y < SIZE; y++) {
+      for (let x = 0; x < SIZE; x++) {
+        const same = px(before, x, y) === px(after, x, y);
+        const inside = boxes.some(
+          ([bx, by, bw, bh]) => x >= bx && x < bx + bw && y >= by && y < by + bh
+        );
+        if (!inside) expect(same, `pixel ${x},${y} outside the painted areas`).toBe(true);
+        else if (!same) changedInside++;
+      }
+    }
+    expect(changedInside).toBeGreaterThan(50);
+  });
+
+  it('reveals the Retouch mask in the right place on a layer that sits at an offset', async () => {
+    const { image, layer_id } = await texture({
+      layer_width: 160,
+      layer_height: 140,
+      layer_x: 90,
+      layer_y: 70,
+      dots: [{ x: 150, y: 120, radius: 7, value: 30 }],
+    });
+    const before = await render(image);
+    const strokes = await session.call<RetouchResult>('retouch', {
+      image,
+      layer_id,
+      method: 'heal',
+      points: [
+        [200, 180],
+        [215, 180],
+      ],
+      source_offset: { dx: -40, dy: -30 },
+      brush_size: 14,
+    });
+    const spot = await session.call<RetouchResult>('retouch', {
+      image,
+      layer_id,
+      method: 'spot_heal',
+      spots: [{ x: 150, y: 120, radius: 7 }],
+    });
+    const after = await render(image);
+    const boxes = [strokes.painted_bbox, spot.painted_bbox];
+    let changed = 0;
+    for (let y = 0; y < SIZE; y++) {
+      for (let x = 0; x < SIZE; x++) {
+        const inside = boxes.some(
+          ([bx, by, bw, bh]) => x >= bx && x < bx + bw && y >= by && y < by + bh
+        );
+        const same = px(before, x, y) === px(after, x, y);
+        if (!inside) expect(same, `pixel ${x},${y} outside the painted areas`).toBe(true);
+        else if (!same) changed++;
+      }
+    }
+    expect(changed).toBeGreaterThan(30);
+    // the dot is gone: the spot's mask reveal landed on it
+    expect(discStats(after, 150, 120, 5).mean).toBeGreaterThan(
+      discStats(before, 150, 120, 5).mean + 30
+    );
+  });
+
+  it('reuses a Retouch layer only for the layer it was made from', async () => {
+    const a = await texture({ seed: 1 });
+    const b = await session.call<{ layer_id: number }>('test_texture_image', {
+      image: a.image,
+      width: SIZE,
+      height: SIZE,
+      seed: 2,
+      name: 'Other',
+      dots: [],
+    });
+    const spot = [{ x: 80, y: 80, radius: 6 }];
+    const first = await session.call<RetouchResult>('retouch', {
+      image: a.image,
+      layer_id: a.layer_id,
+      method: 'spot_heal',
+      spots: spot,
+    });
+    expect(await layerNames(a.image)).toEqual(['Other', 'Retouch', 'Texture']);
+    // put Other's own place under that Retouch layer: the Retouch layer now sits directly above it
+    await session.call('layer', {
+      image: a.image,
+      op: 'reorder',
+      layer_id: first.layer_id,
+      position: 0,
+    });
+    expect(await layerNames(a.image)).toEqual(['Retouch', 'Other', 'Texture']);
+    const second = await session.call<RetouchResult>('retouch', {
+      image: a.image,
+      layer_id: b.layer_id,
+      method: 'spot_heal',
+      spots: spot,
+    });
+    expect(second.created_layer).toBe(true);
+    expect(second.layer_id).not.toBe(first.layer_id);
+    expect(await layerNames(a.image)).toHaveLength(4);
+  });
+
+  it('spot_heal is all or nothing: a spot with no source fails the call with nothing changed', async () => {
+    const { image, layer_id } = await texture();
+    const before = await render(image);
+    await expect(
+      session.call('retouch', {
+        image,
+        layer_id,
+        method: 'spot_heal',
+        target: 'in_place',
+        spots: [
+          { x: 80, y: 80, radius: 6 },
+          { x: 150, y: 150, radius: 100 },
+        ],
+      })
+    ).rejects.toThrow(/spot 1 .*no source area/);
+    const after = await render(image);
+    for (let y = 0; y < SIZE; y++)
+      for (let x = 0; x < SIZE; x++)
+        expect(px(after, x, y), `pixel ${x},${y}`).toBe(px(before, x, y));
+    expect(await layerNames(image)).toEqual(['Texture']);
+  });
+
+  it('refuses a hidden layer, an indexed image, and hardness on spot_heal', async () => {
+    const { image, layer_id } = await texture();
+    const spots = [{ x: 80, y: 80, radius: 6 }];
+    await expect(
+      session.call('retouch', { image, layer_id, method: 'spot_heal', spots, hardness: 0.5 })
+    ).rejects.toThrow(/hardness does not apply/);
+    await session.call('layer', { image, op: 'set', layer_id, visible: false });
+    await expect(
+      session.call('retouch', { image, layer_id, method: 'spot_heal', spots })
+    ).rejects.toThrow(/hidden/);
+    const indexed = await session.call<{ image: number }>('test_new_image', {
+      base_type: 'indexed',
+    });
+    await expect(
+      session.call('retouch', { image: indexed.image, method: 'spot_heal', spots })
+    ).rejects.toThrow(/indexed/);
+  });
+
+  it('clones exactly from a source layer that sits at a different offset', async () => {
+    const target = await texture({ seed: 4, dots: [] });
+    const source = await session.call<{ layer_id: number }>('test_texture_image', {
+      image: target.image,
+      width: SIZE,
+      height: SIZE,
+      layer_width: 160,
+      layer_height: 140,
+      layer_x: 150,
+      layer_y: 100,
+      seed: 9,
+      base: 200,
+      name: 'Source',
+      dots: [],
+    });
+    const before = await render(target.image);
+    // the stroke is at (50, 50) on the target; its source is image point (200, 150), inside Source
+    const result = await session.call<RetouchResult>('retouch', {
+      image: target.image,
+      layer_id: target.layer_id,
+      method: 'clone',
+      points: [[50, 50]],
+      source: { x: 200, y: 150 },
+      source_layer_id: source.layer_id,
+      brush_size: 16,
+      hardness: 1,
+      target: 'in_place',
+    });
+    expect(result.layer_id).toBe(target.layer_id);
+    const after = await render(target.image);
+    // Source is opaque and on top, so the composite at its pixels is Source's own
+    for (let dy = -3; dy <= 3; dy++) {
+      for (let dx = -3; dx <= 3; dx++) {
+        expect(px(after, 50 + dx, 50 + dy), `offset ${dx},${dy}`).toBe(
+          px(before, 200 + dx, 150 + dy)
+        );
+      }
+    }
+  });
 });

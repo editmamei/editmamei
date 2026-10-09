@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import {
   createGimpRetouchTools,
+  RETOUCH_MAX_SPOT_WORK,
+  RETOUCH_MAX_STROKE_WORK,
   RETOUCH_SCHEMA_FOR_TESTS,
 } from '@editmamei/tools/gimp-retouch-tools.ts';
 import { TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
@@ -80,6 +82,7 @@ describe('createGimpRetouchTools', () => {
       { image: 1, method: 'spot_heal', spots: [{ x: 1, y: 1, radius: 501 }] },
       { image: 1, method: 'spot_heal', spots: [{ x: 1, y: 1 }] },
       { image: 1, method: 'spot_heal', spots: [spot], points: [[1, 1]] },
+      { image: 1, method: 'spot_heal', spots: [spot], hardness: 0.5 },
     ];
     for (const bad of cases) {
       const result = await callTool(tools, 'gimp_retouch', bad);
@@ -114,6 +117,63 @@ describe('createGimpRetouchTools', () => {
       },
     });
     expect((result.content?.[0] as { text: string }).text).toContain('new Retouch layer');
+  });
+
+  it('caps the work of a call before reaching the bridge, in plain words', async () => {
+    const gimp = makeGimpBackend({ result: RESULT });
+    const tools = createGimpRetouchTools(gimp.asBackend());
+    const text = async (args: Record<string, unknown>) => {
+      const result = await callTool(tools, 'gimp_retouch', args);
+      expect(result.isError).toBe(true);
+      return (result.content?.[0] as { text: string }).text;
+    };
+    // a long path with a big brush
+    const far = RETOUCH_MAX_STROKE_WORK / 1000;
+    expect(
+      await text({
+        image: 1,
+        method: 'clone',
+        points: [
+          [0, 0],
+          [far, 0],
+        ],
+        source_offset: { dx: 0, dy: 5 },
+        brush_size: 1000,
+      })
+    ).toMatch(/split the stroke into several calls or use a smaller brush/);
+    // spots too big together
+    const r = Math.ceil(Math.sqrt(RETOUCH_MAX_SPOT_WORK / 2)) + 1;
+    expect(
+      await text({
+        image: 1,
+        method: 'spot_heal',
+        spots: [
+          { x: 5, y: 5, radius: r },
+          { x: 5, y: 5, radius: r },
+        ],
+      })
+    ).toMatch(/split them into several calls or use smaller radii/);
+    expect(gimp.calls).toHaveLength(0);
+    // the budget itself is accepted
+    const edge = RETOUCH_MAX_STROKE_WORK / 100 - 100;
+    const ok = await callTool(tools, 'gimp_retouch', {
+      image: 1,
+      method: 'heal',
+      points: [
+        [0, 0],
+        [edge, 0],
+      ],
+      source_offset: { dx: 0, dy: 5 },
+      brush_size: 100,
+    });
+    expect(ok.isError).toBeFalsy();
+    const maxSpot = Math.floor(Math.sqrt(RETOUCH_MAX_SPOT_WORK));
+    const okSpot = await callTool(tools, 'gimp_retouch', {
+      image: 1,
+      method: 'spot_heal',
+      spots: [{ x: 5, y: 5, radius: maxSpot }],
+    });
+    expect(okSpot.isError).toBeFalsy();
   });
 
   it('forwards a clone with every option and a spot_heal with its spots', async () => {
@@ -189,5 +249,7 @@ describe('gimp_retouch schema bounds match bridge/lib.py', () => {
     expect(props.target?.enum).toEqual(tuple('RETOUCH_TARGETS'));
     expect(props.target?.default).toBe('retouch_layer');
     expect(LIB_PY).toMatch(/RETOUCH_MAX_SPOT_RADIUS = 500/);
+    expect(RETOUCH_MAX_STROKE_WORK).toBe(constant('RETOUCH_MAX_STROKE_WORK'));
+    expect(RETOUCH_MAX_SPOT_WORK).toBe(constant('RETOUCH_MAX_SPOT_WORK'));
   });
 });

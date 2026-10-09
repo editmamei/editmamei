@@ -2866,6 +2866,18 @@ RETOUCH_SPOT_BRUSH_FACTOR = 2.6
 RETOUCH_SPOT_MIN_BRUSH = 3.0
 # The annulus a spot's surround is measured over, as a multiple of the spot radius.
 RETOUCH_SPOT_RING_OUTER = 1.6
+# How far a spot's heal reaches, as a multiple of its radius: half the spot brush (1.3x) beyond the
+# spot's own edge. Source candidates must keep this footprint inside the layer, and the Retouch
+# layer's mask reveals a feathered disc of this radius around each spot.
+RETOUCH_SPOT_REACH = 2.3
+# Hardness of the dab that reveals a healed spot on the Retouch layer's mask.
+RETOUCH_REVEAL_HARDNESS = 0.7
+# Work budgets, measured on a 6000x4000 image so the worst accepted call stays under about a minute:
+# a heal stroke costs about (path length + one brush) x brush, at worst ~25 us per unit (brush 90-100;
+# ~2-9 us at other sizes; a clone is far cheaper), so 2,000,000 is ~50 s; spot_heal costs ~270 us per
+# unit of the sum of radius squared, so 200,000 is ~55 s. Mirrored in tools/gimp-retouch-tools.ts.
+RETOUCH_MAX_STROKE_WORK = 2000000
+RETOUCH_MAX_SPOT_WORK = 200000
 
 
 def _finite_number(name, value):
@@ -2891,6 +2903,8 @@ def validate_retouch_args(args):
     target = validate_choice('target', args.get('target') or 'retouch_layer', RETOUCH_TARGETS)
     opts = {'method': method, 'target': target}
     if method == 'spot_heal':
+        if args.get('hardness') is not None:
+            raise ValueError('hardness does not apply to method spot_heal (it sizes its own brush)')
         spots = args.get('spots')
         if not isinstance(spots, list) or not 1 <= len(spots) <= RETOUCH_MAX_SPOTS:
             raise ValueError('spots must be a list of 1..%d spots' % RETOUCH_MAX_SPOTS)
@@ -2906,6 +2920,13 @@ def validate_retouch_args(args):
                 _finite_number('spots[%d].y' % i, spot.get('y')),
                 radius,
             ))
+        work = retouch_spots_work(clean)
+        if work > RETOUCH_MAX_SPOT_WORK:
+            raise ValueError(
+                'these spots are too large to heal in one call (the sum of radius squared is %g, '
+                'the limit is %d): split them into several calls or use smaller radii'
+                % (work, RETOUCH_MAX_SPOT_WORK)
+            )
         opts['spots'] = clean
         return opts
     points = args.get('points')
@@ -2933,11 +2954,32 @@ def validate_retouch_args(args):
         'brush_size', RETOUCH_DEFAULT_BRUSH if brush is None else brush,
         RETOUCH_MIN_BRUSH, RETOUCH_MAX_BRUSH,
     )
+    work = retouch_stroke_work(opts['points'], opts['brush_size'])
+    if work > RETOUCH_MAX_STROKE_WORK:
+        raise ValueError(
+            'this stroke is too long for its brush size to paint in one call (about %d px of '
+            'path x brush, the limit is %d): split the stroke into several calls or use a '
+            'smaller brush' % (work, RETOUCH_MAX_STROKE_WORK)
+        )
     hardness = args.get('hardness')
     opts['hardness'] = validate_range(
         'hardness', RETOUCH_DEFAULT_HARDNESS[method] if hardness is None else hardness, 0.0, 1.0
     )
     return opts
+
+
+def retouch_stroke_work(points, brush_size):
+    """The cost estimate of a heal/clone stroke: (path length + one brush) x brush, about the area
+    the brush sweeps (a single dab still costs its own area)."""
+    length = sum(
+        math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])
+    )
+    return (length + brush_size) * brush_size
+
+
+def retouch_spots_work(spots):
+    """The cost estimate of a spot_heal call: the sum of radius squared over its (x, y, r) spots."""
+    return sum(r * r for _x, _y, r in spots)
 
 
 def retouch_bounds(layer_x, layer_y, layer_width, layer_height, canvas_width, canvas_height):
@@ -3034,10 +3076,10 @@ def union_bbox_xywh(a, b):
 def spot_candidates(cx, cy, radius, bounds, reach=None):
     """Candidate source offsets (dx, dy) for a spot: 8 directions on each of the two rings
     (2.2x and 3.5x the radius). A candidate is dropped when its source footprint -- a disc of
-    `reach` (default 1.65 x radius: the spot plus the healing brush's edge) around the shifted
-    centre -- leaves `bounds`. Rounded to whole pixels; order is ring-major, then by angle."""
+    `reach` (default 2.3 x radius, RETOUCH_SPOT_REACH: the spot plus the healing brush's edge)
+    around the shifted centre -- leaves `bounds`. Rounded to whole pixels; order is ring-major, then by angle."""
     if reach is None:
-        reach = radius * 1.65
+        reach = radius * RETOUCH_SPOT_REACH
     x0, y0, x1, y1 = bounds
     out = []
     for ring in RETOUCH_SPOT_RINGS:
@@ -3066,3 +3108,52 @@ def spot_pick_best(scored):
         if best is None or item[2] < best[2]:
             best = item
     return best
+
+
+# ---- render_region / keep_alpha ---------------------------------------------------------------
+
+# render_region is never downscaled: a box past either bound is refused outright.
+RENDER_REGION_MAX_PIXELS = 16_000_000
+RENDER_REGION_MAX_SIDE = 4096
+KEEP_ALPHA_EXTENSIONS = ('.png', '.webp')
+
+
+def _whole_pixels(name, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError('%s must be a whole number of pixels, got %r' % (name, value))
+    if value != int(value):
+        raise ValueError('%s must be a whole number of pixels, got %r' % (name, value))
+    return int(value)
+
+
+def validate_render_box(box, canvas_width, canvas_height):
+    """`box` [x, y, w, h] in image pixels, clamped to the canvas, as ints. Refuses a malformed box,
+    a box with no pixels on the canvas, and one past RENDER_REGION_MAX_PIXELS /
+    RENDER_REGION_MAX_SIDE (checked after clamping)."""
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        raise ValueError('box must be [x, y, width, height] in image pixels')
+    x, y, w, h = [_whole_pixels('box', v) for v in box]
+    if w <= 0 or h <= 0:
+        raise ValueError('box width and height must be positive')
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(canvas_width, x + w), min(canvas_height, y + h)
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError(
+            'box [%d, %d, %d, %d] does not overlap the %dx%d canvas' % (x, y, w, h, canvas_width, canvas_height)
+        )
+    w, h = x1 - x0, y1 - y0
+    if max(w, h) > RENDER_REGION_MAX_SIDE or w * h > RENDER_REGION_MAX_PIXELS:
+        raise ValueError(
+            'box is %dx%d px; render_region allows at most %d px on a side and %d megapixels '
+            '(it never downscales)' % (w, h, RENDER_REGION_MAX_SIDE, RENDER_REGION_MAX_PIXELS // 1_000_000)
+        )
+    return x0, y0, w, h
+
+
+def validate_keep_alpha(args, path):
+    """Whether `export` should keep transparency: `keep_alpha` must be a boolean (default False)
+    and only PNG and WebP can carry it."""
+    keep = optional_bool(args, 'keep_alpha', False)
+    if keep and os.path.splitext(path)[1].lower() not in KEEP_ALPHA_EXTENSIONS:
+        raise ValueError('keep_alpha only works with a .png or .webp file path')
+    return keep
