@@ -236,6 +236,29 @@ describe.skipIf(!install)('retouch: heal, clone and spot heal', () => {
     expect(discStats(out, 200, 100, 9).mean).toBeGreaterThan(90);
   });
 
+  it('still reuses the Retouch layer after the image is saved and reopened (new layer ids)', async () => {
+    const { image, layer_id } = await texture();
+    const first = await session.call<RetouchResult>('retouch', {
+      image,
+      layer_id,
+      method: 'spot_heal',
+      spots: [{ x: 80, y: 80, radius: 6 }],
+    });
+    expect(first.created_layer).toBe(true);
+    const xcf = join(workDir, `reopen-${counter++}.xcf`);
+    await session.call('export', { image, path: xcf });
+    const reopened = await session.call<{ image: number }>('open', { path: xcf });
+    expect(reopened.image).not.toBe(image);
+    const second = await session.call<RetouchResult>('retouch', {
+      image: reopened.image,
+      layer: 'Texture',
+      method: 'spot_heal',
+      spots: [{ x: 200, y: 100, radius: 10 }],
+    });
+    expect(second.created_layer).toBe(false);
+    expect(await layerNames(reopened.image)).toEqual(['Retouch', 'Texture']);
+  });
+
   it('in_place paints the layer itself and adds no layer', async () => {
     const { image, layer_id } = await texture();
     const result = await session.call<RetouchResult>('retouch', {

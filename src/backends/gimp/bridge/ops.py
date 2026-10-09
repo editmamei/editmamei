@@ -1341,15 +1341,22 @@ def _retouch_marked(layer):
     return not layer.is_group() and layer.get_parasite(lib.RETOUCH_TAG) is not None
 
 
-def _retouch_source_id(layer):
-    """The id of the layer a retouch layer was copied from (stored in its parasite), or None for a
-    layer without one or with a legacy marker."""
+def _retouch_source_tattoo(layer):
+    """The tattoo of the layer a retouch layer was copied from (stored in its parasite as
+    't:<tattoo>'), or None for a layer without one or with any other marker. A tattoo, unlike a
+    layer id, survives an XCF save and reload, so a checkpoint restore still finds the copy."""
     para = layer.get_parasite(lib.RETOUCH_TAG)
     if para is None:
         return None
     try:
-        return int(bytes(para.get_data()).decode('ascii').strip('\x00'))
-    except (ValueError, TypeError, UnicodeDecodeError):
+        text = bytes(para.get_data()).decode('ascii').strip('\x00')
+    except (TypeError, UnicodeDecodeError):
+        return None
+    if not text.startswith('t:'):
+        return None
+    try:
+        return int(text[2:])
+    except ValueError:
         return None
 
 
@@ -1362,7 +1369,7 @@ def _retouch_layer_above(img, layer):
         return None
     siblings = list(parent.get_children()) if parent is not None else list(img.get_layers())
     above = siblings[idx - 1]
-    if _retouch_marked(above) and _retouch_source_id(above) == layer.get_id():
+    if _retouch_marked(above) and _retouch_source_tattoo(above) == layer.get_tattoo():
         return above
     return None
 
@@ -1389,7 +1396,7 @@ def _retouch_make_layer(img, layer):
         _assert_layer_attached(img, copy, 'the retouch layer')
         copy.add_mask(copy.create_mask(Gimp.AddMaskType.BLACK))
         copy.attach_parasite(Gimp.Parasite.new(
-            lib.RETOUCH_TAG, Gimp.PARASITE_PERSISTENT, str(layer.get_id()).encode('ascii')
+            lib.RETOUCH_TAG, Gimp.PARASITE_PERSISTENT, ('t:%d' % layer.get_tattoo()).encode('ascii')
         ))
     except Exception:
         _discard_layer(img, copy)
