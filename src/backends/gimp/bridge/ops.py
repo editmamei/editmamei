@@ -2272,10 +2272,18 @@ def op_preview(args):
         dup.delete()
 
 
-def _channel_stats_from(dup, layer, channels, mask=None):
+class _ProxyMaskUnreliable(ValueError):
+    """A downscaled measurement copy cannot measure this mask: it is empty there, or mostly edge
+    pixels. Scaling blurs a thin mask's edges and the pixels under it into their neighbours (a
+    one-pixel line reads as a pale smear), so the caller re-measures at full resolution."""
+
+
+def _channel_stats_from(dup, layer, channels, mask=None, scaled=False):
     """Per-channel stats of `layer` (in `dup`). With `mask` (a channel name that `dup` carries --
     every render here is a duplicate of the document, so its channels came along, scaled or
-    cropped with it), only the pixels the channel selects at 50% or more are counted."""
+    cropped with it), only the pixels the channel selects at 50% or more are counted. `scaled`
+    marks a downscaled copy: a mask that is empty or edge-dominated there (see
+    `lib.MASK_EDGE_FRACTION_MAX`) raises `_ProxyMaskUnreliable`, not a plain refusal."""
     w, h = dup.get_width(), dup.get_height()
     buf = layer.get_buffer()
     rect = Gegl.Rectangle.new(0, 0, w, h)
@@ -2286,14 +2294,17 @@ def _channel_stats_from(dup, layer, channels, mask=None):
         ch = _find_channel(dup, mask)
         if ch is None:
             raise lib.OpError('gimp_op_failed', 'the render lost the mask channel %r' % mask)
-        flags = lib.mask_flags(ch.get_buffer().get(rect, 1.0, "Y' u8", Gegl.AbyssPolicy.NONE))
+        raw = bytes(ch.get_buffer().get(rect, 1.0, "Y' u8", Gegl.AbyssPolicy.NONE))
+        flags = lib.mask_flags(raw)
+        if scaled and not lib.mask_is_proxy_reliable(raw):
+            raise _ProxyMaskUnreliable('mask %r is too thin to measure on a downscaled copy' % mask)
         if not any(flags):
             raise ValueError('mask %r selects no pixels in the measured area' % mask)
     out = {}
     for ch in channels:
         data = lum if ch == 'luminance' else rgb[('red', 'green', 'blue').index(ch)::3]
         out[ch] = lib.channel_stats(lib.select_masked(data, flags) if flags is not None else data)
-    selected = sum(flags) if flags is not None else w * h
+    selected = flags.count(1) if flags is not None else w * h
     return w, h, out, selected
 
 
@@ -2336,26 +2347,35 @@ def op_histogram(args):
                 ph = min(ph, dup.get_height() - py)
                 dup.crop(pw, ph, px, py)
                 layer = dup.flatten()
-                w, h, out, selected = _channel_stats_from(dup, layer, channels, mask)
+                w, h, out, selected = _channel_stats_from(dup, layer, channels, mask, scaled=True)
+                return {'exact': False, 'width': w, 'height': h, 'pixels': selected, 'channels': out,
+                        'unmirrored_filters': unmirrored, 'mask': mask}
+            except _ProxyMaskUnreliable:
+                pass  # the mask is finer than the proxy allows: measure the full-res crop below
             finally:
                 dup.delete()
-            return {'exact': False, 'width': w, 'height': h, 'pixels': selected, 'channels': out,
-                    'unmirrored_filters': unmirrored, 'mask': mask}
         region = dict(region)  # fall through to the full-res path below
         exact = True
 
     unmirrored = []
-    if region:
-        dup, layer = _region_full_res(img, region)
-    elif exact:
-        dup, layer = _composite(img)
-    else:
+    if not region and not exact:
         dup, unmirrored = _proxy_render(img, 1024)
         layer = dup.get_layers()[0]
-    try:
-        w, h, out, selected = _channel_stats_from(dup, layer, channels, mask)
-    finally:
-        dup.delete()
+        try:
+            w, h, out, selected = _channel_stats_from(dup, layer, channels, mask, scaled=True)
+        except _ProxyMaskUnreliable:
+            exact = True  # a hairline mask lost to the scale-down: measure at full resolution
+        finally:
+            dup.delete()
+    if region or exact:
+        if region:
+            dup, layer = _region_full_res(img, region)
+        else:
+            dup, layer = _composite(img)
+        try:
+            w, h, out, selected = _channel_stats_from(dup, layer, channels, mask)
+        finally:
+            dup.delete()
     result = {'exact': exact, 'width': w, 'height': h, 'pixels': selected, 'channels': out, 'mask': mask}
     if not region and not exact:
         result['unmirrored_filters'] = unmirrored
@@ -3197,7 +3217,7 @@ _LAYER_CAPABLE_BASE_TYPES = {
 }
 
 
-def _layer_type_for(img):
+def _layer_type_for(img, tool='gimp_layer op=create'):
     """The `Gimp.ImageType` a new layer should use so it matches `img`'s own color model instead
     of relying on GIMP's own silent coercion (verified live: an RGBA layer inserted into a
     grayscale image is quietly converted to GRAYA on insert -- this asks for the right type up
@@ -3206,7 +3226,7 @@ def _layer_type_for(img):
     layer_type = _LAYER_CAPABLE_BASE_TYPES.get(base)
     if layer_type is None:
         raise ValueError(
-            'gimp_layer op=create does not support %s images -- only RGB and grayscale' % base.value_nick
+            '%s does not support %s images -- only RGB and grayscale' % (tool, base.value_nick)
         )
     return layer_type
 
@@ -5173,7 +5193,9 @@ def op_fill(args):
     img = _image(args)
     if img.get_base_type() == Gimp.ImageBaseType.INDEXED:
         raise ValueError('cannot fill on an indexed image: convert it to RGB first (gimp_convert_image_mode)')
-    width, height = lib.validate_resize_dims(img.get_width(), img.get_height())
+    layer_type = _layer_type_for(img, 'gimp_fill')
+    # The new layer is canvas-sized: held to the same precision-aware cap as a new document.
+    width, height = lib.validate_document_dims(img.get_width(), img.get_height(), _transform_layer_precision(img))
     opts = lib.validate_fill_args(args, width, height)
     mask_channel = _require_channel(img, opts['mask']) if opts['mask'] is not None else None
     layers = img.get_layers()
@@ -5184,7 +5206,7 @@ def op_fill(args):
     else:
         parent, position = None, 0
     name = _unique_layer_name(img, opts['name'])
-    layer = Gimp.Layer.new(img, name, width, height, _layer_type_for(img), 100.0, Gimp.LayerMode.NORMAL)
+    layer = Gimp.Layer.new(img, name, width, height, layer_type, 100.0, Gimp.LayerMode.NORMAL)
     gradient = None
     try:
         img.insert_layer(layer, parent, position or 0)
@@ -5225,6 +5247,7 @@ def op_fill(args):
                 img.select_item(Gimp.ChannelOps.REPLACE, mask_channel)
                 mask = layer.create_mask(Gimp.AddMaskType.SELECTION)
                 if not layer.add_mask(mask):
+                    mask.delete()  # never attached, so nothing else would free it
                     raise lib.OpError('gimp_op_failed', 'GIMP could not attach the mask to the new layer')
         layer.set_mode(getattr(Gimp.LayerMode, lib.FILL_MODES[opts['mode']]))
         layer.set_opacity(opts['opacity'])

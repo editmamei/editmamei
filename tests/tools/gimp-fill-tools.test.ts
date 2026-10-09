@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import {
   createGimpFillTools,
+  FILL_MAX_COORD_PX,
   FILL_MAX_STOPS,
+  FILL_MAX_STRING_LEN,
   FILL_MIN_STOPS,
   FILL_MODE_NAMES,
   FILL_SCHEMA_FOR_TESTS,
@@ -89,6 +91,25 @@ describe('createGimpFillTools', () => {
       { image: 1, op: 'radial_gradient', stops: STOPS, radius: 0 },
       { image: 1, op: 'radial_gradient', stops: STOPS, center: { x: 'a', y: 1 } },
       { image: 1, op: 'radial_gradient', stops: STOPS, end: { x: 1, y: 1 } },
+      // geometry and string bounds
+      { image: 1, op: 'radial_gradient', stops: STOPS, center: { x: 1e308, y: 0 } },
+      {
+        image: 1,
+        op: 'radial_gradient',
+        stops: STOPS,
+        center: { x: 0, y: -FILL_MAX_COORD_PX - 1 },
+      },
+      { image: 1, op: 'radial_gradient', stops: STOPS, radius: FILL_MAX_COORD_PX + 1 },
+      { image: 1, op: 'linear_gradient', stops: STOPS, start: { x: 0, y: 1e308 } },
+      {
+        image: 1,
+        op: 'linear_gradient',
+        stops: STOPS,
+        start: { x: 5, y: 5 },
+        end: { x: 5, y: 5.5 }, // under 1 px apart
+      },
+      { image: 1, op: 'solid', color: '#000000', name: 'x'.repeat(FILL_MAX_STRING_LEN + 1) },
+      { image: 1, op: 'solid', color: '#000000', mask: 'x'.repeat(FILL_MAX_STRING_LEN + 1) },
     ];
     for (const bad of cases) {
       const result = await callTool(tools, 'gimp_fill', bad);
@@ -142,9 +163,9 @@ describe('createGimpFillTools', () => {
 describe('gimp_fill schema bounds mirror lib.py', () => {
   const props = FILL_SCHEMA_FOR_TESTS.properties as Record<string, Record<string, unknown>>;
   const constant = (name: string): number => {
-    const m = new RegExp(`^${name}\\s*=\\s*(\\d+)`, 'm').exec(LIB_PY);
+    const m = new RegExp(`^${name}\\s*=\\s*([\\d_]+)`, 'm').exec(LIB_PY);
     if (!m) throw new Error(`${name} not found in lib.py`);
-    return Number(m[1]);
+    return Number(m[1]!.replace(/_/g, ''));
   };
 
   it('stop counts', () => {
@@ -152,6 +173,12 @@ describe('gimp_fill schema bounds mirror lib.py', () => {
     expect(FILL_MAX_STOPS).toBe(constant('FILL_MAX_STOPS'));
     expect(props.stops?.minItems).toBe(FILL_MIN_STOPS);
     expect(props.stops?.maxItems).toBe(FILL_MAX_STOPS);
+  });
+
+  it('geometry and string caps', () => {
+    expect(FILL_MAX_COORD_PX).toBe(10 * constant('MAX_RESIZE_SIDE_PX'));
+    expect(FILL_MAX_STRING_LEN).toBe(constant('FILL_MAX_STRING_LEN'));
+    expect(props.radius?.maximum).toBe(FILL_MAX_COORD_PX);
   });
 
   it('blend modes: gimp_layer list plus lch_color', () => {

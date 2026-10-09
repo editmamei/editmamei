@@ -3335,9 +3335,13 @@ class TestFillArgs(unittest.TestCase):
             lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS, 'color': '#000000'}, 1, 1)
         with self.assertRaisesRegex(ValueError, 'radius does not apply'):
             lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS, 'radius': 5}, 200, 80)
-        with self.assertRaisesRegex(ValueError, 'different points'):
+        with self.assertRaisesRegex(ValueError, 'at least 1 pixel apart'):
             lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS,
                                     'start': {'x': 1, 'y': 1}, 'end': {'x': 1, 'y': 1}}, 200, 80)
+        # a degenerate axis (1e-200 long) is as unusable as a zero one
+        with self.assertRaisesRegex(ValueError, 'at least 1 pixel apart'):
+            lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS,
+                                    'start': {'x': 0, 'y': 0}, 'end': {'x': 1e-200, 'y': 0}}, 200, 80)
 
     def test_radial_defaults_are_the_centre_and_half_the_diagonal(self):
         opts = lib.validate_fill_args({'op': 'radial_gradient', 'stops': self.STOPS}, 300, 400)
@@ -3354,6 +3358,34 @@ class TestFillArgs(unittest.TestCase):
         for bad in ({'x': 1}, {'x': 'a', 'y': 2}, [1, 2], {'x': float('inf'), 'y': 0}):
             with self.assertRaisesRegex(ValueError, 'center must be'):
                 lib.validate_fill_args({'op': 'radial_gradient', 'stops': self.STOPS, 'center': bad}, 9, 9)
+
+    def test_geometry_is_bounded(self):
+        cap = lib.FILL_MAX_COORD_PX
+        self.assertEqual(cap, 10 * lib.MAX_RESIZE_SIDE_PX)
+        big = {'op': 'radial_gradient', 'stops': self.STOPS}
+        for bad in (1e308, cap + 1, -cap - 1, float('inf'), 10**400, -10**400):
+            with self.assertRaises(ValueError):
+                lib.validate_fill_args(dict(big, center={'x': bad, 'y': 0}), 9, 9)
+            with self.assertRaises(ValueError):
+                lib.validate_fill_args(dict(big, radius=bad), 9, 9)
+            with self.assertRaises(ValueError):
+                lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS,
+                                        'start': {'x': 0, 'y': bad}, 'end': {'x': 1, 'y': 1}}, 9, 9)
+        # the bound is inclusive, and an off-canvas axis within it is fine
+        opts = lib.validate_fill_args(dict(big, center={'x': cap, 'y': -cap}, radius=cap), 9, 9)
+        self.assertEqual((opts['center'], opts['radius']), ((float(cap), float(-cap)), float(cap)))
+        # two in-range points can still not overflow the axis length
+        opts = lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS,
+                                       'start': {'x': -cap, 'y': -cap}, 'end': {'x': cap, 'y': cap}}, 9, 9)
+        self.assertTrue(math.isfinite(opts['end'][0] - opts['start'][0]))
+
+    def test_name_and_mask_lengths_are_capped(self):
+        ok = 'x' * lib.FILL_MAX_STRING_LEN
+        self.assertEqual(lib.validate_fill_args({'op': 'solid', 'color': '#000000', 'name': ok}, 9, 9)['name'], ok)
+        with self.assertRaisesRegex(ValueError, 'name must be at most'):
+            lib.validate_fill_args({'op': 'solid', 'color': '#000000', 'name': ok + 'x'}, 9, 9)
+        with self.assertRaisesRegex(ValueError, 'mask must be at most'):
+            lib.validate_fill_args({'op': 'solid', 'color': '#000000', 'mask': ok + 'x'}, 9, 9)
 
     def test_op_mode_opacity_and_mask_are_checked(self):
         with self.assertRaisesRegex(ValueError, 'op must be one of'):
@@ -3382,6 +3414,13 @@ class TestMaskedMeasurement(unittest.TestCase):
         data = bytes([10, 20, 30, 40, 50])
         self.assertEqual(lib.select_masked(data, bytes([1, 0, 1, 0, 1])), bytes([10, 30, 50]))
         self.assertEqual(lib.select_masked(data, bytes(5)), b'')
+
+    def test_scaled_mask_reliability(self):
+        solid = bytes([255] * 60 + [0] * 30 + [128] * 5 + [40] * 5)  # 10 edge of 70 touched
+        self.assertTrue(lib.mask_is_proxy_reliable(solid))
+        self.assertFalse(lib.mask_is_proxy_reliable(bytes([0] * 50)))  # nothing left
+        self.assertFalse(lib.mask_is_proxy_reliable(bytes([0] * 40 + [130] * 8 + [255] * 2)))  # a smear
+        self.assertTrue(lib.mask_is_proxy_reliable(bytes([255] * 10)))
 
     def test_stats_over_the_selected_half_ignore_the_rest(self):
         data = bytes([50] * 4 + [250] * 4)

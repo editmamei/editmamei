@@ -43,11 +43,19 @@ export const FILL_MODE_NAMES = [
   'luminosity',
   'lch_color',
 ] as const;
+/** Mirror lib.py's FILL_MAX_COORD_PX (10 x MAX_RESIZE_SIDE_PX) and FILL_MAX_STRING_LEN; a drift test pins them. */
+export const FILL_MAX_COORD_PX = 300_000;
+export const FILL_MAX_STRING_LEN = 255;
+/** A gradient axis (start to end) must be at least this long. */
+const MIN_AXIS_PX = 1;
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
 const POINT_PROP: JsonSchemaProperty = {
   type: 'object',
-  properties: { x: { type: 'number' }, y: { type: 'number' } },
+  properties: {
+    x: { type: 'number', minimum: -FILL_MAX_COORD_PX, maximum: FILL_MAX_COORD_PX },
+    y: { type: 'number', minimum: -FILL_MAX_COORD_PX, maximum: FILL_MAX_COORD_PX },
+  },
   required: ['x', 'y'],
 };
 
@@ -113,6 +121,7 @@ const fillSchema: JsonSchemaObject = {
     radius: {
       type: 'number',
       minimum: 1,
+      maximum: FILL_MAX_COORD_PX,
       description:
         'radial_gradient: the distance in pixels at which offset 1 is reached. Default half the ' +
         'canvas diagonal.',
@@ -160,16 +169,26 @@ function isNum(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-function checkPoint(name: string, v: unknown): void {
+function checkPoint(name: string, v: unknown): { x: number; y: number } {
   const o = v as Record<string, unknown> | null;
   if (!o || typeof o !== 'object' || !isNum(o['x']) || !isNum(o['y'])) {
-    bad(`${name} must be {x, y} with finite numbers`);
+    return bad(`${name} must be {x, y} with finite numbers`);
   }
+  if (Math.abs(o['x']) > FILL_MAX_COORD_PX || Math.abs(o['y']) > FILL_MAX_COORD_PX) {
+    bad(`${name} must be within +/-${FILL_MAX_COORD_PX} px`);
+  }
+  return { x: o['x'], y: o['y'] };
 }
 
 /** The checks validateArgs cannot make: which fields each op takes, and the stop list's order. */
 export function validateFillArgs(args: Record<string, unknown>): void {
   const op = args['op'];
+  for (const k of ['name', 'mask']) {
+    const v = args[k];
+    if (typeof v === 'string' && v.length > FILL_MAX_STRING_LEN) {
+      bad(`${k} must be at most ${FILL_MAX_STRING_LEN} characters`);
+    }
+  }
   const only = (keys: string[], why: string): void => {
     for (const k of keys) if (args[k] !== undefined) bad(`${k} does not apply to ${why}`);
   };
@@ -202,10 +221,18 @@ export function validateFillArgs(args: Record<string, unknown>): void {
   });
   if (op === 'linear_gradient') {
     only(['center', 'radius'], 'op linear_gradient');
-    for (const k of ['start', 'end']) if (args[k] !== undefined) checkPoint(k, args[k]);
+    const start = args['start'] === undefined ? undefined : checkPoint('start', args['start']);
+    const end = args['end'] === undefined ? undefined : checkPoint('end', args['end']);
+    if (start && end && Math.hypot(end.x - start.x, end.y - start.y) < MIN_AXIS_PX) {
+      bad(`start and end must be at least ${MIN_AXIS_PX} pixel apart`);
+    }
   } else {
     only(['start', 'end'], 'op radial_gradient');
     if (args['center'] !== undefined) checkPoint('center', args['center']);
+    const radius = args['radius'];
+    if (radius !== undefined && (!isNum(radius) || radius < 1 || radius > FILL_MAX_COORD_PX)) {
+      bad(`radius must be within 1..${FILL_MAX_COORD_PX} pixels`);
+    }
   }
 }
 
