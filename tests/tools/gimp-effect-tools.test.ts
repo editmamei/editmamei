@@ -112,6 +112,43 @@ describe('createGimpEffectTools', () => {
     expect((result.content?.[0] as { text: string }).text).toContain('confined to mask "Corners"');
   });
 
+  it('forwards outline / outer_glow / surface_blur fields verbatim', async () => {
+    const gimp = makeGimpBackend({
+      result: { filter_id: 5, name: 'Outline', type: 'outline', mask: null },
+    });
+    const tools = createGimpEffectTools(gimp.asBackend());
+    const cases: Array<Record<string, unknown>> = [
+      { image: 1, type: 'outline', width: 6, color: '#ffffff' },
+      { image: 1, type: 'outer_glow', spread: 3, radius: 40, opacity: 0.9, color: '#00ffcc' },
+      { image: 1, type: 'surface_blur', radius: 12, edge_preservation: 0.1 },
+    ];
+    for (const args of cases) {
+      const result = await callTool(tools, 'gimp_add_effect', args);
+      expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
+      expect(gimp.lastCall()).toEqual({ op: 'effect', args });
+    }
+  });
+
+  it('refuses a malformed color or an out-of-range width / spread / edge_preservation before the bridge', async () => {
+    const gimp = makeGimpBackend();
+    const tools = createGimpEffectTools(gimp.asBackend());
+    const bad: Array<Record<string, unknown>> = [
+      { image: 1, type: 'outline', color: 'red' },
+      { image: 1, type: 'outline', color: '#fff' },
+      { image: 1, type: 'outer_glow', color: '000000' },
+      { image: 1, type: 'outline', width: 0 },
+      { image: 1, type: 'outline', width: 101 },
+      { image: 1, type: 'outer_glow', spread: 101 },
+      { image: 1, type: 'surface_blur', edge_preservation: 1.5 },
+    ];
+    for (const args of bad) {
+      expect((await callTool(tools, 'gimp_add_effect', args)).isError, JSON.stringify(args)).toBe(
+        true
+      );
+    }
+    expect(gimp.calls).toHaveLength(0);
+  });
+
   it('maps a bridge invalid_argument error through toolGimpErrorResult', async () => {
     const gimp = makeGimpBackend({
       throwFor: () => new Error('invalid_argument: radius must be within 0.0..3.0'),
@@ -190,7 +227,7 @@ it('parseEffectLibPyBounds finds a healthy number of validated fields (sanity ch
 
 /** Fields lib.py validates under more than one bound (a genuine cross-effect name collision) --
  * the tool schema widens these to the UNION, per gimp-effect-tools.ts's own file doc comment. */
-const KNOWN_COLLISION_FIELDS = new Set(['radius']);
+const KNOWN_COLLISION_FIELDS = new Set(['radius', 'opacity']);
 
 describe('gimp_add_effect schema bounds match bridge/lib.py exactly (or its documented union)', () => {
   for (const [field, tuples] of LIB_BOUNDS) {

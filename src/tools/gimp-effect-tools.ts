@@ -11,7 +11,8 @@ import {
 
 /**
  * gimp_add_effect — the sibling of gimp_add_adjustment for a small allow-listed set of GEGL
- * EFFECT filters (vignette, black_white, motion_blur, lens_blur, add_noise, drop_shadow), rather
+ * EFFECT filters (vignette, black_white, motion_blur, lens_blur, add_noise, drop_shadow, outline,
+ * outer_glow, surface_blur), rather
  * than a new op on gimp_filter: tier 'dev' (`tool-tiers.ts` classifies per TOOL, not per op, so
  * an `apply` op grafted onto gimp_filter, already 'community', would ship live immediately with
  * no dev-tier gate at all). `type` picks the GEGL operation (`bridge/lib.py`'s
@@ -39,8 +40,12 @@ import {
  * `invalid_argument` naming it when a value is in the union but out of range for the `type`
  * actually given.
  *
- * `color` (vignette's tint, drop_shadow's shadow color) is NOT exposed as a schema field —
- * left at GEGL's own default (black) — the same posture as the unexposed `shape` fields below.
+ * `color` is exposed for outline and outer_glow only. vignette's tint and drop_shadow's shadow
+ * color are NOT schema fields — left at GEGL's own default (black).
+ *
+ * outline and outer_glow are gegl:dropshadow with no offset (grown by `grow-radius`), and
+ * surface_blur is gegl:bilateral-filter; all three attach non-destructively, including to a text
+ * layer (verified live: it stays an editable text layer).
  */
 
 const EFFECT_TYPES = [
@@ -50,6 +55,9 @@ const EFFECT_TYPES = [
   'lens_blur',
   'add_noise',
   'drop_shadow',
+  'outline',
+  'outer_glow',
+  'surface_blur',
 ] as const;
 
 const effectSchema: JsonSchemaObject = {
@@ -116,8 +124,10 @@ const effectSchema: JsonSchemaObject = {
         '(default 25 when creating) — capped much lower than the other two effects here (measured ' +
         'live: expensive at full resolution). drop_shadow: blur radius in pixels at full ' +
         'resolution, 0..1500 (default 10 when creating), clipped to the layer bounds rather than ' +
-        'growing it. Both lens_blur and drop_shadow are SPATIAL (radius-scaled on the proxy ' +
-        'preview, see gimp_overview). The bridge enforces the precise range for whichever ' +
+        'growing it. outer_glow: glow blur in pixels, 1..250 (default 20 when creating). ' +
+        'surface_blur: smoothing radius in pixels, 1..50 (default 8 when creating). ' +
+        'lens_blur, drop_shadow, outer_glow and surface_blur are SPATIAL (radius-scaled on the ' +
+        'proxy preview, see gimp_overview). The bridge enforces the precise range for whichever ' +
         '`type` you gave.',
     },
     softness: {
@@ -257,8 +267,43 @@ const effectSchema: JsonSchemaObject = {
       minimum: 0,
       maximum: 1,
       description:
-        'drop_shadow only. Default (when creating): 0.5. The shadow color is black and not ' +
-        'configurable yet.',
+        'drop_shadow: default (when creating) 0.5. The shadow color is black and not ' +
+        'configurable yet. outer_glow: default 0.75 (its color is the `color` field).',
+    },
+    // ---- outline / outer_glow / surface_blur ----
+    width: {
+      type: 'number',
+      minimum: 1,
+      maximum: 100,
+      description:
+        'outline only. Stroke thickness in pixels at full resolution, 1..100 (GIMP caps the ' +
+        'grow at 100). Default (when creating): 4. SPATIAL. The stroke grows outward from the ' +
+        "layer's alpha edge (round corners) and the layer's own pixels are untouched.",
+    },
+    spread: {
+      type: 'number',
+      minimum: 0,
+      maximum: 100,
+      description:
+        "outer_glow only. Pixels the glow's solid core grows past the alpha edge before it " +
+        'blurs, 0..100. Default (when creating): 4. SPATIAL.',
+    },
+    color: {
+      type: 'string',
+      pattern: '^#[0-9a-fA-F]{6}$',
+      description:
+        'outline and outer_glow only. "#rrggbb" hex. Default (when creating): "#000000" for ' +
+        'outline, "#ffffff" for outer_glow.',
+    },
+    edge_preservation: {
+      type: 'number',
+      minimum: 0,
+      maximum: 1,
+      description:
+        'surface_blur only. How much edge contrast survives, 0..1: LOWER smooths harder (near 0 ' +
+        'starts to soften the edges too), HIGHER leaves more detail and noise. Default (when ' +
+        'creating): 0.08, which flattens fine noise and skin texture while keeping hard edges ' +
+        'sharp.',
     },
   },
   required: ['image', 'type'],
@@ -301,7 +346,7 @@ export function createGimpEffectTools(gimp: GimpBackend): ToolDefinition[] {
         description:
           'Headless GIMP: append (or, with filter_id, re-edit in place) one of a small ' +
           'allow-listed set of GEGL effect filters — vignette, black_white, motion_blur, ' +
-          'lens_blur, add_noise, drop_shadow — the same non-destructive, re-editable, maskable ' +
+          'lens_blur, add_noise, drop_shadow, outline, outer_glow, surface_blur — the same non-destructive, re-editable, maskable ' +
           "filter mechanism gimp_add_adjustment uses, sharing the SAME stack: gimp_filter's " +
           "op=list/set_visibility/delete manage this tool's filters exactly as it manages " +
           "gimp_add_adjustment's. `type` picks the effect; a field another effect uses is " +
@@ -318,7 +363,13 @@ export function createGimpEffectTools(gimp: GimpBackend): ToolDefinition[] {
           'angle/offset fields are updated automatically, and gimp_filter op=list reflects the ' +
           'new values afterward) — rotating by any OTHER angle is refused while one of these ' +
           'three is present, rather than letting it drift out of alignment. lens_blur is a ' +
-          'uniform soft-focus blur, not a depth-of-field falloff. For a plain blur with no bokeh ' +
+          'uniform soft-focus blur, not a depth-of-field falloff. outline puts a solid stroke ' +
+          "around a layer's transparent edge (meme text, sticker cut-outs); outer_glow adds a " +
+          'soft glow around it (glowing text); surface_blur smooths skin and other texture ' +
+          'while keeping hard edges. outline and outer_glow need a layer with transparency, ' +
+          'and attach to a text layer without rasterizing it: the text stays editable and the ' +
+          'effect follows each edit. For a plain ' +
+          'blur with no bokeh ' +
           'highlight boost, use gimp_add_adjustment type=gaussian_blur instead. Check the stack ' +
           'afterward with gimp_filter (op=list).',
         inputSchema: effectSchema,

@@ -560,10 +560,22 @@ def _set_drop_shadow(cfg, params):
     # offset/radius does not grow the layer or canvas (measured at the schema maxima and in
     # combination: no size change), it just gets cut off at the edge like any other
     # DrawableFilter here, so no separate cap against "ballooning" is needed.
-    cfg.set_property('x', params['x'])
-    cfg.set_property('y', params['y'])
-    cfg.set_property('radius', params['radius'])
-    cfg.set_property('opacity', params['opacity'])
+    # outline / outer_glow reuse this operation and record only what they use: no offset
+    # (x, y = 0), no blur for outline (radius = 0), full opacity for outline. They add a grown
+    # core and a color; a drop_shadow record has neither, so it renders as before (no growth,
+    # black).
+    cfg.set_property('x', params.get('x', 0.0))
+    cfg.set_property('y', params.get('y', 0.0))
+    cfg.set_property('radius', params.get('radius', 0.0))
+    cfg.set_property('opacity', params.get('opacity', 1.0))
+    cfg.set_property('grow-shape', 'circle')
+    cfg.set_property('grow-radius', params.get('grow-radius', 0.0))
+    cfg.set_property('color', Gegl.Color.new(params.get('color', '#000000')))
+
+
+def _set_surface_blur(cfg, params):
+    cfg.set_property('blur-radius', params['blur-radius'])
+    cfg.set_property('edge-preservation', params['edge-preservation'] * lib.BILATERAL_EDGE_SCALE)
 
 
 SETTERS = {
@@ -586,6 +598,7 @@ SETTERS = {
     'gegl:focus-blur': _set_lens_blur,
     'gegl:noise-rgb': _set_add_noise,
     'gegl:dropshadow': _set_drop_shadow,
+    'gegl:bilateral-filter': _set_surface_blur,
 }
 
 
@@ -989,6 +1002,13 @@ def op_effect(args):
     lib.reject_foreign_fields(effect_type, args)
     img = _image(args)
     operation = lib.EFFECT_OPERATIONS[effect_type]
+    if args.get('filter_id') is not None:
+        # drop_shadow, outline and outer_glow are all gegl:dropshadow, which `_existing_filter`'s
+        # operation check cannot tell apart; the ledger's `type` can.
+        rec = _ledger_get(img)[0].get(_existing_filter(img, args, operation).get_name())
+        existing_type = rec and rec.get('type')
+        if existing_type and existing_type != effect_type:
+            raise ValueError('filter %s is %s, not %s' % (args['filter_id'], existing_type, effect_type))
     defaults = _existing_ledger_params(img, args, operation) or lib.EFFECT_CREATE_DEFAULTS[effect_type]
     params = builder(args, defaults)
     default_name = effect_type.replace('_', ' ').title()
@@ -1946,6 +1966,17 @@ def _refuse_if_masked_filters(img, op_name, before_hint='Rotate, flip or resize'
 ROTATE_DEPENDENT_OPERATIONS = frozenset({'gegl:vignette', 'gegl:motion-blur-linear', 'gegl:dropshadow'})
 
 
+def _rotation_sensitive(rec):
+    """Whether an arbitrary-angle rotation would misalign this ledger record's filter. A
+    gegl:dropshadow with no offset (outline, outer_glow, or a drop_shadow offset to 0,0) is
+    symmetric about the content, so only the offset ones are."""
+    operation = rec.get('operation')
+    if operation == 'gegl:dropshadow':
+        params = rec.get('params', {})
+        return bool(params.get('x') or params.get('y'))
+    return operation in ROTATE_DEPENDENT_OPERATIONS
+
+
 def _refuse_if_non_right_angle_with_tracked_effects(img, degrees, op_name):
     if lib.is_right_angle_degrees(degrees):
         return
@@ -1953,7 +1984,7 @@ def _refuse_if_non_right_angle_with_tracked_effects(img, degrees, op_name):
     live_names = _live_filter_names(img)
     tracked = sorted(
         name for name, rec in filters.items()
-        if name in live_names and rec.get('operation') in ROTATE_DEPENDENT_OPERATIONS
+        if name in live_names and _rotation_sensitive(rec)
     )
     if tracked:
         raise ValueError(
@@ -4430,7 +4461,7 @@ def _ensure_layer_alpha(layer):
     return True
 
 
-def _tracked_effect_names_on(img, layer):
+def _tracked_effect_names_on(img, layer, rotation_only=False):
     """Live, ledgered position/direction-dependent EFFECT filter names (vignette, motion_blur,
     drop_shadow -- `ROTATE_DEPENDENT_OPERATIONS`) anywhere in `layer`'s own subtree (itself, or
     every descendant for a group target) -- NOT its ancestors: an ancestor group's own filter is
@@ -4440,6 +4471,8 @@ def _tracked_effect_names_on(img, layer):
     subtree = _layer_subtree(layer)
     live_names = {f.get_name() for l in subtree for f in l.get_filters()}
     filters, _unknown = _ledger_get(img)
+    if rotation_only:  # an offset-free dropshadow (outline, outer_glow) survives any angle
+        return sorted(name for name in live_names if _rotation_sensitive(filters.get(name, {})))
     return sorted(
         name for name in live_names
         if filters.get(name, {}).get('operation') in ROTATE_DEPENDENT_OPERATIONS
@@ -4459,7 +4492,7 @@ def _refuse_if_tracked_effects_on(img, op_name, layer, reason):
 def _refuse_if_non_right_angle_tracked_effects_on(img, degrees, op_name, layer):
     if lib.is_right_angle_degrees(degrees):
         return
-    tracked = _tracked_effect_names_on(img, layer)
+    tracked = _tracked_effect_names_on(img, layer, rotation_only=True)
     if tracked:
         raise ValueError(
             '%s cannot use an arbitrary angle (%.4g°) while effect filter(s) %s are present on '

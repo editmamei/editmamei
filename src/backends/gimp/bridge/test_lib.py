@@ -866,6 +866,100 @@ class TestEffectParamBuilders(unittest.TestCase):
         with self.assertRaises(ValueError):
             lib.build_drop_shadow_params({'opacity': 1.1}, _effect_create_defaults('drop_shadow'))
 
+    def test_build_outline_params_defaults(self):
+        self.assertEqual(
+            lib.build_outline_params({}, _effect_create_defaults('outline')),
+            {'grow-radius': 4.0, 'color': '#000000'},
+        )
+
+    def test_build_outline_params_maps_width_and_color(self):
+        params = lib.build_outline_params(
+            {'width': 12, 'color': '#FFAA00'}, _effect_create_defaults('outline')
+        )
+        self.assertEqual(params, {'grow-radius': 12, 'color': '#FFAA00'})
+
+    def test_build_outline_params_bounds(self):
+        defaults = _effect_create_defaults('outline')
+        lib.build_outline_params({'width': 1}, defaults)
+        lib.build_outline_params({'width': 100}, defaults)
+        for bad in (0.9, 101, -3):
+            with self.assertRaises(ValueError):
+                lib.build_outline_params({'width': bad}, defaults)
+
+    def test_build_outline_params_rejects_a_bad_color(self):
+        for bad in ('red', '#fff', '#gggggg', '000000', 5, None):
+            with self.subTest(color=bad):
+                with self.assertRaises(ValueError):
+                    lib.build_outline_params({'color': bad}, _effect_create_defaults('outline'))
+
+    def test_build_outer_glow_params_defaults(self):
+        self.assertEqual(
+            lib.build_outer_glow_params({}, _effect_create_defaults('outer_glow')),
+            {'radius': 20.0, 'grow-radius': 4.0, 'opacity': 0.75, 'color': '#ffffff'},
+        )
+
+    def test_build_outer_glow_params_maps_spread_to_grow_radius(self):
+        params = lib.build_outer_glow_params(
+            {'spread': 9, 'radius': 40, 'opacity': 1.0, 'color': '#112233'},
+            _effect_create_defaults('outer_glow'),
+        )
+        self.assertEqual(
+            params, {'radius': 40, 'grow-radius': 9, 'opacity': 1.0, 'color': '#112233'}
+        )
+
+    def test_build_outer_glow_params_bounds(self):
+        defaults = _effect_create_defaults('outer_glow')
+        cases = (
+            ('spread', 0, 100, (-0.5, 100.5)),
+            ('radius', 1, 250, (0.5, 250.5)),
+            ('opacity', 0, 1, (-0.1, 1.1)),
+        )
+        for field, lo, hi, bads in cases:
+            lib.build_outer_glow_params({field: lo}, defaults)
+            lib.build_outer_glow_params({field: hi}, defaults)
+            for bad in bads:
+                with self.subTest(field=field, value=bad):
+                    with self.assertRaises(ValueError):
+                        lib.build_outer_glow_params({field: bad}, defaults)
+
+    def test_build_outer_glow_params_rejects_a_bad_color(self):
+        with self.assertRaises(ValueError):
+            lib.build_outer_glow_params({'color': 'white'}, _effect_create_defaults('outer_glow'))
+
+    def test_build_surface_blur_params_defaults_and_mapping(self):
+        defaults = _effect_create_defaults('surface_blur')
+        self.assertEqual(
+            lib.build_surface_blur_params({}, defaults),
+            {'blur-radius': 8.0, 'edge-preservation': 0.08},
+        )
+        self.assertEqual(
+            lib.build_surface_blur_params({'radius': 20, 'edge_preservation': 0.5}, defaults),
+            {'blur-radius': 20, 'edge-preservation': 0.5},
+        )
+
+    def test_build_surface_blur_params_bounds(self):
+        defaults = _effect_create_defaults('surface_blur')
+        for field, lo, hi in (('radius', 1, 50), ('edge_preservation', 0, 1)):
+            lib.build_surface_blur_params({field: lo}, defaults)
+            lib.build_surface_blur_params({field: hi}, defaults)
+            for bad in (lo - 0.5, hi + 0.5):
+                with self.subTest(field=field, value=bad):
+                    with self.assertRaises(ValueError):
+                        lib.build_surface_blur_params({field: bad}, defaults)
+
+    def test_fields_of_one_type_are_refused_on_another(self):
+        with self.assertRaises(ValueError):
+            lib.reject_foreign_fields('drop_shadow', {'width': 3})
+        with self.assertRaises(ValueError):
+            lib.reject_foreign_fields('outline', {'offset_x': 3})
+        with self.assertRaises(ValueError):
+            lib.reject_foreign_fields('surface_blur', {'color': '#000000'})
+        lib.reject_foreign_fields('outer_glow', {'spread': 1, 'color': '#000000', 'image': 1})
+
+    def test_edge_preservation_scale_maps_the_tool_range_onto_gegls_0_to_100(self):
+        self.assertEqual(lib.BILATERAL_EDGE_SCALE, 100.0)
+        self.assertAlmostEqual(0.08 * lib.BILATERAL_EDGE_SCALE, 8.0)  # GEGL's own default
+
 
 class TestEffectResolveFieldMerge(unittest.TestCase):
     """The same re-edit-is-a-merge contract TestResolveFieldMerge pins for ADJUST_PARAM_BUILDERS,
@@ -1653,6 +1747,9 @@ EFFECT_USER_ARGS_BY_TYPE = {
     'lens_blur': {'radius': 15.0, 'highlight_factor': 0.3},
     'add_noise': {'noise_amount': 0.4, 'alpha': 0.1, 'seed': 42},
     'drop_shadow': {'offset_x': -10.0, 'offset_y': 15.0, 'radius': 8.0, 'opacity': 0.7},
+    'outline': {'width': 7.0, 'color': '#ff8800'},
+    'outer_glow': {'spread': 3.0, 'radius': 30.0, 'opacity': 0.6, 'color': '#00ffcc'},
+    'surface_blur': {'radius': 12.0, 'edge_preservation': 0.2},
 }
 
 
@@ -1694,7 +1791,14 @@ class TestEffectUserParams(unittest.TestCase):
         # EFFECT_OPERATIONS' own) -- op_list_filters looks a foreign/legacy record's operation up
         # there regardless of which tool created it.
         for type_, operation in lib.EFFECT_OPERATIONS.items():
+            if operation == 'gegl:dropshadow':
+                continue  # shared by three types; see the next test
             self.assertEqual(lib.OPERATION_TYPES[operation], type_)
+
+    def test_a_typeless_dropshadow_record_is_a_drop_shadow(self):
+        # outline and outer_glow share gegl:dropshadow, but they only ever exist with a stored
+        # `type`; a record without one predates them.
+        self.assertEqual(lib.OPERATION_TYPES['gegl:dropshadow'], 'drop_shadow')
 
 
 class TestSpatialScaleProps(unittest.TestCase):
@@ -1710,7 +1814,12 @@ class TestSpatialScaleProps(unittest.TestCase):
         self.assertEqual(lib.SPATIAL_SCALE_PROPS['gegl:focus-blur'], ('blur-radius',))
 
     def test_drop_shadow_x_y_radius_are_spatial(self):
-        self.assertEqual(lib.SPATIAL_SCALE_PROPS['gegl:dropshadow'], ('x', 'y', 'radius'))
+        self.assertEqual(
+            lib.SPATIAL_SCALE_PROPS['gegl:dropshadow'], ('x', 'y', 'radius', 'grow-radius')
+        )
+
+    def test_surface_blur_blur_radius_is_spatial(self):
+        self.assertEqual(lib.SPATIAL_SCALE_PROPS['gegl:bilateral-filter'], ('blur-radius',))
 
     def test_vignette_and_mono_mixer_are_deliberately_absent(self):
         # vignette is proportional (not absolute pixels); mono-mixer is a per-pixel channel-weight
@@ -2067,6 +2176,40 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
         # radius uses the geometric mean of the two axis scales (sqrt(2*4) = sqrt(8)).
         self.assertAlmostEqual(result['radius'], 5.0 * math.sqrt(8.0), places=6)
 
+    def test_outline_and_glow_have_no_offset_so_flip_and_rotate_leave_them_alone(self):
+        outline = {'grow-radius': 6.0, 'color': '#000000'}
+        glow = {'radius': 20.0, 'grow-radius': 4.0, 'opacity': 0.75, 'color': '#ffffff'}
+        for params in (outline, glow):
+            self.assertIs(lib.flip_effect_params('gegl:dropshadow', params, 'horizontal'), params)
+            self.assertIs(lib.flip_effect_params('gegl:dropshadow', params, 'vertical'), params)
+            self.assertIs(lib.rotate_effect_params('gegl:dropshadow', params, 90.0, 200, 100), params)
+
+    def test_resize_scales_outline_width_and_glow_by_the_isotropic_factor(self):
+        outline = lib.resize_effect_params(
+            'gegl:dropshadow', {'grow-radius': 6.0, 'color': '#000000'}, 2.0, 2.0
+        )
+        self.assertEqual(outline, {'grow-radius': 12.0, 'color': '#000000'})
+        glow = lib.resize_effect_params(
+            'gegl:dropshadow',
+            {'radius': 20.0, 'grow-radius': 4.0, 'opacity': 0.75, 'color': '#ffffff'}, 0.5, 0.5,
+        )
+        self.assertEqual(glow['radius'], 10.0)
+        self.assertEqual(glow['grow-radius'], 2.0)
+        self.assertEqual(glow['opacity'], 0.75)
+
+    def test_resize_scales_surface_blur_radius(self):
+        out = lib.resize_effect_params(
+            'gegl:bilateral-filter', {'blur-radius': 8.0, 'edge-preservation': 0.08}, 2.0, 2.0
+        )
+        self.assertEqual(out, {'blur-radius': 16.0, 'edge-preservation': 0.08})
+
+    def test_resize_past_the_grow_cap_is_refused_naming_width_or_spread(self):
+        grown = lib.resize_effect_params(
+            'gegl:dropshadow', {'grow-radius': 80.0, 'color': '#000000'}, 2.0, 2.0
+        )
+        with self.assertRaisesRegex(ValueError, 'width/spread'):
+            lib.validate_effect_transform('resize', 'gegl:dropshadow', 'Outline', grown)
+
     def test_resize_uniform_scale_is_exact_for_drop_shadow_radius(self):
         result = lib.resize_effect_params(
             'gegl:dropshadow', {'x': 10.0, 'y': 10.0, 'radius': 5.0, 'opacity': 0.5}, 2.0, 2.0
@@ -2172,14 +2315,28 @@ class TestEffectTransformBoundsMatchBuilders(unittest.TestCase):
         'gegl:motion-blur-linear': ('motion_blur', lib.build_motion_blur_params),
         'gegl:focus-blur': ('lens_blur', lib.build_lens_blur_params),
         'gegl:dropshadow': ('drop_shadow', lib.build_drop_shadow_params),
+        'gegl:bilateral-filter': ('surface_blur', lib.build_surface_blur_params),
     }
+
+    # (operation, GEGL prop) -> (type, builder) for a prop the entry above does not have: the
+    # dropshadow-based types' grow-radius is outer_glow's `spread` and outline's `width`.
+    PROP_OVERRIDES = {
+        ('gegl:dropshadow', 'grow-radius'): ('outer_glow', lib.build_outer_glow_params, 'spread'),
+    }
+    # Where the builder is stricter than the transform bound on purpose: a resize may shrink a
+    # surface_blur radius below the 1 px a caller may ask for, so the builder's own floor is 1.
+    BUILDER_LO = {('gegl:bilateral-filter', 'blur-radius'): 1.0}
 
     def test_every_bound_is_accepted_at_its_edges_and_refused_just_outside(self):
         for operation, props in lib.EFFECT_TRANSFORM_BOUNDS.items():
-            type_, builder = self.BUILDER_AND_TYPE[operation]
-            defaults = lib.EFFECT_CREATE_DEFAULTS[type_]
             for prop, (lo, hi) in props.items():
-                user_field = lib.EFFECT_TRANSFORM_FIELD_NAMES[(operation, prop)]
+                if (operation, prop) in self.PROP_OVERRIDES:
+                    type_, builder, user_field = self.PROP_OVERRIDES[(operation, prop)]
+                else:
+                    type_, builder = self.BUILDER_AND_TYPE[operation]
+                    user_field = lib.EFFECT_TRANSFORM_FIELD_NAMES[(operation, prop)]
+                defaults = lib.EFFECT_CREATE_DEFAULTS[type_]
+                lo = self.BUILDER_LO.get((operation, prop), lo)
                 eps = max(abs(hi - lo), 1.0) * 1e-6
                 with self.subTest(operation=operation, field=user_field, edge='lo'):
                     builder({user_field: lo}, defaults)  # must not raise
@@ -2293,7 +2450,7 @@ class TestLayerModes(unittest.TestCase):
         expected = {
             'normal', 'multiply', 'screen', 'overlay', 'soft_light', 'hard_light', 'darken',
             'lighten', 'difference', 'exclusion', 'addition', 'subtract', 'divide', 'dodge',
-            'burn', 'hue', 'saturation', 'color', 'luminosity',
+            'burn', 'hue', 'saturation', 'color', 'luminosity', 'grain_extract', 'grain_merge',
         }
         self.assertEqual(set(lib.LAYER_MODES), expected)
 
@@ -2304,6 +2461,10 @@ class TestLayerModes(unittest.TestCase):
         for name, member in lib.LAYER_MODES.items():
             self.assertTrue(member.isupper(), '%s -> %r should be upper-case' % (name, member))
             self.assertTrue(member.replace('_', '').isalpha(), '%s -> %r should be a bare identifier' % (name, member))
+
+    def test_grain_modes_map_to_the_non_legacy_members(self):
+        self.assertEqual(lib.LAYER_MODES['grain_extract'], 'GRAIN_EXTRACT')
+        self.assertEqual(lib.LAYER_MODES['grain_merge'], 'GRAIN_MERGE')
 
     def test_validate_layer_mode_accepts_every_listed_name(self):
         for name in lib.LAYER_MODES:

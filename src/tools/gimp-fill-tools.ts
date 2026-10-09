@@ -41,6 +41,8 @@ export const FILL_MODE_NAMES = [
   'saturation',
   'color',
   'luminosity',
+  'grain_extract',
+  'grain_merge',
   'lch_color',
 ] as const;
 /** Mirror lib.py's FILL_MAX_COORD_PX (10 x MAX_RESIZE_SIDE_PX) and FILL_MAX_STRING_LEN; a drift test pins them. */

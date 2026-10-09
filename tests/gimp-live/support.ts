@@ -434,6 +434,31 @@ export function writeNoisyField(path: string, width: number, height: number, amp
   });
 }
 
+/** A noisy dark patch (left half, mean `noisy`, +/- `amplitude`) next to a flat bright one (right
+ * half, `flat`), joined by a hard vertical edge at the midpoint: skin-smoothing's shape, noise to
+ * remove beside a step to keep. Seeded, so reproducible. */
+export function writeNoisyPatchBesideEdge(
+  path: string,
+  width: number,
+  height: number,
+  noisy = 80,
+  flat = 200,
+  amplitude = 30
+): void {
+  let seed = 4242;
+  const next = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  writePng(path, width, height, (x) => {
+    const v =
+      x < width / 2
+        ? Math.max(0, Math.min(255, Math.round(noisy + (next() - 0.5) * 2 * amplitude)))
+        : flat;
+    return [v, v, v];
+  });
+}
+
 /** A grayscale ramp, one exact luminance level per column (R=G=B=x when width===256), so a
  * curves/levels transfer function can be checked against an independently computed LUT at every
  * input level rather than a handful of samples. */
