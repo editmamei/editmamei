@@ -889,8 +889,8 @@ class TestGimpId(unittest.TestCase):
             self.assertEqual(lib.gimp_id(value), expected, value)
 
     def test_anything_gimp_cannot_hold_is_refused(self):
-        # 3230838997 is the id that reached Gimp.Image.get_by_id and raised OverflowError.
-        for value in (3230838997, 2147483648, 0, -1, 1.5, True, False, 'abc', None, [1]):
+        # Past gint32 (3230838997, 2147483648) would raise OverflowError inside Gimp.*.get_by_id.
+        for value in (3230838997, 2147483648, 0, -1, 1.5, float('inf'), True, False, 'abc', None, [1]):
             self.assertIsNone(lib.gimp_id(value), value)
 
 

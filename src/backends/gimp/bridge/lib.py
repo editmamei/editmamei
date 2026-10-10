@@ -342,7 +342,7 @@ def gimp_id(value):
         return None
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if isinstance(value, float) and value != number:
         return None
