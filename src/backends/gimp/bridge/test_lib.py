@@ -883,6 +883,17 @@ class TestRequire(unittest.TestCase):
             lib.require({'degrees': None}, 'degrees')
 
 
+class TestGimpId(unittest.TestCase):
+    def test_a_valid_gint32_id_passes_through(self):
+        for value, expected in ((1, 1), (2147483647, 2147483647), ('5', 5), (7.0, 7)):
+            self.assertEqual(lib.gimp_id(value), expected, value)
+
+    def test_anything_gimp_cannot_hold_is_refused(self):
+        # 3230838997 is the id that reached Gimp.Image.get_by_id and raised OverflowError.
+        for value in (3230838997, 2147483648, 0, -1, 1.5, True, False, 'abc', None, [1]):
+            self.assertIsNone(lib.gimp_id(value), value)
+
+
 class TestRequireBool(unittest.TestCase):
     def test_accepts_true_and_false(self):
         self.assertIs(lib.require_bool({'visible': True}, 'visible'), True)

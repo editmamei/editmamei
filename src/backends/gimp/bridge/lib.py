@@ -331,6 +331,24 @@ def require(args, name):
     return args[name]
 
 
+GINT32_MAX = 2147483647
+
+
+def gimp_id(value):
+    """`value` as an image or item id GIMP's gint32 `get_by_id` can take, or None when it can't be
+    one (a bool, not a whole number, below 1, or past gint32). The caller then answers "no ... with
+    id N" instead of letting PyGObject raise a raw OverflowError on the lookup."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, float) and value != number:
+        return None
+    return number if 1 <= number <= GINT32_MAX else None
+
+
 def require_bool(args, name):
     """Like `require`, but also rejects anything that isn't a real JSON boolean -- `bool("false")`
     is `True` in Python (any non-empty string is truthy), so a caller that sends the STRING
