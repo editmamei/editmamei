@@ -354,6 +354,23 @@ class TestTransport(unittest.TestCase):
             with self.assertRaises(OSError):
                 lib.read_request(path, attempts=2, delay_s=0)
 
+    def test_read_request_backs_off_to_about_a_second_before_giving_up(self):
+        with tempfile.TemporaryDirectory() as rpc:
+            path = os.path.join(rpc, 'req-1.json')  # never created
+            slept = []
+            retried = []
+            original = lib.time.sleep
+            lib.time.sleep = slept.append
+            try:
+                with self.assertRaises(OSError):
+                    lib.read_request(path, on_retry=lambda exc, attempt: retried.append(attempt))
+            finally:
+                lib.time.sleep = original
+            # No sleep and no retry callback after the last attempt; the wait doubles and caps at 0.25s.
+            self.assertEqual(slept, [0.02, 0.04, 0.08, 0.16, 0.25, 0.25, 0.25])
+            self.assertEqual(retried, [0, 1, 2, 3, 4, 5, 6])
+            self.assertAlmostEqual(sum(slept), 1.05)
+
     def test_write_response_normal(self):
         with tempfile.TemporaryDirectory() as rpc:
             path = os.path.join(rpc, 'resp-1.json')
@@ -687,6 +704,11 @@ class TestAdjustParamBuilders(unittest.TestCase):
         self.assertEqual(
             lib.build_saturation_params({}, _create_defaults('saturation')), {'scale': 1.0}
         )
+
+    def test_harden_mask_bytes_cuts_at_50_percent(self):
+        self.assertEqual(lib.harden_mask_bytes(bytes([0, 1, 127, 128, 129, 254, 255])), bytes([0, 0, 0, 255, 255, 255, 255]))
+        self.assertEqual(lib.harden_mask_bytes(b''), b'')
+        self.assertEqual(len(lib.HARDEN_TABLE), 256)
 
     def test_build_vibrance_params_defaults(self):
         self.assertEqual(

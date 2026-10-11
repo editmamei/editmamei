@@ -40,6 +40,7 @@ import {
 } from '@editmamei/utils/operation-timeouts.ts';
 import type { ToolDefinition, ToolResult } from '@editmamei/core/tool-registry.ts';
 import { callTool } from '../fixtures/tool-helpers.ts';
+import { budgetContextFor, runWithToolBudget } from '@editmamei/utils/tool-budget-context.ts';
 import {
   writeGrayRamp,
   readPng,
@@ -1504,6 +1505,17 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
   const PERF = process.env.EDITMAMEI_GIMP_PERF === '1';
 
   describe.skipIf(!PERF)('gimp_transform_layer timing budget', () => {
+    // The timing tests run the transform under its own tool budget, as ToolRegistry.execute does in
+    // production; a bare handler call would get the session's 30s default instead.
+    const timedTransform = (args: Record<string, unknown>): Promise<ToolResult> =>
+      runWithToolBudget(
+        budgetContextFor(
+          'gimp_transform_layer',
+          TOOL_TIMEOUT_BUDGETS_MS.gimp_transform_layer ?? DEFAULT_SCRIPT_TIMEOUT_MS
+        ),
+        () => callTool(tools, 'gimp_transform_layer', args)
+      );
+
     const WIDTH = 6016;
     const HEIGHT = 4000; // ~24.1 MP
 
@@ -1524,7 +1536,7 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
       const layerId = (structuredOf(tree).layers as Array<{ layer_id: number }>)[0]!.layer_id;
 
       const t0 = Date.now();
-      const result = await callTool(tools, 'gimp_transform_layer', {
+      const result = await timedTransform({
         image,
         layer_id: layerId,
         ...args,
@@ -1554,7 +1566,7 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
       expect(scaleMs, 'scale').toBeLessThan(budget * MARGIN);
       expect(rotateMs, 'rotate').toBeLessThan(budget * MARGIN);
       expect(freeMs, 'free').toBeLessThan(budget * MARGIN);
-    }, 120_000);
+    }, 240_000);
 
     // S3: the budget above is measured against a ~24MP sample, but the bridge's own
     // precision-aware cap (lib.validate_document_dims) allows a result up to ~250MP at 8-bit or
@@ -1588,7 +1600,7 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
         const layerId = structuredOf(placed).layer_id as number;
 
         const t0 = Date.now();
-        const result = await callTool(tools, 'gimp_transform_layer', {
+        const result = await timedTransform({
           image,
           layer_id: layerId,
           ...args,
@@ -1645,6 +1657,6 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
       expect(rotate8bitMs, 'rotate (8-bit, near cap)').toBeLessThan(budget * MARGIN);
       expect(scale16bitMs, 'scale (16-bit, near cap)').toBeLessThan(budget * MARGIN);
       expect(rotate16bitMs, 'rotate (16-bit, near cap)').toBeLessThan(budget * MARGIN);
-    }, 180_000);
+    }, 400_000);
   });
 });

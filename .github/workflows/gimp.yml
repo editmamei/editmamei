@@ -41,6 +41,11 @@ on:
       - 'tests/fixtures/fake-gimp-session.ts'
       - '.github/workflows/gimp.yml'
   workflow_dispatch:
+    inputs:
+      perf:
+        description: Also run the large-image timing tests (otherwise only the schedule does)
+        type: boolean
+        default: false
   # The installer is pinned (URL + checksum below), so this does not catch GIMP itself drifting --
   # it re-runs the suite (including the GEGL schema goldens) against that exact pinned build on a
   # schedule independent of any PR, as a baseline health check for the suite itself.
@@ -132,8 +137,8 @@ jobs:
       - name: gimp-live suite (fails loudly, not silently, if GIMP wasn't actually found)
         env:
           EDITMAMEI_REQUIRE_GIMP: '1'
-          # The large-image timing test runs only on the scheduled build.
-          EDITMAMEI_GIMP_PERF: ${{ github.event_name == 'schedule' && '1' || '0' }}
+          # The large-image timing test runs on the scheduled build, or on a dispatch with perf.
+          EDITMAMEI_GIMP_PERF: ${{ (github.event_name == 'schedule' || inputs.perf) && '1' || '0' }}
         run: npm run test:gimp
 
   gimp-macos:
@@ -227,8 +232,8 @@ jobs:
       - name: gimp-live suite (fails loudly, not silently, if GIMP wasn't actually found)
         env:
           EDITMAMEI_REQUIRE_GIMP: '1'
-          # The large-image timing test runs only on the scheduled build.
-          EDITMAMEI_GIMP_PERF: ${{ github.event_name == 'schedule' && '1' || '0' }}
+          # The large-image timing test runs on the scheduled build, or on a dispatch with perf.
+          EDITMAMEI_GIMP_PERF: ${{ (github.event_name == 'schedule' || inputs.perf) && '1' || '0' }}
         run: npm run test:gimp
 
   gimp-linux:
@@ -274,6 +279,6 @@ jobs:
       - name: gimp-live suite
         env:
           EDITMAMEI_REQUIRE_GIMP: '1'
-          # The large-image timing test runs only on the scheduled build.
-          EDITMAMEI_GIMP_PERF: ${{ github.event_name == 'schedule' && '1' || '0' }}
+          # The large-image timing test runs on the scheduled build, or on a dispatch with perf.
+          EDITMAMEI_GIMP_PERF: ${{ (github.event_name == 'schedule' || inputs.perf) && '1' || '0' }}
         run: npm run test:gimp

@@ -204,6 +204,17 @@ MAX_RESIZE_MEGAPIXELS = megapixel_cap_from_env(os.environ.get('EM_GIMP_MAX_MEGAP
 
 MAX_FEATHER_PX = 1000
 
+# Hardening a mask read as "Y' u8": 50% and above becomes fully selected (255), the rest 0. The
+# same 128 cut `_channel_coverage` counts as selected. Applied with `bytes.translate`, a C pass.
+HARDEN_TABLE = bytes(255 if v >= 128 else 0 for v in range(256))
+# Rows per band when hardening, so a very large mask is never held twice in memory at once.
+HARDEN_BAND_ROWS = 512
+
+
+def harden_mask_bytes(data):
+    """`data` ("Y' u8" mask bytes) with every value hardened to 0 or 255 at the 50% cut."""
+    return bytes(data).translate(HARDEN_TABLE)
+
 # gimp_modify_selection's expand/contract/border radius cap -- much lower than MAX_FEATHER_PX.
 # `Gimp.Selection.grow`/`shrink`/`border` are morphological (structuring-element) operations whose
 # cost scales with the radius, unlike `feather` (a GEGL blur, flat ~0.5s regardless of radius on a
@@ -2276,12 +2287,15 @@ def list_requests(rpc_dir):
     return [name for _req_id, name in numbered]
 
 
-def read_request(req_path, attempts=5, delay_s=0.02, on_retry=None):
+def read_request(req_path, attempts=8, delay_s=0.02, max_delay_s=0.25, on_retry=None):
     """Read + parse a request file. Retries ONLY on OSError (e.g. a
     PermissionError from anti-virus or a file indexer holding a brief lock on
     a just-renamed file on Windows) -- a JSONDecodeError means the content
     itself is bad and is raised immediately; retrying that would just mask a
     genuinely malformed file rather than a transient lock.
+
+    The wait doubles from `delay_s` up to `max_delay_s`, about 1s in all at the defaults, since a Windows
+    file lock can outlast 100ms.
 
     `on_retry(exc, attempt)`, if given, is called right before each sleep --
     the bridge logs the exception type through it; tests can assert on it
@@ -2295,9 +2309,11 @@ def read_request(req_path, attempts=5, delay_s=0.02, on_retry=None):
             raise
         except OSError as e:
             last_err = e
+            if attempt == attempts - 1:
+                break
             if on_retry:
                 on_retry(e, attempt)
-            time.sleep(delay_s)
+            time.sleep(min(delay_s * (2 ** attempt), max_delay_s))
     raise last_err
 
 

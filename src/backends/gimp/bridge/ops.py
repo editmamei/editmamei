@@ -1015,7 +1015,7 @@ def _match_select_visible(dup, target):
     mask = target.get_mask()
     if mask is not None:
         dup.select_item(Gimp.ChannelOps.INTERSECT, mask)
-    Gimp.Selection.sharpen(dup)
+    _harden_selection(dup)
 
 
 def _match_render(img, layer, roi, previous_filter_indexes, mode):
@@ -1090,7 +1090,7 @@ def _match_measure_reference(img, layer, roi, previous_filter_indexes, channels,
             visible = Gimp.Selection.save(dup)
             Gimp.Selection.grow(dup, lib.match_scaled_px(opts['surround_px'], factor))
             dup.select_item(Gimp.ChannelOps.SUBTRACT, visible)
-            Gimp.Selection.sharpen(dup)
+            _harden_selection(dup)
             if Gimp.Selection.is_empty(dup):
                 raise ValueError(
                     'there is no canvas around the layer to sample (it fills the canvas); use '
@@ -4397,6 +4397,29 @@ def _capture_selection(img, w, h, scratch):
     scratch.update(0, 0, w, h)
 
 
+def _harden_selection(img):
+    """Re-threshold the active selection at 50%: what GIMP's `Selection.sharpen` does, done on the
+    mask's own bytes instead. On macOS GIMP 3.2.6 `Selection.sharpen` leaves the selection empty
+    (a fully selected pixel reads 0 afterwards), while reading and writing the mask buffer works
+    on every platform. Banded, so a very large mask is never held twice in memory."""
+    if Gimp.Selection.is_empty(img):
+        return
+    w, h = img.get_width(), img.get_height()
+    source = img.get_selection().get_buffer()
+
+    def _fill(scratch):
+        out = scratch.get_buffer()
+        for y in range(0, h, lib.HARDEN_BAND_ROWS):
+            rect = Gegl.Rectangle.new(0, y, w, min(lib.HARDEN_BAND_ROWS, h - y))
+            band = source.get(rect, 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
+            out.set(rect, "Y' u8", lib.harden_mask_bytes(band))
+        out.flush()
+        scratch.update(0, 0, w, h)
+        img.select_item(Gimp.ChannelOps.REPLACE, scratch)
+
+    _with_scratch_channel(img, w, h, _fill)
+
+
 def _shrink_edge_locked(img, px):
     """`Gimp.Selection.shrink` that does not erode from the canvas edge. GIMP's own shrink treats
     the area outside the canvas as unselected (its PDB call hardcodes edge-lock off), so a
@@ -4618,14 +4641,14 @@ def op_modify_mask(args):
         elif how == 'invert':
             Gimp.Selection.invert(img)
         elif how == 'harden':
-            Gimp.Selection.sharpen(img)
+            _harden_selection(img)
         elif how == 'smooth':
             # Round off jaggies: feather, then re-threshold at 50%. `px` is optional here (unlike
             # the four ops above) -- a plain smoothing pass with no caller-chosen radius is still
             # meaningful, so it floors at 1.0 rather than requiring one.
             px = lib.validate_range('px', args.get('px', 0), 0, lib.MAX_FEATHER_PX)
             Gimp.Selection.feather(img, max(px, 1.0))
-            Gimp.Selection.sharpen(img)
+            _harden_selection(img)
         else:
             raise ValueError('unknown op %r' % how)
         return _selection_to_channel(img, out)
