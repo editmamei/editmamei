@@ -2294,8 +2294,8 @@ def read_request(req_path, attempts=8, delay_s=0.02, max_delay_s=0.25, on_retry=
     itself is bad and is raised immediately; retrying that would just mask a
     genuinely malformed file rather than a transient lock.
 
-    The wait doubles from `delay_s` up to `max_delay_s`, about 1s in all at the defaults: a lock
-    on the hosted Windows runner outlasted the earlier flat 5 x 20ms.
+    The wait doubles from `delay_s` up to `max_delay_s`, about 1s in all at the defaults, since a Windows
+    file lock can outlast 100ms.
 
     `on_retry(exc, attempt)`, if given, is called right before each sleep --
     the bridge logs the exception type through it; tests can assert on it

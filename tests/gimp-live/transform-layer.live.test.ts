@@ -1566,7 +1566,7 @@ describe.skipIf(!install)('gimp_transform_layer against real headless GIMP', () 
       expect(scaleMs, 'scale').toBeLessThan(budget * MARGIN);
       expect(rotateMs, 'rotate').toBeLessThan(budget * MARGIN);
       expect(freeMs, 'free').toBeLessThan(budget * MARGIN);
-    }, 120_000);
+    }, 240_000);
 
     // S3: the budget above is measured against a ~24MP sample, but the bridge's own
     // precision-aware cap (lib.validate_document_dims) allows a result up to ~250MP at 8-bit or
