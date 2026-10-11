@@ -358,11 +358,11 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   //   on a result near the bridge's own precision-aware size cap (the actual worst case a
   //   caller can reach without being refused outright) -- ~217MP at 8-bit, ~106MP at 16-bit:
   //     scale ~8.7s (8-bit) / ~7.6s (16-bit), rotate ~7.7s (8-bit) / ~5.4s (16-bit)
-  // GitHub's hosted runners take 2-3x those numbers near the cap: 12-19s on Windows and 15-24s on
-  // macOS at 8-bit, and the 16-bit scale passed 30s on every macOS run (a ~120MP 16-bit layer
-  // and its result are over 2GB on a 7GB machine). A timeout kills the session and every open
-  // image with it, so the budget matches gimp_transform_canvas, the same kind of whole-layer move.
-  gimp_transform_layer: 60_000,
+  // GitHub's hosted runners take far longer near the cap: Windows ~18-25s for all four, macOS
+  // ~22-24s at 8-bit and 38s (rotate) / 49s (scale) at 16-bit, where a ~120MP 16-bit layer and
+  // its result pass 2GB on a 7GB machine. A timeout kills the session and every open image with
+  // it, so the budget keeps that slowest case near 55% of it, as gimp_layer and gimp_bake allow.
+  gimp_transform_layer: 90_000,
   // gimp_match_layer: two cropped throwaway renders plus the ring growth. Measured on a 24 MP
   // (6016x4000) document: 1.4 s for a 600x400 layer, 6.4 s for 2000x1500, 22 s for a 4000x3000
   // layer with the default 400 px surround (3.9 s with reference 'below', which skips the growth;
