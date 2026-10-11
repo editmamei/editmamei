@@ -688,6 +688,11 @@ class TestAdjustParamBuilders(unittest.TestCase):
             lib.build_saturation_params({}, _create_defaults('saturation')), {'scale': 1.0}
         )
 
+    def test_harden_mask_bytes_cuts_at_50_percent(self):
+        self.assertEqual(lib.harden_mask_bytes(bytes([0, 1, 127, 128, 129, 254, 255])), bytes([0, 0, 0, 255, 255, 255, 255]))
+        self.assertEqual(lib.harden_mask_bytes(b''), b'')
+        self.assertEqual(len(lib.HARDEN_TABLE), 256)
+
     def test_build_vibrance_params_defaults(self):
         self.assertEqual(
             lib.build_vibrance_params({}, _create_defaults('vibrance')),

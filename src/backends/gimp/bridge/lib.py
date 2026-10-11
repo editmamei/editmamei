@@ -204,6 +204,17 @@ MAX_RESIZE_MEGAPIXELS = megapixel_cap_from_env(os.environ.get('EM_GIMP_MAX_MEGAP
 
 MAX_FEATHER_PX = 1000
 
+# Hardening a mask read as "Y' u8": 50% and above becomes fully selected (255), the rest 0. The
+# same 128 cut `_channel_coverage` counts as selected. Applied with `bytes.translate`, a C pass.
+HARDEN_TABLE = bytes(255 if v >= 128 else 0 for v in range(256))
+# Rows per band when hardening, so a very large mask is never held twice in memory at once.
+HARDEN_BAND_ROWS = 512
+
+
+def harden_mask_bytes(data):
+    """`data` ("Y' u8" mask bytes) with every value hardened to 0 or 255 at the 50% cut."""
+    return bytes(data).translate(HARDEN_TABLE)
+
 # gimp_modify_selection's expand/contract/border radius cap -- much lower than MAX_FEATHER_PX.
 # `Gimp.Selection.grow`/`shrink`/`border` are morphological (structuring-element) operations whose
 # cost scales with the radius, unlike `feather` (a GEGL blur, flat ~0.5s regardless of radius on a
