@@ -703,15 +703,18 @@ class TestAdjustParamBuilders(unittest.TestCase):
         with self.assertRaises(ValueError):
             lib.build_vibrance_params({'vibrance': 101}, defaults)
 
-    def test_build_vibrance_params_reedit_keeps_the_stored_gegl_value(self):
-        # A re-edit that leaves vibrance out keeps the filter's stored (already scaled) value.
-        stored = {'vibrance': 0.6, 'saturation': 1.0}
+    def test_build_vibrance_params_reedit_merges_without_mixing_units(self):
+        # A re-edit scales only the field the caller gives; the omitted one keeps its stored GEGL value.
+        stored = {'vibrance': 0.6, 'saturation': 1.4}
+        self.assertEqual(lib.build_vibrance_params({'vibrance': 30}, stored), {'vibrance': 1.2, 'saturation': 1.4})
         self.assertEqual(lib.build_vibrance_params({'saturation': 1.2}, stored), {'vibrance': 0.6, 'saturation': 1.2})
 
     def test_vibrance_reads_back_in_the_fields_own_units(self):
         convert = dict((user, conv) for user, _gegl, conv in lib.USER_FIELDS['vibrance'])
-        self.assertEqual(convert['vibrance'](0.6), 15)
-        self.assertEqual(convert['vibrance'](-2.0), -50)
+        defaults = _create_defaults('vibrance')
+        for typed in (15, 33, -7.5, -50, 100):
+            gegl = lib.build_vibrance_params({'vibrance': typed}, defaults)['vibrance']
+            self.assertEqual(convert['vibrance'](gegl), typed)
 
     def test_build_sharpen_params_field_mapping(self):
         params = lib.build_sharpen_params(

@@ -916,10 +916,10 @@ def build_saturation_params(args, defaults):
     }
 
 
-# gegl:vibrance's own -100..100 is far stronger than the Photoshop/Lightroom scale callers expect:
+# gegl:vibrance's own -100..100 is far stronger than the Photoshop scale callers expect:
 # on a marina photo its +15 sent 38% of pixels to red 0, where Photoshop's +15 added about 0.014
 # mean saturation and clipped nothing. Dividing by this factor lines the two up (Photoshop +15 and
-# +50 match gegl 0.6 and 2.0 on that photo), so the field keeps a Photoshop-like -100..100.
+# +50 match gegl about 0.5 and 2.0 on that photo), so the field keeps a Photoshop-like -100..100.
 VIBRANCE_GEGL_DIVISOR = 25.0
 
 
