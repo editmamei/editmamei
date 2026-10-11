@@ -354,6 +354,21 @@ class TestTransport(unittest.TestCase):
             with self.assertRaises(OSError):
                 lib.read_request(path, attempts=2, delay_s=0)
 
+    def test_read_request_backs_off_to_about_a_second_before_giving_up(self):
+        with tempfile.TemporaryDirectory() as rpc:
+            path = os.path.join(rpc, 'req-1.json')  # never created
+            slept = []
+            original = lib.time.sleep
+            lib.time.sleep = slept.append
+            try:
+                with self.assertRaises(OSError):
+                    lib.read_request(path)
+            finally:
+                lib.time.sleep = original
+            # No sleep after the last attempt; the wait doubles and caps at 0.25s.
+            self.assertEqual(slept, [0.02, 0.04, 0.08, 0.16, 0.25, 0.25, 0.25])
+            self.assertAlmostEqual(sum(slept), 1.05)
+
     def test_write_response_normal(self):
         with tempfile.TemporaryDirectory() as rpc:
             path = os.path.join(rpc, 'resp-1.json')

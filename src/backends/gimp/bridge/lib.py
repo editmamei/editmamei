@@ -2287,12 +2287,15 @@ def list_requests(rpc_dir):
     return [name for _req_id, name in numbered]
 
 
-def read_request(req_path, attempts=5, delay_s=0.02, on_retry=None):
+def read_request(req_path, attempts=8, delay_s=0.02, max_delay_s=0.25, on_retry=None):
     """Read + parse a request file. Retries ONLY on OSError (e.g. a
     PermissionError from anti-virus or a file indexer holding a brief lock on
     a just-renamed file on Windows) -- a JSONDecodeError means the content
     itself is bad and is raised immediately; retrying that would just mask a
     genuinely malformed file rather than a transient lock.
+
+    The wait doubles from `delay_s` up to `max_delay_s`, about 1s in all at the defaults: a lock
+    on the hosted Windows runner outlasted the earlier flat 5 x 20ms.
 
     `on_retry(exc, attempt)`, if given, is called right before each sleep --
     the bridge logs the exception type through it; tests can assert on it
@@ -2306,9 +2309,11 @@ def read_request(req_path, attempts=5, delay_s=0.02, on_retry=None):
             raise
         except OSError as e:
             last_err = e
+            if attempt == attempts - 1:
+                break
             if on_retry:
                 on_retry(e, attempt)
-            time.sleep(delay_s)
+            time.sleep(min(delay_s * (2 ** attempt), max_delay_s))
     raise last_err
 
 
