@@ -19,6 +19,7 @@ import {
   LIVE_READY_TIMEOUT_MS,
   TEST_OPS_PY,
 } from './support.ts';
+import { TOOL_TIMEOUT_BUDGETS_MS } from '@editmamei/utils/operation-timeouts.ts';
 
 vi.setConfig({ testTimeout: 60_000 });
 
@@ -398,7 +399,8 @@ describe.skipIf(!install)('match_layer: pull a pasted layer toward its surround'
     await expect(
       session.call('match_layer', { image: doc.image, layer_id: layer.layer_id, surround_px: 400 })
     ).rejects.toThrow(/fills the canvas/);
-    expect(performance.now() - t0).toBeLessThan(20_000);
+    // Well inside the tool's own budget: ~11.5 s on a desktop, ~22 s on the hosted Windows runner.
+    expect(performance.now() - t0).toBeLessThan(TOOL_TIMEOUT_BUDGETS_MS.gimp_match_layer! * 0.5);
     await expectNoNewImages(before);
   });
 });
