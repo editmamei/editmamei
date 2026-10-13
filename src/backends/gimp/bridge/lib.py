@@ -2595,6 +2595,45 @@ def metadata_strip_settings(fmt, prop_names):
     return settings
 
 
+def profile_is_editors_own(texts):
+    """Whether a color profile is the editor's built-in one, from its description, manufacturer,
+    model and copyright strings (None for an image that has no profile of its own, i.e. the
+    built-in one). Exports leave such a profile out: the file is then plain untagged sRGB, which
+    every viewer assumes anyway, and the profile's name ("GIMP built-in sRGB") would otherwise ride
+    along in every file. A camera's or phone's own profile is kept."""
+    if texts is None:
+        return True
+    return any('gimp' in (t or '').lower() for t in texts)
+
+
+PSD_ICC_RESOURCE = 1039
+
+
+def psd_resources_without(section, resource_id):
+    """A PSD image-resource section (the bytes after its 4-byte length) with every block of
+    `resource_id` removed. Each block: '8BIM', a 2-byte id, a Pascal name padded to even length,
+    a 4-byte size, then the data padded to even length. Raises ValueError on a malformed section."""
+    out = bytearray()
+    at = 0
+    while at < len(section):
+        start = at
+        if section[at:at + 4] != b'8BIM' or at + 7 > len(section):
+            raise ValueError('malformed PSD image resource at %d' % at)
+        rid = int.from_bytes(section[at + 4:at + 6], 'big')
+        at += 6
+        at += 1 + section[at]
+        at += at % 2
+        if at + 4 > len(section):
+            raise ValueError('malformed PSD image resource at %d' % start)
+        size = int.from_bytes(section[at:at + 4], 'big')
+        at += 4 + size + size % 2
+        if at > len(section):
+            raise ValueError('malformed PSD image resource at %d' % start)
+        if rid != resource_id:
+            out += section[start:at]
+    return bytes(out)
+
+
 def layered_bake_plan(nodes):
     """Which layers a layered (.psd) export must flatten its live filters into first.
 

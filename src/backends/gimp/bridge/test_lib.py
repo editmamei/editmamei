@@ -1559,6 +1559,45 @@ class TestMetadataStripSettings(unittest.TestCase):
         self.assertNotIn('save-geotiff', lib.metadata_strip_settings('png', props))
 
 
+class TestEditorsProfile(unittest.TestCase):
+    def test_no_profile_of_its_own_is_the_built_in_one(self):
+        self.assertTrue(lib.profile_is_editors_own(None))
+
+    def test_a_profile_naming_the_editor_anywhere_is_left_out(self):
+        self.assertTrue(lib.profile_is_editors_own(['GIMP built-in sRGB', 'GIMP', 'sRGB', 'Public Domain']))
+        self.assertTrue(lib.profile_is_editors_own([None, 'gimp', None, None]))
+
+    def test_a_camera_or_phone_profile_is_kept(self):
+        self.assertFalse(lib.profile_is_editors_own(['Display P3', 'Apple Inc.', None, 'Copyright Apple Inc., 2017']))
+        self.assertFalse(lib.profile_is_editors_own([]))
+
+
+def _psd_block(rid, data, name=b''):
+    pascal = bytes([len(name)]) + name
+    if len(pascal) % 2:
+        pascal += b'\0'
+    return b'8BIM' + rid.to_bytes(2, 'big') + pascal + len(data).to_bytes(4, 'big') + data + b'\0' * (len(data) % 2)
+
+
+class TestPsdResourcesWithout(unittest.TestCase):
+    def test_removes_only_the_named_resource_and_keeps_the_rest_byte_for_byte(self):
+        keep_a = _psd_block(1005, b'x' * 16)
+        icc = _psd_block(1039, b'GIMP built-in sRGB', name=b'odd')
+        keep_b = _psd_block(1024, b'abc')  # odd size: padded
+        self.assertEqual(lib.psd_resources_without(keep_a + icc + keep_b, 1039), keep_a + keep_b)
+
+    def test_nothing_to_remove_is_unchanged(self):
+        section = _psd_block(1005, b'x' * 16)
+        self.assertEqual(lib.psd_resources_without(section, 1039), section)
+        self.assertEqual(lib.psd_resources_without(b'', 1039), b'')
+
+    def test_malformed_sections_are_refused(self):
+        good = _psd_block(1039, b'data')
+        for bad in (b'XXXX' + good[4:], good[:-3], good[:9]):
+            with self.assertRaises(ValueError):
+                lib.psd_resources_without(bad, 1039)
+
+
 class TestLayeredBakePlan(unittest.TestCase):
     def test_leaf_layers_with_filters_are_baked_in_place(self):
         nodes = [(1, None, False, True), (2, None, False, False), (3, None, False, True)]

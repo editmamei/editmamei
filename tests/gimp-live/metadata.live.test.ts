@@ -208,7 +208,7 @@ describe.skipIf(!install)('metadata stripping (byte-level)', () => {
     expect(found.get(1060)![0]!.toString()).toBe(XMP_MARKER);
   });
 
-  it('export to psd strips the EXIF (1058), XMP (1060) and IPTC (1028) resources and every GPS byte', async () => {
+  it('export to psd strips the EXIF (1058), XMP (1060), IPTC (1028) and thumbnail (1036) resources and every GPS byte', async () => {
     const opened = await session.call<{ image: number }>('open', { path: sourcePath });
     try {
       const outPath = join(workDir, 'out.psd');
@@ -218,6 +218,7 @@ describe.skipIf(!install)('metadata stripping (byte-level)', () => {
       expect(resources.has(1058)).toBe(false);
       expect(resources.has(1060)).toBe(false);
       expect(resources.has(1028)).toBe(false);
+      expect(resources.has(1036)).toBe(false); // thumbnail
       const gps = gpsLatitudeBytes(findJpegApp1Segments(readFileSync(sourcePath)).exif[0]!);
       expect(psd.includes(gps)).toBe(false);
       expect(psd.includes(XMP_MARKER)).toBe(false);

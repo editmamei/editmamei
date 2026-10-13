@@ -19,7 +19,9 @@
 
 import math
 import os
+import shutil
 import sys
+import tempfile
 import time
 import traceback
 
@@ -2193,7 +2195,53 @@ def _export_stripped(dup, path, options=None):
     cfg.set_property('image', dup)
     cfg.set_property('file', Gio.File.new_for_path(path))
     _strip_metadata(cfg, fmt)
+    if _has_editors_profile(dup):
+        cfg.set_property('include-color-profile', False)
     _run_export(proc, cfg, path)
+
+
+def _has_editors_profile(img):
+    """Whether `img` carries the editor's built-in color profile (or none of its own), which
+    exports leave out: see `lib.profile_is_editors_own`."""
+    profile = img.get_color_profile()
+    if profile is None:
+        return lib.profile_is_editors_own(None)
+    texts = []
+    for getter in ('get_description', 'get_manufacturer', 'get_model', 'get_copyright'):
+        try:
+            texts.append(getattr(profile, getter)())
+        except Exception:
+            pass
+    return lib.profile_is_editors_own(texts)
+
+
+def _drop_psd_resource(path, resource_id):
+    """Rewrite the PSD at `path` without image resource `resource_id`. Only the header and the
+    resource section are read into memory; the layer and image data are copied through as they
+    are, to a temporary file in the same folder that then replaces the original."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or '.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'wb') as dst, open(path, 'rb') as src:
+            head = src.read(26)
+            color_len = src.read(4)
+            color = src.read(int.from_bytes(color_len, 'big'))
+            res_len = int.from_bytes(src.read(4), 'big')
+            section = src.read(res_len)
+            try:
+                if head[:4] != b'8BPS' or len(section) != res_len:
+                    raise ValueError('truncated header')
+                kept = lib.psd_resources_without(section, resource_id)
+            except ValueError:
+                raise lib.OpError('gimp_op_failed', 'could not finish %s' % os.path.basename(path))
+            dst.write(head + color_len + color + len(kept).to_bytes(4, 'big') + kept)
+            shutil.copyfileobj(src, dst, 1 << 20)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _export_precision(img, options):
@@ -2240,6 +2288,7 @@ def _export_layered(img, path, options):
     Metadata: same rule as `_export_stripped` -- the duplicate's `Gimp.Metadata` is cleared and
     file-psd-export's own include-exif/xmp/iptc/thumbnail switches are turned off (verified live
     that with them off the file has no EXIF (1058) or XMP (1060) image resource)."""
+    lib.validate_choice('bit_depth', options.get('bit_depth', 8), lib.BIT_DEPTHS)
     dup = img.duplicate()
     try:
         layers = _all_layers(dup)
@@ -2273,6 +2322,10 @@ def _export_layered(img, path, options):
         cfg.set_property('file', Gio.File.new_for_path(path))
         _strip_metadata(cfg, 'psd')
         _run_export(proc, cfg, path)
+        # file-psd-export writes the profile whatever include-color-profile says (verified live,
+        # GIMP 3.2.6), so the editor's own is taken out of the written file instead.
+        if _has_editors_profile(dup):
+            _drop_psd_resource(path, lib.PSD_ICC_RESOURCE)
 
         final = _all_layers(dup)
         may_blend_differently = [

@@ -13,6 +13,10 @@ import {
   readPngBitDepth,
   readTiffTag,
   readPsdBitDepth,
+  findTiffIfd0,
+  findPngChunks,
+  findRiffChunks,
+  findPsdImageResources,
   maxAbsDiff,
   writeGrayRamp,
   readySession,
@@ -497,6 +501,37 @@ describe.skipIf(!install)('export options, metadata stripping, and .xcf round tr
         await session.call('close', { image });
       }
     });
+  });
+
+  it("leaves the editor's built-in color profile out of every format, so no file names the editor", async () => {
+    const opened = await session.call<{ image: number }>('open', { path: rampPath });
+    try {
+      const utf16Name = Buffer.from(' G I M P', 'latin1');
+      const icc: Record<string, (buf: Buffer) => boolean> = {
+        jpg: (b) => b.includes('ICC_PROFILE'),
+        png: (b) => findPngChunks(b).has('iCCP'),
+        webp: (b) => findRiffChunks(b).has('ICCP'),
+        tif: (b) => findTiffIfd0(b).has(34675),
+        psd: (b) => findPsdImageResources(b).has(1039),
+      };
+      for (const [ext, hasProfile] of Object.entries(icc)) {
+        const path = join(workDir, `no-profile.${ext}`);
+        await session.call('export', { image: opened.image, path });
+        const buf = readFileSync(path);
+        expect(hasProfile(buf), `${ext} carries a color profile`).toBe(false);
+        const named =
+          buf.includes(utf16Name) || buf.toString('latin1').toLowerCase().includes('gimp');
+        expect(named, `${ext} names the editor`).toBe(false);
+      }
+      // The PSD is still a valid file after its profile is taken out: it reopens with its layer.
+      const reopened = await session.call<{ image: number; layers: string[] }>('open', {
+        path: join(workDir, 'no-profile.psd'),
+      });
+      expect(reopened.layers).toHaveLength(1);
+      await session.call('close', { image: reopened.image });
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
   });
 
   it('op_export takes the live-document .xcf branch for a .xcf path', async () => {
