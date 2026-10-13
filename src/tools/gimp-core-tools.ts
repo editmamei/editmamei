@@ -149,9 +149,9 @@ in the real GIMP GUI afterward to see it directly.
    stacking a second one for the same correction (see "Curve laws"
    below).
 6. **Finish** — \`gimp_save_xcf\` keeps every filter live and
-   re-editable; \`gimp_export\` writes a flattened deliverable. Do both
-   when the user wants to keep working on it later AND ship a JPEG/PNG
-   now.
+   re-editable; \`gimp_export\` writes a flattened deliverable, or a
+   layered .psd for finishing in Photoshop. Do both when the user wants
+   to keep working on it later AND ship a JPEG/PNG now.
 
 ## Curve laws (gimp_add_adjustment type=curves)
 

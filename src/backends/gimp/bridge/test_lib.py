@@ -1559,6 +1559,39 @@ class TestMetadataStripSettings(unittest.TestCase):
         self.assertNotIn('save-geotiff', lib.metadata_strip_settings('png', props))
 
 
+class TestLayeredBakePlan(unittest.TestCase):
+    def test_leaf_layers_with_filters_are_baked_in_place(self):
+        nodes = [(1, None, False, True), (2, None, False, False), (3, None, False, True)]
+        self.assertEqual(lib.layered_bake_plan(nodes), ([], [1, 3]))
+
+    def test_a_filtered_group_is_merged_and_absorbs_its_whole_subtree(self):
+        nodes = [
+            (10, None, True, True),     # filtered group -> merged
+            (11, 10, False, True),      # inside it: absorbed, not baked separately
+            (12, 10, True, True),       # nested filtered group: absorbed too
+            (13, 12, False, True),      # two levels down: still absorbed
+            (20, None, False, True),    # sibling after the group: baked as usual
+        ]
+        self.assertEqual(lib.layered_bake_plan(nodes), ([10], [20]))
+
+    def test_an_unfiltered_group_keeps_its_children_individually_handled(self):
+        nodes = [
+            (10, None, True, False),
+            (11, 10, False, True),
+            (12, 10, True, True),
+            (13, 12, False, True),
+        ]
+        self.assertEqual(lib.layered_bake_plan(nodes), ([12], [11]))
+
+    def test_nothing_to_do_without_filters(self):
+        nodes = [(1, None, True, False), (2, 1, False, False)]
+        self.assertEqual(lib.layered_bake_plan(nodes), ([], []))
+
+    def test_psd_is_layered_only_never_a_flat_export_format(self):
+        self.assertEqual(lib.LAYERED_EXPORT_FORMATS, {'.psd': 'psd'})
+        self.assertFalse(set(lib.LAYERED_EXPORT_FORMATS) & set(lib.EXPORT_FORMATS))
+
+
 # Known user-facing args per type, each field set to a non-default value -- what a model would
 # send, and what `list` must hand back in the same names and units.
 USER_ARGS_BY_TYPE = {

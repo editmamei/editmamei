@@ -21,6 +21,7 @@ import {
   pngTextPayloads,
   gpsLatitudeBytes,
   findRiffChunks,
+  findPsdImageResources,
   readySession,
   LIVE_READY_TIMEOUT_MS,
   TEST_OPS_PY,
@@ -176,6 +177,50 @@ describe.skipIf(!install)('metadata stripping (byte-level)', () => {
       const chunks = findRiffChunks(readFileSync(outPath));
       expect(chunks.has('EXIF')).toBe(false);
       expect(chunks.has('XMP ')).toBe(false);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('the PSD resource parser finds EXIF (1058) and XMP (1060) blocks (positive control)', () => {
+    const block = (id: number, data: Buffer) => {
+      const head = Buffer.alloc(12);
+      head.write('8BIM', 0, 'ascii');
+      head.writeUInt16BE(id, 4);
+      // empty Pascal name (1 length byte + 1 pad byte), then the size
+      head.writeUInt32BE(data.length, 8);
+      return Buffer.concat([head, data, Buffer.alloc(data.length % 2)]);
+    };
+    const resources = Buffer.concat([
+      block(1058, Buffer.from('Exif-ish')),
+      block(1060, Buffer.from(XMP_MARKER)),
+    ]);
+    const header = Buffer.alloc(26);
+    header.write('8BPS', 0, 'ascii');
+    const len = (n: number) => {
+      const b = Buffer.alloc(4);
+      b.writeUInt32BE(n, 0);
+      return b;
+    };
+    const psd = Buffer.concat([header, len(0), len(resources.length), resources]);
+    const found = findPsdImageResources(psd);
+    expect(found.has(1058)).toBe(true);
+    expect(found.get(1060)![0]!.toString()).toBe(XMP_MARKER);
+  });
+
+  it('export to psd strips the EXIF (1058), XMP (1060) and IPTC (1028) resources and every GPS byte', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: sourcePath });
+    try {
+      const outPath = join(workDir, 'out.psd');
+      await session.call('export', { image: opened.image, path: outPath });
+      const psd = readFileSync(outPath);
+      const resources = findPsdImageResources(psd);
+      expect(resources.has(1058)).toBe(false);
+      expect(resources.has(1060)).toBe(false);
+      expect(resources.has(1028)).toBe(false);
+      const gps = gpsLatitudeBytes(findJpegApp1Segments(readFileSync(sourcePath)).exif[0]!);
+      expect(psd.includes(gps)).toBe(false);
+      expect(psd.includes(XMP_MARKER)).toBe(false);
     } finally {
       await session.call('close', { image: opened.image });
     }

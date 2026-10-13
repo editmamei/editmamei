@@ -715,6 +715,42 @@ export function findRiffChunks(buf: Buffer): Map<string, Buffer[]> {
 }
 
 /**
+ * A PSD's image resource blocks, keyed by resource id (1058 = EXIF, 1060 = XMP, 1028 = IPTC,
+ * 1036 = thumbnail, 1039 = ICC profile). Layout: 26-byte header, color-mode section, then the
+ * resource section of `8BIM` blocks, each with an even-padded Pascal name and data.
+ */
+export function findPsdImageResources(buf: Buffer): Map<number, Buffer[]> {
+  if (buf.subarray(0, 4).toString('ascii') !== '8BPS') {
+    throw new Error('not a PSD file (bad 8BPS header)');
+  }
+  let pos = 26;
+  pos += 4 + buf.readUInt32BE(pos); // color mode data
+  const end = pos + 4 + buf.readUInt32BE(pos);
+  pos += 4;
+  const resources = new Map<number, Buffer[]>();
+  while (pos < end) {
+    if (buf.subarray(pos, pos + 4).toString('ascii') !== '8BIM') {
+      throw new Error(`bad image resource signature at ${pos}`);
+    }
+    const id = buf.readUInt16BE(pos + 4);
+    const nameLen = buf[pos + 6]!;
+    pos += 6 + 1 + nameLen;
+    pos += pos % 2;
+    const size = buf.readUInt32BE(pos);
+    const data = buf.subarray(pos + 4, pos + 4 + size);
+    if (!resources.has(id)) resources.set(id, []);
+    resources.get(id)!.push(Buffer.from(data));
+    pos += 4 + size + (size % 2);
+  }
+  return resources;
+}
+
+/** A PSD's channel depth (8 or 16) from its header. */
+export function readPsdBitDepth(buf: Buffer): number {
+  return buf.readUInt16BE(22);
+}
+
+/**
  * A real (8x8) JPEG carrying GPS EXIF (IFD0 has a GPSInfo IFD pointer, tag 0x8825, though its
  * GPS IFD holds only GPSLatitudeRef -- `writeGpsXmpJpeg` swaps in EXIF with real coordinates)
  * AND a real XMP packet (Xmp.dc.description) -- generated once with GIMP's own metadata API and

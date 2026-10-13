@@ -314,6 +314,99 @@ describe('createGimpDocumentTools', () => {
       });
     });
 
+    it('forwards only bit_depth for a .psd path', async () => {
+      const gimp = makeGimpBackend({
+        result: {
+          path: absPath('out.psd'),
+          bytes: 500,
+          layers: 2,
+          merged_groups: [],
+          rasterized_text: [],
+          may_blend_differently: [],
+        },
+      });
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('out.psd'),
+        bit_depth: 16,
+        quality: 50, // irrelevant to psd — should be dropped
+        tiff_compression: 'lzw',
+      });
+      expect(gimp.lastCall()).toEqual({
+        op: 'export',
+        args: { image: 1, path: absPath('out.psd'), bit_depth: 16 },
+      });
+    });
+
+    it('reports the layered-export details for a .psd, naming what changed and what may look different', async () => {
+      const report = {
+        path: absPath('out.psd'),
+        bytes: 12_345,
+        layers: 4,
+        merged_groups: ['Toned group'],
+        rasterized_text: ['Title'],
+        may_blend_differently: ['Glow', 'Shadow'],
+      };
+      const gimp = makeGimpBackend({ result: report });
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('out.psd'),
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({ ...report, format: 'psd' });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toMatch(/layered PSD with 4 layers/);
+      expect(text).toMatch(/"Toned group"/);
+      expect(text).toMatch(/Text layers written as pixels.*"Title"/);
+      expect(text).toMatch(/"Glow", "Shadow"/);
+      expect(text).toMatch(/Metadata .* was stripped/);
+    });
+
+    it('leaves out the optional PSD notes when nothing was merged, rasterized or at risk', async () => {
+      const gimp = makeGimpBackend({
+        result: {
+          path: absPath('out.psd'),
+          bytes: 10,
+          layers: 1,
+          merged_groups: [],
+          rasterized_text: [],
+          may_blend_differently: [],
+        },
+      });
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('out.psd'),
+      });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).not.toMatch(/merged|Text layers|gamma/);
+    });
+
+    it('caps a long list of layer names in the PSD result text', async () => {
+      const names = Array.from({ length: 13 }, (_, i) => `L${i}`);
+      const gimp = makeGimpBackend({
+        result: {
+          path: absPath('out.psd'),
+          bytes: 10,
+          layers: 13,
+          merged_groups: [],
+          rasterized_text: [],
+          may_blend_differently: names,
+        },
+      });
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('out.psd'),
+      });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toMatch(/"L9" and 3 more/);
+      expect(text).not.toMatch(/"L10"/);
+      expect(result.structuredContent?.may_blend_differently).toEqual(names);
+    });
+
     it('refuses to overwrite an existing file unless overwrite: true', async () => {
       const existingPath = join(scratchDir, 'existing.jpg');
       writeFileSync(existingPath, 'x');
@@ -357,11 +450,14 @@ describe('gimp_export schema matches the bridge export options exactly', () => {
     'utf8'
   );
 
-  it("EXPORT_FORMAT_EXTENSIONS matches lib.py EXPORT_FORMATS' keys exactly (both directions)", () => {
-    const match = LIB_PY.match(/EXPORT_FORMATS = \{([^}]+)\}/s);
-    expect(match, 'EXPORT_FORMATS not found in lib.py').toBeTruthy();
-    const extensions = [...match![1].matchAll(/'(\.[a-z]+)':/g)].map((m) => m[1]);
-    expect(extensions.length).toBeGreaterThan(0);
+  it("EXPORT_FORMAT_EXTENSIONS matches lib.py EXPORT_FORMATS' + LAYERED_EXPORT_FORMATS' keys exactly (both directions)", () => {
+    const extensions = ['EXPORT_FORMATS', 'LAYERED_EXPORT_FORMATS'].flatMap((table) => {
+      const match = LIB_PY.match(new RegExp(`^${table} = \\{([^}]+)\\}`, 'ms'));
+      expect(match, `${table} not found in lib.py`).toBeTruthy();
+      const keys = [...match![1].matchAll(/'(\.[a-z]+)':/g)].map((m) => m[1]);
+      expect(keys.length, table).toBeGreaterThan(0);
+      return keys;
+    });
     expect([...EXPORT_FORMAT_EXTENSIONS].sort()).toEqual([...extensions].sort());
   });
 

@@ -175,6 +175,9 @@ IMAGE_MODES = ('rgb', 'grayscale')
 EXPORT_FORMATS = {'.jpg': 'jpeg', '.jpeg': 'jpeg', '.png': 'png', '.webp': 'webp',
                   '.tif': 'tiff', '.tiff': 'tiff'}
 
+# Formats `_export_layered` (ops.py) writes with the layer stack kept, instead of a flattened copy.
+LAYERED_EXPORT_FORMATS = {'.psd': 'psd'}
+
 BIT_DEPTHS = (8, 16)
 
 # A DoS floor for `resize`: bounds a single call's memory/time cost regardless of how large the
@@ -2590,6 +2593,28 @@ def metadata_strip_settings(fmt, prop_names):
     if fmt == 'tiff' and 'save-geotiff' in names:
         settings.append('save-geotiff')
     return settings
+
+
+def layered_bake_plan(nodes):
+    """Which layers a layered (.psd) export must flatten its live filters into first.
+
+    `nodes` is `(layer_id, parent_id, is_group, has_filters)` per layer in `_all_layers` order
+    (a group before its children; `parent_id` None at top level). Returns `(merge_groups,
+    bake_layers)`: a group carrying a live filter is merged whole into one raster layer, since the
+    PSD exporter drops a group's own filter (verified live, GIMP 3.2.6) and merging is the only
+    way to keep its look; everything inside it is absorbed by that merge. Any other layer with
+    filters is baked in place, keeping its own mask, mode and opacity."""
+    absorbed = set()
+    merge_groups, bake_layers = [], []
+    for layer_id, parent_id, is_group, has_filters in nodes:
+        if parent_id is not None and parent_id in absorbed:
+            absorbed.add(layer_id)
+        elif is_group and has_filters:
+            merge_groups.append(layer_id)
+            absorbed.add(layer_id)
+        elif has_filters:
+            bake_layers.append(layer_id)
+    return merge_groups, bake_layers
 
 
 # ---- text layers (gimp_text) -----------------------------------------------------------------

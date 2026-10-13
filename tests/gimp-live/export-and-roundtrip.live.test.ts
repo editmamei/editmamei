@@ -12,6 +12,7 @@ import {
   readPng,
   readPngBitDepth,
   readTiffTag,
+  readPsdBitDepth,
   maxAbsDiff,
   writeGrayRamp,
   readySession,
@@ -276,6 +277,226 @@ describe.skipIf(!install)('export options, metadata stripping, and .xcf round tr
     } finally {
       await session.call('close', { image: opened.image });
     }
+  });
+
+  describe('layered .psd export', () => {
+    type LayerNode = {
+      layer_id: number;
+      name: string;
+      opacity: number;
+      visible: boolean;
+      is_group: boolean;
+      is_text_layer: boolean;
+      children: LayerNode[];
+    };
+    type PsdReport = {
+      path: string;
+      bytes: number;
+      layers: number;
+      merged_groups: string[];
+      rasterized_text: string[];
+      may_blend_differently: string[];
+    };
+    const tree = async (image: number) =>
+      (await session.call<{ layers: LayerNode[] }>('describe', { image, what: 'layers' })).layers;
+    const flat = (nodes: LayerNode[]): LayerNode[] =>
+      nodes.flatMap((n) => [n, ...flat(n.children)]);
+
+    /**
+     * Everything at 100% opacity, normal mode, hard-edged masks, and the text layer hidden, so
+     * GIMP's own render and the PSD's reopened render are directly comparable: those are the
+     * cases where linear and gamma-space blending agree (soft edges and partial opacity do not,
+     * which the `may_blend_differently` test below covers instead).
+     */
+    async function buildLayeredDocument(): Promise<number> {
+      const { image } = await session.call<{ image: number }>('open', { path: rampPath });
+      const background = (await tree(image))[0]!.layer_id;
+      // A plain filter, a masked filter, and a hidden filter on the background.
+      await session.call('curves', {
+        image,
+        points: [
+          [0, 40],
+          [255, 215],
+        ],
+        name: 'Lift',
+      });
+      await session.call('create_mask', {
+        image,
+        type: 'rectangle',
+        x: 0,
+        y: 0,
+        width: 96,
+        height: 32,
+        name: 'Left',
+      });
+      await session.call('curves', {
+        image,
+        points: [
+          [0, 0],
+          [255, 140],
+        ],
+        mask: 'Left',
+        name: 'MaskedDarken',
+      });
+      const off = await session.call<{ filter_id: number }>('adjust', {
+        image,
+        layer_id: background,
+        type: 'exposure',
+        exposure: 2,
+        name: 'Off',
+      });
+      await session.call('filter', {
+        image,
+        op: 'set_visibility',
+        filter_id: off.filter_id,
+        visible: false,
+      });
+      // A hard-masked layer with its own filter.
+      const patch = await session.call<{ layer_id: number }>('layer', {
+        image,
+        op: 'create',
+        name: 'Patch',
+        width: 256,
+        height: 32,
+        fill: 'white',
+      });
+      await session.call('create_mask', {
+        image,
+        type: 'rectangle',
+        x: 160,
+        y: 8,
+        width: 48,
+        height: 16,
+        name: 'PatchMask',
+      });
+      await session.call('layer_mask', {
+        image,
+        op: 'create',
+        layer_id: patch.layer_id,
+        source: 'channel',
+        channel: 'PatchMask',
+      });
+      await session.call('adjust', {
+        image,
+        layer_id: patch.layer_id,
+        type: 'brightness_contrast',
+        brightness: -50,
+      });
+      // A group carrying its own filter: PSD cannot hold it, so it must be merged.
+      const group = await session.call<{ layer_id: number }>('layer', {
+        image,
+        op: 'create_group',
+        name: 'Toned',
+      });
+      await session.call('layer', {
+        image,
+        op: 'create',
+        name: 'Inner',
+        width: 32,
+        height: 16,
+        fill: 'white',
+        parent_group: group.layer_id,
+      });
+      await session.call('adjust', {
+        image,
+        layer_id: group.layer_id,
+        type: 'brightness_contrast',
+        brightness: -40,
+      });
+      // A hidden layer with a filter, and a hidden text layer.
+      const ghost = await session.call<{ layer_id: number }>('layer', {
+        image,
+        op: 'create',
+        name: 'Ghost',
+        width: 256,
+        height: 32,
+        fill: 'black',
+      });
+      await session.call('adjust', {
+        image,
+        layer_id: ghost.layer_id,
+        type: 'exposure',
+        exposure: 1,
+      });
+      await session.call('layer', { image, op: 'set', layer_id: ghost.layer_id, visible: false });
+      const title = await session.call<{ layer_id: number }>('text', {
+        image,
+        op: 'create',
+        text: 'Hi',
+        x: 200,
+        y: 0,
+        font_size: 12,
+      });
+      await session.call('layer', { image, op: 'set', layer_id: title.layer_id, visible: false });
+      return image;
+    }
+
+    it('keeps the layer stack, bakes filters, merges a filtered group, and renders like the document', async () => {
+      const image = await buildLayeredDocument();
+      try {
+        const refPath = join(workDir, 'layered-ref.png');
+        await session.call('export', { image, path: refPath });
+        const psdPath = join(workDir, 'layered.psd');
+        const report = await session.call<PsdReport>('export', { image, path: psdPath });
+
+        expect(report.merged_groups).toEqual(['Toned']);
+        expect(report.rasterized_text).toHaveLength(1);
+        expect(report.may_blend_differently).toEqual([]);
+        expect(report.bytes).toBe(readFileSync(psdPath).length);
+        expect(readPsdBitDepth(readFileSync(psdPath))).toBe(8);
+
+        // The live document is untouched: the group is still a group and every filter is live.
+        const live = flat(await tree(image));
+        expect(live.find((n) => n.name === 'Toned')!.is_group).toBe(true);
+        const filters = await session.call<{ filters: unknown[] }>('filter', { image, op: 'list' });
+        expect(filters.filters).toHaveLength(6);
+
+        const reopened = (await session.call<{ image: number }>('open', { path: psdPath })).image;
+        try {
+          const layers = flat(await tree(reopened));
+          expect(layers).toHaveLength(report.layers);
+          const byName = (name: string) => layers.find((n) => n.name === name);
+          expect(byName('Toned')!.is_group).toBe(false);
+          expect(byName('Inner')).toBeUndefined();
+          expect(byName('Patch')).toBeDefined();
+          expect(byName('Ghost')!.visible).toBe(false);
+          const text = layers.find((n) => n.name === report.rasterized_text[0]);
+          expect(text!.is_text_layer).toBe(false);
+          expect(text!.visible).toBe(false);
+          const reopenedFilters = await session.call<{ filters: unknown[] }>('filter', {
+            image: reopened,
+            op: 'list',
+          });
+          expect(reopenedFilters.filters).toEqual([]);
+
+          const rtPath = join(workDir, 'layered-rt.png');
+          await session.call('export', { image: reopened, path: rtPath });
+          expect(maxAbsDiff(readPng(refPath), readPng(rtPath))).toBeLessThanOrEqual(1);
+        } finally {
+          await session.call('close', { image: reopened });
+        }
+      } finally {
+        await session.call('close', { image });
+      }
+    });
+
+    it('lists visible layers below 100% opacity as may_blend_differently, and writes 16-bit on request', async () => {
+      const image = await buildLayeredDocument();
+      try {
+        const patch = flat(await tree(image)).find((n) => n.name === 'Patch')!;
+        await session.call('layer', { image, op: 'set', layer_id: patch.layer_id, opacity: 60 });
+        const psdPath = join(workDir, 'layered-16.psd');
+        const report = await session.call<PsdReport>('export', {
+          image,
+          path: psdPath,
+          bit_depth: 16,
+        });
+        expect(report.may_blend_differently).toEqual(['Patch']);
+        expect(readPsdBitDepth(readFileSync(psdPath))).toBe(16);
+      } finally {
+        await session.call('close', { image });
+      }
+    });
   });
 
   it('op_export takes the live-document .xcf branch for a .xcf path', async () => {
