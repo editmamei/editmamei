@@ -2600,7 +2600,9 @@ def profile_is_editors_own(texts):
     model and copyright strings (None for an image that has no profile of its own, i.e. the
     built-in one). Exports leave such a profile out: the file is then plain untagged sRGB, which
     every viewer assumes anyway, and the profile's name ("GIMP built-in sRGB") would otherwise ride
-    along in every file. A camera's or phone's own profile is kept."""
+    along in every file. A camera's or phone's own profile is kept, unless the editor itself
+    rewrote it (a precision or mode conversion marks the variant it makes with its own name);
+    such a file is exported untagged too."""
     if texts is None:
         return True
     return any('gimp' in (t or '').lower() for t in texts)

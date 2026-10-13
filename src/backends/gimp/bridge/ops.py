@@ -2219,7 +2219,8 @@ def _drop_psd_resource(path, resource_id):
     """Rewrite the PSD at `path` without image resource `resource_id`. Only the header and the
     resource section are read into memory; the layer and image data are copied through as they
     are, to a temporary file in the same folder that then replaces the original."""
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or '.', suffix='.tmp')
+    # Dot-prefixed, so nothing that lists the folder for files to serve can pick up a leftover.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or '.', prefix='.', suffix='.tmp')
     try:
         with os.fdopen(fd, 'wb') as dst, open(path, 'rb') as src:
             head = src.read(26)
@@ -2235,6 +2236,7 @@ def _drop_psd_resource(path, resource_id):
                 raise lib.OpError('gimp_op_failed', 'could not finish %s' % os.path.basename(path))
             dst.write(head + color_len + color + len(kept).to_bytes(4, 'big') + kept)
             shutil.copyfileobj(src, dst, 1 << 20)
+        shutil.copymode(path, tmp)  # mkstemp's 0600 would otherwise replace the export's own mode
         os.replace(tmp, path)
     except BaseException:
         try:
