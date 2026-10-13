@@ -26,8 +26,9 @@
  * fix adds (`ps_open_document`, `ps_apply_camera_raw`).
  *
  * Raising a budget is a real tradeoff, not a free fix: a genuine hang now
- * takes longer to surface as an error. `ps_open_document` pairs its budget
- * with a post-timeout re-probe (`document-tools.ts`'s `reprobeOpenDocument`)
+ * takes longer to surface as an error. `ps_open_document` and
+ * `ps_save_psd` pair their budgets with a post-timeout re-probe
+ * (`document-tools.ts`'s `reprobeOpenDocument` / `reprobeSavedPsd`)
  * for exactly this reason — the probe only benefits the legitimately-slow
  * case; a genuine hang still surfaces via the original timeout path once the
  * probe also finds nothing.
@@ -58,6 +59,24 @@ export const OPEN_DOCUMENT_TIMEOUT_MS = 120_000;
  * original timeout error rather than waiting indefinitely.
  */
 export const OPEN_DOCUMENT_REPROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * `ps_save_psd` — writing a layered PSD scales with layer count and document
+ * pixels, and `maximize_compatibility` (the default) adds a full composite on
+ * top. The measured 32s budget timed out on 21 of 269 saves (2026-10-09..13)
+ * while Photoshop went on to write the file, so the caller got an error for a
+ * save that happened. Matches the other pixel-heavy operations, and is paired
+ * with a post-timeout file check (`document-tools.ts`'s `reprobeSavedPsd`).
+ */
+export const SAVE_PSD_TIMEOUT_MS = 120_000;
+
+/**
+ * Budget for `reprobeSavedPsd`'s readiness script. Photoshop runs one script
+ * at a time, so this script only returns once the save it kept running has
+ * finished; a probe that times out too means the save is still going, and the
+ * caller gets the original timeout error.
+ */
+export const SAVE_PSD_REPROBE_TIMEOUT_MS = 30_000;
 
 /** `ps_apply_camera_raw` — the Pro Camera Raw Filter headliner; structurally
  * exposed to the same first-engine-init cliff as ps_open_document. */
@@ -152,6 +171,7 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   ps_select_subject: SELECT_SUBJECT_TIMEOUT_MS,
   ps_select_sky: SELECT_SKY_TIMEOUT_MS,
   ps_replace_sky: SKY_REPLACEMENT_TIMEOUT_MS,
+  ps_save_psd: SAVE_PSD_TIMEOUT_MS,
 
   // DELIBERATE EXCEPTION to the derivation rule above: measured max_clean
   // (33893ms, with 2 calls censored at the old ceiling) would put this well
@@ -170,7 +190,6 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // Moderately long.
   ps_select: 54_000,
   ps_modify_selection: 37_000,
-  ps_save_psd: 32_000,
   ps_filter: 31_000,
   ps_get_histogram: 25_000,
   ps_create_document: 20_000,
