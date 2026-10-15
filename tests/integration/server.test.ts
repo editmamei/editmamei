@@ -589,6 +589,50 @@ describe('ps_ping — fast-fail when no Photoshop process exists', () => {
     expect(fakeConn.ensureRunningCalls).toBe(0);
     expect(fakeConn.pingCalls).toBe(0);
   });
+
+  // No install detected is a different problem from a closed Photoshop, and
+  // "did not respond" sends the user to open an application they may not have.
+  it('says no install was found, and how to point at one, when detection finds nothing', async () => {
+    vi.stubEnv('PHOTOSHOP_PATH', '');
+    const server = new EditmameiServer() as unknown as PingServer;
+    const fakeConn = makeConnection({ info: null });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = null;
+
+    const res = await server.pingPhotoshop().finally(() => vi.unstubAllEnvs());
+    expect(res.content[0].text).toContain('set PHOTOSHOP_PATH to its full path');
+
+    expect(res.structuredContent).toEqual({
+      connected: false,
+      update_available: null,
+      notify_user: false,
+    });
+    expect(res.content[0].text).toContain('could not find a Photoshop install');
+    expect(res.content[0].text).toContain('PHOTOSHOP_PATH');
+    expect(res.content[0].text).toContain(
+      'docs/installation.md#optional-pin-a-specific-photoshop-install'
+    );
+    expect(fakeConn.executions).toHaveLength(0);
+    expect(fakeConn.pingCalls).toBe(0);
+  });
+
+  it('says to check PHOTOSHOP_PATH, not to set it, when it is already set', async () => {
+    vi.stubEnv('PHOTOSHOP_PATH', 'D:/Apps/Photoshop/Photoshop.exe');
+    try {
+      const server = new EditmameiServer() as unknown as PingServer;
+      server.session.connection = makeConnection({ info: null });
+      server.snippetClient = makeSnippetClient();
+      server.updateInfo = null;
+
+      const res = await server.pingPhotoshop();
+
+      expect(res.content[0].text).toContain('PHOTOSHOP_PATH is set, but does not point');
+      expect(res.content[0].text).not.toContain('set PHOTOSHOP_PATH to its full path');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 // ===========================================================================
@@ -645,10 +689,10 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
 
   it('build() throws AND the ping() probe also fails: connected:false (Q3)', async () => {
     const server = new EditmameiServer() as unknown as PingServerFull;
-    // currentlyRunning:true keeps the process-existence fast-fail out of the
-    // way — this test pins the build-failure fallback, which only runs when a
-    // Photoshop process exists but the connection can't reach it.
-    const fakeConn = makeConnection({ info: null, currentlyRunning: true }); // ping() resolves false (info === null)
+    // A detected, running install keeps the not-found and not-running answers
+    // out of the way — this test pins the build-failure fallback, which only
+    // runs when a Photoshop process exists but the connection can't reach it.
+    const fakeConn = makeConnection({ pingReaches: false });
     server.session.connection = fakeConn;
     server.snippetClient = {
       build: async () => {
@@ -1300,16 +1344,128 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       result_bytes: expect.any(Number),
       retry: false,
     });
-    // The downgrade is a failure, so it feeds the opt-in diagnostic too. This
-    // was previously gated on the registry's raw success flag — still true
-    // here — so nothing was ever emitted for it. Asserted whole for the same
-    // reason as above: error_message is the field this path newly synthesizes,
-    // and a partial match would not see it.
+    // The downgrade is a failure, so it feeds the opt-in diagnostic too, carrying
+    // the round trip's real error rather than a placeholder. Asserted whole for the
+    // same reason as above: a partial match would not see error_message.
     expect(telemetry.recordDiagnostic).toHaveBeenCalledTimes(1);
     expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
       tool: 'ps_ping',
       error_class: 'ps_not_running',
-      error_message: 'ps_ping did not reach Photoshop',
+      error_message: 'boom',
+    });
+  });
+
+  it('records ps_not_detected with the detector error when no install is found', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    const fakeConn = makeConnection({ info: null });
+    fakeConn.getVersion = async () => {
+      throw new Error('No Photoshop install could be found on this machine');
+    };
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
+      tool: 'ps_ping',
+      success: false,
+      error_class: 'ps_not_detected',
+    });
+    expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
+      tool: 'ps_ping',
+      error_class: 'ps_not_detected',
+      error_message: 'No Photoshop install could be found on this machine',
+    });
+  });
+
+  it('records ps_not_running with its own message when the install is detected but closed', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    server.session.connection = makeConnection({ currentlyRunning: false });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
+      tool: 'ps_ping',
+      error_class: 'ps_not_running',
+      error_message: 'Photoshop is installed but no Photoshop process is running',
+    });
+  });
+
+  it('classifies a round-trip failure by its real error when it has a known class', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    server.session.connection = makeConnection({
+      throwOnExecute: new Error('Script execution timeout after 30000ms'),
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ error_class: 'timeout' });
+    expect(telemetry.recordDiagnostic.mock.calls[0][0]).toMatchObject({
+      error_class: 'timeout',
+      error_message: expect.stringContaining('Script execution timeout after 30000ms'),
+    });
+  });
+
+  // The failure reason is per-ping state: a second unreachable ping reports its
+  // own reason, not the first one's.
+  it('reports each failed ping with its own reason', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    const fakeConn = makeConnection({ currentlyRunning: false, throwOnExecute: new Error('boom') });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+    fakeConn.setCurrentlyRunning(true);
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordDiagnostic.mock.calls[0][0].error_message).toBe(
+      'Photoshop is installed but no Photoshop process is running'
+    );
+    expect(telemetry.recordDiagnostic.mock.calls[1][0].error_message).toBe('boom');
+  });
+
+  // classifyError is first-match over every tool's errors. A COM description
+  // that happens to say "invalid" must not turn an unreachable Photoshop into
+  // bad input to a tool that takes none.
+  it('keeps ps_not_running for a round-trip error whose class does not describe a round trip', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    server.session.connection = makeConnection({
+      throwOnExecute: new Error('could not attach to Photoshop over COM - Invalid class string'),
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ error_class: 'ps_not_running' });
+  });
+
+  // Photoshop answered but the pingState script threw: a snippet problem, which
+  // ps_not_running would hide.
+  it('keeps ps_general_error when Photoshop answered the round trip with an error', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    server.session.connection = makeConnection({
+      throwOnExecute: new Error('General Photoshop error occurred.'),
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
+      error_class: 'ps_general_error',
     });
   });
 
@@ -2646,9 +2802,9 @@ describe('ps_ping license advisory', () => {
     const server = new EditmameiServer({
       licenseAdvisory: source,
     }) as unknown as AdvisoryPingServer;
-    // info:null → the round trip fails fast and the ping answers "not
+    // A detected install whose round trip fails → the ping answers "not
     // connected", which must carry the advisory like every other ping shape.
-    server.session.connection = makeConnection({ info: null });
+    server.session.connection = makeConnection({ throwOnExecute: new Error('boom') });
     server.snippetClient = makeSnippetClient();
     server.updateInfo = null;
     return server;
