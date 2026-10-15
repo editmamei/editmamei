@@ -3,6 +3,7 @@ import type { GimpBackend } from '../backends/gimp/backend.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers.js';
 import { pickSchemaDeclaredKeys } from './gimp-shared.js';
+import { capLines, channelsText, filterLine, layerTreeLines } from './gimp-result-text.js';
 
 /**
  * gimp_inspect — read-only state reader, the gimp_* twin of ps_inspect.
@@ -100,7 +101,13 @@ interface PingBridgeResult {
   images: number[];
 }
 
-/** A one-line human-readable summary for a describe-by-id result — `documents` keeps its own. */
+/** The layer tree under a summary line, top of stack first, capped. */
+function withLayerTree(summary: string, layers: unknown): string {
+  const lines = capLines(layerTreeLines(layers));
+  return lines.length > 0 ? `${summary}\n${lines.join('\n')}` : summary;
+}
+
+/** A human-readable summary for a describe-by-id result — `documents` keeps its own. */
 function describeSummary(
   what: 'document' | 'layers' | 'channels' | 'filter',
   args: Record<string, unknown>,
@@ -108,7 +115,7 @@ function describeSummary(
 ): string {
   const truncatedSuffix = result.truncated ? ' (truncated at the node cap)' : '';
   if (what === 'filter') {
-    return `Filter ${result.filter_id} ("${result.name as string}"): ${result.operation as string}.`;
+    return filterLine(result);
   }
   if (what === 'layers') {
     const layers = (result.layers as unknown[] | undefined) ?? [];
@@ -116,22 +123,31 @@ function describeSummary(
     // for a mocked/older result missing the field, but is itself just the (possibly truncated)
     // list this response happens to carry.
     const topLevelCount = (result.top_level_count as number | undefined) ?? layers.length;
-    return `${topLevelCount} top-level layer(s) on image ${args.image}${truncatedSuffix}.`;
+    return withLayerTree(
+      `${topLevelCount} top-level layer(s) on image ${args.image}${truncatedSuffix}, top of stack first.`,
+      layers
+    );
   }
   if (what === 'channels') {
     const channels = (result.channels as unknown[] | undefined) ?? [];
     const skipped = result.channels_skipped as number | undefined;
     const stoppedEarlySuffix =
       result.truncated && skipped ? ` (stopped early, ${skipped} channel(s) skipped)` : '';
-    return `${channels.length} channel(s) on image ${args.image}${stoppedEarlySuffix}.`;
+    return (
+      `${channels.length} channel(s) on image ${args.image}${stoppedEarlySuffix}` +
+      (channels.length > 0 ? `: ${channelsText(channels)}.` : '.')
+    );
   }
   const layers = (result.layers as unknown[] | undefined) ?? [];
   const channels = (result.channels as unknown[] | undefined) ?? [];
   const topLevelCount = (result.top_level_count as number | undefined) ?? layers.length;
-  return (
+  return withLayerTree(
     `Document ${result.image}: ${result.width}x${result.height} ${result.base_type as string} ` +
-    `${result.precision as string}, ${topLevelCount} top-level layer(s)${truncatedSuffix}, ` +
-    `${channels.length} channel(s).`
+      `${result.precision as string}, ${topLevelCount} top-level layer(s)${truncatedSuffix}, ` +
+      `${channels.length} channel(s)` +
+      (channels.length > 0 ? `: ${channelsText(channels)}.` : '.') +
+      (layers.length > 0 ? ' Layers, top of stack first:' : ''),
+    layers
   );
 }
 
