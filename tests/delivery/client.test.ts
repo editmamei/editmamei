@@ -256,6 +256,21 @@ describe('DeliveryClient', () => {
       expect(n).toBe(1);
     });
 
+    it('maps a 451 to unavailable_in_region with a plain message, and does NOT retry it', async () => {
+      let n = 0;
+      const fetchImpl: DeliveryFetch = async () => {
+        n++;
+        return jsonRes(451, 'blocked');
+      };
+      const client = new DeliveryClient({ config: cfg, fetchImpl, sleep: noSleep });
+      await expect(client.fetchKey('K', 'pro')).rejects.toMatchObject({
+        code: 'unavailable_in_region',
+        httpStatus: 451,
+        message: "Editmamei Pro downloads aren't available in your region.",
+      });
+      expect(n).toBe(1);
+    });
+
     it('gives up after `attempts` transient failures and throws the last error', async () => {
       let n = 0;
       const fetchImpl: DeliveryFetch = async () => {
