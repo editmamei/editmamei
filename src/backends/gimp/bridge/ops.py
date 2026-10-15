@@ -47,7 +47,10 @@ RAW_EXTENSIONS = {'.dng', '.cr2', '.cr3', '.nef', '.arw', '.raf', '.orf', '.rw2'
 
 def _image(args):
     image_id = lib.require(args, 'image')
-    img = Gimp.Image.get_by_id(int(image_id))
+    gid = lib.gimp_id(image_id)
+    if gid is None:
+        raise ValueError('no open image with id %s' % image_id)
+    img = Gimp.Image.get_by_id(gid)
     if img is None or not img.is_valid():
         raise ValueError('no open image with id %s' % image_id)
     # A preview proxy (see PROXIES below) is an internal, filter-free duplicate this bridge made
@@ -77,7 +80,8 @@ def _layer(img, args):
     (possibly closed) image and let an op silently touch the wrong document."""
     layer_id = args.get('layer_id')
     if layer_id is not None:
-        layer = Gimp.Layer.get_by_id(int(layer_id))
+        gid = lib.gimp_id(layer_id)
+        layer = Gimp.Layer.get_by_id(gid) if gid is not None else None
         owner = _owning_image(layer)
         if layer is None or owner is None or owner.get_id() != img.get_id():
             raise ValueError('no layer with id %s on image %s' % (layer_id, img.get_id()))
@@ -2680,7 +2684,8 @@ def _resolve_parent_group(img, args):
     parent_id = args.get('parent_group')
     if parent_id is None:
         return None
-    parent = Gimp.Layer.get_by_id(int(parent_id))
+    gid = lib.gimp_id(parent_id)
+    parent = Gimp.Layer.get_by_id(gid) if gid is not None else None
     owner = _owning_image(parent)
     if parent is None or owner is None or owner.get_id() != img.get_id():
         raise ValueError('no layer with id %s on image %s' % (parent_id, img.get_id()))
