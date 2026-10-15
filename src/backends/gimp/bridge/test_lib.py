@@ -1559,6 +1559,78 @@ class TestMetadataStripSettings(unittest.TestCase):
         self.assertNotIn('save-geotiff', lib.metadata_strip_settings('png', props))
 
 
+class TestEditorsProfile(unittest.TestCase):
+    def test_no_profile_of_its_own_is_the_built_in_one(self):
+        self.assertTrue(lib.profile_is_editors_own(None))
+
+    def test_a_profile_naming_the_editor_anywhere_is_left_out(self):
+        self.assertTrue(lib.profile_is_editors_own(['GIMP built-in sRGB', 'GIMP', 'sRGB', 'Public Domain']))
+        self.assertTrue(lib.profile_is_editors_own([None, 'gimp', None, None]))
+
+    def test_a_camera_or_phone_profile_is_kept(self):
+        self.assertFalse(lib.profile_is_editors_own(['Display P3', 'Apple Inc.', None, 'Copyright Apple Inc., 2017']))
+        self.assertFalse(lib.profile_is_editors_own([]))
+
+
+def _psd_block(rid, data, name=b''):
+    pascal = bytes([len(name)]) + name
+    if len(pascal) % 2:
+        pascal += b'\0'
+    return b'8BIM' + rid.to_bytes(2, 'big') + pascal + len(data).to_bytes(4, 'big') + data + b'\0' * (len(data) % 2)
+
+
+class TestPsdResourcesWithout(unittest.TestCase):
+    def test_removes_only_the_named_resource_and_keeps_the_rest_byte_for_byte(self):
+        keep_a = _psd_block(1005, b'x' * 16)
+        icc = _psd_block(1039, b'GIMP built-in sRGB', name=b'odd')
+        keep_b = _psd_block(1024, b'abc')  # odd size: padded
+        self.assertEqual(lib.psd_resources_without(keep_a + icc + keep_b, 1039), keep_a + keep_b)
+
+    def test_nothing_to_remove_is_unchanged(self):
+        section = _psd_block(1005, b'x' * 16)
+        self.assertEqual(lib.psd_resources_without(section, 1039), section)
+        self.assertEqual(lib.psd_resources_without(b'', 1039), b'')
+
+    def test_malformed_sections_are_refused(self):
+        good = _psd_block(1039, b'data')
+        for bad in (b'XXXX' + good[4:], good[:-3], good[:9]):
+            with self.assertRaises(ValueError):
+                lib.psd_resources_without(bad, 1039)
+
+
+class TestLayeredBakePlan(unittest.TestCase):
+    def test_leaf_layers_with_filters_are_baked_in_place(self):
+        nodes = [(1, None, False, True), (2, None, False, False), (3, None, False, True)]
+        self.assertEqual(lib.layered_bake_plan(nodes), ([], [1, 3]))
+
+    def test_a_filtered_group_is_merged_and_absorbs_its_whole_subtree(self):
+        nodes = [
+            (10, None, True, True),     # filtered group -> merged
+            (11, 10, False, True),      # inside it: absorbed, not baked separately
+            (12, 10, True, True),       # nested filtered group: absorbed too
+            (13, 12, False, True),      # two levels down: still absorbed
+            (20, None, False, True),    # sibling after the group: baked as usual
+        ]
+        self.assertEqual(lib.layered_bake_plan(nodes), ([10], [20]))
+
+    def test_an_unfiltered_group_keeps_its_children_individually_handled(self):
+        nodes = [
+            (10, None, True, False),
+            (11, 10, False, True),
+            (12, 10, True, True),
+            (13, 12, False, True),
+        ]
+        self.assertEqual(lib.layered_bake_plan(nodes), ([12], [11]))
+
+    def test_nothing_to_do_without_filters(self):
+        nodes = [(1, None, True, False), (2, 1, False, False)]
+        self.assertEqual(lib.layered_bake_plan(nodes), ([], []))
+
+    def test_psd_is_layered_only_never_a_flat_export_format(self):
+        self.assertEqual(lib.LAYERED_EXPORT_FORMATS, {'.psd': 'psd'})
+        self.assertFalse(set(lib.LAYERED_EXPORT_FORMATS) & set(lib.EXPORT_FORMATS))
+
+
 # Known user-facing args per type, each field set to a non-default value -- what a model would
 # send, and what `list` must hand back in the same names and units.
 USER_ARGS_BY_TYPE = {

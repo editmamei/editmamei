@@ -175,6 +175,9 @@ IMAGE_MODES = ('rgb', 'grayscale')
 EXPORT_FORMATS = {'.jpg': 'jpeg', '.jpeg': 'jpeg', '.png': 'png', '.webp': 'webp',
                   '.tif': 'tiff', '.tiff': 'tiff'}
 
+# Formats `_export_layered` (ops.py) writes with the layer stack kept, instead of a flattened copy.
+LAYERED_EXPORT_FORMATS = {'.psd': 'psd'}
+
 BIT_DEPTHS = (8, 16)
 
 # A DoS floor for `resize`: bounds a single call's memory/time cost regardless of how large the
@@ -2590,6 +2593,69 @@ def metadata_strip_settings(fmt, prop_names):
     if fmt == 'tiff' and 'save-geotiff' in names:
         settings.append('save-geotiff')
     return settings
+
+
+def profile_is_editors_own(texts):
+    """Whether a color profile is the editor's built-in one, from its description, manufacturer,
+    model and copyright strings (None for an image that has no profile of its own, i.e. the
+    built-in one). Exports leave such a profile out: the file is then plain untagged sRGB, which
+    every viewer assumes anyway, and the profile's name ("GIMP built-in sRGB") would otherwise ride
+    along in every file. A camera's or phone's own profile is kept, unless the editor itself
+    rewrote it (a precision or mode conversion marks the variant it makes with its own name);
+    such a file is exported untagged too."""
+    if texts is None:
+        return True
+    return any('gimp' in (t or '').lower() for t in texts)
+
+
+PSD_ICC_RESOURCE = 1039
+
+
+def psd_resources_without(section, resource_id):
+    """A PSD image-resource section (the bytes after its 4-byte length) with every block of
+    `resource_id` removed. Each block: '8BIM', a 2-byte id, a Pascal name padded to even length,
+    a 4-byte size, then the data padded to even length. Raises ValueError on a malformed section."""
+    out = bytearray()
+    at = 0
+    while at < len(section):
+        start = at
+        if section[at:at + 4] != b'8BIM' or at + 7 > len(section):
+            raise ValueError('malformed PSD image resource at %d' % at)
+        rid = int.from_bytes(section[at + 4:at + 6], 'big')
+        at += 6
+        at += 1 + section[at]
+        at += at % 2
+        if at + 4 > len(section):
+            raise ValueError('malformed PSD image resource at %d' % start)
+        size = int.from_bytes(section[at:at + 4], 'big')
+        at += 4 + size + size % 2
+        if at > len(section):
+            raise ValueError('malformed PSD image resource at %d' % start)
+        if rid != resource_id:
+            out += section[start:at]
+    return bytes(out)
+
+
+def layered_bake_plan(nodes):
+    """Which layers a layered (.psd) export must flatten its live filters into first.
+
+    `nodes` is `(layer_id, parent_id, is_group, has_filters)` per layer in `_all_layers` order
+    (a group before its children; `parent_id` None at top level). Returns `(merge_groups,
+    bake_layers)`: a group carrying a live filter is merged whole into one raster layer, since the
+    PSD exporter drops a group's own filter (verified live, GIMP 3.2.6) and merging is the only
+    way to keep its look; everything inside it is absorbed by that merge. Any other layer with
+    filters is baked in place, keeping its own mask, mode and opacity."""
+    absorbed = set()
+    merge_groups, bake_layers = [], []
+    for layer_id, parent_id, is_group, has_filters in nodes:
+        if parent_id is not None and parent_id in absorbed:
+            absorbed.add(layer_id)
+        elif is_group and has_filters:
+            merge_groups.append(layer_id)
+            absorbed.add(layer_id)
+        elif has_filters:
+            bake_layers.append(layer_id)
+    return merge_groups, bake_layers
 
 
 # ---- text layers (gimp_text) -----------------------------------------------------------------
