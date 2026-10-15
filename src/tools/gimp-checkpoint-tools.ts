@@ -8,6 +8,7 @@ import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers.js';
 import { GimpError } from '../backends/gimp/errors.js';
 import { GIMP_IMAGE_PROP } from './gimp-shared.js';
+import { capLines, quoted } from './gimp-result-text.js';
 
 /**
  * gimp_checkpoint — the headless substitute for undo.
@@ -615,7 +616,18 @@ async function checkpointList(
     content: [
       {
         type: 'text' as const,
-        text: `${checkpoints.length} checkpoint(s)${scopedNote}.${goneNote}`,
+        text:
+          `${checkpoints.length} checkpoint(s)${scopedNote}.${goneNote}` +
+          capLines(
+            checkpoints.map(
+              (c) =>
+                `- ${quoted(c.checkpoint_id)}: image ${c.image}` +
+                `${c.open ? '' : ' (gone)'}${c.pending ? ', still being created' : ''}, ` +
+                `${c.created_at}, ${c.bytes.toLocaleString()} bytes`
+            )
+          )
+            .map((line) => `\n${line}`)
+            .join(''),
       },
     ],
     structuredContent: { checkpoints },

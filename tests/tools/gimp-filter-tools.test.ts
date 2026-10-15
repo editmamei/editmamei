@@ -28,6 +28,57 @@ describe('createGimpFilterTools', () => {
     expect((result.content?.[0] as { text: string }).text).toContain('2 filter(s)');
   });
 
+  it("op='list' puts each filter's id, layer, mask, source and settings in the text", async () => {
+    const gimp = makeGimpBackend({
+      result: {
+        filters: [
+          {
+            layer: 'Background',
+            layer_id: 2,
+            filter_id: 11,
+            name: 'Hue Saturation',
+            operation: 'gimp:hue-saturation',
+            type: 'hue_saturation',
+            visible: false,
+            source: 'editmamei',
+            mask: 'Water',
+            params: { range: 'cyan', hue: -4, saturation: 12, lightness: 0 },
+          },
+          {
+            layer: 'Background',
+            layer_id: 2,
+            filter_id: 12,
+            name: 'GUI blur',
+            operation: 'gegl:gaussian-blur',
+            type: null,
+            visible: true,
+            source: 'readback',
+            mask: null,
+            params: { 'std-dev-x': 1.5 },
+          },
+        ],
+      },
+    });
+    const tools = createGimpFilterTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_filter', { image: 5, op: 'list' });
+    const lines = (result.content?.[0] as { text: string }).text.split('\n');
+    expect(lines).toEqual([
+      '2 filter(s) on image 5, top of stack first.',
+      '#11 "Hue Saturation" hue_saturation on layer "Background" (id 2), hidden, mask "Water", ' +
+        'editmamei: range=cyan hue=-4 saturation=12 lightness=0',
+      '#12 "GUI blur" gegl:gaussian-blur on layer "Background" (id 2), readback: std-dev-x=1.5',
+    ]);
+  });
+
+  it("op='list' on an empty stack is a single line", async () => {
+    const gimp = makeGimpBackend({ result: { filters: [] } });
+    const tools = createGimpFilterTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_filter', { image: 5, op: 'list' });
+    expect((result.content?.[0] as { text: string }).text).toBe(
+      '0 filter(s) on image 5, top of stack first.'
+    );
+  });
+
   it("op='set_visibility' dispatches with filter_id + visible", async () => {
     const gimp = makeGimpBackend({ result: { filter_id: 3, visible: false } });
     const tools = createGimpFilterTools(gimp.asBackend());

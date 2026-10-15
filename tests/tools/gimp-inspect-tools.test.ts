@@ -32,7 +32,7 @@ describe('createGimpInspectTools', () => {
     });
   });
 
-  it("what='document' dispatches describe with image and reports a one-line summary", async () => {
+  it("what='document' dispatches describe with image and reports a summary with channels and the layer tree", async () => {
     const layerTree = [
       {
         layer_id: 1,
@@ -67,7 +67,8 @@ describe('createGimpInspectTools', () => {
     expect(gimp.lastCall()).toEqual({ op: 'describe', args: { what: 'document', image: 5 } });
     expect(result.isError).toBeFalsy();
     expect((result.content?.[0] as { text: string }).text).toBe(
-      'Document 5: 100x50 rgb u8-non-linear, 1 top-level layer(s), 1 channel(s).'
+      'Document 5: 100x50 rgb u8-non-linear, 1 top-level layer(s), 1 channel(s): "HalfMask". ' +
+        'Layers, top of stack first:\n- "Background" (id 1)'
     );
     expect(result.structuredContent).toEqual({ what: 'document', ...documentResult });
   });
@@ -156,7 +157,8 @@ describe('createGimpInspectTools', () => {
     const result = await callTool(tools, 'gimp_inspect', { what: 'layers', image: 5 });
     expect(gimp.lastCall()).toEqual({ op: 'describe', args: { what: 'layers', image: 5 } });
     expect((result.content?.[0] as { text: string }).text).toBe(
-      '5 top-level layer(s) on image 5 (truncated at the node cap).'
+      '5 top-level layer(s) on image 5 (truncated at the node cap), top of stack first.\n' +
+        '- "A" (id 1)\n- "B" (id 2)'
     );
     expect(result.structuredContent).toEqual({ what: 'layers', ...layersResult });
   });
@@ -173,7 +175,8 @@ describe('createGimpInspectTools', () => {
     const tools = createGimpInspectTools(gimp.asBackend());
     const result = await callTool(tools, 'gimp_inspect', { what: 'layers', image: 5 });
     expect((result.content?.[0] as { text: string }).text).toBe(
-      '50 top-level layer(s) on image 5 (truncated at the node cap).'
+      '50 top-level layer(s) on image 5 (truncated at the node cap), top of stack first.\n' +
+        '- "A" (id 1)'
     );
   });
 
@@ -191,7 +194,9 @@ describe('createGimpInspectTools', () => {
     });
     const tools = createGimpInspectTools(gimp.asBackend());
     const result = await callTool(tools, 'gimp_inspect', { what: 'layers', image: 5 });
-    expect((result.content?.[0] as { text: string }).text).toBe('2 top-level layer(s) on image 5.');
+    expect((result.content?.[0] as { text: string }).text).toBe(
+      '2 top-level layer(s) on image 5, top of stack first.\n- "A" (id 1)\n- "B" (id 2)'
+    );
   });
 
   it("what='channels' dispatches describe with image and reports the channel count, with coverage in structuredContent", async () => {
@@ -202,7 +207,9 @@ describe('createGimpInspectTools', () => {
     const tools = createGimpInspectTools(gimp.asBackend());
     const result = await callTool(tools, 'gimp_inspect', { what: 'channels', image: 5 });
     expect(gimp.lastCall()).toEqual({ op: 'describe', args: { what: 'channels', image: 5 } });
-    expect((result.content?.[0] as { text: string }).text).toBe('1 channel(s) on image 5.');
+    expect((result.content?.[0] as { text: string }).text).toBe(
+      '1 channel(s) on image 5: "Mask" (50.0% selected).'
+    );
     expect(result.structuredContent).toEqual({ what: 'channels', ...channelsResult });
   });
 
@@ -216,7 +223,7 @@ describe('createGimpInspectTools', () => {
     const tools = createGimpInspectTools(gimp.asBackend());
     const result = await callTool(tools, 'gimp_inspect', { what: 'channels', image: 5 });
     expect((result.content?.[0] as { text: string }).text).toBe(
-      '1 channel(s) on image 5 (stopped early, 2 channel(s) skipped).'
+      '1 channel(s) on image 5 (stopped early, 2 channel(s) skipped): "A" (50.0% selected).'
     );
     expect(result.structuredContent).toEqual({ what: 'channels', ...channelsResult });
   });
@@ -252,7 +259,8 @@ describe('createGimpInspectTools', () => {
       args: { what: 'filter', image: 5, filter_id: 7 },
     });
     expect((result.content?.[0] as { text: string }).text).toBe(
-      'Filter 7 ("Curves"): gimp:curves.'
+      '#7 "Curves" curves on layer "Background" (id 3), editmamei: ' +
+        'channel=value points=[[0,0],[255,255]]'
     );
     expect(result.structuredContent).toEqual({ what: 'filter', ...filterResult });
   });
