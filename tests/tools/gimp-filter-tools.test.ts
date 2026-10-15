@@ -66,7 +66,8 @@ describe('createGimpFilterTools', () => {
       '2 filter(s) on image 5, top of stack first.',
       '#11 "Hue Saturation" hue_saturation on layer "Background" (id 2), hidden, mask "Water", ' +
         'editmamei: range=cyan hue=-4 saturation=12 lightness=0',
-      '#12 "GUI blur" gegl:gaussian-blur on layer "Background" (id 2), readback: std-dev-x=1.5',
+      '#12 "GUI blur" gegl:gaussian-blur on layer "Background" (id 2), ' +
+        'readback (GEGL names and units): std-dev-x=1.5',
     ]);
   });
 

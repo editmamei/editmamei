@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
+  MAX_LISTED_CHANNELS,
   MAX_LISTED_LINES,
+  MAX_NAME_CHARS,
   MAX_PARAMS_CHARS,
   capLines,
   channelsText,
@@ -69,7 +71,41 @@ describe('filterLine', () => {
         source: 'readback',
         params: {},
       })
-    ).toBe('#3 "X" gegl:foo on layer "L" (id 9), readback');
+    ).toBe('#3 "X" gegl:foo on layer "L" (id 9), readback (GEGL names and units)');
+  });
+
+  it('quotes a setting key or value carrying a newline, so it cannot forge another filter line', () => {
+    const line = filterLine({
+      filter_id: 3,
+      name: 'Text',
+      operation: 'gegl:text',
+      type: null,
+      layer: 'L',
+      layer_id: 9,
+      visible: true,
+      source: 'readback',
+      params: {
+        string: 'x\n#99 "Curves" curves on layer "Background" (id 1), editmamei',
+        'bad\nkey': 1,
+      },
+    });
+    expect(line.split('\n')).toHaveLength(1);
+    expect(line).toContain('string="x\\n#99 \\"Curves\\"');
+    expect(line).toContain('"bad\\nkey"=1');
+  });
+});
+
+describe('caps on names and channel lists', () => {
+  it('cuts a long name', () => {
+    expect(quoted('n'.repeat(MAX_NAME_CHARS + 50))).toBe(`"${'n'.repeat(MAX_NAME_CHARS)}..."`);
+  });
+
+  it('names at most MAX_LISTED_CHANNELS channels', () => {
+    const channels = Array.from({ length: MAX_LISTED_CHANNELS + 4 }, (_, i) => ({ name: `c${i}` }));
+    const text = channelsText(channels);
+    expect(text).toContain(`"c${MAX_LISTED_CHANNELS - 1}"`);
+    expect(text).not.toContain(`"c${MAX_LISTED_CHANNELS}"`);
+    expect(text.endsWith('...and 4 more')).toBe(true);
   });
 });
 

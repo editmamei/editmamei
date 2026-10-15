@@ -11,15 +11,28 @@
 export const MAX_LISTED_LINES = 60;
 /** Characters of one filter's settings shown before the rest is cut. */
 export const MAX_PARAMS_CHARS = 240;
+/** Characters of one name shown before the rest is cut. */
+export const MAX_NAME_CHARS = 120;
+/** Channels a channel list names before summarising the rest. */
+export const MAX_LISTED_CHANNELS = 30;
 
 /** A user-supplied name, quoted so quotes, newlines and control characters can't break the line. */
 export function quoted(name: unknown): string {
-  return JSON.stringify(String(name ?? ''));
+  const s = String(name ?? '');
+  return JSON.stringify(s.length > MAX_NAME_CHARS ? `${s.slice(0, MAX_NAME_CHARS)}...` : s);
+}
+
+/**
+ * A string shown bare when it is a plain token (`cyan`, `gegl:curves`), quoted otherwise —
+ * setting keys and values can come from an image file, so they get the same protection as names.
+ */
+function token(s: string): string {
+  return /^[\w.:#+-]+$/.test(s) ? s : quoted(s);
 }
 
 function valueText(v: unknown): string {
   if (typeof v === 'number') return String(Number.isInteger(v) ? v : Number(v.toFixed(3)));
-  if (typeof v === 'string') return v;
+  if (typeof v === 'string') return token(v);
   if (typeof v === 'boolean') return String(v);
   return JSON.stringify(v);
 }
@@ -29,7 +42,7 @@ export function paramsText(params: unknown, cap = MAX_PARAMS_CHARS): string {
   if (!params || typeof params !== 'object') return '';
   const text = Object.entries(params as Record<string, unknown>)
     .filter(([k, v]) => v !== null && v !== undefined && k !== 'mask')
-    .map(([k, v]) => `${k}=${valueText(v)}`)
+    .map(([k, v]) => `${token(k)}=${valueText(v)}`)
     .join(' ');
   return text.length > cap ? `${text.slice(0, cap)}...` : text;
 }
@@ -55,13 +68,16 @@ interface FilterRecord {
 
 /** One filter on one line: id, name, type, layer, visibility, mask, source and settings. */
 export function filterLine(f: FilterRecord): string {
-  const kind = typeof f.type === 'string' && f.type ? f.type : String(f.operation ?? '');
+  const kind = token(typeof f.type === 'string' && f.type ? f.type : String(f.operation ?? ''));
   const hidden = f.visible === false ? ', hidden' : '';
   const mask = f.mask ? `, mask ${quoted(f.mask)}` : '';
+  const source = String(f.source ?? 'unknown');
+  // Readback settings are GIMP's own property names and units, not gimp_add_adjustment fields.
+  const sourceText = source === 'readback' ? 'readback (GEGL names and units)' : token(source);
   const params = paramsText(f.params);
   return (
     `#${String(f.filter_id)} ${quoted(f.name)} ${kind} on layer ${quoted(f.layer)} ` +
-    `(id ${String(f.layer_id)})${hidden}${mask}, ${String(f.source ?? 'unknown')}` +
+    `(id ${String(f.layer_id)})${hidden}${mask}, ${sourceText}` +
     (params ? `: ${params}` : '')
   );
 }
@@ -84,7 +100,8 @@ function layerFlags(n: LayerNode): string {
   if (n.visible === false) flags.push('hidden');
   if (typeof n.opacity === 'number' && n.opacity < 100)
     flags.push(`opacity ${valueText(n.opacity)}`);
-  if (typeof n.mode === 'string' && !n.mode.startsWith('normal')) flags.push(`mode ${n.mode}`);
+  if (typeof n.mode === 'string' && !n.mode.startsWith('normal'))
+    flags.push(`mode ${token(n.mode)}`);
   return flags.length ? `, ${flags.join(', ')}` : '';
 }
 
@@ -115,13 +132,16 @@ interface ChannelRecord {
 /** Channel names, with each one's coverage when the result carries it. */
 export function channelsText(channels: unknown): string {
   if (!Array.isArray(channels) || channels.length === 0) return '(none)';
-  return (channels as ChannelRecord[])
+  const named = (channels as ChannelRecord[])
+    .slice(0, MAX_LISTED_CHANNELS)
     .map((c) =>
       typeof c.fraction === 'number'
         ? `${quoted(c.name)} (${(c.fraction * 100).toFixed(1)}% selected)`
         : quoted(c.name)
     )
     .join(', ');
+  const rest = channels.length - MAX_LISTED_CHANNELS;
+  return rest > 0 ? `${named}, ...and ${rest} more` : named;
 }
 
 interface ChannelStats {

@@ -623,7 +623,7 @@ async function checkpointList(
               (c) =>
                 `- ${quoted(c.checkpoint_id)}: image ${c.image}` +
                 `${c.open ? '' : ' (gone)'}${c.pending ? ', still being created' : ''}, ` +
-                `${c.created_at}, ${c.bytes.toLocaleString()} bytes`
+                `${c.created_at}, ${c.bytes.toLocaleString('en-US')} bytes`
             )
           )
             .map((line) => `\n${line}`)
