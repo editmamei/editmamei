@@ -103,7 +103,7 @@ describe.skipIf(!install)('outline, outer_glow, surface_blur, grain modes, text 
       }
     });
 
-    it('honours the color: a red ring is red, not gray', async () => {
+    it('honors the color: a red ring is red, not gray', async () => {
       const image = await open(whiteSquare);
       try {
         await session.call('effect', { image, type: 'outline', width: 4, color: '#ff0000' });
@@ -399,7 +399,7 @@ describe.skipIf(!install)('outline, outer_glow, surface_blur, grain modes, text 
           expect(out[i]!, `falloff at ${i}: ${out}`).toBeGreaterThan(out[i - 1]!);
         }
         expect(out[0]!).toBeLessThan(225); // visibly dark at the edge
-        expect(out[0]! - out[1]!).toBeLessThan(40); // soft: no step between neighbours
+        expect(out[0]! - out[1]!).toBeLessThan(40); // soft: no step between neighbors
         expect(out[out.length - 1]!).toBeGreaterThanOrEqual(250); // far side is clear
         expect(pixelAt(ppm, 64, 64)).toEqual([255, 255, 255]);
         expect(pixelAt(ppm, 44, 44)).toEqual([255, 255, 255]);

@@ -86,7 +86,7 @@ SPATIAL_SCALE_PROPS = {
     'gegl:motion-blur-linear': ('length',),
     'gegl:focus-blur': ('blur-radius',),
     'gegl:dropshadow': ('x', 'y', 'radius', 'grow-radius'),
-    # surface_blur's blur-radius is a pixel neighbourhood, scaled like any other radius.
+    # surface_blur's blur-radius is a pixel neighborhood, scaled like any other radius.
     'gegl:bilateral-filter': ('blur-radius',),
     # gegl:vignette and gegl:mono-mixer are deliberately absent: vignette's radius/x/y are
     # proportional (fractions of the LAYER's own size, not absolute pixel lengths), and
