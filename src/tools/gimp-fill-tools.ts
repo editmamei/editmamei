@@ -11,7 +11,7 @@ import {
 } from './gimp-shared.js';
 
 /**
- * gimp_fill — a new canvas-sized layer filled with a solid colour or a linear / radial gradient
+ * gimp_fill — a new canvas-sized layer filled with a solid color or a linear / radial gradient
  * (`bridge/ops.py`'s `op_fill`). Points are image pixels. The layer goes directly above the target
  * layer, so the original stays untouched.
  */
@@ -67,8 +67,8 @@ const fillSchema: JsonSchemaObject = {
       type: 'string',
       enum: OPS,
       description:
-        "'solid': one flat colour. 'linear_gradient': a ramp from start to end. " +
-        "'radial_gradient': a ramp from a centre out to a radius.",
+        "'solid': one flat color. 'linear_gradient': a ramp from start to end. " +
+        "'radial_gradient': a ramp from a center out to a radius.",
     },
     layer: {
       ...GIMP_LAYER_PROP,
@@ -84,7 +84,7 @@ const fillSchema: JsonSchemaObject = {
     color: {
       type: 'string',
       pattern: '^#[0-9a-fA-F]{6}$',
-      description: 'solid only: the colour as #rrggbb.',
+      description: 'solid only: the color as #rrggbb.',
     },
     stops: {
       type: 'array',
@@ -100,23 +100,23 @@ const fillSchema: JsonSchemaObject = {
         required: ['offset', 'color'],
       },
       description:
-        'Gradient only: 2-8 colour stops {offset 0..1, color #rrggbb, opacity 0..100}, sorted by ' +
-        'offset. Colours blend in sRGB (a black to white stop pair reads 128 at the midpoint). ' +
-        'Before the first stop and after the last, the end colours hold.',
+        'Gradient only: 2-8 color stops {offset 0..1, color #rrggbb, opacity 0..100}, sorted by ' +
+        'offset. Colors blend in sRGB (a black to white stop pair reads 128 at the midpoint). ' +
+        'Before the first stop and after the last, the end colors hold.',
     },
     start: {
       ...POINT_PROP,
       description:
-        'linear_gradient: where offset 0 sits, in image pixels. Default top centre of the canvas.',
+        'linear_gradient: where offset 0 sits, in image pixels. Default top center of the canvas.',
     },
     end: {
       ...POINT_PROP,
       description:
-        'linear_gradient: where offset 1 sits, in image pixels. Default bottom centre of the canvas.',
+        'linear_gradient: where offset 1 sits, in image pixels. Default bottom center of the canvas.',
     },
     center: {
       ...POINT_PROP,
-      description: 'radial_gradient: where offset 0 sits, in image pixels. Default canvas centre.',
+      description: 'radial_gradient: where offset 0 sits, in image pixels. Default canvas center.',
     },
     radius: {
       type: 'number',
@@ -133,7 +133,7 @@ const fillSchema: JsonSchemaObject = {
       description:
         "The new layer's blend mode: gimp_layer's list plus 'lch_color'. 'color' is HSL Color; " +
         "'lch_color' (LCh Color) keeps the lightness underneath exactly and swaps only hue and " +
-        'chroma, the better choice for recolouring.',
+        'chroma, the better choice for recoloring.',
     },
     opacity: {
       type: 'number',
@@ -194,7 +194,7 @@ export function validateFillArgs(args: Record<string, unknown>): void {
   };
   if (op === 'solid') {
     if (typeof args['color'] !== 'string' || !HEX.test(args['color'])) {
-      bad('color must be a colour like #rrggbb for op solid');
+      bad('color must be a color like #rrggbb for op solid');
     }
     only(['stops', 'start', 'end', 'center', 'radius'], 'op solid');
     return;
@@ -210,7 +210,7 @@ export function validateFillArgs(args: Record<string, unknown>): void {
     if (!o || typeof o !== 'object' || !isNum(o['offset']) || typeof o['color'] !== 'string') {
       return bad(`stops[${i}] must be {offset, color, opacity?}`);
     }
-    if (!HEX.test(o['color'])) bad(`stops[${i}].color must be a colour like #rrggbb`);
+    if (!HEX.test(o['color'])) bad(`stops[${i}].color must be a color like #rrggbb`);
     if (o['offset'] < 0 || o['offset'] > 1) bad(`stops[${i}].offset must be within 0..1`);
     const opacity = o['opacity'];
     if (opacity !== undefined && (!isNum(opacity) || opacity < 0 || opacity > 100)) {
@@ -242,11 +242,11 @@ export function createGimpFillTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_fill',
         description:
-          'Headless GIMP: add a NEW layer, canvas-sized, filled with a solid colour (op solid), a ' +
-          'linear gradient (start to end) or a radial gradient (centre and radius) through 2-8 ' +
-          'colour stops. The layer goes directly above the target layer (inside its group), with ' +
+          'Headless GIMP: add a NEW layer, canvas-sized, filled with a solid color (op solid), a ' +
+          'linear gradient (start to end) or a radial gradient (center and radius) through 2-8 ' +
+          'color stops. The layer goes directly above the target layer (inside its group), with ' +
           'the blend mode and opacity you give; mode lch_color tints without touching lightness, ' +
-          'the usual choice for recolouring. Pass mask (a channel name) to confine the fill to ' +
+          'the usual choice for recoloring. Pass mask (a channel name) to confine the fill to ' +
           'that channel: it becomes the layer mask. Gradients blend in sRGB, are not dithered, ' +
           'and use image pixels for every point. The current selection is kept and does not clip ' +
           'the fill. Do NOT use for painting strokes or touching up pixels; use gimp_retouch ' +

@@ -79,7 +79,7 @@ describe.skipIf(!install)('fill: solid and gradient layers', () => {
     { offset: 1, color: '#ffffff' },
   ];
 
-  it('a solid layer: colour, name, mode, opacity, stacked above the active layer', async () => {
+  it('a solid layer: color, name, mode, opacity, stacked above the active layer', async () => {
     const image = await doc();
     const r = await fill(image, { op: 'solid', color: '#336699' });
     expect(r).toMatchObject({ op: 'solid', mode: 'normal', opacity: 100, masked: false });
@@ -169,7 +169,7 @@ describe.skipIf(!install)('fill: solid and gradient layers', () => {
     expect(pixelAt(ppm, 100, 0)).toEqual(pixelAt(ppm, 100, H - 1));
   });
 
-  it('the default linear ramp runs top centre to bottom centre', async () => {
+  it('the default linear ramp runs top center to bottom center', async () => {
     const image = await doc();
     await fill(image, { op: 'linear_gradient', stops: BW });
     const ppm = await render(image);
@@ -178,7 +178,7 @@ describe.skipIf(!install)('fill: solid and gradient layers', () => {
     expect(pixelAt(ppm, 10, 20)).toEqual(pixelAt(ppm, W - 10, 20));
   });
 
-  it('3 stops hit each stop colour at its offset', async () => {
+  it('3 stops hit each stop color at its offset', async () => {
     const image = await doc();
     await fill(image, {
       op: 'linear_gradient',
@@ -202,7 +202,7 @@ describe.skipIf(!install)('fill: solid and gradient layers', () => {
     expect(Math.abs(mid[2] - 128)).toBeLessThanOrEqual(8);
   });
 
-  it('the end colours hold outside the first and last stop', async () => {
+  it('the end colors hold outside the first and last stop', async () => {
     const image = await doc();
     await fill(image, {
       op: 'linear_gradient',
@@ -240,7 +240,7 @@ describe.skipIf(!install)('fill: solid and gradient layers', () => {
     expect(Math.abs(pixelAt(ppm, W / 2, 5)[0] - half)).toBeLessThanOrEqual(4);
   });
 
-  it('a radial gradient: stop 0 at the centre, the last stop from the radius out', async () => {
+  it('a radial gradient: stop 0 at the center, the last stop from the radius out', async () => {
     const image = await doc('white', 200, 200);
     await fill(image, {
       op: 'radial_gradient',
