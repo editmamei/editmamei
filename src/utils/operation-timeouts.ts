@@ -387,6 +387,11 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // layer with the default 400 px surround (3.9 s with reference 'below', which skips the growth;
   // edge options add ~1 s). Budgeted at ~3x the worst case.
   gimp_match_layer: 70_000,
+  // gimp_retouch: spot_heal is the cost driver (a selection + histogram read per candidate, then
+  // ~9 heal dabs per spot, each as wide as 2.6x the radius). Measured on a 24 MP (6016x4000)
+  // document: 50 spots of radius 20 in 4.4 s, 50 of radius 100 in 55 s, 3 of radius 500 in 10 s
+  // (~3.5 s each, so 50 of them would take about 175 s). Budgeted at 240 s.
+  gimp_retouch: 240_000,
 };
 
 /**
