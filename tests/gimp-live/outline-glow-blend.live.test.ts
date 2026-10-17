@@ -40,7 +40,7 @@ describe.skipIf(!install)('outline, outer_glow, surface_blur, grain modes, text 
   let noisyPatch: string; // noisy dark left half, flat bright right half, hard edge at x=64
 
   beforeAll(async () => {
-    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-connect-fx-'));
+    workDir = mkdtempSync(join(tmpdir(), 'em-gimp-outline-fx-'));
     session = new GimpSession({
       install: install!,
       rootDir: join(workDir, 'session-root'),
