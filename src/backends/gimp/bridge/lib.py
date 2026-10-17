@@ -2861,7 +2861,7 @@ RETOUCH_MAX_SPOT_RADIUS = 500
 RETOUCH_SPOT_RINGS = (2.2, 3.5)
 RETOUCH_SPOT_DIRECTIONS = 8
 # Healing blends a dab to the pixels around its edge, so the dab must reach past the spot: 2.6x the
-# radius is 1.3x the spot's diameter. A smaller brush sits wholly inside the spot and keeps its colour.
+# radius is 1.3x the spot's diameter. A smaller brush sits wholly inside the spot and keeps its color.
 RETOUCH_SPOT_BRUSH_FACTOR = 2.6
 RETOUCH_SPOT_MIN_BRUSH = 3.0
 # The annulus a spot's surround is measured over, as a multiple of the spot radius.
@@ -3011,7 +3011,7 @@ def retouch_spot_brush(radius):
 
 def retouch_cover_stroke(cx, cy, radius, brush_size, bounds=None, max_points=RETOUCH_MAX_POINTS):
     """A stroke (list of [x, y]) whose brush (diameter `brush_size`) covers the disc at (cx, cy):
-    an Archimedean spiral from the centre out to `radius` with a turn pitch of 0.6 x the brush, then
+    an Archimedean spiral from the center out to `radius` with a turn pitch of 0.6 x the brush, then
     one full circle at `radius`, points spaced 0.4 x the brush apart (a heal dab blends to its
     own edge, so several overlapping dabs beat one). Clamped into `bounds`; the
     spacing widens if the stroke would exceed `max_points`."""
@@ -3077,7 +3077,7 @@ def spot_candidates(cx, cy, radius, bounds, reach=None):
     """Candidate source offsets (dx, dy) for a spot: 8 directions on each of the two rings
     (2.2x and 3.5x the radius). A candidate is dropped when its source footprint -- a disc of
     `reach` (default 2.3 x radius, RETOUCH_SPOT_REACH: the spot plus the healing brush's edge)
-    around the shifted centre -- leaves `bounds`. Rounded to whole pixels; order is ring-major, then by angle."""
+    around the shifted center -- leaves `bounds`. Rounded to whole pixels; order is ring-major, then by angle."""
     if reach is None:
         reach = radius * RETOUCH_SPOT_REACH
     x0, y0, x1, y1 = bounds

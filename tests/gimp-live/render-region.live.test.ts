@@ -152,7 +152,7 @@ describe.skipIf(!install)('render_region and export keep_alpha', () => {
             const alpha = png.data[(y * 100 + x) * 4 + 3]!;
             expect(alpha, `${channel} alpha at ${x},${y}`).toBe(255 - v);
             if (v > 0 && v < 255) partial++;
-            // colour is the composite's wherever the pixel is still visible enough to compare
+            // color is the composite's wherever the pixel is still visible enough to compare
             if (alpha === 255) expect(rgbAt(png, x, y, 4)).toEqual(rgbAt(full, 40 + x, 60 + y));
           }
         }
@@ -314,7 +314,7 @@ describe.skipIf(!install)('render_region and export keep_alpha', () => {
       await session.call('test_assign_linear_profile', { image });
       await session.call('render_region', { image, box: [0, 0, 20, 20], out_path: path });
       const png = readPngRgba(path);
-      // a profile conversion moves a mid-grey-ish noise pixel; plain assignment would not
+      // a profile conversion moves a mid-gray-ish noise pixel; plain assignment would not
       const plain = await texture({ base: 150 });
       const plainPath = out();
       await session.call('render_region', {

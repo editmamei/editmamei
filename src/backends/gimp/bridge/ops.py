@@ -2522,7 +2522,7 @@ def op_export(args):
     16, default 8).
 
     `keep_alpha` (png / webp only) merges the visible layers onto a transparent canvas instead of
-    flattening onto the background colour, so the file keeps its transparency.
+    flattening onto the background color, so the file keeps its transparency.
 
     Flat exports flatten a duplicate first and save that. Handing the live document to
     file_save lets the exporter render the filters itself, which measured 9.3 s for a 24 MP
