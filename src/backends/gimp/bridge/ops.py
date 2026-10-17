@@ -5304,7 +5304,7 @@ def _build_fill_gradient(stops):
         # left edge, so setting each interior boundary once lines everything up.
         for i in range(count - 1):
             gradient.segment_set_right_pos(i, ramp[i + 1][0])
-        # Segment midpoints (the blend's bias) are re-centred last: moving an edge leaves them where they were.
+        # Segment midpoints (the blend's bias) are re-centered last: moving an edge leaves them where they were.
         for i in range(count):
             lo, hi = gradient.segment_get_left_pos(i)[-1], gradient.segment_get_right_pos(i)[-1]
             gradient.segment_set_middle_pos(i, (lo + hi) / 2.0)
@@ -5315,7 +5315,7 @@ def _build_fill_gradient(stops):
 
 
 def op_fill(args):
-    """Add a new canvas-sized layer filled with a solid colour or a linear/radial gradient.
+    """Add a new canvas-sized layer filled with a solid color or a linear/radial gradient.
 
     The layer goes directly above the target layer (`layer` / `layer_id`, else the selected one),
     inside its group. A gradient is rendered by GIMP's own gradient engine through a temporary

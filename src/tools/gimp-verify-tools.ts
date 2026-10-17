@@ -168,7 +168,7 @@ const histogramSchema: JsonSchemaObject = {
       description:
         'The name of a selection channel: measure only the pixels it selects at ' +
         '50% or more (a hard cut, no partial credit for soft edges), e.g. the mean lightness or ' +
-        'colour of a selected object. Combines with region and exact; pixels in the result is ' +
+        'color of a selected object. Combines with region and exact; pixels in the result is ' +
         'the number of pixels counted.',
     },
   },

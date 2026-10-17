@@ -3341,11 +3341,11 @@ class TestKeepAlpha(unittest.TestCase):
 class TestFillArgs(unittest.TestCase):
     STOPS = [{'offset': 0, 'color': '#000000'}, {'offset': 1, 'color': '#FFFFFF', 'opacity': 40}]
 
-    def test_hex_colour_is_strict(self):
+    def test_hex_color_is_strict(self):
         self.assertEqual(lib.parse_hex_color('color', '#336699'), (0x33, 0x66, 0x99))
         self.assertEqual(lib.parse_hex_color('color', '#AbCdEf'), (0xAB, 0xCD, 0xEF))
         for bad in ('336699', '#369', '#33669', '#3366999', '#33669g', 'red', '', None, 123):
-            with self.assertRaisesRegex(ValueError, 'color must be a colour like #rrggbb'):
+            with self.assertRaisesRegex(ValueError, 'color must be a color like #rrggbb'):
                 lib.parse_hex_color('color', bad)
 
     def test_stops_normalise_to_offset_rgb_alpha(self):
@@ -3379,7 +3379,7 @@ class TestFillArgs(unittest.TestCase):
             with self.assertRaises(ValueError):
                 lib.validate_fill_stops([stop, {'offset': 1, 'color': '#ffffff'}])
 
-    def test_ramp_extends_the_end_colours_to_0_and_1(self):
+    def test_ramp_extends_the_end_colors_to_0_and_1(self):
         ramp = lib.gradient_ramp(lib.validate_fill_stops([
             {'offset': 0.25, 'color': '#ff0000'}, {'offset': 0.75, 'color': '#0000ff'},
         ]))
@@ -3391,7 +3391,7 @@ class TestFillArgs(unittest.TestCase):
         stops = lib.validate_fill_stops(self.STOPS)
         self.assertEqual(lib.gradient_ramp(stops), stops)
 
-    def test_solid_needs_a_colour_and_refuses_gradient_fields(self):
+    def test_solid_needs_a_color_and_refuses_gradient_fields(self):
         opts = lib.validate_fill_args({'op': 'solid', 'color': '#102030'}, 100, 50)
         self.assertEqual((opts['color'], opts['name'], opts['mode'], opts['opacity']),
                          ((16, 32, 48), 'Fill', 'normal', 100.0))

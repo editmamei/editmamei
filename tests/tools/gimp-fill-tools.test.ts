@@ -62,7 +62,7 @@ describe('createGimpFillTools', () => {
       {},
       { image: 1 }, // no op
       { image: 1, op: 'spiral' },
-      { image: 1, op: 'solid' }, // no colour
+      { image: 1, op: 'solid' }, // no color
       { image: 1, op: 'solid', color: 'red' },
       { image: 1, op: 'solid', color: '#abc' },
       { image: 1, op: 'solid', color: '#12345g' },

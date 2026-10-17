@@ -166,7 +166,7 @@ FILL_OPS = ('solid', 'linear_gradient', 'radial_gradient')
 FILL_MIN_STOPS = 2
 FILL_MAX_STOPS = 8
 # gimp_fill takes gimp_layer's blend-mode names plus 'lch_color': GIMP's LCh Color keeps the
-# layer underneath's lightness exactly and swaps only hue and chroma, which is what a recolour
+# layer underneath's lightness exactly and swaps only hue and chroma, which is what a recolor
 # wants. 'color' stays HSL Color (see LAYER_MODES), so existing callers are unchanged.
 FILL_MODES = dict(LAYER_MODES, lch_color='LCH_COLOR')
 _HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
@@ -184,7 +184,7 @@ def _is_number(v):
 def parse_hex_color(name, value):
     """'#rrggbb' (strictly: a leading '#' and six hex digits) -> (r, g, b) ints 0..255."""
     if not isinstance(value, str) or not _HEX_COLOR_RE.match(value):
-        raise ValueError('%s must be a colour like #rrggbb' % name)
+        raise ValueError('%s must be a color like #rrggbb' % name)
     return int(value[1:3], 16), int(value[3:5], 16), int(value[5:7], 16)
 
 
@@ -225,7 +225,7 @@ def validate_fill_stops(stops):
 
 
 def gradient_ramp(stops):
-    """The stops widened to cover the whole 0..1 range (the first colour holds back to 0, the last
+    """The stops widened to cover the whole 0..1 range (the first color holds back to 0, the last
     holds on to 1), so the gradient is defined everywhere. Returns a new list."""
     ramp = list(stops)
     if ramp[0][0] > 0:
