@@ -302,7 +302,7 @@ def mask_flags(mask_data):
 
 
 # A hard-edged mask scaled down keeps a ring of partial-coverage pixels around its edge; a thin
-# one is ALL ring (a 1 px line reads as a pale smear whose pixels blend with their neighbours).
+# one is ALL ring (a 1 px line reads as a pale smear whose pixels blend with their neighbors).
 # Past this share of edge pixels among the touched ones the scaled copy is not trusted.
 MASK_EDGE_FRACTION_MAX = 0.25
 

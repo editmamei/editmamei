@@ -2276,7 +2276,7 @@ def op_preview(args):
 
 class _ProxyMaskUnreliable(ValueError):
     """A downscaled measurement copy cannot measure this mask: it is empty there, or mostly edge
-    pixels. Scaling blurs a thin mask's edges and the pixels under it into their neighbours (a
+    pixels. Scaling blurs a thin mask's edges and the pixels under it into their neighbors (a
     one-pixel line reads as a pale smear), so the caller re-measures at full resolution."""
 
 
@@ -5286,7 +5286,7 @@ def _fill_color(rgb, alpha=1.0):
 
 def _build_fill_gradient(stops):
     """A temporary custom gradient through `stops`: one linear segment between each pair of
-    neighbours of `lib.gradient_ramp`. The caller deletes it (`Gimp.Gradient` is a resource that
+    neighbors of `lib.gradient_ramp`. The caller deletes it (`Gimp.Gradient` is a resource that
     would otherwise outlive the call)."""
     ramp = lib.gradient_ramp(stops)
     count = len(ramp) - 1
@@ -5300,7 +5300,7 @@ def _build_fill_gradient(stops):
             gradient.segment_set_right_color(i, _fill_color(rrgb, ra))
         gradient.segment_range_set_blending_function(0, count - 1, Gimp.GradientSegmentType.LINEAR)
         gradient.segment_range_set_coloring_type(0, count - 1, Gimp.GradientSegmentColor.RGB)
-        # Positions last, left to right: moving a segment's right edge also moves its neighbour's
+        # Positions last, left to right: moving a segment's right edge also moves its neighbor's
         # left edge, so setting each interior boundary once lines everything up.
         for i in range(count - 1):
             gradient.segment_set_right_pos(i, ramp[i + 1][0])
