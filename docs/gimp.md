@@ -130,8 +130,8 @@ metadata (including any GPS location); only `gimp_export` removes it.
   drop shadow, live and re-editable the same way. `gimp_bake` merges a layer's live filters into its
   pixels when you want them fixed.
 - **Selections and masks:** build a selection from a rectangle, ellipse, polygon, color range, magic
-  wand, a layer's opaque pixels or a gradient, and save it under a name (`gimp_select`). Grow,
-  shrink, feather, border, invert, harden or smooth a saved selection (`gimp_modify_selection`). Attach
+  wand, a layer's opaque pixels or a gradient, and save it under a name (`gimp_select`). Expand,
+  contract, feather, border, invert, harden or smooth a saved selection (`gimp_modify_selection`). Attach
   one as a layer mask, or remove, apply or invert a mask (`gimp_layer_mask`), and check the result
   in a rendered preview (`gimp_get_selection_preview`). A saved selection also confines a filter
   when you pass its name as `mask`.
