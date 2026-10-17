@@ -724,7 +724,12 @@ describe.skipIf(!install)('gimp_text against real headless GIMP', () => {
       const image = await newDoc(800, 600);
       const created = await text({ image, op: 'create', text: 'short', font_size: 30 });
       const id = (structuredOf(created) as unknown as TextResult).layer_id;
-      const boxed = await text({ image, op: 'set_box', layer_id: id, box: { width: 300, height: 200 } });
+      const boxed = await text({
+        image,
+        op: 'set_box',
+        layer_id: id,
+        box: { width: 300, height: 200 },
+      });
       expect(boxed.isError, errorText(boxed)).toBeFalsy();
       const edited = await text({ image, op: 'set_content', layer_id: id, text: CAPTION_1500 });
       expect(edited.isError, errorText(edited)).toBeFalsy();
@@ -871,7 +876,12 @@ describe.skipIf(!install)('gimp_text against real headless GIMP', () => {
       });
       expect(fit.isError).toBe(true);
       expect(errorText(fit)).toMatch(/fit supports a box of at most 16 MP/);
-      const area = await text({ image, op: 'create', text: 'x', box: { width: 10000, height: 7000 } });
+      const area = await text({
+        image,
+        op: 'create',
+        text: 'x',
+        box: { width: 10000, height: 7000 },
+      });
       expect(area.isError).toBe(true);
       expect(errorText(area)).toMatch(/text box|MP/);
       expect(await layerTree(image)).toEqual(before);
