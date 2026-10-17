@@ -486,7 +486,7 @@ describe.skipIf(!install)('histogram mask on a proxy-sized image (wider than 102
     expect(Math.abs(h.channels['luminance']!.mean - 64)).toBeLessThanOrEqual(1);
   });
 
-  it('a proxy-eligible region keeps the same behaviour', async () => {
+  it('a proxy-eligible region keeps the same behavior', async () => {
     const image = await wide({ Left: [0, 0, 1000, 800] });
     const h = await session.call<Hist>('histogram', {
       image,

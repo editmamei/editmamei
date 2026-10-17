@@ -3276,7 +3276,7 @@ class TestFillArgs(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'color must be a color like #rrggbb'):
                 lib.parse_hex_color('color', bad)
 
-    def test_stops_normalise_to_offset_rgb_alpha(self):
+    def test_stops_normalize_to_offset_rgb_alpha(self):
         self.assertEqual(
             lib.validate_fill_stops(self.STOPS),
             [(0.0, (0, 0, 0), 1.0), (1.0, (255, 255, 255), 0.4)],
@@ -3328,7 +3328,7 @@ class TestFillArgs(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'stops does not apply'):
             lib.validate_fill_args({'op': 'solid', 'color': '#102030', 'stops': self.STOPS}, 100, 50)
 
-    def test_linear_defaults_run_top_centre_to_bottom_centre(self):
+    def test_linear_defaults_run_top_center_to_bottom_center(self):
         opts = lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS}, 200, 80)
         self.assertEqual((opts['start'], opts['end'], opts['name']), ((100.0, 0.0), (100.0, 80.0), 'Gradient'))
         with self.assertRaisesRegex(ValueError, 'color applies to op solid'):
@@ -3343,7 +3343,7 @@ class TestFillArgs(unittest.TestCase):
             lib.validate_fill_args({'op': 'linear_gradient', 'stops': self.STOPS,
                                     'start': {'x': 0, 'y': 0}, 'end': {'x': 1e-200, 'y': 0}}, 200, 80)
 
-    def test_radial_defaults_are_the_centre_and_half_the_diagonal(self):
+    def test_radial_defaults_are_the_center_and_half_the_diagonal(self):
         opts = lib.validate_fill_args({'op': 'radial_gradient', 'stops': self.STOPS}, 300, 400)
         self.assertEqual(opts['center'], (150.0, 200.0))
         self.assertAlmostEqual(opts['radius'], 250.0)
