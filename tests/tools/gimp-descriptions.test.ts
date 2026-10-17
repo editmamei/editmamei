@@ -313,9 +313,12 @@ describe('raw handling matches op_open (the load is always tried first)', () => 
 });
 
 describe('annotations', () => {
-  it.each(['gimp_filter', 'gimp_export', 'gimp_select'])('%s is marked destructive', (name) => {
-    expect(byName.get(name)!.annotations?.destructiveHint).toBe(true);
-  });
+  it.each(['gimp_filter', 'gimp_export', 'gimp_select', 'gimp_retouch'])(
+    '%s is marked destructive',
+    (name) => {
+      expect(byName.get(name)!.annotations?.destructiveHint).toBe(true);
+    }
+  );
 });
 
 describe('levels input rules match lib.validate_levels', () => {

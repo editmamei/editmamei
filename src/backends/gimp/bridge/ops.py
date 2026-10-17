@@ -2576,8 +2576,7 @@ _INVERT_BYTES = bytes(255 - i for i in range(256))
 
 def op_render_region(args):
     """Bridge-only (no tool): the pixels of `box` [x, y, w, h] (image pixels, clamped to the canvas)
-    as an 8-bit sRGB RGBA PNG at `out_path`, at full resolution, never downscaled -- the input an
-    inpainting model gets. The source is the visible composite, or with `layer` / `layer_id` that one
+    as an 8-bit sRGB RGBA PNG at `out_path`, at full resolution, never downscaled. The source is the visible composite, or with `layer` / `layer_id` that one
     layer rendered as if fully visible at 100% opacity in Normal mode (its mask and filters included,
     as `render_layer` does). `hole_channel` names a channel whose value becomes transparency: output
     alpha is multiplied by 255 - value, so the channel's selected pixels turn transparent. Works on a

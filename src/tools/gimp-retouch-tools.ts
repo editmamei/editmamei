@@ -258,7 +258,7 @@ export function createGimpRetouchTools(gimp: GimpBackend): ToolDefinition[] {
         annotations: {
           title: 'Retouch GIMP Layer',
           readOnlyHint: false,
-          destructiveHint: false,
+          destructiveHint: true,
           idempotentHint: false,
           openWorldHint: true,
         },

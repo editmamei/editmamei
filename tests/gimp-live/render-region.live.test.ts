@@ -1,5 +1,5 @@
 /**
- * The bridge-only `render_region` op (an exact full-resolution RGBA crop for inpainting, with an
+ * The bridge-only `render_region` op (an exact full-resolution RGBA crop of a region, with an
  * optional hole channel) and `export`'s `keep_alpha` option, against real headless GIMP. Pixels are
  * read back from independently decoded PNGs (`support.ts`'s `readPng` / `readPngRgba`).
  */
