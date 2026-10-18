@@ -45,7 +45,15 @@ function paeth(a: number, b: number, c: number): number {
  * own fixtures and GIMP's own PNG exporter produce) into the same `{width, height, data}` shape
  * `readPpm` used to, always as RGB triples (alpha, if any, is dropped -- every test fixture here
  * is opaque). */
-export function readPng(path: string): Ppm {
+interface DecodedPng {
+  width: number;
+  height: number;
+  channels: number;
+  /** Row-major, `channels` bytes per pixel, as stored in the file. */
+  pixels: Buffer;
+}
+
+function decodePng(path: string): DecodedPng {
   const buf = readFileSync(path);
   if (!buf.subarray(0, 8).equals(PNG_SIGNATURE)) {
     throw new Error('not a PNG file (bad signature)');
@@ -117,6 +125,37 @@ export function readPng(path: string): Ppm {
     }
   }
 
+  return { width, height, channels, pixels: out };
+}
+
+/** A decoded 8-bit PNG as RGBA quads (opaque 255 when the file has no alpha) plus the file's own
+ * channel count (4 = RGBA, 3 = RGB), for the tests that check transparency. */
+export function readPngRgba(path: string): {
+  width: number;
+  height: number;
+  channels: number;
+  data: Buffer;
+} {
+  const { width, height, channels, pixels } = decodePng(path);
+  const data = Buffer.alloc(width * height * 4);
+  for (let p = 0; p < width * height; p++) {
+    const si = p * channels;
+    const di = p * 4;
+    if (channels <= 2) {
+      data[di] = data[di + 1] = data[di + 2] = pixels[si]!;
+      data[di + 3] = channels === 2 ? pixels[si + 1]! : 255;
+    } else {
+      data[di] = pixels[si]!;
+      data[di + 1] = pixels[si + 1]!;
+      data[di + 2] = pixels[si + 2]!;
+      data[di + 3] = channels === 4 ? pixels[si + 3]! : 255;
+    }
+  }
+  return { width, height, channels, data };
+}
+
+export function readPng(path: string): Ppm {
+  const { width, height, channels, pixels: out } = decodePng(path);
   const rgb = Buffer.alloc(width * height * 3);
   for (let p = 0; p < width * height; p++) {
     const si = p * channels;
@@ -712,6 +751,42 @@ export function findRiffChunks(buf: Buffer): Map<string, Buffer[]> {
     pos += 8 + size + (size % 2); // chunks are padded to an even size
   }
   return chunks;
+}
+
+/**
+ * A PSD's image resource blocks, keyed by resource id (1058 = EXIF, 1060 = XMP, 1028 = IPTC,
+ * 1036 = thumbnail, 1039 = ICC profile). Layout: 26-byte header, color-mode section, then the
+ * resource section of `8BIM` blocks, each with an even-padded Pascal name and data.
+ */
+export function findPsdImageResources(buf: Buffer): Map<number, Buffer[]> {
+  if (buf.subarray(0, 4).toString('ascii') !== '8BPS') {
+    throw new Error('not a PSD file (bad 8BPS header)');
+  }
+  let pos = 26;
+  pos += 4 + buf.readUInt32BE(pos); // color mode data
+  const end = pos + 4 + buf.readUInt32BE(pos);
+  pos += 4;
+  const resources = new Map<number, Buffer[]>();
+  while (pos < end) {
+    if (buf.subarray(pos, pos + 4).toString('ascii') !== '8BIM') {
+      throw new Error(`bad image resource signature at ${pos}`);
+    }
+    const id = buf.readUInt16BE(pos + 4);
+    const nameLen = buf[pos + 6]!;
+    pos += 6 + 1 + nameLen;
+    pos += pos % 2;
+    const size = buf.readUInt32BE(pos);
+    const data = buf.subarray(pos + 4, pos + 4 + size);
+    if (!resources.has(id)) resources.set(id, []);
+    resources.get(id)!.push(Buffer.from(data));
+    pos += 4 + size + (size % 2);
+  }
+  return resources;
+}
+
+/** A PSD's channel depth (8 or 16) from its header. */
+export function readPsdBitDepth(buf: Buffer): number {
+  return buf.readUInt16BE(22);
 }
 
 /**

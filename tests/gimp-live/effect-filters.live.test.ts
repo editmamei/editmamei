@@ -171,7 +171,9 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
         await session.call('export', { image: opened.image, path: after });
         const a = readPng(before);
         const b = readPng(after);
-        expect(maxAbsDiff(a, b)).toBe(0);
+        // gegl:lens-blur's re-render of identical params has come back one level off on the macOS
+        // runner (not every run); the params check above is the exact one.
+        expect(maxAbsDiff(a, b)).toBeLessThanOrEqual(type === 'lens_blur' ? 1 : 0);
       } finally {
         await session.call('close', { image: opened.image });
       }

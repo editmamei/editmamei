@@ -41,11 +41,11 @@ previews in the conversation instead of watching a window change. See
 
 Editmamei looks for GIMP in the conventional install locations for your OS:
 
-| OS | Where it looks |
-|---|---|
-| **Windows** | `%LOCALAPPDATA%\Programs\GIMP 3\bin\` and `C:\Program Files\GIMP 3\bin\`, for `gimp-console-3.2.exe` or `gimp-console-3.exe` |
-| **macOS** | `/Applications/GIMP.app/Contents/MacOS` and `~/Applications/GIMP.app/Contents/MacOS`, for `gimp-console-3.2`, `gimp-console-3`, or `gimp-console` |
-| **Linux** | Your `PATH`, for `gimp-console-3.2`, `gimp-console-3`, or `gimp-console`, then a Flatpak install of `org.gimp.GIMP` |
+| OS          | Where it looks                                                                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Windows** | `%LOCALAPPDATA%\Programs\GIMP 3\bin\` and `C:\Program Files\GIMP 3\bin\`, for `gimp-console-3.2.exe` or `gimp-console-3.exe`                      |
+| **macOS**   | `/Applications/GIMP.app/Contents/MacOS` and `~/Applications/GIMP.app/Contents/MacOS`, for `gimp-console-3.2`, `gimp-console-3`, or `gimp-console` |
+| **Linux**   | Your `PATH`, for `gimp-console-3.2`, `gimp-console-3`, or `gimp-console`, then a Flatpak install of `org.gimp.GIMP`                               |
 
 If none of those match, `gimp_*` tools won't register, unless you've pinned the editor to `gimp`:
 see [Pinning the editor](#pinning-the-editor) below, in which case they register anyway and every
@@ -115,7 +115,12 @@ metadata (including any GPS location); only `gimp_export` removes it.
 
 - **Documents:** open (most formats GIMP can load: JPEG, PNG, TIFF, WebP, HEIC/HEIF, XCF, and more),
   create a blank one, close, save as `.xcf` (live, re-editable), export flattened to
-  jpg/jpeg/png/webp/tif/tiff. Convert between color and grayscale. JPEG photos tagged with an EXIF
+  jpg/jpeg/png/webp/tif/tiff (a PNG or WebP can keep its transparency with `keep_alpha`), or export
+  a layered `.psd` for finishing in Photoshop (masks, opacity, blend modes and groups kept; filters
+  baked into each layer; a group with its own filter merged into one layer; text written as
+  pixels). Photoshop blends partly transparent layers and blend modes in gamma space, so those can
+  look slightly different there; the export result lists them.
+  Convert between color and grayscale. JPEG photos tagged with an EXIF
   orientation (phone portraits, for example) are rotated upright on open and on `gimp_place_image`;
   other formats keep whatever orientation their own loader applies.
 - **Layers:** create, delete, duplicate, group, reorder, rename, set opacity, blend mode and
@@ -125,12 +130,13 @@ metadata (including any GPS location); only `gimp_export` removes it.
 - **Non-destructive adjustments** (`gimp_add_adjustment`), 13 types: curves, levels, exposure,
   brightness/contrast, hue/saturation, color balance, color temperature, shadows/highlights,
   saturation, vibrance, sharpen, noise reduction, gaussian blur. Each stays live and re-editable by
-  its `filter_id`; exporting writes a flattened copy and leaves the live document as it was.
+  its `filter_id`; exporting writes a copy and leaves the live document as it was.
 - **Effects** (`gimp_add_effect`): vignette, black and white, motion blur, lens blur, noise, and
   drop shadow, live and re-editable the same way. `gimp_bake` merges a layer's live filters into its
   pixels when you want them fixed.
 - **Selections and masks:** build a selection from a rectangle, ellipse, polygon, color range, magic
-  wand, a layer's opaque pixels or a gradient, and save it under a name (`gimp_select`). Attach
+  wand, a layer's opaque pixels or a gradient, and save it under a name (`gimp_select`). Expand,
+  contract, feather, border, invert, harden or smooth a saved selection (`gimp_modify_selection`). Attach
   one as a layer mask, or remove, apply or invert a mask (`gimp_layer_mask`), and check the result
   in a rendered preview (`gimp_get_selection_preview`). A saved selection also confines a filter
   when you pass its name as `mask`.

@@ -15,6 +15,7 @@ import {
   defaultPreviewsAllowed,
   type GimpPreviewDeps,
 } from './gimp-shared.js';
+import { regionStatsLines } from './gimp-result-text.js';
 
 /**
  * gimp_get_preview / gimp_get_histogram / gimp_compare — the verification
@@ -264,21 +265,24 @@ async function gimpCompare(
     }
 
     if (mode === 'regions') {
-      const result = await gimp.call<{ region_a: unknown; region_b: unknown; proxy: boolean }>(
-        'compare',
-        {
-          image: args.image,
-          mode,
-          channels: args.channels,
-          region_a: args.region_a,
-          region_b: args.region_b,
-        }
-      );
+      const result = await gimp.call<{
+        region_a: Parameters<typeof regionStatsLines>[0];
+        region_b: Parameters<typeof regionStatsLines>[1];
+        proxy: boolean;
+      }>('compare', {
+        image: args.image,
+        mode,
+        channels: args.channels,
+        region_a: args.region_a,
+        region_b: args.region_b,
+      });
       return {
         content: [
           {
             type: 'text' as const,
-            text: 'Compared region_a vs region_b (full-resolution, exact).',
+            text:
+              'Compared region_a (A) vs region_b (B), full-resolution, exact. Values 0-255.\n' +
+              regionStatsLines(result.region_a, result.region_b).join('\n'),
           },
         ],
         structuredContent: result as unknown as Record<string, unknown>,

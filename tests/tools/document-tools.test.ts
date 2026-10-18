@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDocumentTools } from '@editmamei/tools/document-tools.ts';
@@ -7,6 +7,7 @@ import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connec
 import { assertToolShape, callTool, indexTools, textOf } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { resetOutputPathsForTests, setPathPlatformForTests } from '@editmamei/utils/local-path.ts';
+import { getToolTimeoutMs } from '@editmamei/utils/operation-timeouts.ts';
 
 // Written with Windows paths: apply Windows path rules on every runner.
 beforeAll(() => setPathPlatformForTests('win32'));
@@ -626,6 +627,159 @@ describe('ps_save_psd scene-channel purge (2026-08-01)', () => {
     // Best-effort: a failed cleanup must never block the save the user asked for.
     expect(res.isError).not.toBe(true);
     expect(conn.allScripts().some((x) => x.includes('savePsdAsCopy'))).toBe(true);
+  });
+});
+
+describe('ps_save_psd timeout budget and post-timeout check', () => {
+  // A timeout kills the wrapper, not Photoshop: the save usually completes anyway.
+  const TIMEOUT_MSG =
+    'Script execution timeout after 120000ms (cscript wrapper.vbs). The child process was ' +
+    'killed, but Photoshop runs as a separate process and may have kept executing.';
+  const isSave = (script: string) => script.includes('"__snippet":"savePsdAsCopy"');
+  const isProbe = (script: string) => script.includes('return { ready: true };');
+
+  let dir: string;
+  let out: string;
+  beforeEach(() => {
+    // Real files in a real temp folder, so the runner's own path rules apply.
+    setPathPlatformForTests(undefined);
+    dir = mkdtempSync(join(tmpdir(), 'em-psd-'));
+    out = join(dir, 'edit.psd');
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    resetOutputPathsForTests();
+    setPathPlatformForTests('win32');
+  });
+
+  /** Save times out after "Photoshop" ran `writes`; the probe answers with `probe`. */
+  function timingOut(writes: () => void, probe: () => unknown = () => ({ ready: true })) {
+    return makeConnection({
+      resultFor: (script: string) => {
+        if (isSave(script)) {
+          writes();
+          throw new Error(TIMEOUT_MSG);
+        }
+        if (isProbe(script)) return probe();
+        return { removed: 0 };
+      },
+    });
+  }
+
+  it('gives the save its own table budget', async () => {
+    const conn = makeConnection({ result: { success: true } });
+    await callTool(createDocumentTools(conn.asConnection(), makeSnippetClient()), 'ps_save_psd', {
+      output_path: out,
+    });
+    expect(conn.executions.find((e) => isSave(e.script))?.timeout).toBe(
+      getToolTimeoutMs('ps_save_psd')
+    );
+  });
+
+  it('reports success when the file was written despite the timeout, and lets a retry save over it', async () => {
+    const conn = timingOut(() => writeFileSync(out, 'layered psd bytes'));
+    const tools = createDocumentTools(conn.asConnection(), makeSnippetClient());
+
+    const res = await callTool(tools, 'ps_save_psd', { output_path: out });
+
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('post-timeout check confirmed');
+    const sc = res.structuredContent as Record<string, unknown>;
+    expect(sc).toMatchObject({ success: true, saved_to: out, reprobed: true, bytes: 17 });
+    expect(conn.executions.find((e) => isProbe(e.script))?.timeout).toBe(30000);
+
+    // Recorded as this session's output: the same path saves again without overwrite.
+    const again = await callTool(tools, 'ps_save_psd', { output_path: out });
+    expect(textOf(again)).not.toContain('was not written in this session');
+  });
+
+  it('keeps the timeout error when no file was written', async () => {
+    const conn = timingOut(() => {});
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out }
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('Script execution timeout');
+    expect(textOf(res)).toContain('may still be writing the file');
+    expect(conn.allScripts().some(isProbe)).toBe(true);
+  });
+
+  it('keeps the timeout error when the file is empty', async () => {
+    const conn = timingOut(() => writeFileSync(out, ''));
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out }
+    );
+    expect(res.isError).toBe(true);
+  });
+
+  it('still reports the scene-channel purge on a confirmed save', async () => {
+    const conn = makeConnection({
+      resultFor: (script: string) => {
+        if (isSave(script)) {
+          writeFileSync(out, 'layered psd bytes');
+          throw new Error(TIMEOUT_MSG);
+        }
+        if (isProbe(script)) return { ready: true };
+        return { removed: 3 };
+      },
+    });
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out }
+    );
+    expect(res.structuredContent).toMatchObject({ reprobed: true, scene_channels_purged: 3 });
+  });
+
+  it('keeps the timeout error when the file at the path predates the save', async () => {
+    writeFileSync(out, 'an older copy');
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(out, old, old);
+    const conn = timingOut(() => {});
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out, overwrite: true }
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('Script execution timeout');
+  });
+
+  it('keeps the timeout error when the probe times out too (the save is still running)', async () => {
+    const conn = timingOut(
+      () => writeFileSync(out, 'partial'),
+      () => {
+        throw new Error('Script execution timeout after 30000ms (cscript wrapper.vbs).');
+      }
+    );
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out }
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('120000ms');
+  });
+
+  it('does not probe on a non-timeout failure', async () => {
+    const conn = makeConnection({
+      resultFor: (script: string) => {
+        if (isSave(script)) throw new Error('Could not save because the disk is full.');
+        return { removed: 0 };
+      },
+    });
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out }
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('disk is full');
+    expect(conn.allScripts().some(isProbe)).toBe(false);
   });
 });
 

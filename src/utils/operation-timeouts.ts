@@ -26,8 +26,9 @@
  * fix adds (`ps_open_document`, `ps_apply_camera_raw`).
  *
  * Raising a budget is a real tradeoff, not a free fix: a genuine hang now
- * takes longer to surface as an error. `ps_open_document` pairs its budget
- * with a post-timeout re-probe (`document-tools.ts`'s `reprobeOpenDocument`)
+ * takes longer to surface as an error. `ps_open_document` and
+ * `ps_save_psd` pair their budgets with a post-timeout re-probe
+ * (`document-tools.ts`'s `reprobeOpenDocument` / `reprobeSavedPsd`)
  * for exactly this reason — the probe only benefits the legitimately-slow
  * case; a genuine hang still surfaces via the original timeout path once the
  * probe also finds nothing.
@@ -58,6 +59,24 @@ export const OPEN_DOCUMENT_TIMEOUT_MS = 120_000;
  * original timeout error rather than waiting indefinitely.
  */
 export const OPEN_DOCUMENT_REPROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * `ps_save_psd` — writing a layered PSD scales with layer count and document
+ * pixels, and `maximize_compatibility` (the default) adds a full composite on
+ * top. The measured 32s budget timed out on 21 of 269 saves (2026-10-09..13)
+ * while Photoshop went on to write the file, so the caller got an error for a
+ * save that happened. Matches the other pixel-heavy operations, and is paired
+ * with a post-timeout file check (`document-tools.ts`'s `reprobeSavedPsd`).
+ */
+export const SAVE_PSD_TIMEOUT_MS = 120_000;
+
+/**
+ * Budget for `reprobeSavedPsd`'s readiness script. Photoshop runs one script
+ * at a time, so this script only returns once the save it kept running has
+ * finished; a probe that times out too means the save is still going, and the
+ * caller gets the original timeout error.
+ */
+export const SAVE_PSD_REPROBE_TIMEOUT_MS = 30_000;
 
 /** `ps_apply_camera_raw` — the Pro Camera Raw Filter headliner; structurally
  * exposed to the same first-engine-init cliff as ps_open_document. */
@@ -152,6 +171,7 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   ps_select_subject: SELECT_SUBJECT_TIMEOUT_MS,
   ps_select_sky: SELECT_SKY_TIMEOUT_MS,
   ps_replace_sky: SKY_REPLACEMENT_TIMEOUT_MS,
+  ps_save_psd: SAVE_PSD_TIMEOUT_MS,
 
   // DELIBERATE EXCEPTION to the derivation rule above: measured max_clean
   // (33893ms, with 2 calls censored at the old ceiling) would put this well
@@ -170,7 +190,6 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // Moderately long.
   ps_select: 54_000,
   ps_modify_selection: 37_000,
-  ps_save_psd: 32_000,
   ps_filter: 31_000,
   ps_get_histogram: 25_000,
   ps_create_document: 20_000,
@@ -358,15 +377,21 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   //   on a result near the bridge's own precision-aware size cap (the actual worst case a
   //   caller can reach without being refused outright) -- ~217MP at 8-bit, ~106MP at 16-bit:
   //     scale ~8.7s (8-bit) / ~7.6s (16-bit), rotate ~7.7s (8-bit) / ~5.4s (16-bit)
-  // Budgeted at roughly 3.5x the worst of those (~8.7s), rounded up -- comfortably inside the
-  // same ~3x multiplier gimp_resize_image/gimp_transform_canvas use, with margin left over for
-  // a slower machine.
-  gimp_transform_layer: 30_000,
+  // GitHub's hosted runners take far longer near the cap: Windows ~18-25s for all four, macOS
+  // ~22-24s at 8-bit and 38s (rotate) / 49s (scale) at 16-bit, where a ~120MP 16-bit layer and
+  // its result pass 2GB on a 7GB machine. A timeout kills the session and every open image with
+  // it, so the budget keeps that slowest case near 55% of it, as gimp_layer and gimp_bake allow.
+  gimp_transform_layer: 90_000,
   // gimp_match_layer: two cropped throwaway renders plus the ring growth. Measured on a 24 MP
   // (6016x4000) document: 1.4 s for a 600x400 layer, 6.4 s for 2000x1500, 22 s for a 4000x3000
   // layer with the default 400 px surround (3.9 s with reference 'below', which skips the growth;
   // edge options add ~1 s). Budgeted at ~3x the worst case.
   gimp_match_layer: 70_000,
+  // gimp_retouch: spot_heal is the cost driver (a selection + histogram read per candidate, then
+  // ~9 heal dabs per spot, each as wide as 2.6x the radius). Measured on a 24 MP (6016x4000)
+  // document: 50 spots of radius 20 in 4.4 s, 50 of radius 100 in 55 s, 3 of radius 500 in 10 s
+  // (~3.5 s each, so 50 of them would take about 175 s). Budgeted at 240 s.
+  gimp_retouch: 240_000,
 };
 
 /**

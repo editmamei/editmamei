@@ -175,6 +175,9 @@ IMAGE_MODES = ('rgb', 'grayscale')
 EXPORT_FORMATS = {'.jpg': 'jpeg', '.jpeg': 'jpeg', '.png': 'png', '.webp': 'webp',
                   '.tif': 'tiff', '.tiff': 'tiff'}
 
+# Formats `_export_layered` (ops.py) writes with the layer stack kept, instead of a flattened copy.
+LAYERED_EXPORT_FORMATS = {'.psd': 'psd'}
+
 BIT_DEPTHS = (8, 16)
 
 # A DoS floor for `resize`: bounds a single call's memory/time cost regardless of how large the
@@ -203,6 +206,17 @@ def megapixel_cap_from_env(raw, default=_DEFAULT_MAX_RESIZE_MEGAPIXELS):
 MAX_RESIZE_MEGAPIXELS = megapixel_cap_from_env(os.environ.get('EM_GIMP_MAX_MEGAPIXELS'))
 
 MAX_FEATHER_PX = 1000
+
+# Hardening a mask read as "Y' u8": 50% and above becomes fully selected (255), the rest 0. The
+# same 128 cut `_channel_coverage` counts as selected. Applied with `bytes.translate`, a C pass.
+HARDEN_TABLE = bytes(255 if v >= 128 else 0 for v in range(256))
+# Rows per band when hardening, so a very large mask is never held twice in memory at once.
+HARDEN_BAND_ROWS = 512
+
+
+def harden_mask_bytes(data):
+    """`data` ("Y' u8" mask bytes) with every value hardened to 0 or 255 at the 50% cut."""
+    return bytes(data).translate(HARDEN_TABLE)
 
 # gimp_modify_selection's expand/contract/border radius cap -- much lower than MAX_FEATHER_PX.
 # `Gimp.Selection.grow`/`shrink`/`border` are morphological (structuring-element) operations whose
@@ -934,10 +948,18 @@ def build_saturation_params(args, defaults):
     }
 
 
+# gegl:vibrance's own -100..100 is far stronger than the Photoshop scale callers expect:
+# on a marina photo its +15 sent 38% of pixels to red 0, where Photoshop's +15 added about 0.014
+# mean saturation and clipped nothing. Dividing by this factor lines the two up (Photoshop +15 and
+# +50 match gegl about 0.5 and 2.0 on that photo), so the field keeps a Photoshop-like -100..100.
+VIBRANCE_GEGL_DIVISOR = 25.0
+
+
 def build_vibrance_params(args, defaults):
     return {
         'vibrance': resolve_field(
-            args, 'vibrance', defaults, 'vibrance', lambda v: validate_range('vibrance', v, -100.0, 100.0)
+            args, 'vibrance', defaults, 'vibrance',
+            lambda v: validate_range('vibrance', v, -100.0, 100.0) / VIBRANCE_GEGL_DIVISOR,
         ),
         'saturation': resolve_field(
             args, 'saturation', defaults, 'saturation', lambda v: validate_range('saturation', v, 0.0, 10.0)
@@ -1288,7 +1310,7 @@ USER_FIELDS = {
     ),
     'saturation': (('scale', 'scale', _same),),
     'vibrance': (
-        ('vibrance', 'vibrance', _same),
+        ('vibrance', 'vibrance', _scaled(VIBRANCE_GEGL_DIVISOR)),
         ('saturation', 'saturation', _same),
     ),
     'sharpen': (
@@ -2286,12 +2308,15 @@ def list_requests(rpc_dir):
     return [name for _req_id, name in numbered]
 
 
-def read_request(req_path, attempts=5, delay_s=0.02, on_retry=None):
+def read_request(req_path, attempts=8, delay_s=0.02, max_delay_s=0.25, on_retry=None):
     """Read + parse a request file. Retries ONLY on OSError (e.g. a
     PermissionError from anti-virus or a file indexer holding a brief lock on
     a just-renamed file on Windows) -- a JSONDecodeError means the content
     itself is bad and is raised immediately; retrying that would just mask a
     genuinely malformed file rather than a transient lock.
+
+    The wait doubles from `delay_s` up to `max_delay_s`, about 1s in all at the defaults, since a Windows
+    file lock can outlast 100ms.
 
     `on_retry(exc, attempt)`, if given, is called right before each sleep --
     the bridge logs the exception type through it; tests can assert on it
@@ -2305,9 +2330,11 @@ def read_request(req_path, attempts=5, delay_s=0.02, on_retry=None):
             raise
         except OSError as e:
             last_err = e
+            if attempt == attempts - 1:
+                break
             if on_retry:
                 on_retry(e, attempt)
-            time.sleep(delay_s)
+            time.sleep(min(delay_s * (2 ** attempt), max_delay_s))
     raise last_err
 
 
@@ -2586,6 +2613,69 @@ def metadata_strip_settings(fmt, prop_names):
     return settings
 
 
+def profile_is_editors_own(texts):
+    """Whether a color profile is the editor's built-in one, from its description, manufacturer,
+    model and copyright strings (None for an image that has no profile of its own, i.e. the
+    built-in one). Exports leave such a profile out: the file is then plain untagged sRGB, which
+    every viewer assumes anyway, and the profile's name ("GIMP built-in sRGB") would otherwise ride
+    along in every file. A camera's or phone's own profile is kept, unless the editor itself
+    rewrote it (a precision or mode conversion marks the variant it makes with its own name);
+    such a file is exported untagged too."""
+    if texts is None:
+        return True
+    return any('gimp' in (t or '').lower() for t in texts)
+
+
+PSD_ICC_RESOURCE = 1039
+
+
+def psd_resources_without(section, resource_id):
+    """A PSD image-resource section (the bytes after its 4-byte length) with every block of
+    `resource_id` removed. Each block: '8BIM', a 2-byte id, a Pascal name padded to even length,
+    a 4-byte size, then the data padded to even length. Raises ValueError on a malformed section."""
+    out = bytearray()
+    at = 0
+    while at < len(section):
+        start = at
+        if section[at:at + 4] != b'8BIM' or at + 7 > len(section):
+            raise ValueError('malformed PSD image resource at %d' % at)
+        rid = int.from_bytes(section[at + 4:at + 6], 'big')
+        at += 6
+        at += 1 + section[at]
+        at += at % 2
+        if at + 4 > len(section):
+            raise ValueError('malformed PSD image resource at %d' % start)
+        size = int.from_bytes(section[at:at + 4], 'big')
+        at += 4 + size + size % 2
+        if at > len(section):
+            raise ValueError('malformed PSD image resource at %d' % start)
+        if rid != resource_id:
+            out += section[start:at]
+    return bytes(out)
+
+
+def layered_bake_plan(nodes):
+    """Which layers a layered (.psd) export must flatten its live filters into first.
+
+    `nodes` is `(layer_id, parent_id, is_group, has_filters)` per layer in `_all_layers` order
+    (a group before its children; `parent_id` None at top level). Returns `(merge_groups,
+    bake_layers)`: a group carrying a live filter is merged whole into one raster layer, since the
+    PSD exporter drops a group's own filter (verified live, GIMP 3.2.6) and merging is the only
+    way to keep its look; everything inside it is absorbed by that merge. Any other layer with
+    filters is baked in place, keeping its own mask, mode and opacity."""
+    absorbed = set()
+    merge_groups, bake_layers = [], []
+    for layer_id, parent_id, is_group, has_filters in nodes:
+        if parent_id is not None and parent_id in absorbed:
+            absorbed.add(layer_id)
+        elif is_group and has_filters:
+            merge_groups.append(layer_id)
+            absorbed.add(layer_id)
+        elif has_filters:
+            bake_layers.append(layer_id)
+    return merge_groups, bake_layers
+
+
 # ---- text layers (gimp_text) -----------------------------------------------------------------
 
 TEXT_MAX_CHARS = 2000
@@ -2833,3 +2923,321 @@ def check_text_layer_size(width, height):
             'the text would render as a %dx%d px layer, past the size limit (%s); use a smaller '
             'font_size or less text' % (width, height, exc)
         )
+
+
+# ---- retouch: heal / clone / spot heal --------------------------------------------------------
+#
+# Pure helpers (no gi). Coordinates are image pixels; `bounds` is the half-open box
+# (x0, y0, x1, y1) of the layer clipped to the canvas.
+
+RETOUCH_TAG = 'editmamei-retouch'
+RETOUCH_METHODS = ('heal', 'clone', 'spot_heal')
+RETOUCH_TARGETS = ('retouch_layer', 'in_place')
+RETOUCH_MAX_POINTS = 500
+RETOUCH_MAX_SPOTS = 50
+RETOUCH_MIN_BRUSH = 1
+RETOUCH_MAX_BRUSH = 1000
+RETOUCH_DEFAULT_BRUSH = 20
+RETOUCH_DEFAULT_HARDNESS = {'heal': 0.5, 'clone': 0.8}
+RETOUCH_SPOT_HARDNESS = 0.5
+RETOUCH_MAX_SPOT_RADIUS = 500
+# Spot-heal source search: 8 directions on two rings, as multiples of the spot radius.
+RETOUCH_SPOT_RINGS = (2.2, 3.5)
+RETOUCH_SPOT_DIRECTIONS = 8
+# Healing blends a dab to the pixels around its edge, so the dab must reach past the spot: 2.6x the
+# radius is 1.3x the spot's diameter. A smaller brush sits wholly inside the spot and keeps its color.
+RETOUCH_SPOT_BRUSH_FACTOR = 2.6
+RETOUCH_SPOT_MIN_BRUSH = 3.0
+# The annulus a spot's surround is measured over, as a multiple of the spot radius.
+RETOUCH_SPOT_RING_OUTER = 1.6
+# How far a spot's heal reaches, as a multiple of its radius: half the spot brush (1.3x) beyond the
+# spot's own edge. Source candidates must keep this footprint inside the layer, and the Retouch
+# layer's mask reveals a feathered disc of this radius around each spot.
+RETOUCH_SPOT_REACH = 2.3
+# Hardness of the dab that reveals a healed spot on the Retouch layer's mask.
+RETOUCH_REVEAL_HARDNESS = 0.7
+# Work budgets, measured on a 6000x4000 image so the worst accepted call stays under about a minute:
+# a heal stroke costs about (path length + one brush) x brush, at worst ~25 us per unit (brush 90-100;
+# ~2-9 us at other sizes; a clone is far cheaper), so 2,000,000 is ~50 s; spot_heal costs ~270 us per
+# unit of the sum of radius squared, so 200,000 is ~55 s. Mirrored in tools/gimp-retouch-tools.ts.
+RETOUCH_MAX_STROKE_WORK = 2000000
+RETOUCH_MAX_SPOT_WORK = 200000
+
+
+def _finite_number(name, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError('%s must be a finite number, got %r' % (name, value))
+    return float(value)
+
+
+def _xy(name, value):
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError('%s must be [x, y], got %r' % (name, value))
+    return [_finite_number(name, value[0]), _finite_number(name, value[1])]
+
+
+def validate_retouch_args(args):
+    """The validated, defaulted `retouch` options as a dict. Raises ValueError (-> invalid_argument)
+    naming the field. heal/clone need `points` plus exactly one of `source` / `source_offset`
+    (returned as `source_offset` (dx, dy) relative to points[0]); spot_heal needs `spots`."""
+    method = args.get('method')
+    if method is None:
+        raise ValueError('method is required')
+    validate_choice('method', method, RETOUCH_METHODS)
+    target = validate_choice('target', args.get('target') or 'retouch_layer', RETOUCH_TARGETS)
+    opts = {'method': method, 'target': target}
+    if method == 'spot_heal':
+        if args.get('hardness') is not None:
+            raise ValueError('hardness does not apply to method spot_heal (it sizes its own brush)')
+        spots = args.get('spots')
+        if not isinstance(spots, list) or not 1 <= len(spots) <= RETOUCH_MAX_SPOTS:
+            raise ValueError('spots must be a list of 1..%d spots' % RETOUCH_MAX_SPOTS)
+        clean = []
+        for i, spot in enumerate(spots):
+            if not isinstance(spot, dict):
+                raise ValueError('spots[%d] must be {x, y, radius}' % i)
+            radius = _finite_number('spots[%d].radius' % i, spot.get('radius'))
+            if not 1 <= radius <= RETOUCH_MAX_SPOT_RADIUS:
+                raise ValueError('spots[%d].radius must be within 1..%d' % (i, RETOUCH_MAX_SPOT_RADIUS))
+            clean.append((
+                _finite_number('spots[%d].x' % i, spot.get('x')),
+                _finite_number('spots[%d].y' % i, spot.get('y')),
+                radius,
+            ))
+        work = retouch_spots_work(clean)
+        if work > RETOUCH_MAX_SPOT_WORK:
+            raise ValueError(
+                'these spots are too large to heal in one call (the sum of radius squared is %g, '
+                'the limit is %d): split them into several calls or use smaller radii'
+                % (work, RETOUCH_MAX_SPOT_WORK)
+            )
+        opts['spots'] = clean
+        return opts
+    points = args.get('points')
+    if not isinstance(points, list) or not 1 <= len(points) <= RETOUCH_MAX_POINTS:
+        raise ValueError('points must be a list of 1..%d [x, y] points' % RETOUCH_MAX_POINTS)
+    opts['points'] = [_xy('points', p) for p in points]
+    source, offset = args.get('source'), args.get('source_offset')
+    if (source is None) == (offset is None):
+        raise ValueError('give exactly one of source {x, y} or source_offset {dx, dy}')
+    if source is not None:
+        if not isinstance(source, dict):
+            raise ValueError('source must be {x, y}')
+        sx = _finite_number('source.x', source.get('x'))
+        sy = _finite_number('source.y', source.get('y'))
+        opts['source_offset'] = (sx - opts['points'][0][0], sy - opts['points'][0][1])
+    else:
+        if not isinstance(offset, dict):
+            raise ValueError('source_offset must be {dx, dy}')
+        opts['source_offset'] = (
+            _finite_number('source_offset.dx', offset.get('dx')),
+            _finite_number('source_offset.dy', offset.get('dy')),
+        )
+    brush = args.get('brush_size')
+    opts['brush_size'] = validate_range(
+        'brush_size', RETOUCH_DEFAULT_BRUSH if brush is None else brush,
+        RETOUCH_MIN_BRUSH, RETOUCH_MAX_BRUSH,
+    )
+    work = retouch_stroke_work(opts['points'], opts['brush_size'])
+    if work > RETOUCH_MAX_STROKE_WORK:
+        raise ValueError(
+            'this stroke is too long for its brush size to paint in one call (about %d px of '
+            'path x brush, the limit is %d): split the stroke into several calls or use a '
+            'smaller brush' % (work, RETOUCH_MAX_STROKE_WORK)
+        )
+    hardness = args.get('hardness')
+    opts['hardness'] = validate_range(
+        'hardness', RETOUCH_DEFAULT_HARDNESS[method] if hardness is None else hardness, 0.0, 1.0
+    )
+    return opts
+
+
+def retouch_stroke_work(points, brush_size):
+    """The cost estimate of a heal/clone stroke: (path length + one brush) x brush, about the area
+    the brush sweeps (a single dab still costs its own area)."""
+    length = sum(
+        math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])
+    )
+    return (length + brush_size) * brush_size
+
+
+def retouch_spots_work(spots):
+    """The cost estimate of a spot_heal call: the sum of radius squared over its (x, y, r) spots."""
+    return sum(r * r for _x, _y, r in spots)
+
+
+def retouch_bounds(layer_x, layer_y, layer_width, layer_height, canvas_width, canvas_height):
+    """The layer's box clipped to the canvas as half-open (x0, y0, x1, y1); None when empty."""
+    x0, y0 = max(0, layer_x), max(0, layer_y)
+    x1 = min(canvas_width, layer_x + layer_width)
+    y1 = min(canvas_height, layer_y + layer_height)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def retouch_check_points(points, bounds, what):
+    """Raises ValueError naming `bounds` for the first point outside the half-open box."""
+    x0, y0, x1, y1 = bounds
+    for i, (x, y) in enumerate(points):
+        if not (x0 <= x < x1 and y0 <= y < y1):
+            raise ValueError(
+                '%s point %d (%g, %g) is outside the layer bounds x %d..%d, y %d..%d (image pixels)'
+                % (what, i, x, y, x0, x1 - 1, y0, y1 - 1)
+            )
+
+
+def retouch_spot_brush(radius):
+    """Brush diameter for healing a spot of `radius`: 1.3x the spot's diameter, within 3..1000."""
+    return max(RETOUCH_SPOT_MIN_BRUSH,
+               min(float(RETOUCH_MAX_BRUSH), radius * RETOUCH_SPOT_BRUSH_FACTOR))
+
+
+def retouch_cover_stroke(cx, cy, radius, brush_size, bounds=None, max_points=RETOUCH_MAX_POINTS):
+    """A stroke (list of [x, y]) whose brush (diameter `brush_size`) covers the disc at (cx, cy):
+    an Archimedean spiral from the center out to `radius` with a turn pitch of 0.6 x the brush, then
+    one full circle at `radius`, points spaced 0.4 x the brush apart (a heal dab blends to its
+    own edge, so several overlapping dabs beat one). Clamped into `bounds`; the
+    spacing widens if the stroke would exceed `max_points`."""
+    if radius <= 0 or brush_size <= 0:
+        return [[cx, cy]]
+    scale = 1.0
+    # Estimated point count (spiral length / spacing + the closing circle), so a stroke that would
+    # blow the cap widens its spacing up front instead of generating it first.
+    while ((math.pi * radius ** 2 / (0.6 * brush_size * scale) + 2 * math.pi * radius)
+           / (0.4 * brush_size * scale) > max_points * 0.9):
+        scale *= 1.1
+    while True:
+        pitch, step = 0.6 * brush_size * scale, 0.4 * brush_size * scale
+        pts = [(cx, cy)]
+        theta = 0.0
+        while True:
+            r = min(radius, pitch * theta / (2 * math.pi))
+            if r >= radius:
+                break
+            theta += step / max(r, step)
+            r = min(radius, pitch * theta / (2 * math.pi))
+            pts.append((cx + r * math.cos(theta), cy + r * math.sin(theta)))
+            if r >= radius:
+                break
+        n = max(3, int(math.ceil(2 * math.pi * radius / step)))
+        for k in range(1, n + 1):
+            a = theta + 2 * math.pi * k / n
+            pts.append((cx + radius * math.cos(a), cy + radius * math.sin(a)))
+        if len(pts) <= max_points:
+            break
+        scale *= 1.25
+    if bounds is not None:
+        x0, y0, x1, y1 = bounds
+        pts = [(min(max(x, x0), x1 - 1), min(max(y, y0), y1 - 1)) for x, y in pts]
+    return [[round(x, 2), round(y, 2)] for x, y in pts]
+
+
+def retouch_painted_bbox(points, brush_size, bounds):
+    """[x, y, w, h] of the stroke's brush footprint (points grown by half the brush), clipped to
+    `bounds`; [0, 0, 0, 0] when nothing is left."""
+    half = brush_size / 2.0
+    x0 = max(bounds[0], int(math.floor(min(p[0] for p in points) - half)))
+    y0 = max(bounds[1], int(math.floor(min(p[1] for p in points) - half)))
+    x1 = min(bounds[2], int(math.ceil(max(p[0] for p in points) + half)))
+    y1 = min(bounds[3], int(math.ceil(max(p[1] for p in points) + half)))
+    if x1 <= x0 or y1 <= y0:
+        return [0, 0, 0, 0]
+    return [x0, y0, x1 - x0, y1 - y0]
+
+
+def union_bbox_xywh(a, b):
+    """Union of two [x, y, w, h] boxes; an empty (zero-area) box is ignored."""
+    if a is None or a[2] <= 0 or a[3] <= 0:
+        return list(b) if b is not None else None
+    if b is None or b[2] <= 0 or b[3] <= 0:
+        return list(a)
+    x0, y0 = min(a[0], b[0]), min(a[1], b[1])
+    x1, y1 = max(a[0] + a[2], b[0] + b[2]), max(a[1] + a[3], b[1] + b[3])
+    return [x0, y0, x1 - x0, y1 - y0]
+
+
+def spot_candidates(cx, cy, radius, bounds, reach=None):
+    """Candidate source offsets (dx, dy) for a spot: 8 directions on each of the two rings
+    (2.2x and 3.5x the radius). A candidate is dropped when its source footprint -- a disc of
+    `reach` (default 2.3 x radius, RETOUCH_SPOT_REACH: the spot plus the healing brush's edge)
+    around the shifted center -- leaves `bounds`. Rounded to whole pixels; order is ring-major, then by angle."""
+    if reach is None:
+        reach = radius * RETOUCH_SPOT_REACH
+    x0, y0, x1, y1 = bounds
+    out = []
+    for ring in RETOUCH_SPOT_RINGS:
+        dist = ring * radius
+        for k in range(RETOUCH_SPOT_DIRECTIONS):
+            a = 2 * math.pi * k / RETOUCH_SPOT_DIRECTIONS
+            dx, dy = int(round(dist * math.cos(a))), int(round(dist * math.sin(a)))
+            sx, sy = cx + dx, cy + dy
+            if sx - reach < x0 or sy - reach < y0 or sx + reach > x1 or sy + reach > y1:
+                continue
+            out.append((dx, dy))
+    return out
+
+
+def spot_score(cand_mean, cand_std, ring_mean, ring_std):
+    """How far a candidate disc's (mean, std) is from the spot's surround ring: the sum of the two
+    absolute differences, in histogram units (0-255). Lower is better."""
+    return abs(cand_mean - ring_mean) + abs(cand_std - ring_std)
+
+
+def spot_pick_best(scored):
+    """The (dx, dy, score) with the lowest score from [(dx, dy, score), ...]; the earliest wins
+    a tie. None when empty."""
+    best = None
+    for item in scored:
+        if best is None or item[2] < best[2]:
+            best = item
+    return best
+
+
+# ---- render_region / keep_alpha ---------------------------------------------------------------
+
+# render_region is never downscaled: a box past either bound is refused outright.
+RENDER_REGION_MAX_PIXELS = 16_000_000
+RENDER_REGION_MAX_SIDE = 4096
+KEEP_ALPHA_EXTENSIONS = ('.png', '.webp')
+
+
+def _whole_pixels(name, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError('%s must be a whole number of pixels, got %r' % (name, value))
+    if value != int(value):
+        raise ValueError('%s must be a whole number of pixels, got %r' % (name, value))
+    return int(value)
+
+
+def validate_render_box(box, canvas_width, canvas_height):
+    """`box` [x, y, w, h] in image pixels, clamped to the canvas, as ints. Refuses a malformed box,
+    a box with no pixels on the canvas, and one past RENDER_REGION_MAX_PIXELS /
+    RENDER_REGION_MAX_SIDE (checked after clamping)."""
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        raise ValueError('box must be [x, y, width, height] in image pixels')
+    x, y, w, h = [_whole_pixels('box', v) for v in box]
+    if w <= 0 or h <= 0:
+        raise ValueError('box width and height must be positive')
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(canvas_width, x + w), min(canvas_height, y + h)
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError(
+            'box [%d, %d, %d, %d] does not overlap the %dx%d canvas' % (x, y, w, h, canvas_width, canvas_height)
+        )
+    w, h = x1 - x0, y1 - y0
+    if max(w, h) > RENDER_REGION_MAX_SIDE or w * h > RENDER_REGION_MAX_PIXELS:
+        raise ValueError(
+            'box is %dx%d px; render_region allows at most %d px on a side and %d megapixels '
+            '(it never downscales)' % (w, h, RENDER_REGION_MAX_SIDE, RENDER_REGION_MAX_PIXELS // 1_000_000)
+        )
+    return x0, y0, w, h
+
+
+def validate_keep_alpha(args, path):
+    """Whether `export` should keep transparency: `keep_alpha` must be a boolean (default False)
+    and only PNG and WebP can carry it."""
+    keep = optional_bool(args, 'keep_alpha', False)
+    if keep and os.path.splitext(path)[1].lower() not in KEEP_ALPHA_EXTENSIONS:
+        raise ValueError('keep_alpha only works with a .png or .webp file path')
+    return keep

@@ -357,9 +357,10 @@ const adjustSchema: JsonSchemaObject = {
       description:
         'vibrance only. THE vibrance control — a vibrance adjustment must set this field, not ' +
         '`saturation` (a separate, plain multiplier for this type that normally stays at its ' +
-        'default). Positive values boost muted/less-saturated colours more than already-saturated ' +
-        'ones (skin tones move less than a bright sky); negative desaturates the same way in ' +
-        'reverse. Default (when creating): 0.',
+        "default). The scale follows Photoshop's Vibrance: +10 to +30 is a natural boost, +50 a " +
+        "strong one; negative values desaturate. Unlike Photoshop's, it lifts already-saturated " +
+        'colors (a blue sky, a bright shirt) about as much as muted ones, so check those areas ' +
+        'with a histogram above about +50. Default (when creating): 0.',
     },
     // ---- sharpen ----
     amount: {

@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
@@ -6,6 +7,8 @@ import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import {
   OPEN_DOCUMENT_TIMEOUT_MS,
   OPEN_DOCUMENT_REPROBE_TIMEOUT_MS,
+  SAVE_PSD_REPROBE_TIMEOUT_MS,
+  getToolTimeoutMs,
 } from '../utils/operation-timeouts.js';
 import { toolErrorResult, runSnippetTool } from '../utils/tool-helpers.js';
 import { checkOutputPath, recordOutputPath, requireLocalPath } from '../utils/local-path.js';
@@ -411,6 +414,16 @@ export function createDocumentTools(
             saved_to: { type: 'string' },
             document_name: { type: 'string' },
             layers: { type: 'number' },
+            reprobed: {
+              type: 'boolean',
+              description:
+                'Present when the save outran its time budget and a follow-up check confirmed the file was written. document_name, layers and context are absent then.',
+            },
+            bytes: {
+              type: 'number',
+              description: 'Size of the written file. Present only with reprobed.',
+            },
+            scene_channels_purged: { type: 'number' },
             context: { type: 'object' },
           },
           required: ['success'],
@@ -807,6 +820,57 @@ async function openDocumentPipeline(
   }
 }
 
+/**
+ * Post-timeout check for `ps_save_psd`, the save-side twin of
+ * `reprobeOpenDocument`. A timeout kills the wrapper, not Photoshop, which
+ * goes on writing the file. A constant readiness script waits for Photoshop
+ * to finish (it runs one script at a time); the file is then checked on disk,
+ * so no path is ever spliced into a script. It counts as saved only if it is
+ * non-empty and was modified after the save started, which rules out an older
+ * copy at the same path (an overwrite, or an earlier save this session).
+ *
+ * Returns a success result, or null when the probe times out or errors, or
+ * the file is missing, empty or stale; the caller then reports the original
+ * timeout error.
+ */
+async function reprobeSavedPsd(
+  connection: PhotoshopConnection,
+  outputPath: string,
+  startedAt: number
+): Promise<ToolResult | null> {
+  try {
+    await runScript(connection, 'return { ready: true };', SAVE_PSD_REPROBE_TIMEOUT_MS);
+  } catch {
+    return null;
+  }
+  let size: number;
+  let modifiedMs: number;
+  try {
+    const stats = statSync(outputPath);
+    if (!stats.isFile()) return null;
+    size = stats.size;
+    modifiedMs = stats.mtimeMs;
+  } catch {
+    return null;
+  }
+  // 2s of slack: FAT and exFAT drives store modification times to the nearest 2 seconds.
+  if (size === 0 || modifiedMs < startedAt - 2_000) return null;
+
+  const payload = { success: true, saved_to: outputPath, bytes: size, reprobed: true };
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text:
+          `PSD saved (the save ran past the ${getToolTimeoutMs('ps_save_psd')}ms budget and was reported as a ` +
+          `timeout, but a post-timeout check confirmed the file was written):\n` +
+          JSON.stringify(payload, null, 2),
+      },
+    ],
+    structuredContent: payload,
+  };
+}
+
 async function savePsdPipeline(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
@@ -827,9 +891,6 @@ async function savePsdPipeline(
   // keep_scene_channels:"true" validate cleanly and then purge anyway — silently
   // destroying the very channels the caller asked to keep, and reporting
   // scene_channels_purged as though it were intended.
-  //
-  // runSnippetTool re-validates below; validateArgs is pure, so paying for it
-  // twice costs nothing and keeps the "reject before you mutate" order explicit.
   let args: Record<string, unknown>;
   let outputPath: string;
   try {
@@ -858,24 +919,41 @@ async function savePsdPipeline(
     }
   }
 
-  const res = await runSnippetTool({
-    connection,
-    snippetClient,
-    rawArgs,
-    schema: savePsdSchema,
-    snippet: 'savePsdAsCopy',
-    errorPrefix: 'Error saving PSD',
-    params: (args) => ({
+  // Passed explicitly (still scaled by EDITMAMEI_SCRIPT_TIMEOUT_MS), so time the
+  // purge spent never comes out of the save's budget.
+  const startedAt = Date.now();
+  let res: ToolResult;
+  try {
+    const script = await snippetClient.build('savePsdAsCopy', {
       outputPath,
       maximizeCompat: args.maximize_compatibility as boolean,
-    }),
-    successText: (result) => `PSD saved:\n${JSON.stringify(result, null, 2)}`,
-  });
+    });
+    const result = await runScript(connection, script, getToolTimeoutMs('ps_save_psd'));
+    res = {
+      content: [{ type: 'text' as const, text: `PSD saved:\n${JSON.stringify(result, null, 2)}` }],
+      structuredContent: result as Record<string, unknown>,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isScriptTimeoutError(message)) {
+      res =
+        (await reprobeSavedPsd(connection, outputPath, startedAt)) ??
+        toolErrorResult(
+          'Error saving PSD',
+          new Error(
+            `${message} Photoshop may still be writing the file: check whether ${outputPath} ` +
+              'was just modified before saving again.'
+          )
+        );
+    } else {
+      res = toolErrorResult('Error saving PSD', error);
+    }
+  }
   if (!res.isError) recordOutputPath(outputPath);
 
   // Report the purge rather than doing it silently — the channels are gone from
   // the OPEN document too, so the next select_by_reference re-derives.
-  // runSnippetTool passes the snippet's raw return through as structuredContent,
+  // The snippet's raw return goes through as structuredContent,
   // which is a STRING whenever the script returned a non-JSON value; assigning a
   // property to a string primitive throws in strict mode, so only annotate a
   // real object.

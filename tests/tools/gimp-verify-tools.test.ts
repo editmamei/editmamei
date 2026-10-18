@@ -343,6 +343,33 @@ describe('createGimpVerifyTools', () => {
       });
     });
 
+    it("mode='regions' puts both regions' stats and the difference in means in the text", async () => {
+      const stats = (mean: number) => ({ mean, median: mean, p5: mean - 10, p95: mean + 10 });
+      const gimp = makeGimpBackend({
+        result: {
+          region_a: { luminance: stats(80.5), red: stats(40) },
+          region_b: { luminance: stats(100), red: stats(30) },
+          proxy: false,
+        },
+      });
+      const tools = createGimpVerifyTools(gimp.asBackend(), { previewsAllowed: allow });
+      const result = await callTool(tools, 'gimp_compare', {
+        image: 1,
+        mode: 'regions',
+        region_a: { x: 0, y: 0, width: 10, height: 10 },
+        region_b: { x: 10, y: 10, width: 10, height: 10 },
+      });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toContain(
+        'luminance: A mean=80.5 median=80.5 p5=70.5 p95=90.5 | ' +
+          'B mean=100 median=100 p5=90 p95=110; B-A mean +19.5'
+      );
+      expect(text).toContain(
+        'red: A mean=40 median=40 p5=30 p95=50 | ' +
+          'B mean=30 median=30 p5=20 p95=40; B-A mean -10'
+      );
+    });
+
     it("mode='before_after' dispatches compare and reports deltas, with no image content when include_previews is false", async () => {
       const gimp = makeGimpBackend({
         result: {

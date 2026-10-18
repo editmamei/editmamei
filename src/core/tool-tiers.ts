@@ -346,11 +346,12 @@ export const TOOL_TIERS: Record<string, Tier> = {
   gimp_convert_image_mode: 'community',
   // Selections and masks: build a saved selection, refine it, and attach it as a layer mask.
   gimp_select: 'community',
-  gimp_modify_selection: 'dev',
+  gimp_modify_selection: 'community',
   gimp_layer_mask: 'community',
   gimp_get_selection_preview: 'community',
   // New tools start at 'dev'; promotion is the owner's call.
   gimp_match_layer: 'dev',
+  gimp_retouch: 'dev',
 };
 
 /**
