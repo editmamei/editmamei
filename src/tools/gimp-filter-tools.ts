@@ -3,6 +3,7 @@ import type { GimpBackend } from '../backends/gimp/backend.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers.js';
 import { GIMP_IMAGE_PROP, pickSchemaDeclaredKeys } from './gimp-shared.js';
+import { capLines, filterLine } from './gimp-result-text.js';
 
 /**
  * gimp_filter — the GIMP twin of ps_filter's stack-management ops. No
@@ -65,8 +66,9 @@ async function gimpFilter(
     );
     let text: string;
     if (op === 'list') {
-      const filters = (result.filters as unknown[] | undefined) ?? [];
-      text = `${filters.length} filter(s) on image ${args.image}.`;
+      const filters = (result.filters as Parameters<typeof filterLine>[0][] | undefined) ?? [];
+      text = `${filters.length} filter(s) on image ${args.image}, top of stack first.`;
+      if (filters.length > 0) text += '\n' + capLines(filters.map(filterLine)).join('\n');
     } else if (op === 'set_visibility') {
       text = `Filter ${result.filter_id} visibility set to ${result.visible}.`;
     } else {

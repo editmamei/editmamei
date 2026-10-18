@@ -3128,5 +3128,215 @@ class TestMatchMeasuring(unittest.TestCase):
             self.assertFalse(lib.is_linear_precision(nick), nick)
 
 
+
+def _dist_to_polyline(px, py, pts):
+    best = float('inf')
+    if len(pts) == 1:
+        return math.hypot(px - pts[0][0], py - pts[0][1])
+    for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+        vx, vy = bx - ax, by - ay
+        L2 = vx * vx + vy * vy
+        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / L2))
+        best = min(best, math.hypot(px - (ax + t * vx), py - (ay + t * vy)))
+    return best
+
+
+class TestRetouchValidate(unittest.TestCase):
+    PTS = [[10, 10], [20, 10]]
+
+    def test_requires_method(self):
+        with self.assertRaisesRegex(ValueError, 'method is required'):
+            lib.validate_retouch_args({})
+        with self.assertRaisesRegex(ValueError, 'method'):
+            lib.validate_retouch_args({'method': 'blur'})
+
+    def test_heal_defaults_and_source_to_offset(self):
+        o = lib.validate_retouch_args({'method': 'heal', 'points': self.PTS, 'source': {'x': 40, 'y': 25}})
+        self.assertEqual(o['source_offset'], (30.0, 15.0))
+        self.assertEqual(o['brush_size'], 20.0)
+        self.assertEqual(o['hardness'], 0.5)
+        self.assertEqual(o['target'], 'retouch_layer')
+        c = lib.validate_retouch_args({'method': 'clone', 'points': self.PTS, 'source_offset': {'dx': -5, 'dy': 2}})
+        self.assertEqual(c['hardness'], 0.8)
+        self.assertEqual(c['source_offset'], (-5.0, 2.0))
+
+    def test_exactly_one_source(self):
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            lib.validate_retouch_args({'method': 'heal', 'points': self.PTS})
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            lib.validate_retouch_args({
+                'method': 'heal', 'points': self.PTS,
+                'source': {'x': 1, 'y': 1}, 'source_offset': {'dx': 1, 'dy': 1}})
+
+    def test_ranges(self):
+        base = {'method': 'heal', 'points': self.PTS, 'source_offset': {'dx': 1, 'dy': 1}}
+        for bad in ({'brush_size': 0}, {'brush_size': 1001}, {'hardness': 1.1}, {'hardness': -0.1},
+                    {'points': []}, {'points': [[1, 2]] * 501}, {'points': [[1]]},
+                    {'points': [[float('nan'), 1]]}, {'target': 'elsewhere'}):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                lib.validate_retouch_args(dict(base, **bad))
+
+    def test_spots(self):
+        o = lib.validate_retouch_args({'method': 'spot_heal', 'spots': [{'x': 5, 'y': 6, 'radius': 3}]})
+        self.assertEqual(o['spots'], [(5.0, 6.0, 3.0)])
+        for bad in ([], [{'x': 1, 'y': 1, 'radius': 0.5}], [{'x': 1, 'y': 1, 'radius': 501}],
+                    [{'x': 1, 'y': 1}], [{'x': 1, 'y': 1, 'radius': 3}] * 51, 'x'):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                lib.validate_retouch_args({'method': 'spot_heal', 'spots': bad})
+
+    def test_hardness_is_refused_for_spot_heal(self):
+        with self.assertRaisesRegex(ValueError, 'hardness does not apply'):
+            lib.validate_retouch_args(
+                {'method': 'spot_heal', 'spots': [{'x': 5, 'y': 6, 'radius': 3}], 'hardness': 0.5})
+
+    def test_stroke_work_is_path_length_plus_one_brush_times_brush(self):
+        self.assertEqual(lib.retouch_stroke_work([[0, 0]], 10), 100)
+        self.assertEqual(lib.retouch_stroke_work([[0, 0], [30, 40]], 10), (50 + 10) * 10)
+        self.assertEqual(lib.retouch_spots_work([(1, 1, 3.0), (5, 5, 4.0)]), 25.0)
+
+    def test_stroke_work_cap(self):
+        base = {'method': 'heal', 'source_offset': {'dx': 1, 'dy': 1}}
+        side = int(lib.RETOUCH_MAX_STROKE_WORK ** 0.5)
+        # one dab at the largest brush is inside the budget, a long stroke with a big brush is not
+        lib.validate_retouch_args(dict(base, points=[[0, 0]], brush_size=1000))
+        lib.validate_retouch_args(dict(base, points=[[0, 0], [side, 0]], brush_size=1))
+        with self.assertRaisesRegex(ValueError, 'split the stroke into several calls'):
+            lib.validate_retouch_args(
+                dict(base, points=[[0, 0], [side, 0], [0, 0]], brush_size=1000))
+        edge = lib.RETOUCH_MAX_STROKE_WORK / 100.0
+        lib.validate_retouch_args(dict(base, points=[[0, 0], [edge - 100 - 1, 0]], brush_size=100))
+        with self.assertRaisesRegex(ValueError, 'smaller brush'):
+            lib.validate_retouch_args(dict(base, points=[[0, 0], [edge, 0]], brush_size=100))
+
+    def test_spot_work_cap(self):
+        r = int(lib.RETOUCH_MAX_SPOT_WORK ** 0.5)
+        lib.validate_retouch_args({'method': 'spot_heal', 'spots': [{'x': 5, 'y': 6, 'radius': r}]})
+        too_many = [{'x': 5, 'y': 6, 'radius': r}, {'x': 5, 'y': 6, 'radius': 20}]
+        with self.assertRaisesRegex(ValueError, 'split them into several calls'):
+            lib.validate_retouch_args({'method': 'spot_heal', 'spots': too_many})
+
+    def test_points_checked_against_bounds(self):
+        b = lib.retouch_bounds(20, 20, 60, 60, 100, 100)
+        self.assertEqual(b, (20, 20, 80, 80))
+        lib.retouch_check_points([[20, 20], [79.5, 79]], b, 'stroke')
+        with self.assertRaisesRegex(ValueError, r'x 20\.\.79, y 20\.\.79'):
+            lib.retouch_check_points([[30, 30], [10, 30]], b, 'stroke')
+        self.assertEqual(lib.retouch_bounds(-10, 90, 50, 50, 100, 100), (0, 90, 40, 100))
+        self.assertIsNone(lib.retouch_bounds(100, 0, 10, 10, 100, 100))
+
+
+class TestRetouchStroke(unittest.TestCase):
+    def test_stroke_covers_the_disc(self):
+        for cx, cy, r in ((50, 50, 1), (50, 50, 6), (200, 150, 40), (300, 300, 120)):
+            brush = lib.retouch_spot_brush(r)
+            pts = lib.retouch_cover_stroke(cx, cy, r, brush)
+            self.assertLessEqual(len(pts), lib.RETOUCH_MAX_POINTS)
+            worst = 0.0
+            steps = 24
+            for i in range(-steps, steps + 1):
+                for j in range(-steps, steps + 1):
+                    px, py = cx + r * i / steps, cy + r * j / steps
+                    if math.hypot(px - cx, py - cy) <= r:
+                        worst = max(worst, _dist_to_polyline(px, py, pts))
+            self.assertLessEqual(worst, brush / 2.0, (cx, cy, r, worst, brush))
+
+    def test_point_count_is_bounded_for_the_largest_spot(self):
+        pts = lib.retouch_cover_stroke(1000, 1000, 500, lib.retouch_spot_brush(500))
+        self.assertLessEqual(len(pts), lib.RETOUCH_MAX_POINTS)
+        pts = lib.retouch_cover_stroke(1000, 1000, 500, 1.0)
+        self.assertLessEqual(len(pts), lib.RETOUCH_MAX_POINTS)
+
+    def test_stroke_is_clamped_into_bounds(self):
+        pts = lib.retouch_cover_stroke(3, 3, 20, 10, bounds=(0, 0, 50, 50))
+        for x, y in pts:
+            self.assertTrue(0 <= x <= 49 and 0 <= y <= 49)
+
+    def test_spot_brush_is_bounded(self):
+        self.assertEqual(lib.retouch_spot_brush(1), 3.0)
+        self.assertAlmostEqual(lib.retouch_spot_brush(10), 26.0)
+        self.assertEqual(lib.retouch_spot_brush(100000), 1000.0)
+
+    def test_painted_bbox(self):
+        self.assertEqual(lib.retouch_painted_bbox([[50, 50], [60, 50]], 10, (0, 0, 100, 100)), [45, 45, 20, 10])
+        self.assertEqual(lib.retouch_painted_bbox([[2, 2]], 10, (0, 0, 100, 100)), [0, 0, 7, 7])
+        self.assertEqual(lib.union_bbox_xywh([0, 0, 10, 10], [5, 5, 10, 10]), [0, 0, 15, 15])
+        self.assertEqual(lib.union_bbox_xywh(None, [1, 2, 3, 4]), [1, 2, 3, 4])
+
+
+class TestSpotSource(unittest.TestCase):
+    def test_open_field_has_sixteen_candidates_on_two_rings(self):
+        c = lib.spot_candidates(500, 500, 10, (0, 0, 1000, 1000))
+        self.assertEqual(len(c), 16)
+        for dx, dy in c:
+            self.assertTrue(abs(math.hypot(dx, dy) - 22) < 1.1 or abs(math.hypot(dx, dy) - 35) < 1.1)
+        self.assertEqual(sum(1 for dx, dy in c if math.hypot(dx, dy) < 30), 8)
+
+    def test_candidates_leaving_the_layer_are_dropped(self):
+        # Spot at the left edge: nothing may point further left.
+        c = lib.spot_candidates(30, 500, 10, (0, 0, 1000, 1000))
+        self.assertTrue(c)
+        self.assertLess(len(c), 16)
+        for dx, _dy in c:
+            self.assertGreaterEqual(30 + dx - 23, 0)  # reach is 2.3 x the radius
+        # A layer too small for any source leaves none.
+        self.assertEqual(lib.spot_candidates(25, 25, 10, (0, 0, 50, 50)), [])
+
+    def test_score_and_pick(self):
+        self.assertAlmostEqual(lib.spot_score(100, 10, 100, 10), 0.0)
+        self.assertAlmostEqual(lib.spot_score(90, 14, 100, 10), 14.0)
+        scored = [(1, 0, 8.0), (2, 0, 3.5), (0, 3, 3.5), (4, 4, 9.0)]
+        self.assertEqual(lib.spot_pick_best(scored), (2, 0, 3.5))
+        self.assertIsNone(lib.spot_pick_best([]))
+
+
+class TestRenderBox(unittest.TestCase):
+    def test_box_is_clamped_to_the_canvas(self):
+        self.assertEqual(lib.validate_render_box([10, 20, 30, 40], 100, 100), (10, 20, 30, 40))
+        self.assertEqual(lib.validate_render_box([-10, -10, 30, 30], 100, 100), (0, 0, 20, 20))
+        self.assertEqual(lib.validate_render_box([90, 90, 50, 50], 100, 100), (90, 90, 10, 10))
+        self.assertEqual(lib.validate_render_box([5.0, 6, 7, 8], 100, 100), (5, 6, 7, 8))
+
+    def test_empty_or_malformed_boxes_are_refused(self):
+        for bad in (None, [], [1, 2, 3], [1, 2, 3, 4, 5], 'box', [0, 0, 0, 5], [0, 0, 5, -1],
+                    [200, 0, 10, 10], [0, 200, 10, 10], [-50, 0, 50, 10], [0, 0, 1.5, 2],
+                    [0, 0, True, 2], [0, 0, float('nan'), 2], [0, 0, '5', 5]):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                lib.validate_render_box(bad, 100, 100)
+
+    def test_caps_are_checked_after_clamping_and_never_downscale(self):
+        side = lib.RENDER_REGION_MAX_SIDE
+        self.assertEqual(lib.validate_render_box([0, 0, side, 3906], 8000, 8000), (0, 0, side, 3906))
+        with self.assertRaisesRegex(ValueError, 'at most 4096 px'):
+            lib.validate_render_box([0, 0, side + 1, 10], 8000, 8000)
+        with self.assertRaisesRegex(ValueError, '16 megapixels'):
+            lib.validate_render_box([0, 0, side, 3907], 8000, 8000)
+        # a huge request that clamps to a small canvas is fine
+        self.assertEqual(lib.validate_render_box([-5000, -5000, 20000, 20000], 100, 80), (0, 0, 100, 80))
+
+    def test_caps_are_the_documented_ones(self):
+        self.assertEqual(lib.RENDER_REGION_MAX_PIXELS, 16_000_000)
+        self.assertEqual(lib.RENDER_REGION_MAX_SIDE, 4096)
+
+
+class TestKeepAlpha(unittest.TestCase):
+    def test_defaults_to_false(self):
+        self.assertFalse(lib.validate_keep_alpha({}, '/x/a.jpg'))
+        self.assertFalse(lib.validate_keep_alpha({'keep_alpha': None}, '/x/a.jpg'))
+        self.assertFalse(lib.validate_keep_alpha({'keep_alpha': False}, '/x/a.tif'))
+
+    def test_png_and_webp_may_keep_alpha(self):
+        self.assertTrue(lib.validate_keep_alpha({'keep_alpha': True}, '/x/a.png'))
+        self.assertTrue(lib.validate_keep_alpha({'keep_alpha': True}, '/x/A.WEBP'))
+
+    def test_other_formats_refuse_it(self):
+        for path in ('/x/a.jpg', '/x/a.jpeg', '/x/a.tif', '/x/a.tiff', '/x/a.xcf', '/x/a'):
+            with self.assertRaisesRegex(ValueError, 'keep_alpha only works with'):
+                lib.validate_keep_alpha({'keep_alpha': True}, path)
+
+    def test_must_be_a_real_boolean(self):
+        with self.assertRaisesRegex(ValueError, 'keep_alpha must be a boolean'):
+            lib.validate_keep_alpha({'keep_alpha': 'true'}, '/x/a.png')
+
+
 if __name__ == '__main__':
     unittest.main()

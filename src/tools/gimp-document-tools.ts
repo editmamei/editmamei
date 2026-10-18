@@ -211,6 +211,14 @@ const exportSchema: JsonSchemaObject = {
       default: 8,
       description: 'PNG/TIFF/PSD only: output bit depth. JPEG/WebP are always 8-bit.',
     },
+    keep_alpha: {
+      type: 'boolean',
+      default: false,
+      description:
+        'PNG/WebP only: keep transparency. The visible layers are merged onto a transparent ' +
+        'canvas, so areas no layer covers (a cut-out, say) stay transparent. Default false ' +
+        'flattens onto white. Refused for JPEG and TIFF.',
+    },
   },
   required: ['image', 'file_path'],
 };
@@ -281,6 +289,13 @@ async function gimpExport(
         `"file_path" must end in ${EXPORT_FORMAT_EXTENSIONS.join(', ')}, got "${ext || '(none)'}".`
       );
     }
+    const keepAlpha = args.keep_alpha === true;
+    if (keepAlpha && ext !== '.png' && ext !== '.webp') {
+      throw new GimpError(
+        'invalid_argument',
+        `"keep_alpha" only works with a .png or .webp file_path, got "${ext}".`
+      );
+    }
     refuseExistingGimpFile(filePath, args.overwrite as boolean | undefined, existsSync);
 
     // Only the option(s) relevant to the resolved format are forwarded — the
@@ -303,6 +318,7 @@ async function gimpExport(
     } else if (ext === '.psd') {
       bridgeArgs.bit_depth = args.bit_depth;
     }
+    if (keepAlpha) bridgeArgs.keep_alpha = true;
 
     const format = ext.replace('.', '');
     if (ext === '.psd') {
@@ -437,7 +453,9 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
           'different there — the result lists them. Any other extension is refused, and .xcf is ' +
           'refused outright — use gimp_save_xcf for the live, re-editable document instead. ' +
           'Refuses to overwrite an existing file unless overwrite: true (with it, the existing ' +
-          'file is replaced).',
+          'file is replaced). A flattened image is composited onto white by default; keep_alpha: ' +
+          'true (png or webp only) keeps transparency, so a cut-out exports with a transparent ' +
+          'background.',
         inputSchema: exportSchema,
         outputSchema: {
           type: 'object',

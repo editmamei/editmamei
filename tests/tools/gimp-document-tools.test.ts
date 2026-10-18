@@ -284,6 +284,43 @@ describe('createGimpDocumentTools', () => {
       });
     });
 
+    it('forwards keep_alpha only when true, for png and webp', async () => {
+      for (const name of ['out.png', 'out.webp']) {
+        const gimp = makeGimpBackend({ result: { path: absPath(name), bytes: 500 } });
+        const tools = createGimpDocumentTools(gimp.asBackend());
+        await callTool(tools, 'gimp_export', {
+          image: 1,
+          file_path: absPath(name),
+          keep_alpha: true,
+        });
+        expect(gimp.lastCall().args).toMatchObject({ keep_alpha: true });
+        await callTool(tools, 'gimp_export', {
+          image: 1,
+          file_path: absPath(name),
+          keep_alpha: false,
+          overwrite: true,
+        });
+        expect(gimp.lastCall().args).not.toHaveProperty('keep_alpha');
+      }
+    });
+
+    it('refuses keep_alpha for jpeg and tiff before reaching the bridge', async () => {
+      for (const name of ['out.jpg', 'out.jpeg', 'out.tif', 'out.tiff']) {
+        const gimp = makeGimpBackend();
+        const tools = createGimpDocumentTools(gimp.asBackend());
+        const result = await callTool(tools, 'gimp_export', {
+          image: 1,
+          file_path: absPath(name),
+          keep_alpha: true,
+        });
+        expect(result.isError, name).toBe(true);
+        expect((result.content?.[0] as { text: string }).text).toMatch(
+          /keep_alpha.*\.png or \.webp/
+        );
+        expect(gimp.calls).toHaveLength(0);
+      }
+    });
+
     it('forwards only tiff-relevant options (compression enum + bit_depth) for a .tif path', async () => {
       const gimp = makeGimpBackend({ result: { path: absPath('out.tif'), bytes: 500 } });
       const tools = createGimpDocumentTools(gimp.asBackend());

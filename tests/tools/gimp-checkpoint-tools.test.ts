@@ -344,6 +344,23 @@ describe('createGimpCheckpointTools', () => {
       expect(scopedList[0]!.image).toBe(1);
     });
 
+    it('puts each checkpoint id and its image in the text', async () => {
+      const gimp = makeCheckpointBackend();
+      const tools = createGimpCheckpointTools(gimp.asBackend());
+      const a = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 1 });
+      const b = await callTool(tools, 'gimp_checkpoint', { op: 'create', image: 2 });
+      const idA = (a.structuredContent as { checkpoint_id: string }).checkpoint_id;
+      const idB = (b.structuredContent as { checkpoint_id: string }).checkpoint_id;
+
+      const listed = await callTool(tools, 'gimp_checkpoint', { op: 'list' });
+      const lines = (listed.content?.[0] as { text: string }).text.split('\n');
+      expect(lines[0]).toBe('2 checkpoint(s).');
+      expect(lines.slice(1)).toEqual([
+        expect.stringMatching(new RegExp(`^- "${idA}": image 1, \\S+, [\\d,]+ bytes$`)),
+        expect.stringMatching(new RegExp(`^- "${idB}": image 2, \\S+, [\\d,]+ bytes$`)),
+      ]);
+    });
+
     it('reports zero checkpoints, not an error, when none exist', async () => {
       const gimp = makeGimpBackend();
       const tools = createGimpCheckpointTools(gimp.asBackend());

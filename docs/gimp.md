@@ -115,10 +115,11 @@ metadata (including any GPS location); only `gimp_export` removes it.
 
 - **Documents:** open (most formats GIMP can load: JPEG, PNG, TIFF, WebP, HEIC/HEIF, XCF, and more),
   create a blank one, close, save as `.xcf` (live, re-editable), export flattened to
-  jpg/jpeg/png/webp/tif/tiff, or export a layered `.psd` for finishing in Photoshop (masks, opacity,
-  blend modes and groups kept; filters baked into each layer; a group with its own filter merged
-  into one layer; text written as pixels). Photoshop blends partly transparent layers and blend
-  modes in gamma space, so those can look slightly different there; the export result lists them.
+  jpg/jpeg/png/webp/tif/tiff (a PNG or WebP can keep its transparency with `keep_alpha`), or export
+  a layered `.psd` for finishing in Photoshop (masks, opacity, blend modes and groups kept; filters
+  baked into each layer; a group with its own filter merged into one layer; text written as
+  pixels). Photoshop blends partly transparent layers and blend modes in gamma space, so those can
+  look slightly different there; the export result lists them.
   Convert between color and grayscale. JPEG photos tagged with an EXIF
   orientation (phone portraits, for example) are rotated upright on open and on `gimp_place_image`;
   other formats keep whatever orientation their own loader applies.
