@@ -716,3 +716,52 @@ def op_test_assign_linear_profile(args):
 
 
 OPS['test_assign_linear_profile'] = op_test_assign_linear_profile
+
+
+
+def op_test_gradient_names(args):
+    """Names of every gradient GIMP knows, to prove a tool leaves none behind."""
+    return {'names': sorted(g.get_name() for g in Gimp.gradients_get_list(None))}
+
+
+def op_test_context_state(args):
+    """The ambient paint/gradient context, to prove a tool leaves it as it found it."""
+    def rgba(c):
+        return [round(v, 4) for v in c.get_rgba()]
+    return {
+        'foreground': rgba(Gimp.context_get_foreground()),
+        'background': rgba(Gimp.context_get_background()),
+        'gradient': Gimp.context_get_gradient().get_name(),
+        'reverse': Gimp.context_get_gradient_reverse(),
+        'repeat': Gimp.context_get_gradient_repeat_mode().value_nick,
+        'blend_space': Gimp.context_get_gradient_blend_color_space().value_nick,
+        'opacity': Gimp.context_get_opacity(),
+        'paint_mode': Gimp.context_get_paint_mode().value_nick,
+    }
+
+
+OPS['test_gradient_names'] = op_test_gradient_names
+OPS['test_context_state'] = op_test_context_state
+
+
+class _FailOnceModes(dict):
+    """lib.FILL_MODES that raises on the first value lookup and then puts the real table back."""
+
+    def __init__(self, real):
+        dict.__init__(self, real)
+        self.real = real
+
+    def __getitem__(self, key):
+        lib.FILL_MODES = self.real
+        raise RuntimeError('injected gimp_fill failure')
+
+
+def op_test_arm_fill_failure(args):
+    """Arm a one-shot failure in gimp_fill's last step -- the blend-mode lookup -- which runs after
+    the layer is inserted, the gradient is built and the layer mask is attached. Validation only
+    tests membership, so it still passes; the next gimp_fill then fails once and the table heals."""
+    lib.FILL_MODES = _FailOnceModes(lib.FILL_MODES)
+    return {'armed': True}
+
+
+OPS['test_arm_fill_failure'] = op_test_arm_fill_failure

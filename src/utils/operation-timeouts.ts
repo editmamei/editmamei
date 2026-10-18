@@ -392,6 +392,8 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   // document: 50 spots of radius 20 in 4.4 s, 50 of radius 100 in 55 s, 3 of radius 500 in 10 s
   // (~3.5 s each, so 50 of them would take about 175 s). Budgeted at 240 s.
   gimp_retouch: 240_000,
+  // gimp_fill: a canvas-sized layer plus one gradient render; a 24 MP document takes a few seconds.
+  gimp_fill: 60_000,
 };
 
 /**

@@ -13,6 +13,7 @@
 # helpers below do real file I/O, same as any other stdlib code would.
 
 import collections
+import itertools
 import json
 import math
 import os
@@ -159,6 +160,171 @@ def validate_layer_mode(value):
     return value
 
 
+# ---- gimp_fill ---------------------------------------------------------------------------------
+
+FILL_OPS = ('solid', 'linear_gradient', 'radial_gradient')
+FILL_MIN_STOPS = 2
+FILL_MAX_STOPS = 8
+# gimp_fill takes gimp_layer's blend-mode names plus 'lch_color': GIMP's LCh Color keeps the
+# layer underneath's lightness exactly and swaps only hue and chroma, which is what a recolor
+# wants. 'color' stays HSL Color (see LAYER_MODES), so existing callers are unchanged.
+FILL_MODES = dict(LAYER_MODES, lch_color='LCH_COLOR')
+_HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+
+def _is_number(v):
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:  # an int too large for a float (10**400)
+        return False
+
+
+def parse_hex_color(name, value):
+    """'#rrggbb' (strictly: a leading '#' and six hex digits) -> (r, g, b) ints 0..255."""
+    if not isinstance(value, str) or not _HEX_COLOR_RE.match(value):
+        raise ValueError('%s must be a color like #rrggbb' % name)
+    return int(value[1:3], 16), int(value[3:5], 16), int(value[5:7], 16)
+
+
+def _fill_point(name, value, default):
+    if value is None:
+        return default
+    if not isinstance(value, dict) or not _is_number(value.get('x')) or not _is_number(value.get('y')):
+        raise ValueError('%s must be {x, y} with finite numbers' % name)
+    try:
+        x, y = float(value['x']), float(value['y'])
+    except OverflowError:  # a Python int too large for a float (10**400)
+        raise ValueError('%s is out of range' % name)
+    if abs(x) > FILL_MAX_COORD_PX or abs(y) > FILL_MAX_COORD_PX:
+        raise ValueError('%s must be within +/-%d px' % (name, FILL_MAX_COORD_PX))
+    return x, y
+
+
+def validate_fill_stops(stops):
+    """2..8 stops [{offset 0..1, color #rrggbb, opacity? 0..100}], offsets non-decreasing (they
+    must arrive sorted: a mis-ordered list is a caller mistake, not something to silently fix).
+    Returns [(offset, (r, g, b), alpha 0..1)]."""
+    if not isinstance(stops, list) or not FILL_MIN_STOPS <= len(stops) <= FILL_MAX_STOPS:
+        raise ValueError('stops must be a list of %d..%d stops' % (FILL_MIN_STOPS, FILL_MAX_STOPS))
+    out = []
+    for i, s in enumerate(stops):
+        if not isinstance(s, dict):
+            raise ValueError('stops[%d] must be an object {offset, color, opacity?}' % i)
+        offset = s.get('offset')
+        if not _is_number(offset) or not 0 <= offset <= 1:
+            raise ValueError('stops[%d].offset must be a number within 0..1' % i)
+        opacity = s.get('opacity', 100)
+        if not _is_number(opacity) or not 0 <= opacity <= 100:
+            raise ValueError('stops[%d].opacity must be within 0..100' % i)
+        if out and offset < out[-1][0]:
+            raise ValueError('stops must be sorted by offset: stops[%d] comes before stops[%d]' % (i, i - 1))
+        out.append((float(offset), parse_hex_color('stops[%d].color' % i, s.get('color')), opacity / 100.0))
+    return out
+
+
+def gradient_ramp(stops):
+    """The stops widened to cover the whole 0..1 range (the first color holds back to 0, the last
+    holds on to 1), so the gradient is defined everywhere. Returns a new list."""
+    ramp = list(stops)
+    if ramp[0][0] > 0:
+        ramp.insert(0, (0.0,) + ramp[0][1:])
+    if ramp[-1][0] < 1:
+        ramp.append((1.0,) + ramp[-1][1:])
+    return ramp
+
+
+def _fill_name(value, op):
+    name = str(value or ('Fill' if op == 'solid' else 'Gradient')).strip() or 'Fill'
+    if len(name) > FILL_MAX_STRING_LEN:
+        raise ValueError('name must be at most %d characters' % FILL_MAX_STRING_LEN)
+    return name
+
+
+def validate_fill_args(args, width, height):
+    """Everything gimp_fill needs, validated before any GIMP call. Points are image pixels."""
+    op = validate_choice('op', args.get('op'), FILL_OPS)
+    opts = {
+        'op': op,
+        'name': _fill_name(args.get('name'), op),
+        'mode': validate_choice('mode', args.get('mode', 'normal'), FILL_MODES),
+        'mask': args.get('mask'),
+    }
+    opacity = args.get('opacity', 100)
+    if not _is_number(opacity) or not 0 <= opacity <= 100:
+        raise ValueError('opacity must be within 0..100')
+    opts['opacity'] = float(opacity)
+    if opts['mask'] is not None and (not isinstance(opts['mask'], str) or not opts['mask']):
+        raise ValueError('mask must be a channel name')
+    if opts['mask'] is not None and len(opts['mask']) > FILL_MAX_STRING_LEN:
+        raise ValueError('mask must be at most %d characters' % FILL_MAX_STRING_LEN)
+    if op == 'solid':
+        opts['color'] = parse_hex_color('color', args.get('color'))
+        for k in ('stops', 'start', 'end', 'center', 'radius'):
+            if args.get(k) is not None:
+                raise ValueError('%s does not apply to op solid' % k)
+        return opts
+    if args.get('color') is not None:
+        raise ValueError('color applies to op solid only; a gradient takes stops')
+    opts['stops'] = validate_fill_stops(args.get('stops'))
+    if op == 'linear_gradient':
+        for k in ('center', 'radius'):
+            if args.get(k) is not None:
+                raise ValueError('%s does not apply to op linear_gradient' % k)
+        opts['start'] = _fill_point('start', args.get('start'), (width / 2.0, 0.0))
+        opts['end'] = _fill_point('end', args.get('end'), (width / 2.0, float(height)))
+        if math.hypot(opts['end'][0] - opts['start'][0], opts['end'][1] - opts['start'][1]) < 1:
+            raise ValueError('start and end must be at least 1 pixel apart')
+    else:
+        for k in ('start', 'end'):
+            if args.get(k) is not None:
+                raise ValueError('%s does not apply to op radial_gradient' % k)
+        opts['center'] = _fill_point('center', args.get('center'), (width / 2.0, height / 2.0))
+        radius = args.get('radius')
+        if radius is None:
+            radius = math.hypot(width, height) / 2.0
+        if not _is_number(radius) or not 1 <= radius <= FILL_MAX_COORD_PX:
+            raise ValueError('radius must be within 1..%d pixels' % FILL_MAX_COORD_PX)
+        opts['radius'] = float(radius)
+    return opts
+
+
+# ---- masked measurement (gimp_get_histogram `mask`) ---------------------------------------------
+
+MASK_SELECTED_MIN = 128  # a mask pixel counts as selected at 50% or more (>= 128 of 255)
+_MASK_FLAG_TABLE = bytes(1 if v >= MASK_SELECTED_MIN else 0 for v in range(256))
+
+
+def mask_flags(mask_data):
+    """One byte per mask pixel: 1 where the pixel is selected (>= 50%), else 0."""
+    return bytes(mask_data).translate(_MASK_FLAG_TABLE)
+
+
+# A hard-edged mask scaled down keeps a ring of partial-coverage pixels around its edge; a thin
+# one is ALL ring (a 1 px line reads as a pale smear whose pixels blend with their neighbors).
+# Past this share of edge pixels among the touched ones the scaled copy is not trusted.
+MASK_EDGE_FRACTION_MAX = 0.25
+
+
+def mask_is_proxy_reliable(mask_data):
+    """Whether a downscaled copy's mask is solid enough to measure. Not when it touches nothing
+    (it may have vanished in the scale-down; the full-resolution pass tells that from a mask that
+    is truly empty) or when its partial-coverage pixels (not 0, not 255) are more than
+    MASK_EDGE_FRACTION_MAX of all the pixels it touches."""
+    data = bytes(mask_data)
+    touched = len(data) - data.count(0)
+    if touched == 0:
+        return False
+    edge = touched - data.count(255)
+    return edge <= MASK_EDGE_FRACTION_MAX * touched
+
+
+def select_masked(data, flags):
+    """The bytes of `data` (one value per pixel) at the positions `flags` marks 1."""
+    return bytes(itertools.compress(data, flags))
+
+
 # gimp_layer op=create's fill options -- verified live that `Gimp.FillType.TRANSPARENT` exists
 # and that a freshly created layer's content is otherwise undefined, so `create` always fills
 # explicitly rather than trusting whatever `Gimp.Layer.new` leaves behind.
@@ -184,6 +350,10 @@ BIT_DEPTHS = (8, 16)
 # SOURCE document already is (crop/rotate/flip only ever shrink-or-preserve the existing canvas,
 # so they don't need this; resize is the one op that can grow it arbitrarily from a tiny source).
 MAX_RESIZE_SIDE_PX = 30_000
+# gimp_fill's geometry bounds: a gradient axis may sit well off-canvas but not at 1e308, where
+# GIMP's float arithmetic overflows. Also the longest layer name / mask channel name it takes.
+FILL_MAX_COORD_PX = 10 * MAX_RESIZE_SIDE_PX
+FILL_MAX_STRING_LEN = 255
 _DEFAULT_MAX_RESIZE_MEGAPIXELS = 250
 
 
