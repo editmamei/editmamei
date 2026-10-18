@@ -3256,6 +3256,163 @@ def check_estimated_text_size(width, height):
         )
 
 
+# ---- text box and fit (gimp_text box / fit) --------------------------------------------------
+
+TEXT_FIT_DEFAULT_MIN_PX = 8
+TEXT_FIT_MAX_MIN_PX = 10000
+TEXT_FIT_MAX_PROBES = 12
+TEXT_BOX_SCAN_MAX_PIXELS = 16_000_000
+TEXT_OVERFLOW_LINES = 1_000_000  # "more lines than any box holds": what an overflowing probe reports
+TEXT_LINE_PITCH_SAMPLE_LINES = 10
+
+# A text box's own area ceiling, precision-aware like DOCUMENT_MEGAPIXEL_CAP but much tighter (a
+# text layer is a caption, not a canvas): 64 MP at 8-bit, halved for 16-bit and quartered for
+# 32-bit, and never above the matching document cap when EM_GIMP_MAX_MEGAPIXELS lowers those.
+TEXT_BOX_MEGAPIXEL_CAP = {
+    '8': min(64, MAX_RESIZE_MEGAPIXELS),
+    '16': min(32, MAX_RESIZE_MEGAPIXELS / 2),
+    '32': min(16, MAX_RESIZE_MEGAPIXELS / 4),
+}
+
+# Marks a text layer this tool put in a fixed box. GIMP cannot report a layer's box mode, so this
+# persistent layer parasite is how later edits know their size is bounded by the box.
+TEXT_BOX_TAG = 'editmamei-text-box'
+
+
+def check_text_box_area(width, height, precision='8'):
+    """Refuses a text box past the precision-aware text-box area cap (`TEXT_BOX_MEGAPIXEL_CAP`)."""
+    cap = TEXT_BOX_MEGAPIXEL_CAP[precision]
+    megapixels = (width * height) / 1_000_000.0
+    if megapixels > cap:
+        raise ValueError(
+            'a %dx%d px text box is %.1f MP, past the %g MP limit for a %s-bit text layer; use a '
+            'smaller box' % (width, height, megapixels, cap, precision)
+        )
+
+
+def text_scan_max_pixels(precision='8'):
+    """The largest probe layer (px) a box scan renders: `TEXT_BOX_SCAN_MAX_PIXELS`, or the text-box
+    area cap for `precision` when EM_GIMP_MAX_MEGAPIXELS has lowered it below that."""
+    return min(TEXT_BOX_SCAN_MAX_PIXELS, int(TEXT_BOX_MEGAPIXEL_CAP[precision] * 1_000_000))
+
+
+def check_text_fit_box(width, height, precision='8'):
+    """Refuses `fit` for a box too large to probe in one render (`text_scan_max_pixels`)."""
+    limit = text_scan_max_pixels(precision)
+    if width * height > limit:
+        raise ValueError(
+            'fit supports a box of at most %g MP (got %dx%d px); use a smaller box, or set the '
+            'box and font_size without fit' % (limit / 1_000_000.0, width, height)
+        )
+
+
+def text_scan_cap(width, precision='8'):
+    """The tallest probe layer (px) the box scan renders at `width`."""
+    return max(1, min(MAX_RESIZE_SIDE_PX, text_scan_max_pixels(precision) // max(1, width)))
+
+
+def fit_probe_plan(width, limit_h, pitch, precision='8'):
+    """(scan_h, clamped): the probe height for testing whether text fits `limit_h`, a little
+    taller than the limit so overflow shows as ink past it. `clamped` means the scan cap cut it
+    below that height, so ink on its last row only says "reaches the end of the probe"."""
+    ideal = int(math.ceil(limit_h + 2 * pitch)) + 1
+    scan_h = min(text_scan_cap(width, precision), ideal)
+    return scan_h, scan_h < ideal
+
+
+def fit_probe_overflows(ink_bottom_row, scan_h, clamped):
+    """Whether a clamped probe (`fit_probe_plan`) with ink on its last row means the text
+    overflows. An unclamped probe is judged by its line count instead."""
+    return bool(clamped and ink_bottom_row >= scan_h - 1)
+
+
+def validate_text_box(box):
+    """(width, height) from a `box` object `{width, height?}` in image px; height is None when
+    omitted (the layer grows to fit the wrapped text). Each side is held to the engine's resize
+    caps, and the area to its megapixel cap."""
+    if not isinstance(box, dict):
+        raise ValueError('box must be an object {width, height?}')
+    unknown = sorted(set(box) - {'width', 'height'})
+    if unknown:
+        raise ValueError('box has unknown keys: %s' % ', '.join(unknown))
+    if box.get('width') is None:
+        raise ValueError('box.width is required')
+    width = _box_side('box.width', box['width'])
+    height = None if box.get('height') is None else _box_side('box.height', box['height'])
+    validate_resize_dims(width, height if height is not None else 1)
+    return width, height
+
+
+def _box_side(name, value):
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or (isinstance(value, float) and not math.isfinite(value)) or int(value) != value):
+        raise ValueError('%s must be an integer' % name)
+    return validate_int_range(name, value, 1, MAX_RESIZE_SIDE_PX)
+
+
+def validate_text_fit(args, box):
+    """(fit, min_px) from `fit` / `min_size`. Fitting needs a box with both width and height;
+    `min_size` (pixels) is only meaningful with `fit`."""
+    fit = args.get('fit')
+    if fit is not None and not isinstance(fit, bool):
+        raise ValueError('fit must be a boolean')
+    min_given = args.get('min_size') is not None
+    if not fit:
+        if min_given:
+            raise ValueError('min_size only applies with fit: true')
+        return False, None
+    if box is None or box[1] is None:
+        raise ValueError('fit needs a box with both width and height')
+    min_px = TEXT_FIT_DEFAULT_MIN_PX
+    if min_given:
+        value = args['min_size']
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError('min_size must be a number')
+        min_px = validate_range('min_size', value, 1, TEXT_FIT_MAX_MIN_PX)
+    return True, min_px
+
+
+def fit_font_size(max_px, min_px, fits, max_probes=TEXT_FIT_MAX_PROBES):
+    """The largest font size in [min_px, max_px] for which `fits(size)` is true, searched in
+    whole pixels (the requested max is tried exactly as given). Returns (size, fitted, probes);
+    `fitted` is False when even `min_px` overflows (the size is then `min_px`). Never calls
+    `fits` more than `max_probes` times: the search keeps the best size that fit so far."""
+    if min_px > max_px:
+        min_px = max_px
+    probes = 0
+
+    def probe(size):
+        nonlocal probes
+        probes += 1
+        return fits(size)
+
+    if probe(max_px):
+        return max_px, True, probes
+    if min_px >= max_px or not probe(min_px):
+        return min_px, False, probes
+    lo, hi = min_px, max_px  # lo fits, hi does not
+    while probes < max_probes:
+        mid = math.floor((lo + hi) / 2.0)
+        if mid <= lo:
+            break
+        if probe(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo, True, probes
+
+
+def wrapped_line_count(ink_bottom_row, pitch, explicit_lines):
+    """How many lines a wrapped text layout occupies, from the last row holding ink
+    (`ink_bottom_row`, -1 when blank) and the line pitch (line height plus line spacing). The
+    last line's ink always sits below the top of its own line box and within it, so its index is
+    `floor(row / pitch)`; lines the content separates with newlines count even when blank."""
+    lines = explicit_lines
+    if ink_bottom_row >= 0 and pitch > 0:
+        lines = max(lines, int(ink_bottom_row // pitch) + 1)
+    return max(1, lines)
+
+
 TEXT_REPORT_MAX_CHARS = 200
 
 

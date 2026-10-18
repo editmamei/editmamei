@@ -22,7 +22,14 @@ import {
  * unchanged (`bridge/ops.py`'s `op_text`).
  */
 
-const TEXT_OPS = ['create', 'set_content', 'set_font', 'set_color', 'set_alignment'] as const;
+const TEXT_OPS = [
+  'create',
+  'set_content',
+  'set_font',
+  'set_color',
+  'set_alignment',
+  'set_box',
+] as const;
 
 const ALIGNMENTS = [
   'LEFT',
@@ -46,7 +53,8 @@ const textSchema: JsonSchemaObject = {
         '100,100) and `font_size` (default 24), optionally with font_name, red/green/blue and ' +
         'alignment. set_content: replace the text with `text`. set_font: set `font_name` ' +
         '(optionally `font_size`). set_color: set red/green/blue. set_alignment: set ' +
-        '`alignment`. The set_* ops act on the text layer named by `layer_id` or `layer`.',
+        '`alignment`. set_box: put the layer in a fixed `box` (re-wrapping its text). The ' +
+        'set_* ops act on the text layer named by `layer_id` or `layer`.',
     },
     layer: {
       ...GIMP_LAYER_PROP,
@@ -115,7 +123,38 @@ const textSchema: JsonSchemaObject = {
       enum: [...ALIGNMENTS],
       description:
         'Text alignment. GIMP supports LEFT, CENTER, RIGHT and FULLYJUSTIFIED; the other ' +
-        'values ps_text accepts (LEFTJUSTIFIED, CENTERJUSTIFIED, RIGHTJUSTIFIED) are refused.',
+        'values ps_text accepts (LEFTJUSTIFIED, CENTERJUSTIFIED, RIGHTJUSTIFIED) are refused. ' +
+        'In a box, alignment applies within the box width.',
+    },
+    box: {
+      type: 'object',
+      properties: {
+        width: { type: 'integer', minimum: 1, maximum: 30000 },
+        height: { type: 'integer', minimum: 1, maximum: 30000 },
+      },
+      required: ['width'],
+      description:
+        'create, set_box: a fixed text box {width, height?} in image pixels (each side 1 to ' +
+        '30000, area within the text-box cap: 64 MP at 8-bit, 32 MP at 16-bit, 16 MP at 32-bit). The text wraps at `width` (newlines in the ' +
+        'text are kept) and is placed at the top of the box; GIMP has no vertical alignment, so ' +
+        'a taller box leaves the space below. Omit `height` and the layer grows to the wrapped ' +
+        "text's height. The box survives later set_content / set_font / set_alignment edits. " +
+        'Emoji and some scripts depend on installed fonts and may render as empty boxes.',
+    },
+    fit: {
+      type: 'boolean',
+      description:
+        'create, set_box: with a `box` that has both width and height (at most 16 MP), shrink the ' +
+        'text to approximately the largest size (at most font_size, or the current size for ' +
+        'set_box) at which the wrapped text fits inside the box, searched in at most 12 trial ' +
+        'renders. A word wider than the box counts as not fitting. The result ' +
+        'reports `fitted`: false when even min_size overflows (the text is left at min_size).',
+    },
+    min_size: {
+      type: 'number',
+      minimum: 1,
+      maximum: 10000,
+      description: 'fit only: the smallest font size to try, in pixels (default 8).',
     },
   },
   required: ['image', 'op'],
@@ -129,6 +168,9 @@ interface TextBridgeResult {
   font_size_px?: number;
   ppi?: number | null;
   bounds: { x: number | null; y: number | null; width: number; height: number };
+  box?: { width: number; height: number };
+  fitted?: boolean;
+  fit_probes?: number;
 }
 
 async function gimpText(gimp: GimpBackend, rawArgs: Record<string, unknown>): Promise<ToolResult> {
@@ -149,7 +191,12 @@ async function gimpText(gimp: GimpBackend, rawArgs: Record<string, unknown>): Pr
           type: 'text' as const,
           text:
             `Text layer "${result.name}" (id ${result.layer_id}): ${result.font ?? 'unknown font'} ` +
-            `${result.font_size} pt${sizing}, ${b.width}x${b.height} px at (${b.x}, ${b.y}).`,
+            `${result.font_size} pt${sizing}, ${b.width}x${b.height} px at (${b.x}, ${b.y}).` +
+            (result.fitted === undefined
+              ? ''
+              : result.fitted
+                ? ' Fitted to the box.'
+                : ' Does NOT fit: even min_size overflows the box, so the text is left at min_size and is clipped.'),
         },
       ],
       structuredContent: result as unknown as Record<string, unknown>,
@@ -166,15 +213,19 @@ export function createGimpTextTools(gimp: GimpBackend): ToolDefinition[] {
         name: 'gimp_text',
         description:
           'Headless GIMP: create a live, editable text layer or restyle one, chosen with `op` ' +
-          '(create, set_content, set_font, set_color, set_alignment) — the same ops and ' +
-          'parameters as ps_text. create adds a layer at `x`/`y` with `text`, `font_size` in ' +
+          '(create, set_content, set_font, set_color, set_alignment, set_box) — the same ops and ' +
+          'parameters as ps_text, plus a fixed `box` with wrapping and `fit`. create adds a layer at `x`/`y` with `text`, `font_size` in ' +
           'points, and optional font_name, red/green/blue and alignment; it reports layer_id, ' +
           'name, bounds, the image ppi and the font size in pixels. The set_* ops change the text layer named by `layer_id` or `layer` ' +
           '(a non-text layer is refused). Fonts accept a family ("Inter") or full name ("Inter ' +
           'Bold"), case-insensitive; a miss is refused with the closest installed names (list ' +
           'them with gimp_inspect what=fonts). Text is capped at 2000 characters, and a layer ' +
           'that would render past the size limit is refused and leaves the document unchanged. ' +
-          'GIMP supports LEFT, CENTER, RIGHT and FULLYJUSTIFIED alignment only. There is no ' +
+          'GIMP supports LEFT, CENTER, RIGHT and FULLYJUSTIFIED alignment only. `box` {width, ' +
+          'height?} (create, set_box) fixes the text box so text wraps at `width`; `fit` ' +
+          'shrinks the size to approximately the largest size at which the wrapped text fits a box with both sides; the result then ' +
+          'carries `box` and, for fit, `fitted` and `fit_probes`. Text sits at the top of the ' +
+          'box (no vertical alignment). There is no ' +
           'undo in this session: gimp_checkpoint or gimp_save_xcf first when in doubt.',
         inputSchema: textSchema,
         outputSchema: {
@@ -212,6 +263,20 @@ export function createGimpTextTools(gimp: GimpBackend): ToolDefinition[] {
                 height: { type: 'number' },
               },
             },
+            box: {
+              type: 'object',
+              description: 'create / set_box with a box: the resulting box in pixels.',
+              properties: { width: { type: 'number' }, height: { type: 'number' } },
+            },
+            fitted: {
+              type: 'boolean',
+              description: 'fit only: false when even min_size overflows the box.',
+            },
+            fit_probes: {
+              type: 'integer',
+              description: 'fit only: trial renders used (at most 12).',
+            },
+            fit_seconds: { type: 'number', description: 'fit only: time the search took.' },
           },
         },
         annotations: {

@@ -513,6 +513,16 @@ def op_test_set_layer_lock(args):
     return {'lock_position': layer.get_lock_position(), 'lock_content': layer.get_lock_content()}
 
 
+def op_test_tag_text_box(args):
+    """Attaches the boxed-text tag to a text layer without putting it in box mode: the state a
+    layer reaches when it is switched back to dynamic in GIMP, or when a file made elsewhere
+    carries the tag. No shipped tool can produce it."""
+    img = _image(args)
+    layer = _layer(img, args)
+    _text_mark_boxed(layer)
+    return {'tagged': _text_is_boxed(layer)}
+
+
 def op_test_layer_bounds(args):
     """A layer's own {x, y, width, height} directly -- `gimp_inspect what=layers` reports
     offsets but not width/height, so a live test that needs to read a layer's current bounds
@@ -555,6 +565,7 @@ OPS.update({
     'test_build_no_alpha_gap_xcf': op_test_build_no_alpha_gap_xcf,
     'test_add_layer_mask': op_test_add_layer_mask,
     'test_layer_bounds': op_test_layer_bounds,
+    'test_tag_text_box': op_test_tag_text_box,
     'test_set_layer_lock': op_test_set_layer_lock,
 })
 
