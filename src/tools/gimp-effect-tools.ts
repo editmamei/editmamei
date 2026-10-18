@@ -275,19 +275,19 @@ const effectSchema: JsonSchemaObject = {
     width: {
       type: 'number',
       minimum: 1,
-      maximum: 100,
+      maximum: 50,
       description:
-        'outline only. Stroke thickness in pixels at full resolution, 1..100 (GIMP caps the ' +
-        'grow at 100). Default (when creating): 4. SPATIAL. The stroke grows outward from the ' +
-        "layer's alpha edge (round corners) and the layer's own pixels are untouched.",
+        'outline only. Stroke thickness in pixels at full resolution, 1..50. Default (when ' +
+        "creating): 4. SPATIAL. The stroke grows outward from the layer's alpha edge (round " +
+        "corners) and the layer's own pixels are untouched.",
     },
     spread: {
       type: 'number',
       minimum: 0,
-      maximum: 100,
+      maximum: 50,
       description:
         "outer_glow only. Pixels the glow's solid core grows past the alpha edge before it " +
-        'blurs, 0..100. Default (when creating): 4. SPATIAL.',
+        'blurs, 0..50. Default (when creating): 4. SPATIAL.',
     },
     color: {
       type: 'string',

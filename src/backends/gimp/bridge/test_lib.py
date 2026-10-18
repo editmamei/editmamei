@@ -116,7 +116,7 @@ class TestLedger(unittest.TestCase):
         filters_in = {'Curves': {'operation': 'gimp:curves', 'params': {'points': [[0, 0], [255, 255]]}}}
         raw = lib.serialize_ledger(filters_in, {'future_field': 'kept'})
         doc = json.loads(raw)
-        self.assertEqual(doc['v'], lib.LEDGER_VERSION)
+        self.assertEqual(doc['v'], 1)  # no version-2 record type, so every bridge can read it
         self.assertEqual(doc['writer'], lib.LEDGER_WRITER)
 
         filters_out, unknown_out, raw_filters_out = lib.parse_ledger(raw)
@@ -147,9 +147,33 @@ class TestLedger(unittest.TestCase):
         filters['NewFilter'] = {'operation': 'gimp:levels', 'params': {}}
         rewritten = lib.serialize_ledger(filters, unknown)
         doc = json.loads(rewritten)
-        self.assertEqual(doc['v'], lib.LEDGER_VERSION)
+        self.assertEqual(doc['v'], 1)
         self.assertEqual(doc['kept'], 'yes')
         self.assertEqual(list(doc['filters'].keys()), ['NewFilter'])
+
+    def test_a_version_2_record_type_writes_version_2(self):
+        for type_, operation in (
+            ('outline', 'gegl:dropshadow'),
+            ('outer_glow', 'gegl:dropshadow'),
+            ('surface_blur', 'gegl:bilateral-filter'),
+        ):
+            filters = {
+                'Curves': {'operation': 'gimp:curves', 'params': {}},
+                'New': {'operation': operation, 'type': type_, 'params': {}},
+            }
+            doc = json.loads(lib.serialize_ledger(filters))
+            self.assertEqual(doc['v'], 2, type_)
+        # A typeless legacy gegl:dropshadow is a drop_shadow, which version 1 holds.
+        legacy = {'Shadow': {'operation': 'gegl:dropshadow', 'params': {'x': 1.0}}}
+        self.assertEqual(json.loads(lib.serialize_ledger(legacy))['v'], 1)
+
+    def test_reads_both_version_1_and_version_2(self):
+        record = {'Curves': {'operation': 'gimp:curves', 'params': {}}}
+        for v in (1, 2):
+            filters, _unknown, _raw = lib.parse_ledger(json.dumps({'v': v, 'filters': record}))
+            self.assertEqual(filters, record, v)
+        filters, _unknown, _raw = lib.parse_ledger(json.dumps({'v': 0, 'filters': record}))
+        self.assertEqual(filters, {})
 
     def test_ledger_is_newer_version(self):
         older = json.dumps({'v': lib.LEDGER_VERSION, 'filters': {}})
@@ -274,7 +298,7 @@ class TestMergedLedgerForWrite(unittest.TestCase):
         written = lib.merged_ledger_for_write('', {'New': {'operation': 'x', 'params': {}}}, {})
         doc = json.loads(written.decode('utf-8'))
         self.assertEqual(doc['filters'], {'New': {'operation': 'x', 'params': {}}})
-        self.assertEqual(doc['v'], lib.LEDGER_VERSION)
+        self.assertEqual(doc['v'], 1)
 
 
 class TestGimpVersion(unittest.TestCase):
@@ -881,8 +905,8 @@ class TestEffectParamBuilders(unittest.TestCase):
     def test_build_outline_params_bounds(self):
         defaults = _effect_create_defaults('outline')
         lib.build_outline_params({'width': 1}, defaults)
-        lib.build_outline_params({'width': 100}, defaults)
-        for bad in (0.9, 101, -3):
+        lib.build_outline_params({'width': 50}, defaults)
+        for bad in (0.9, 50.5, -3):
             with self.assertRaises(ValueError):
                 lib.build_outline_params({'width': bad}, defaults)
 
@@ -910,7 +934,7 @@ class TestEffectParamBuilders(unittest.TestCase):
     def test_build_outer_glow_params_bounds(self):
         defaults = _effect_create_defaults('outer_glow')
         cases = (
-            ('spread', 0, 100, (-0.5, 100.5)),
+            ('spread', 0, 50, (-0.5, 50.5)),
             ('radius', 1, 250, (0.5, 250.5)),
             ('opacity', 0, 1, (-0.1, 1.1)),
         )
@@ -2292,6 +2316,25 @@ class TestGeometryTransformEffectParams(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, 'width/spread'):
             lib.validate_effect_transform('resize', 'gegl:dropshadow', 'Outline', grown)
+
+    def test_resize_past_the_outer_glow_radius_cap_is_refused(self):
+        # gegl:dropshadow allows radius 1500 (drop_shadow's cap); an outer_glow's own is 250.
+        grown = lib.resize_effect_params(
+            'gegl:dropshadow', {'radius': 200.0, 'grow-radius': 4.0, 'color': '#ffffff'}, 2.0, 2.0
+        )
+        with self.assertRaisesRegex(ValueError, 'radius'):
+            lib.validate_effect_transform('resize', 'gegl:dropshadow', 'Glow', grown, 'outer_glow')
+        # The same radius on a drop_shadow is in range.
+        lib.validate_effect_transform('resize', 'gegl:dropshadow', 'Shadow', grown, 'drop_shadow')
+
+    def test_every_transform_ceiling_matches_its_builder_cap(self):
+        for (type_, prop), ceiling in lib.EFFECT_TRANSFORM_CEILINGS.items():
+            builder = {'outer_glow': lib.build_outer_glow_params}[type_]
+            field = {'radius': 'radius'}[prop]
+            defaults = _effect_create_defaults(type_)
+            builder({field: ceiling}, defaults)  # no raise at the ceiling
+            with self.assertRaises(ValueError):
+                builder({field: ceiling + 0.5}, defaults)
 
     def test_resize_uniform_scale_is_exact_for_drop_shadow_radius(self):
         result = lib.resize_effect_params(

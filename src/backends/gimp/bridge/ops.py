@@ -2042,7 +2042,7 @@ def _snapshot_effect_transform(img, op_name, transform_fn, layers=None):
             new_params = lib.clamp_effect_transform(type_, transform_fn(operation, params, layer))
             if new_params == params:
                 continue
-            lib.validate_effect_transform(op_name, operation, f.get_name(), new_params)
+            lib.validate_effect_transform(op_name, operation, f.get_name(), new_params, type_)
             planned[f.get_name()] = (operation, new_params)
     return planned
 

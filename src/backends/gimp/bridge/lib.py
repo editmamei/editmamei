@@ -22,7 +22,13 @@ import sys
 import time
 import traceback
 
-LEDGER_VERSION = 1
+# The newest ledger version this bridge reads and writes. A document is written at the lowest
+# version that can hold its records: version 2 added the outline, outer_glow and surface_blur
+# types, whose params an earlier bridge cannot read. Written as 2, an earlier bridge treats the
+# ledger as newer than itself (it reads the filters back from GIMP and leaves the ledger alone)
+# instead of failing on them; a ledger without them stays version 1, which every bridge reads.
+LEDGER_VERSION = 2
+LEDGER_V2_TYPES = frozenset(('outline', 'outer_glow', 'surface_blur'))
 LEDGER_WRITER = 'editmamei'
 
 HIST_CHANNELS = ('luminance', 'red', 'green', 'blue')
@@ -1434,12 +1440,17 @@ def build_drop_shadow_params(args, defaults):
 def build_outline_params(args, defaults):
     # A solid ring around the layer's alpha: gegl:dropshadow with no offset and no blur, grown by
     # `width` px (grow-radius, a circle) at full opacity. Only `grow-radius` and `color` are
-    # recorded; `_set_drop_shadow` fills the rest in (offset 0, blur 0, opacity 1). GEGL caps
-    # grow-radius at 100 on this GIMP (3.2.x) -- probed live -- so `width` stops there. The shadow
-    # is drawn under the layer's own pixels, so the interior is untouched.
+    # recorded; `_set_drop_shadow` fills the rest in (offset 0, blur 0, opacity 1). The shadow is
+    # drawn under the layer's own pixels, so the interior is untouched.
+    #
+    # GEGL allows grow-radius up to 100, but its cost grows linearly with the radius times the
+    # pixel count. Measured live (GIMP 3.2.6, a 6000x4000 = 24 MP layer, full export incl. a ~1 s
+    # baseline export with no filter): width 6 -> 4 s, 50 -> 18.5 s, 100 -> 39.5 s; outer_glow at
+    # radius 250 with spread 50 -> 17.7 s, spread 100 -> 30.6 s. Width and spread stop at 50, the
+    # same ~20 s worst case on 24 MP as SURFACE_BLUR_MAX_RADIUS.
     return {
         'grow-radius': resolve_field(
-            args, 'width', defaults, 'grow-radius', lambda val: validate_range('width', val, 1.0, 100.0)
+            args, 'width', defaults, 'grow-radius', lambda val: validate_range('width', val, 1.0, 50.0)
         ),
         'color': resolve_field(
             args, 'color', defaults, 'color', lambda val: validate_hex_color('color', val)
@@ -1456,7 +1467,7 @@ def build_outer_glow_params(args, defaults):
         ),
         'grow-radius': resolve_field(
             args, 'spread', defaults, 'grow-radius',
-            lambda val: validate_range('spread', val, 0.0, 100.0),
+            lambda val: validate_range('spread', val, 0.0, 50.0),
         ),
         'opacity': resolve_field(
             args, 'opacity', defaults, 'opacity', lambda val: validate_range('opacity', val, 0.0, 1.0)
@@ -2070,8 +2081,8 @@ EFFECT_TRANSFORM_BOUNDS = {
     'gegl:focus-blur': {'blur-radius': (0.0, 150.0)},
     'gegl:dropshadow': {
         'x': (-500.0, 500.0), 'y': (-500.0, 500.0), 'radius': (0.0, 1500.0),
-        # outline's width and outer_glow's spread: GEGL's own cap, the widest either allows.
-        'grow-radius': (0.0, 100.0),
+        # outline's width and outer_glow's spread share a cap (see build_outline_params).
+        'grow-radius': (0.0, 50.0),
     },
     'gegl:bilateral-filter': {'blur-radius': (0.0, SURFACE_BLUR_MAX_RADIUS)},
 }
@@ -2107,6 +2118,15 @@ EFFECT_TRANSFORM_FLOORS = {
 }
 
 
+# Per-type ceilings a re-edit enforces below EFFECT_TRANSFORM_BOUNDS' own upper bound: outer_glow
+# shares gegl:dropshadow (radius up to 1500) but its own builder caps radius at 250, so a growing
+# resize would otherwise store a radius a re-edit of the same glow refuses. Unlike a floor, a
+# value past a ceiling is refused, the same as any other out-of-range transform.
+EFFECT_TRANSFORM_CEILINGS = {
+    ('outer_glow', 'radius'): 250.0,
+}
+
+
 def clamp_effect_transform(type_, new_params):
     """`new_params` with every EFFECT_TRANSFORM_FLOORS entry for `type_` applied (the same dict
     when nothing needed clamping, so callers' `==` change check stays honest)."""
@@ -2118,7 +2138,7 @@ def clamp_effect_transform(type_, new_params):
     return new_params if clamped is None else clamped
 
 
-def validate_effect_transform(op_name, operation, filter_name, new_params):
+def validate_effect_transform(op_name, operation, filter_name, new_params, type_=None):
     """Refuse `op_name` (the geometry op about to run) outright if any of `new_params` -- already
     computed for `operation` by flip_effect_params/rotate_effect_params/resize_effect_params --
     would leave the range its own create/re-edit path enforces. Called BEFORE the geometry
@@ -2126,10 +2146,12 @@ def validate_effect_transform(op_name, operation, filter_name, new_params):
     range never gets a chance to silently clamp via GObject's own property setter instead of a
     clear, actionable refusal -- and the geometry op never partially applies. Names the filter
     (`filter_name`, the same way `_refuse_if_masked_filters` does) and the field in gimp_add_
-    effect's OWN terms (`EFFECT_TRANSFORM_FIELD_NAMES`), not the raw GEGL property name."""
+    effect's OWN terms (`EFFECT_TRANSFORM_FIELD_NAMES`), not the raw GEGL property name. `type_`
+    (the record's effect type) adds that type's EFFECT_TRANSFORM_CEILINGS."""
     for prop, (lo, hi) in EFFECT_TRANSFORM_BOUNDS.get(operation, {}).items():
         if prop not in new_params:
             continue
+        hi = min(hi, EFFECT_TRANSFORM_CEILINGS.get((type_, prop), hi))
         value = new_params[prop]
         if not lo <= value <= hi:
             field = EFFECT_TRANSFORM_FIELD_NAMES.get((operation, prop), prop)
@@ -2449,10 +2471,10 @@ def parse_ledger(raw):
       parasite bytes ARE the filters map directly (no wrapper). Treated as
       v1-compatible so files written before the ledger was versioned keep
       working.
-    - Versioned + "v" == LEDGER_VERSION: "filters" is the map; any OTHER
+    - Versioned + "v" in 1..LEDGER_VERSION: "filters" is the map; any OTHER
       top-level key is returned as `unknown_top_level` so a future writer's
       extra fields round-trip untouched through serialize_ledger.
-    - Versioned + "v" != LEDGER_VERSION (in practice: greater, from a future
+    - Versioned + "v" outside that range (in practice: greater, from a future
       writer): every filter is treated as absent — the caller falls back to
       readback for all of them, per the documented contract that we never
       guess at a schema we don't recognize. `unknown_top_level` still
@@ -2488,7 +2510,7 @@ def parse_ledger(raw):
         return _validate_filters(raw_filters), {}, raw_filters
     unknown = {k: v for k, v in doc.items() if k not in ('v', 'writer', 'filters')}
     raw_filters = dict(doc['filters'])
-    if doc['v'] != LEDGER_VERSION:
+    if not 1 <= doc['v'] <= LEDGER_VERSION:
         return {}, unknown, raw_filters
     return _validate_filters(raw_filters), unknown, raw_filters
 
@@ -2536,12 +2558,19 @@ def ledger_is_newer_version(raw):
     return doc['v'] > LEDGER_VERSION
 
 
+def ledger_write_version(filters_by_name):
+    """The lowest ledger version that holds every record in `filters_by_name` (see LEDGER_VERSION)."""
+    if any(record_type(rec) in LEDGER_V2_TYPES for rec in filters_by_name.values()):
+        return 2
+    return 1
+
+
 def serialize_ledger(filters_by_name, unknown_top_level=None):
-    """Serialize filters_by_name as the current-version ledger, preserving any
+    """Serialize filters_by_name as a ledger at `ledger_write_version`, preserving any
     unknown_top_level keys carried over from parse_ledger byte-for-byte
     (as JSON values -- not literal bytes, but nothing under them is rewritten)."""
     doc = dict(unknown_top_level or {})
-    doc['v'] = LEDGER_VERSION
+    doc['v'] = ledger_write_version(filters_by_name)
     doc['writer'] = LEDGER_WRITER
     doc['filters'] = filters_by_name
     return json.dumps(doc)

@@ -270,7 +270,7 @@ describe.skipIf(!install)('outline, outer_glow, surface_blur, grain modes, text 
       writeRgbaSquare(big, W, H, 700, 56, 400, [255, 255, 255]);
       const image = await open(big);
       try {
-        await session.call('effect', { image, type: 'outline', width: 80 });
+        await session.call('effect', { image, type: 'outline', width: 50 });
         const ref = join(workDir, 'outline-prev-ref.png');
         await session.call('preview', {
           image,
