@@ -154,6 +154,8 @@ const layerSchema: JsonSchemaObject = {
         'saturation',
         'color',
         'luminosity',
+        'grain_extract',
+        'grain_merge',
       ],
       description: 'set only. A fixed blend-mode list, not a raw GEGL/GIMP mode name.',
     },

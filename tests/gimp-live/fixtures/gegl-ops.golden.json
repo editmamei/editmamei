@@ -390,7 +390,12 @@
       "type": "GeglColor",
       "minimum": null,
       "maximum": null,
-      "default": [0, 0, 0, 1]
+      "default": [
+        0,
+        0,
+        0,
+        1
+      ]
     },
     {
       "name": "radius",
@@ -701,7 +706,12 @@
       "type": "GeglColor",
       "minimum": null,
       "maximum": null,
-      "default": [0, 0, 0, 1]
+      "default": [
+        0,
+        0,
+        0,
+        1
+      ]
     },
     {
       "name": "opacity",
@@ -709,6 +719,22 @@
       "minimum": 0,
       "maximum": 1,
       "default": 0.5
+    }
+  ],
+  "gegl:bilateral-filter": [
+    {
+      "name": "blur-radius",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1000,
+      "default": 4
+    },
+    {
+      "name": "edge-preservation",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 8
     }
   ]
 }

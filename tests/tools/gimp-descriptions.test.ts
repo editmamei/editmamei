@@ -164,6 +164,14 @@ describe('gimp_add_effect: allow-listed GEGL effect filters (dev-tier sibling of
     );
   });
 
+  it('says what outline, outer_glow and surface_blur are for, and that text layers stay editable', () => {
+    const text = description('gimp_add_effect').replace(/\s+/g, ' ');
+    expect(text).toMatch(/outline puts a solid stroke around a layer's transparent edge/);
+    expect(text).toMatch(/outer_glow adds a soft glow/);
+    expect(text).toMatch(/surface_blur smooths skin/);
+    expect(text).toMatch(/text stays editable/);
+  });
+
   it('vignette and drop_shadow say their color is black and not configurable yet', () => {
     expect(field('gimp_add_effect', 'center_y').replace(/\s+/g, ' ')).toMatch(
       /color is black and not configurable yet/

@@ -22,7 +22,13 @@ import sys
 import time
 import traceback
 
-LEDGER_VERSION = 1
+# The newest ledger version this bridge reads and writes. A document is written at the lowest
+# version that can hold its records: version 2 added the outline, outer_glow and surface_blur
+# types, whose params an earlier bridge cannot read. Written as 2, an earlier bridge treats the
+# ledger as newer than itself (it reads the filters back from GIMP and leaves the ledger alone)
+# instead of failing on them; a ledger without them stays version 1, which every bridge reads.
+LEDGER_VERSION = 2
+LEDGER_V2_TYPES = frozenset(('outline', 'outer_glow', 'surface_blur'))
 LEDGER_WRITER = 'editmamei'
 
 HIST_CHANNELS = ('luminance', 'red', 'green', 'blue')
@@ -85,7 +91,9 @@ SPATIAL_SCALE_PROPS = {
     'gegl:gaussian-blur': ('std-dev-x', 'std-dev-y'),
     'gegl:motion-blur-linear': ('length',),
     'gegl:focus-blur': ('blur-radius',),
-    'gegl:dropshadow': ('x', 'y', 'radius'),
+    'gegl:dropshadow': ('x', 'y', 'radius', 'grow-radius'),
+    # surface_blur's blur-radius is a pixel neighborhood, scaled like any other radius.
+    'gegl:bilateral-filter': ('blur-radius',),
     # gegl:vignette and gegl:mono-mixer are deliberately absent: vignette's radius/x/y are
     # proportional (fractions of the LAYER's own size, not absolute pixel lengths), and
     # mono-mixer is a per-pixel channel-weight filter with no spatial extent at all.
@@ -129,6 +137,7 @@ MASK_TYPES = ('rectangle', 'ellipse', 'gradient_linear', 'gradient_radial')
 #   hard_light=hardlight darken=darken-only lighten=lighten-only difference=difference
 #   exclusion=exclusion addition=addition subtract=subtract divide=divide dodge=dodge burn=burn
 #   hue=hsv-hue saturation=hsv-saturation color=hsl-color luminosity=luminance
+#   grain_extract=grain-extract grain_merge=grain-merge
 # hue/saturation/color/luminosity map to the HSV/HSL (not LCH) variants -- those are the ones
 # GIMP's own UI labels plainly "Hue"/"Saturation"/"Color"/"Luminosity" without a "(LCH)" suffix.
 LAYER_MODES = {
@@ -151,6 +160,8 @@ LAYER_MODES = {
     'saturation': 'HSV_SATURATION',
     'color': 'HSL_COLOR',
     'luminosity': 'LUMINANCE',
+    'grain_extract': 'GRAIN_EXTRACT',
+    'grain_merge': 'GRAIN_MERGE',
 }
 
 
@@ -1243,13 +1254,35 @@ EFFECT_OPERATIONS = {
     'lens_blur': 'gegl:focus-blur',
     'add_noise': 'gegl:noise-rgb',
     'drop_shadow': 'gegl:dropshadow',
+    # outline and outer_glow are also gegl:dropshadow (zero offset, grown by grow-radius): one
+    # operation, three types -- the ledger's `type` tells them apart, see OPERATION_TYPES below.
+    'outline': 'gegl:dropshadow',
+    'outer_glow': 'gegl:dropshadow',
+    'surface_blur': 'gegl:bilateral-filter',
 }
 
 # The inverse of ADJUST_OPERATIONS and EFFECT_OPERATIONS together, for a ledger record written
 # without a `type` field -- one shared map, since `op_list_filters` looks a record's operation up
-# here regardless of which tool (gimp_add_adjustment or gimp_add_effect) created it.
+# here regardless of which tool (gimp_add_adjustment or gimp_add_effect) created it. Where several
+# types share one operation (gegl:dropshadow), the first listed wins: a record with no `type` is
+# from before outline/outer_glow existed, so it can only be a drop_shadow. THAT DEPENDS ON
+# INSERTION ORDER: `setdefault` keeps whichever type reached the map first, so 'drop_shadow' must
+# stay listed above 'outline' and 'outer_glow' in EFFECT_OPERATIONS (test_lib.py pins it).
 OPERATION_TYPES = {operation: type_ for type_, operation in ADJUST_OPERATIONS.items()}
-OPERATION_TYPES.update({operation: type_ for type_, operation in EFFECT_OPERATIONS.items()})
+for _type, _operation in EFFECT_OPERATIONS.items():
+    OPERATION_TYPES.setdefault(_operation, _type)
+del _type, _operation
+
+
+def record_type(rec):
+    """The tool `type` of a ledger filter record: its stored `type`, or -- for a record written
+    before `type` was stored -- the type its operation implies (`OPERATION_TYPES`). None for an
+    operation neither tool owns. The one place both the filter listing and the effect re-edit
+    type guard resolve a record's type, so a typeless legacy gegl:dropshadow reads as drop_shadow
+    in both."""
+    if not isinstance(rec, dict):
+        return None
+    return rec.get('type') or OPERATION_TYPES.get(rec.get('operation'))
 
 # Every validate_range/validate_int_range call below uses `val`, not `v`, as its lambda's
 # parameter name -- deliberately, so it is NOT matched by gimp-adjustment-tools.test.ts's own
@@ -1404,6 +1437,79 @@ def build_drop_shadow_params(args, defaults):
     }
 
 
+def build_outline_params(args, defaults):
+    # A solid ring around the layer's alpha: gegl:dropshadow with no offset and no blur, grown by
+    # `width` px (grow-radius, a circle) at full opacity. Only `grow-radius` and `color` are
+    # recorded; `_set_drop_shadow` fills the rest in (offset 0, blur 0, opacity 1). The shadow is
+    # drawn under the layer's own pixels, so the interior is untouched.
+    #
+    # GEGL allows grow-radius up to 100, but its cost grows linearly with the radius times the
+    # pixel count. Measured live (GIMP 3.2.6, a 6000x4000 = 24 MP layer, full export incl. a ~1 s
+    # baseline export with no filter): width 6 -> 4 s, 50 -> 18.5 s, 100 -> 39.5 s; outer_glow at
+    # radius 250 with spread 50 -> 17.7 s, spread 100 -> 30.6 s. Width and spread stop at 50, the
+    # same ~20 s worst case on 24 MP as SURFACE_BLUR_MAX_RADIUS.
+    return {
+        'grow-radius': resolve_field(
+            args, 'width', defaults, 'grow-radius', lambda val: validate_range('width', val, 1.0, 50.0)
+        ),
+        'color': resolve_field(
+            args, 'color', defaults, 'color', lambda val: validate_hex_color('color', val)
+        ),
+    }
+
+
+def build_outer_glow_params(args, defaults):
+    # The same gegl:dropshadow, centered (no offset, filled in by `_set_drop_shadow`): `spread`
+    # grows the glow's solid core, `radius` blurs it.
+    return {
+        'radius': resolve_field(
+            args, 'radius', defaults, 'radius', lambda val: validate_range('radius', val, 1.0, 250.0)
+        ),
+        'grow-radius': resolve_field(
+            args, 'spread', defaults, 'grow-radius',
+            lambda val: validate_range('spread', val, 0.0, 50.0),
+        ),
+        'opacity': resolve_field(
+            args, 'opacity', defaults, 'opacity', lambda val: validate_range('opacity', val, 0.0, 1.0)
+        ),
+        'color': resolve_field(
+            args, 'color', defaults, 'color', lambda val: validate_hex_color('color', val)
+        ),
+    }
+
+
+# gegl:bilateral-filter's `edge-preservation` runs 0..100 (default 8), where HIGHER keeps more of
+# the original, edges and noise alike -- probed live on a noisy patch beside a hard edge: 0 smooths
+# hard enough to blur the edge itself, 8 flattens the noise (stddev 17 -> 2) with the edge intact,
+# 100 barely smooths. The tool exposes it as 0..1 (this factor times the tool value).
+# gegl:mean-curvature-blur and gegl:snn-mean were not needed: GIMP attaches bilateral-filter fine.
+BILATERAL_EDGE_SCALE = 100.0
+
+
+# gegl:bilateral-filter's cost grows with the SQUARE of the radius times the pixel count. Measured
+# live (GIMP 3.2.6, this dev box, a noisy 6016x4000 = 24 MP layer; full export incl. a ~2 s
+# baseline export with no filter): radius 5 -> 12 s, 6 -> 17 s, 7 -> 23 s, 8 -> 28 s, 10 -> 41 s;
+# radius 25 and 50 were not finished inside a 400 s timeout (extrapolating the r^2 trend: ~4 and
+# ~16 minutes). The tool's ~20 s worst case on 24 MP therefore stops at radius 6, and the remote
+# box is slower still. A smaller image has headroom (cost scales with pixels) but the cap is a flat
+# per-filter number: it does not look at the layer. TS schema, EFFECT_TRANSFORM_BOUNDS and this
+# builder share it.
+SURFACE_BLUR_MAX_RADIUS = 6.0
+
+
+def build_surface_blur_params(args, defaults):
+    return {
+        'blur-radius': resolve_field(
+            args, 'radius', defaults, 'blur-radius',
+            lambda val: validate_range('radius', val, 1.0, SURFACE_BLUR_MAX_RADIUS),
+        ),
+        'edge-preservation': resolve_field(
+            args, 'edge_preservation', defaults, 'edge-preservation',
+            lambda val: validate_range('edge_preservation', val, 0.0, 1.0),
+        ),
+    }
+
+
 EFFECT_PARAM_BUILDERS = {
     'vignette': build_vignette_params,
     'black_white': build_black_white_params,
@@ -1411,6 +1517,9 @@ EFFECT_PARAM_BUILDERS = {
     'lens_blur': build_lens_blur_params,
     'add_noise': build_add_noise_params,
     'drop_shadow': build_drop_shadow_params,
+    'outline': build_outline_params,
+    'outer_glow': build_outer_glow_params,
+    'surface_blur': build_surface_blur_params,
 }
 
 # Creation-time defaults, already in GEGL-property units -- probed live via `describe_operation`
@@ -1424,6 +1533,9 @@ EFFECT_CREATE_DEFAULTS = {
     'lens_blur': {'blur-radius': 25.0, 'highlight-factor': 0.0},
     'add_noise': {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 0},
     'drop_shadow': {'x': 20.0, 'y': 20.0, 'radius': 10.0, 'opacity': 0.5},
+    'outline': {'grow-radius': 4.0, 'color': '#000000'},
+    'outer_glow': {'radius': 20.0, 'grow-radius': 4.0, 'opacity': 0.75, 'color': '#ffffff'},
+    'surface_blur': {'blur-radius': 4.0, 'edge-preservation': 0.08},
 }
 
 
@@ -1523,6 +1635,20 @@ USER_FIELDS = {
         ('radius', 'radius', _same),
         ('opacity', 'opacity', _same),
     ),
+    'outline': (
+        ('width', 'grow-radius', _same),
+        ('color', 'color', _same),
+    ),
+    'outer_glow': (
+        ('spread', 'grow-radius', _same),
+        ('radius', 'radius', _same),
+        ('opacity', 'opacity', _same),
+        ('color', 'color', _same),
+    ),
+    'surface_blur': (
+        ('radius', 'blur-radius', _same),
+        ('edge_preservation', 'edge-preservation', _same),
+    ),
 }
 
 CURVES_USER_FIELDS = ('channel', 'points')
@@ -1608,7 +1734,6 @@ def json_safe(value):
 # text from GIMP's own PDB) for a probe whose only real job is confirming the schema of the
 # operations this engine actually uses.
 ALLOWED_DESCRIBE_OPERATIONS = frozenset(ADJUST_OPERATIONS.values()) | frozenset(EFFECT_OPERATIONS.values())
-
 
 # ---- geometry-op masked-filter detection (pure logic; ops.py supplies the live GIMP state) -----
 
@@ -1842,7 +1967,7 @@ def flip_effect_params(operation, params, orientation):
         else:
             params['angle'] = _round_transform_value(_wrap_angle_deg(-params['angle']))
         return params
-    if operation == 'gegl:dropshadow':
+    if operation == 'gegl:dropshadow' and 'x' in params:  # outline / outer_glow have no offset
         params = dict(params)
         if orientation == 'horizontal':
             params['x'] = _round_transform_value(-params['x'])
@@ -1879,7 +2004,7 @@ def rotate_effect_params(operation, params, degrees, layer_width, layer_height):
         canonical_degrees = _right_angle_k(degrees) * 90.0
         params['angle'] = _round_transform_value(_wrap_angle_deg(params['angle'] + canonical_degrees))
         return params
-    if operation == 'gegl:dropshadow':
+    if operation == 'gegl:dropshadow' and 'x' in params:
         params = dict(params)
         cos_t, sin_t = _right_angle_cos_sin(degrees)
         dx, dy = params['x'], params['y']
@@ -1929,9 +2054,18 @@ def resize_effect_params(operation, params, scale_x, scale_y):
     if operation == 'gegl:dropshadow':
         params = dict(params)
         isotropic_scale = math.sqrt(scale_x * scale_y)
-        params['x'] = _round_transform_value(params['x'] * scale_x)
-        params['y'] = _round_transform_value(params['y'] * scale_y)
-        params['radius'] = _round_transform_value(params['radius'] * isotropic_scale)
+        # outline has only grow-radius, outer_glow lacks the offset: scale what is recorded.
+        for prop, factor in (
+            ('x', scale_x), ('y', scale_y), ('radius', isotropic_scale),
+            ('grow-radius', isotropic_scale),
+        ):
+            if prop in params:
+                params[prop] = _round_transform_value(params[prop] * factor)
+        return params
+    if operation == 'gegl:bilateral-filter':
+        params = dict(params)
+        isotropic_scale = math.sqrt(scale_x * scale_y)
+        params['blur-radius'] = _round_transform_value(params['blur-radius'] * isotropic_scale)
         return params
     return params
 
@@ -1945,7 +2079,12 @@ EFFECT_TRANSFORM_BOUNDS = {
     'gegl:vignette': {'x': (0.0, 1.0), 'y': (0.0, 1.0)},
     'gegl:motion-blur-linear': {'length': (0.0, 1000.0), 'angle': (-180.0, 180.0)},
     'gegl:focus-blur': {'blur-radius': (0.0, 150.0)},
-    'gegl:dropshadow': {'x': (-500.0, 500.0), 'y': (-500.0, 500.0), 'radius': (0.0, 1500.0)},
+    'gegl:dropshadow': {
+        'x': (-500.0, 500.0), 'y': (-500.0, 500.0), 'radius': (0.0, 1500.0),
+        # outline's width and outer_glow's spread share a cap (see build_outline_params).
+        'grow-radius': (0.0, 50.0),
+    },
+    'gegl:bilateral-filter': {'blur-radius': (0.0, SURFACE_BLUR_MAX_RADIUS)},
 }
 
 # The user-facing (gimp_add_effect) field name for each EFFECT_TRANSFORM_BOUNDS entry -- so a
@@ -1962,10 +2101,44 @@ EFFECT_TRANSFORM_FIELD_NAMES = {
     ('gegl:dropshadow', 'x'): 'offset_x',
     ('gegl:dropshadow', 'y'): 'offset_y',
     ('gegl:dropshadow', 'radius'): 'radius',
+    ('gegl:dropshadow', 'grow-radius'): 'width/spread',
+    ('gegl:bilateral-filter', 'blur-radius'): 'radius',
 }
 
 
-def validate_effect_transform(op_name, operation, filter_name, new_params):
+# Per-type floors a re-edit enforces above EFFECT_TRANSFORM_BOUNDS' own lower bound (those are
+# per operation, and gegl:dropshadow serves three types): shrinking resize would otherwise store a
+# value a re-edit of the same filter refuses. A resize that bottoms out is clamped to the floor
+# (the 1 px minimum the effect itself allows) instead of refused: the filter is still valid, only
+# no thinner than the tool can express.
+EFFECT_TRANSFORM_FLOORS = {
+    ('outline', 'grow-radius'): 1.0,
+    ('outer_glow', 'radius'): 1.0,
+    ('surface_blur', 'blur-radius'): 1.0,
+}
+
+
+# Per-type ceilings a re-edit enforces below EFFECT_TRANSFORM_BOUNDS' own upper bound: outer_glow
+# shares gegl:dropshadow (radius up to 1500) but its own builder caps radius at 250, so a growing
+# resize would otherwise store a radius a re-edit of the same glow refuses. Unlike a floor, a
+# value past a ceiling is refused, the same as any other out-of-range transform.
+EFFECT_TRANSFORM_CEILINGS = {
+    ('outer_glow', 'radius'): 250.0,
+}
+
+
+def clamp_effect_transform(type_, new_params):
+    """`new_params` with every EFFECT_TRANSFORM_FLOORS entry for `type_` applied (the same dict
+    when nothing needed clamping, so callers' `==` change check stays honest)."""
+    clamped = None
+    for (floor_type, prop), floor in EFFECT_TRANSFORM_FLOORS.items():
+        if floor_type == type_ and prop in new_params and new_params[prop] < floor:
+            clamped = clamped if clamped is not None else dict(new_params)
+            clamped[prop] = floor
+    return new_params if clamped is None else clamped
+
+
+def validate_effect_transform(op_name, operation, filter_name, new_params, type_=None):
     """Refuse `op_name` (the geometry op about to run) outright if any of `new_params` -- already
     computed for `operation` by flip_effect_params/rotate_effect_params/resize_effect_params --
     would leave the range its own create/re-edit path enforces. Called BEFORE the geometry
@@ -1973,10 +2146,12 @@ def validate_effect_transform(op_name, operation, filter_name, new_params):
     range never gets a chance to silently clamp via GObject's own property setter instead of a
     clear, actionable refusal -- and the geometry op never partially applies. Names the filter
     (`filter_name`, the same way `_refuse_if_masked_filters` does) and the field in gimp_add_
-    effect's OWN terms (`EFFECT_TRANSFORM_FIELD_NAMES`), not the raw GEGL property name."""
+    effect's OWN terms (`EFFECT_TRANSFORM_FIELD_NAMES`), not the raw GEGL property name. `type_`
+    (the record's effect type) adds that type's EFFECT_TRANSFORM_CEILINGS."""
     for prop, (lo, hi) in EFFECT_TRANSFORM_BOUNDS.get(operation, {}).items():
         if prop not in new_params:
             continue
+        hi = min(hi, EFFECT_TRANSFORM_CEILINGS.get((type_, prop), hi))
         value = new_params[prop]
         if not lo <= value <= hi:
             field = EFFECT_TRANSFORM_FIELD_NAMES.get((operation, prop), prop)
@@ -2296,10 +2471,10 @@ def parse_ledger(raw):
       parasite bytes ARE the filters map directly (no wrapper). Treated as
       v1-compatible so files written before the ledger was versioned keep
       working.
-    - Versioned + "v" == LEDGER_VERSION: "filters" is the map; any OTHER
+    - Versioned + "v" in 1..LEDGER_VERSION: "filters" is the map; any OTHER
       top-level key is returned as `unknown_top_level` so a future writer's
       extra fields round-trip untouched through serialize_ledger.
-    - Versioned + "v" != LEDGER_VERSION (in practice: greater, from a future
+    - Versioned + "v" outside that range (in practice: greater, from a future
       writer): every filter is treated as absent — the caller falls back to
       readback for all of them, per the documented contract that we never
       guess at a schema we don't recognize. `unknown_top_level` still
@@ -2335,7 +2510,7 @@ def parse_ledger(raw):
         return _validate_filters(raw_filters), {}, raw_filters
     unknown = {k: v for k, v in doc.items() if k not in ('v', 'writer', 'filters')}
     raw_filters = dict(doc['filters'])
-    if doc['v'] != LEDGER_VERSION:
+    if not 1 <= doc['v'] <= LEDGER_VERSION:
         return {}, unknown, raw_filters
     return _validate_filters(raw_filters), unknown, raw_filters
 
@@ -2383,12 +2558,19 @@ def ledger_is_newer_version(raw):
     return doc['v'] > LEDGER_VERSION
 
 
+def ledger_write_version(filters_by_name):
+    """The lowest ledger version that holds every record in `filters_by_name` (see LEDGER_VERSION)."""
+    if any(record_type(rec) in LEDGER_V2_TYPES for rec in filters_by_name.values()):
+        return 2
+    return 1
+
+
 def serialize_ledger(filters_by_name, unknown_top_level=None):
-    """Serialize filters_by_name as the current-version ledger, preserving any
+    """Serialize filters_by_name as a ledger at `ledger_write_version`, preserving any
     unknown_top_level keys carried over from parse_ledger byte-for-byte
     (as JSON values -- not literal bytes, but nothing under them is rewritten)."""
     doc = dict(unknown_top_level or {})
-    doc['v'] = LEDGER_VERSION
+    doc['v'] = ledger_write_version(filters_by_name)
     doc['writer'] = LEDGER_WRITER
     doc['filters'] = filters_by_name
     return json.dumps(doc)

@@ -338,6 +338,17 @@ def op_test_ledger_dump(args):
     return {'names': sorted(filters.keys())}
 
 
+def op_test_strip_ledger_type(args):
+    """Rewrites every ledger record as a pre-`type` build would have written it (no `type` key),
+    to stand in for a document saved before gimp_add_effect stored one."""
+    img = _image(args)
+    filters, unknown = _ledger_get(img)
+    for rec in filters.values():
+        rec.pop('type', None)
+    _ledger_put(img, filters, unknown)
+    return {'names': sorted(filters.keys())}
+
+
 _TEST_IMAGE_BASE_TYPES = {
     'rgb': Gimp.ImageBaseType.RGB,
     'gray': Gimp.ImageBaseType.GRAY,
@@ -539,6 +550,7 @@ OPS.update({
     'test_force_effect_update_failure': op_test_force_effect_update_failure,
     'test_add_offset_layer': op_test_add_offset_layer,
     'test_ledger_dump': op_test_ledger_dump,
+    'test_strip_ledger_type': op_test_strip_ledger_type,
     'test_gray_bytes_image_leak': op_test_gray_bytes_image_leak,
     'test_build_no_alpha_gap_xcf': op_test_build_no_alpha_gap_xcf,
     'test_add_layer_mask': op_test_add_layer_mask,

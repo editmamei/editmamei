@@ -100,7 +100,8 @@ describe.skipIf(!install)('GEGL/GIMP operation schema goldens', () => {
     'gegl:motion-blur-linear',
     'gegl:focus-blur',
     'gegl:noise-rgb',
-    'gegl:dropshadow',
+    'gegl:dropshadow', // also outline and outer_glow
+    'gegl:bilateral-filter', // surface_blur
   ];
 
   it("covers exactly lib.py's EFFECT_OPERATIONS (a new effect needs its golden)", () => {
@@ -110,7 +111,8 @@ describe.skipIf(!install)('GEGL/GIMP operation schema goldens', () => {
     );
     const block = libPy.match(/EFFECT_OPERATIONS = \{([\s\S]*?)\n\}/);
     expect(block, 'EFFECT_OPERATIONS not found in lib.py').toBeTruthy();
-    const libOps = [...block![1].matchAll(/:\s*'([a-z]+:[a-z-]+)'/g)].map((m) => m[1]);
+    // A Set: several effect types can share one operation (outline/outer_glow are dropshadow).
+    const libOps = new Set([...block![1].matchAll(/:\s*'([a-z]+:[a-z-]+)'/g)].map((m) => m[1]));
     expect([...effectOperations].sort()).toEqual([...libOps].sort());
   });
 
