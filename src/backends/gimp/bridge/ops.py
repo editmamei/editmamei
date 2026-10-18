@@ -3932,6 +3932,18 @@ def _text_is_boxed(layer):
     return layer.get_parasite(lib.TEXT_BOX_TAG) is not None
 
 
+def _text_enforce_box(layer):
+    """For a layer tagged as boxed, put it in box mode at its current size again and return True;
+    False for an untagged layer. The tag is what exempts an edit from the pre-render size
+    estimate, and it outlives a switch back to dynamic text (in the GIMP UI, or in a file made
+    elsewhere), so an edit that relies on it re-asserts the box it stands for. One render, at a
+    size the layer already has."""
+    if not _text_is_boxed(layer):
+        return False
+    _text_set_box(layer, layer.get_width(), layer.get_height())
+    return True
+
+
 def _text_mark_boxed(layer):
     layer.attach_parasite(Gimp.Parasite.new(lib.TEXT_BOX_TAG, Gimp.PARASITE_PERSISTENT, b'1'))
 
@@ -3940,20 +3952,21 @@ def _text_layout_height(single, pitch, lines):
     return single + (lines - 1) * pitch
 
 
-def _text_wrapped_lines(layer, width, limit_h=None):
+def _text_wrapped_lines(layer, width, precision, limit_h=None):
     """How many lines the layer's text wraps to in a box `width` wide, read from a real render:
     the box is made tall enough that nothing clips and the last inked row gives the line count
     (GIMP renders text synchronously, so the pixels are current right after the resize). With
     `limit_h` the box is only a little taller than that limit, enough to tell whether the text
     fits; a probe cut short by the scan cap, a glyph inked in the last column, or text that
-    renders blank (a glyph wider than the box), reports `lib.TEXT_OVERFLOW_LINES`. Leaves the layer's box at the probe height; callers
-    set the final box."""
+    renders blank (a glyph wider than the box), reports `lib.TEXT_OVERFLOW_LINES` (the caller
+    probes with left alignment, so only a glyph that does not fit reaches the last column).
+    Leaves the layer's box at the probe height; callers set the final box."""
     single, pitch = _text_line_metrics(layer)
     text = layer.get_text()
     explicit = text.count('\n') + 1
-    cap = lib.text_scan_cap(width)
+    cap = lib.text_scan_cap(width, precision)
     if limit_h is not None:
-        scan_h, clamped = lib.fit_probe_plan(width, limit_h, pitch)
+        scan_h, clamped = lib.fit_probe_plan(width, limit_h, pitch, precision)
     else:
         unwrapped = float(_text_extents(layer.get_font(), _text_size_px(layer), text).width)
         scan_h = min(cap, int(math.ceil((explicit + 2 * math.ceil(unwrapped / width) + 1) * pitch)))
@@ -3979,7 +3992,7 @@ def _text_wrapped_lines(layer, width, limit_h=None):
 
 def _text_grow_box(layer, width, precision):
     """Set the box to `width` wide and as tall as the wrapped text needs."""
-    lines = _text_wrapped_lines(layer, width)
+    lines = _text_wrapped_lines(layer, width, precision)
     single, pitch = _text_line_metrics(layer)
     height = max(1, int(math.ceil(_text_layout_height(single, pitch, lines))))
     lib.check_text_layer_size(width, height)
@@ -3987,17 +4000,28 @@ def _text_grow_box(layer, width, precision):
     _text_set_box(layer, width, height)
 
 
-def _text_fit(layer, width, height, max_px, min_px):
+def _text_fit(layer, width, height, max_px, min_px, precision):
     """Find approximately the largest size in [min_px, max_px] at which the wrapped text fits
     `width` x `height` (`lib.fit_font_size`, whole pixels, bounded probes) and leave it applied in
-    that box. Returns (fitted, probes)."""
+    that box. Returns (fitted, probes).
+
+    Probes run left-aligned: right, centered and filled lines legitimately end at the box's right
+    edge, which would read as overflow, and alignment does not change where lines break."""
     def fits(size):
         layer.set_font_size(size, Gimp.Unit.pixel())
         single, pitch = _text_line_metrics(layer)
-        lines = _text_wrapped_lines(layer, width, limit_h=height)
+        lines = _text_wrapped_lines(layer, width, precision, limit_h=height)
         return _text_layout_height(single, pitch, lines) <= height
 
-    size, fitted, probes = lib.fit_font_size(max_px, min_px, fits)
+    justification = layer.get_justification()
+    left = Gimp.TextJustification.LEFT
+    if justification != left:
+        layer.set_justification(left)
+    try:
+        size, fitted, probes = lib.fit_font_size(max_px, min_px, fits)
+    finally:
+        if justification != left:
+            layer.set_justification(justification)
     layer.set_font_size(size, Gimp.Unit.pixel())
     _text_set_box(layer, width, height)
     return fitted, probes
@@ -4010,7 +4034,7 @@ def _text_apply_box(layer, box, fit, min_px, max_px, precision):
     extra = {}
     if fit:
         t0 = time.time()
-        fitted, probes = _text_fit(layer, width, height, max_px, min_px)
+        fitted, probes = _text_fit(layer, width, height, max_px, min_px, precision)
         extra = {'fitted': fitted, 'fit_probes': probes, 'fit_seconds': round(time.time() - t0, 3)}
     elif height is None:
         _text_grow_box(layer, width, precision)
@@ -4024,7 +4048,7 @@ def _text_check_box_request(box, fit, precision):
     """Refusals that need no render: the box area cap, and fit's probe-size limit."""
     lib.check_text_box_area(box[0], box[1] or 1, precision)
     if fit:
-        lib.check_text_fit_box(box[0], box[1])
+        lib.check_text_fit_box(box[0], box[1], precision)
 
 
 def _text_box_fields(layer, extra):
@@ -4128,7 +4152,7 @@ def _op_text_set_content(img, args):
     # A boxed layer is bounded by its box, so there is no unwrapped-size estimate to take.
     return _op_text_edit(
         img, args, lambda layer: layer.set_text(text),
-        precheck_fn=lambda layer: None if _text_is_boxed(layer) else _check_estimated_text_size(
+        precheck_fn=lambda layer: None if _text_enforce_box(layer) else _check_estimated_text_size(
             text, layer.get_font(), _text_size_px(layer), img, layer),
     )
 
@@ -4140,9 +4164,9 @@ def _op_text_set_font(img, args):
     new_size_px = lib.pt_to_px(size_pt, _image_ppi(img)) if size_pt is not None else None
 
     def precheck_fn(layer):
-        if _text_is_boxed(layer):
+        if _text_enforce_box(layer):
             return
-        size_px =new_size_px if new_size_px is not None else _text_size_px(layer)
+        size_px = new_size_px if new_size_px is not None else _text_size_px(layer)
         _check_estimated_text_size(layer.get_text(), font, size_px, img, layer)
 
     def apply_fn(layer):
@@ -4211,7 +4235,7 @@ def _op_text_set_box(img, args):
     start_px = lib.pt_to_px(size_pt, _image_ppi(img)) if size_pt is not None else _text_size_px(layer)
     state = _text_state(layer)
     prev_box = (layer.get_width(), layer.get_height())
-    was_boxed = _text_is_boxed(layer)
+    was_boxed = _text_enforce_box(layer)
     try:
         if was_boxed:
             if size_pt is not None:

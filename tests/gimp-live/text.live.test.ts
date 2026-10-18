@@ -653,6 +653,54 @@ describe.skipIf(!install)('gimp_text against real headless GIMP', () => {
       expect(f.bounds).toMatchObject({ width: 300, height: 40 });
     });
 
+    // Right, centered and filled lines end at the box's right edge; fit must not read that as
+    // overflow. Alignment does not change line breaks, so every alignment fits at one size.
+    it('fit sizes right, centered and filled text the same as left, and keeps the alignment', async () => {
+      const sizes: Record<string, number> = {};
+      for (const alignment of ['LEFT', 'RIGHT', 'CENTER', 'FULLYJUSTIFIED']) {
+        const image = await newDoc(800, 400);
+        const created = await text({
+          image,
+          op: 'create',
+          text: LONG + ' ' + LONG,
+          font_size: 60,
+          x: 0,
+          y: 0,
+          box: { width: 600, height: 150 },
+          fit: true,
+          alignment,
+        });
+        expect(created.isError, errorText(created)).toBeFalsy();
+        const r = structuredOf(created) as unknown as TextResult;
+        expect(r.fitted, alignment).toBe(true);
+        sizes[alignment] = r.font_size_px;
+        expect((await textNode(image, r.layer_id)).alignment).toBe(alignment);
+      }
+      for (const alignment of ['RIGHT', 'CENTER', 'FULLYJUSTIFIED']) {
+        expect(sizes[alignment], alignment).toBeCloseTo(sizes.LEFT!, 0);
+      }
+    });
+
+    // The boxed tag outlives a switch back to dynamic text. An edit that trusts it skips the
+    // pre-render size estimate, so it must put the layer back in its box first.
+    it('a layer tagged as boxed but not in box mode stays bounded through a content edit', async () => {
+      const image = await newDoc(800, 400);
+      const created = await text({ image, op: 'create', text: 'short', font_size: 30, x: 0, y: 0 });
+      const c = structuredOf(created) as unknown as TextResult;
+      await backend.call('test_tag_text_box', { image, layer_id: c.layer_id });
+      const edited = await text({
+        image,
+        op: 'set_content',
+        layer_id: c.layer_id,
+        text: (LONG + ' ').repeat(20),
+      });
+      expect(edited.isError, errorText(edited)).toBeFalsy();
+      expect((structuredOf(edited) as unknown as TextResult).bounds).toMatchObject({
+        width: c.bounds.width,
+        height: c.bounds.height,
+      });
+    });
+
     it('centered text in a box is centered about the box middle', async () => {
       const image = await newDoc(500, 200);
       const created = await text({

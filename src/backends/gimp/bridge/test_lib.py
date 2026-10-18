@@ -3393,6 +3393,25 @@ class TestTextBoxAndFit(unittest.TestCase):
         with self.assertRaises(ValueError):
             lib.check_text_fit_box(4001, 4000)
 
+    def test_probe_budget_follows_a_lowered_text_box_cap(self):
+        # EM_GIMP_MAX_MEGAPIXELS lowers TEXT_BOX_MEGAPIXEL_CAP; the probes must not outgrow it.
+        saved = dict(lib.TEXT_BOX_MEGAPIXEL_CAP)
+        try:
+            lib.TEXT_BOX_MEGAPIXEL_CAP.update({'8': 8, '16': 4, '32': 2})
+            self.assertEqual(lib.text_scan_max_pixels('8'), 8_000_000)
+            self.assertEqual(lib.text_scan_max_pixels('32'), 2_000_000)
+            self.assertEqual(lib.text_scan_cap(1000, '32'), 2000)
+            self.assertEqual(lib.fit_probe_plan(1000, 5000, 50.0, '32'), (2000, True))
+            lib.check_text_fit_box(1000, 2000, '32')
+            with self.assertRaises(ValueError):
+                lib.check_text_fit_box(1001, 2000, '32')
+        finally:
+            lib.TEXT_BOX_MEGAPIXEL_CAP.clear()
+            lib.TEXT_BOX_MEGAPIXEL_CAP.update(saved)
+        # At the default caps every precision keeps the 16 MP budget.
+        for precision in ('8', '16', '32'):
+            self.assertEqual(lib.text_scan_max_pixels(precision), lib.TEXT_BOX_SCAN_MAX_PIXELS)
+
 
 class TestMatchTransfer(unittest.TestCase):
     def test_strength_zero_is_identity(self):

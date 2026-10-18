@@ -3290,26 +3290,33 @@ def check_text_box_area(width, height, precision='8'):
         )
 
 
-def check_text_fit_box(width, height):
-    """Refuses `fit` for a box too large to probe in one render (`TEXT_BOX_SCAN_MAX_PIXELS`)."""
-    if width * height > TEXT_BOX_SCAN_MAX_PIXELS:
+def text_scan_max_pixels(precision='8'):
+    """The largest probe layer (px) a box scan renders: `TEXT_BOX_SCAN_MAX_PIXELS`, or the text-box
+    area cap for `precision` when EM_GIMP_MAX_MEGAPIXELS has lowered it below that."""
+    return min(TEXT_BOX_SCAN_MAX_PIXELS, int(TEXT_BOX_MEGAPIXEL_CAP[precision] * 1_000_000))
+
+
+def check_text_fit_box(width, height, precision='8'):
+    """Refuses `fit` for a box too large to probe in one render (`text_scan_max_pixels`)."""
+    limit = text_scan_max_pixels(precision)
+    if width * height > limit:
         raise ValueError(
-            'fit supports a box of at most %d MP (got %dx%d px); use a smaller box, or set the '
-            'box and font_size without fit' % (TEXT_BOX_SCAN_MAX_PIXELS // 1_000_000, width, height)
+            'fit supports a box of at most %g MP (got %dx%d px); use a smaller box, or set the '
+            'box and font_size without fit' % (limit / 1_000_000.0, width, height)
         )
 
 
-def text_scan_cap(width):
+def text_scan_cap(width, precision='8'):
     """The tallest probe layer (px) the box scan renders at `width`."""
-    return max(1, min(MAX_RESIZE_SIDE_PX, TEXT_BOX_SCAN_MAX_PIXELS // max(1, width)))
+    return max(1, min(MAX_RESIZE_SIDE_PX, text_scan_max_pixels(precision) // max(1, width)))
 
 
-def fit_probe_plan(width, limit_h, pitch):
+def fit_probe_plan(width, limit_h, pitch, precision='8'):
     """(scan_h, clamped): the probe height for testing whether text fits `limit_h`, a little
     taller than the limit so overflow shows as ink past it. `clamped` means the scan cap cut it
     below that height, so ink on its last row only says "reaches the end of the probe"."""
     ideal = int(math.ceil(limit_h + 2 * pitch)) + 1
-    scan_h = min(text_scan_cap(width), ideal)
+    scan_h = min(text_scan_cap(width, precision), ideal)
     return scan_h, scan_h < ideal
 
 
