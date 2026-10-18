@@ -5292,18 +5292,22 @@ def _build_fill_gradient(stops):
     count = len(ramp) - 1
     gradient = Gimp.Gradient.new('editmamei-fill-tmp')
     try:
-        if count > 1:
-            gradient.segment_range_split_uniform(0, 0, count)
+        # GIMP clamps a segment's new right edge between its own middle and the next segment's
+        # middle, so edges cannot be placed after a uniform split (a stop at 0.1 would land on
+        # the first middle). Instead, grow one segment at a time: split the last segment, park
+        # the two halves' middles at their outer edges, then set the edge, which can now go
+        # anywhere in [previous stop, 1]. Equal offsets give a zero-width segment, a hard edge.
+        for i in range(count - 1):
+            gradient.segment_range_split_midpoint(i, i)
+            gradient.segment_set_middle_pos(i, gradient.segment_get_left_pos(i)[-1])
+            gradient.segment_set_middle_pos(i + 1, gradient.segment_get_right_pos(i + 1)[-1])
+            gradient.segment_set_right_pos(i, ramp[i + 1][0])
         for i in range(count):
             (_lo, lrgb, la), (_hi, rrgb, ra) = ramp[i], ramp[i + 1]
             gradient.segment_set_left_color(i, _fill_color(lrgb, la))
             gradient.segment_set_right_color(i, _fill_color(rrgb, ra))
         gradient.segment_range_set_blending_function(0, count - 1, Gimp.GradientSegmentType.LINEAR)
         gradient.segment_range_set_coloring_type(0, count - 1, Gimp.GradientSegmentColor.RGB)
-        # Positions last, left to right: moving a segment's right edge also moves its neighbor's
-        # left edge, so setting each interior boundary once lines everything up.
-        for i in range(count - 1):
-            gradient.segment_set_right_pos(i, ramp[i + 1][0])
         # Segment midpoints (the blend's bias) are re-centered last: moving an edge leaves them where they were.
         for i in range(count):
             lo, hi = gradient.segment_get_left_pos(i)[-1], gradient.segment_get_right_pos(i)[-1]

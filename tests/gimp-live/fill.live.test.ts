@@ -202,6 +202,52 @@ describe.skipIf(!install)('fill: solid and gradient layers', () => {
     expect(Math.abs(mid[2] - 128)).toBeLessThanOrEqual(8);
   });
 
+  // Stops far from an even split: GIMP clamps a segment edge between neighboring middles, so
+  // these land at their offsets only if the gradient is built one segment at a time.
+  it('uneven stops (0, 0.1, 0.9, 1) each hit their color at their offset', async () => {
+    const image = await doc();
+    await fill(image, {
+      op: 'linear_gradient',
+      stops: [
+        { offset: 0, color: '#ff0000' },
+        { offset: 0.1, color: '#00ff00' },
+        { offset: 0.9, color: '#0000ff' },
+        { offset: 1, color: '#ffffff' },
+      ],
+      start: { x: 0, y: 0 },
+      end: { x: W, y: 0 },
+    });
+    const ppm = await render(image);
+    const near = (a: number[], b: number[], tol = 8) =>
+      a.every((v, i) => Math.abs(v - b[i]!) <= tol);
+    // Rounded to the nearest pixel: each ramp is steep, so the pixel beside a stop is off by ~10.
+    expect(near(pixelAt(ppm, Math.round(W * 0.1), 5), [0, 255, 0])).toBe(true);
+    expect(near(pixelAt(ppm, Math.round(W * 0.9), 5), [0, 0, 255])).toBe(true);
+    // Halfway between 0.1 and 0.9: an even green/blue mix, no red.
+    const mid = pixelAt(ppm, W * 0.5, 5);
+    expect(mid[0]).toBeLessThanOrEqual(8);
+    expect(Math.abs(mid[1] - 128)).toBeLessThanOrEqual(8);
+    expect(Math.abs(mid[2] - 128)).toBeLessThanOrEqual(8);
+  });
+
+  it('two stops at the same offset make a hard edge', async () => {
+    const image = await doc();
+    await fill(image, {
+      op: 'linear_gradient',
+      stops: [
+        { offset: 0, color: '#000000' },
+        { offset: 0.5, color: '#000000' },
+        { offset: 0.5, color: '#ffffff' },
+        { offset: 1, color: '#ffffff' },
+      ],
+      start: { x: 0, y: 0 },
+      end: { x: W, y: 0 },
+    });
+    const ppm = await render(image);
+    expect(pixelAt(ppm, W * 0.5 - 3, 5)[0]).toBeLessThanOrEqual(6);
+    expect(pixelAt(ppm, W * 0.5 + 3, 5)[0]).toBeGreaterThanOrEqual(249);
+  });
+
   it('the end colors hold outside the first and last stop', async () => {
     const image = await doc();
     await fill(image, {
