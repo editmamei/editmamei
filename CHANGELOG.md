@@ -10,6 +10,48 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-10-18
+
+### Added
+
+- **GIMP exports layered PSD files.** `gimp_export` writes a `.psd` that keeps layers, masks,
+  opacity, blend modes and groups, for finishing in Photoshop.
+  - Live filters are baked into each layer, a group with its own filter is merged into one layer,
+    and text is written as pixels.
+  - Photoshop blends partly transparent layers and blend modes in gamma space, so those can look
+    slightly different there; the export result lists them.
+- **Refine a saved GIMP selection.** `gimp_modify_selection` moves into the Community set: expand,
+  contract, feather, border, invert, harden or smooth a selection saved with `gimp_select`.
+- **Outlines, glows and edge-preserving blur in GIMP.** `gimp_add_effect` adds `outline`,
+  `outer_glow` and `surface_blur`, and the layer tools add the `grain_extract` and `grain_merge`
+  blend modes.
+  - Outline width and glow spread go up to 50 px, which keeps a large photo's export time
+    reasonable.
+- **GIMP text can wrap inside a box and size itself to fit.** `gimp_text` takes a `box` that wraps
+  the text, a `set_box` op for an existing layer, and `fit`, which picks the largest size that
+  fits the box. Text without a box behaves as before.
+
+### Changed
+
+- **Editmamei says when it cannot find Photoshop at all.** When no Photoshop install is detected,
+  `ps_ping` says so and explains how to point Editmamei at one with `PHOTOSHOP_PATH`, instead of
+  asking you to open Photoshop.
+- **GIMP files saved with the new effects need 1.9.0 to keep their settings.** An earlier version
+  opening such a file reads those filters back from GIMP instead of from Editmamei's saved record.
+  Files without the new effects are unaffected.
+
+### Fixed
+
+- **A slow Photoshop save is no longer reported as a failure when it finished.** A `ps_save_psd`
+  that runs past its time limit is checked on disk, and saving has a time budget of its own.
+- **GIMP vibrance matches Photoshop's strength.** The same `vibrance` value now gives a similar
+  result in both editors.
+- **GIMP results list what they found.** Listed filters, region statistics, checkpoints and layers
+  now appear in the result text, not only in the structured result.
+- **An out-of-range image or layer id is answered as not found.** A GIMP id too large for GIMP to
+  hold no longer fails with an internal overflow error.
+- **A module download refused for your region is reported once.** It is no longer retried.
+
 ## [1.8.0] — 2026-10-06
 
 ### Added

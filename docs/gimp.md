@@ -131,9 +131,11 @@ metadata (including any GPS location); only `gimp_export` removes it.
   brightness/contrast, hue/saturation, color balance, color temperature, shadows/highlights,
   saturation, vibrance, sharpen, noise reduction, gaussian blur. Each stays live and re-editable by
   its `filter_id`; exporting writes a copy and leaves the live document as it was.
-- **Effects** (`gimp_add_effect`): vignette, black and white, motion blur, lens blur, noise, and
-  drop shadow, live and re-editable the same way. `gimp_bake` merges a layer's live filters into its
-  pixels when you want them fixed.
+- **Effects** (`gimp_add_effect`): vignette, black and white, motion blur, lens blur, noise, drop
+  shadow, outline, outer glow and surface blur (an edge-preserving blur), live and re-editable the
+  same way. Outline width and glow spread go up to 50 px. `gimp_bake` merges a layer's live filters
+  into its pixels when you want them fixed. Layers also take the grain extract and grain merge
+  blend modes.
 - **Selections and masks:** build a selection from a rectangle, ellipse, polygon, color range, magic
   wand, a layer's opaque pixels or a gradient, and save it under a name (`gimp_select`). Expand,
   contract, feather, border, invert, harden or smooth a saved selection (`gimp_modify_selection`). Attach
@@ -141,7 +143,8 @@ metadata (including any GPS location); only `gimp_export` removes it.
   in a rendered preview (`gimp_get_selection_preview`). A saved selection also confines a filter
   when you pass its name as `mask`.
 - **Text:** live text layers you can create and restyle later, with content, font, color and
-  alignment (`gimp_text`).
+  alignment (`gimp_text`). Give a layer a box and its text wraps inside it; with `fit`, the size
+  is the largest that fits the box.
 - **Moving and transforming layers:** fit, scale, move, rotate, flip, skew or free-transform a single
   layer (`gimp_transform_layer`). Moving a layer used to be a `gimp_layer` operation; it lives here
   now.
