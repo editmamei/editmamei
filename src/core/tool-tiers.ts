@@ -351,6 +351,7 @@ export const TOOL_TIERS: Record<string, Tier> = {
   gimp_get_selection_preview: 'community',
   // New tools start at 'dev'; promotion is the owner's call.
   gimp_match_layer: 'dev',
+  gimp_retouch: 'dev',
 };
 
 /**
