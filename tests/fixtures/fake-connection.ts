@@ -12,6 +12,8 @@ export interface FakeConnectionOptions {
   throwOnExecute?: Error | null;
   /** Seeds isCurrentlyRunning(). Defaults to `info !== null`; flip later with setCurrentlyRunning(). */
   currentlyRunning?: boolean;
+  /** What ping() answers. Defaults to `info !== null`; false models a detected install that won't answer. */
+  pingReaches?: boolean;
 }
 
 const DEFAULT_INFO: PhotoshopInfo = {
@@ -42,6 +44,7 @@ export class FakePhotoshopConnection {
   private throwOnExecute: Error | null;
   private everReachedPhotoshop = false;
   private currentlyRunning: boolean;
+  private readonly pingReaches: boolean;
   // The as-constructed value, restored by reset() — currentlyRunning is mutable via
   // setCurrentlyRunning() (unlike info/result/etc., which stay fixed for the fake's
   // lifetime), so reset() needs its OWN initial value to return to, not a hardcoded
@@ -55,13 +58,14 @@ export class FakePhotoshopConnection {
     this.throwOnExecute = options.throwOnExecute ?? null;
     this.currentlyRunning = options.currentlyRunning ?? this.info !== null;
     this.initialCurrentlyRunning = this.currentlyRunning;
+    this.pingReaches = options.pingReaches ?? this.info !== null;
   }
 
   async ping(): Promise<boolean> {
     this.pingCalls++;
     // Mirrors PhotoshopConnection.ping, which is itself built on executeScript
     // in production — a successful ping is a successful round trip.
-    const reached = this.info !== null;
+    const reached = this.pingReaches;
     if (reached) this.everReachedPhotoshop = true;
     return reached;
   }

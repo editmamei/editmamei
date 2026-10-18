@@ -126,6 +126,19 @@ export const FIRST_RUN_DISCLOSURE =
  */
 export const BACKGROUND_VERSION_PROBE_TIMEOUT_MS = 3_000;
 
+/** Error classes a failed pingState round trip may report as-is; see its catch in pingPhotoshop. */
+const PING_ROUND_TRIP_CLASSES: ReadonlySet<string> = new Set([
+  'timeout',
+  'ps_modal_blocking',
+  'ps_not_running',
+  'ps_general_error',
+  'file_io',
+]);
+
+/** Where ps_ping's not-found answer points: how to set PHOTOSHOP_PATH. On `main`, so it tracks released docs. */
+const PHOTOSHOP_PATH_DOCS_URL =
+  'https://github.com/editmamei/editmamei/blob/main/docs/installation.md#optional-pin-a-specific-photoshop-install';
+
 /**
  * Test seam for the boot-time update check wired up in the constructor — production never
  * passes either field and gets the real `shouldCheckForUpdate` / `checkForUpdateWithStatus`
@@ -246,6 +259,16 @@ export class EditmameiServer {
    */
   private lastPingReachedPs: boolean | null = null;
   /**
+   * Why the last `ps_ping` did not reach Photoshop: the error class and message its
+   * telemetry row and opt-in diagnostic carry. A not-connected ping is a normal result,
+   * not an `isError`, so the registry has no error text to classify; without this every
+   * unreachable ping read as `ps_not_running`, whether Photoshop was closed, not
+   * installed, or running but refusing the connection. Set alongside
+   * `lastPingReachedPs = false` and read by the same `onCall` hook, under the same
+   * ordering constraint described there.
+   */
+  private lastPingFailure: { errorClass: string; message: string } | null = null;
+  /**
    * SHA-256 hash of JSON(tool+args) of the immediately preceding tool call, for telemetry's
    * `retry` signal (RecordedCall.retry — mirrors SessionLog's own `lastCallKey`/
    * `retry_signal`, kept as a SEPARATE field rather than reused: this one stays in memory
@@ -272,9 +295,9 @@ export class EditmameiServer {
    * prefer over the cache.
    *
    * Also cleared on any of `pingPhotoshop`'s early returns that mean Photoshop itself is
-   * UNREACHABLE (the "does not appear to be running" check, and the "did not respond"
-   * response, which covers both the build()-failure-fallback ping and the pingState round
-   * trip itself) — an unreachable Photoshop is direct evidence the cached document no longer
+   * UNREACHABLE (no install found, the "does not appear to be running" check, and the
+   * "did not respond" response, which covers both the build()-failure-fallback ping and the
+   * pingState round trip itself; all go through `markPingUnreachable`) — an unreachable Photoshop is direct evidence the cached document no longer
    * exists, same as a live round trip that finds none open. NOT cleared on a path that merely
    * means a signal was skipped (e.g. the disk-detected version fallback) without saying
    * anything about reachability.
@@ -528,9 +551,14 @@ export class EditmameiServer {
         // no branch that produces one.
         const isPingDowngrade =
           entry.tool === 'ps_ping' && !telemetrySuccess && entry.error === undefined;
+        const pingFailure = isPingDowngrade ? this.lastPingFailure : null;
         const errorClass =
           classifyError(entry.error) ??
-          (telemetrySuccess ? null : isPingDowngrade ? 'ps_not_running' : NO_ERROR_TEXT_CLASS);
+          (telemetrySuccess
+            ? null
+            : isPingDowngrade
+              ? (pingFailure?.errorClass ?? 'ps_not_running')
+              : NO_ERROR_TEXT_CLASS);
         // Retry signal: same tool + deep-equal args as the IMMEDIATELY preceding call. Hashed
         // (never the raw args themselves — nothing about args is retained, logged, or
         // emitted). A hash failure (unserializable args, e.g. a circular structure) degrades
@@ -572,7 +600,7 @@ export class EditmameiServer {
             error_message:
               entry.error ||
               (isPingDowngrade
-                ? 'ps_ping did not reach Photoshop'
+                ? (pingFailure?.message ?? 'ps_ping did not reach Photoshop')
                 : 'tool reported failure with no message'),
             ...(this.lastPsLocale !== null ? { ps_locale: this.lastPsLocale } : {}),
             ...(this.lastDocDepth !== null ? { doc_depth: this.lastDocDepth } : {}),
@@ -1142,6 +1170,18 @@ export class EditmameiServer {
     })();
   }
 
+  /**
+   * Record that this ping did not reach Photoshop, and why. Drops the cached document
+   * depth/mode too: an unreachable Photoshop is evidence that document is gone (see
+   * lastDocDepth/lastDocMode's field doc).
+   */
+  private markPingUnreachable(errorClass: string, message: string): void {
+    this.lastPingReachedPs = false;
+    this.lastPingFailure = { errorClass, message };
+    this.lastDocDepth = null;
+    this.lastDocMode = null;
+  }
+
   private async pingPhotoshop() {
     // Reset the telemetry-only reached-Photoshop signal — see the field doc. Every
     // branch below that returns sets it explicitly; this default only survives an
@@ -1150,6 +1190,7 @@ export class EditmameiServer {
     // Placed before everything else in this method, including the license refresh
     // below, so nothing can throw ahead of it.
     this.lastPingReachedPs = null;
+    this.lastPingFailure = null;
 
     // Piggyback a once-per-process license staleness refresh here (not
     // gated on the PS connection — license I/O is independent of Photoshop).
@@ -1223,11 +1264,49 @@ export class EditmameiServer {
     // throws "Photoshop info not available" whenever getPhotoshopInfo() is
     // still null, and runScript() below wraps this SAME connection
     // instance. Keep this call ahead of anything that reaches runScript().
+    // Kept rather than discarded: when it is the reason no install was found,
+    // it is what the not-found telemetry row reports.
+    let detectError: string | null = null;
     try {
       const detected = await connection.getVersion();
       if (detected) version = detected;
-    } catch {
-      /* fall through with default; pingState may still populate version */
+    } catch (err) {
+      detectError = err instanceof Error ? err.message : String(err);
+    }
+
+    // No install detected on a host Photoshop ships for. Every script needs a
+    // detected install, so nothing below could succeed; and "did not respond"
+    // would send the user to open an application this machine may not have.
+    // Unsupported hosts keep their own path below, which names the OS.
+    if (connection.getPhotoshopInfo() === null && unsupportedHostReason() === null) {
+      this.markPingUnreachable(
+        'ps_not_detected',
+        detectError ?? 'No Photoshop install was detected'
+      );
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: withAdvisory(
+              'Editmamei could not find a Photoshop install on this computer. Photoshop must be ' +
+                'installed on the same computer as Editmamei. ' +
+                // Already set means it is the path that failed, not a missing setting.
+                (process.env.PHOTOSHOP_PATH?.trim()
+                  ? 'PHOTOSHOP_PATH is set, but does not point at a Photoshop install: check it '
+                  : 'If it is installed in a custom location, set PHOTOSHOP_PATH to its full path ') +
+                "in your MCP client's Editmamei config (see " +
+                PHOTOSHOP_PATH_DOCS_URL +
+                '), restart the client, then call ps_ping again.' +
+                update.note
+            ),
+          },
+        ],
+        structuredContent: {
+          connected: false,
+          update_available: this.updateInfo,
+          notify_user: update.notify,
+        },
+      };
     }
 
     // Fast-fail when a DETECTED Photoshop install has no running process.
@@ -1239,22 +1318,22 @@ export class EditmameiServer {
     // >10s and must keep the full budget — absence is the only case that
     // deserves the shortcut. Scoped to detection SUCCESS on purpose:
     // isCurrentlyRunning() is also false when no install was detected at all
-    // (photoshopInfo null — including unsupported hosts), and those cases keep
-    // their pre-existing paths and messages below rather than being
-    // misdiagnosed as "not running". Runs AFTER getVersion(), which is what
+    // (photoshopInfo null), and those cases are answered by the not-found
+    // branch above or, on an unsupported host, by the paths below, rather
+    // than being misdiagnosed as "not running". Runs AFTER getVersion(), which is what
     // populates photoshopInfo on the real connection. isCurrentlyRunning()
     // self-catches to false, so this guard can never throw; the hedged
     // "does not appear" wording covers a process-name miss on an exotic
     // install, where a definitive claim could send the user chasing a
     // Photoshop that is already open.
     if (connection.getPhotoshopInfo() !== null && !(await connection.isCurrentlyRunning())) {
-      this.lastPingReachedPs = false;
-      // Photoshop reported not running — the process-name probe is hedged (it can miss an
-      // exotic install), but clearing here errs toward omitting doc_depth/doc_mode rather
-      // than reporting a document that may already be gone. See lastDocDepth/lastDocMode's
-      // field doc.
-      this.lastDocDepth = null;
-      this.lastDocMode = null;
+      // The process-name probe is hedged (it can miss an exotic install), but clearing the
+      // cached document here errs toward omitting doc_depth/doc_mode rather than reporting
+      // a document that may already be gone.
+      this.markPingUnreachable(
+        'ps_not_running',
+        'Photoshop is installed but no Photoshop process is running'
+      );
       return {
         content: [
           {
@@ -1297,12 +1376,12 @@ export class EditmameiServer {
         // closed application and sends the reader after the wrong fix. The
         // host knows the real reason; say it.
         const reason = unsupportedHostReason();
-        this.lastPingReachedPs = false;
-        // The fallback liveness probe did not answer — a ping can time out transiently, but
-        // clearing here errs toward omitting doc_depth/doc_mode rather than reporting a
-        // document that may already be gone. See lastDocDepth/lastDocMode's field doc.
-        this.lastDocDepth = null;
-        this.lastDocMode = null;
+        // A ping can time out transiently, but clearing the cached document errs toward
+        // omitting doc_depth/doc_mode rather than reporting a document that may be gone.
+        this.markPingUnreachable(
+          'ps_not_running',
+          reason ?? 'pingState snippet build failed and the fallback ping did not reach Photoshop'
+        );
         return {
           content: [
             {
@@ -1350,14 +1429,20 @@ export class EditmameiServer {
           doc_mode?: string;
         };
       } catch (err) {
-        this.logger.warn(
-          `pingState snippet failed: ${err instanceof Error ? err.message : String(err)}`
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`pingState snippet failed: ${message}`);
+        // The round trip did not complete. The message carries the real reason (a COM
+        // attach failure, a timeout). Only classes that describe a failed round trip are
+        // kept: classifyError is first-match over every tool's errors, so a COM
+        // description saying "invalid" would otherwise read as bad input to a tool that
+        // takes none. Everything else stays ps_not_running.
+        const errorClass = classifyError(message);
+        this.markPingUnreachable(
+          errorClass !== null && PING_ROUND_TRIP_CLASSES.has(errorClass)
+            ? errorClass
+            : 'ps_not_running',
+          message
         );
-        this.lastPingReachedPs = false;
-        // The round trip itself failed to respond — Photoshop is unreachable. See
-        // lastDocDepth/lastDocMode's field doc.
-        this.lastDocDepth = null;
-        this.lastDocMode = null;
         return {
           content: [
             {
