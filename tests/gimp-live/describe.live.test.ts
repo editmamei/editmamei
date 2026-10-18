@@ -434,6 +434,15 @@ describe.skipIf(!install)('gimp_inspect describe-by-id', () => {
     });
   });
 
+  it('answers an image id past gint32 as not open, not with an OverflowError', async () => {
+    for (const what of ['layers', 'document'] as const) {
+      await expect(session.call('describe', { image: 3230838997, what })).rejects.toMatchObject({
+        code: 'invalid_argument',
+        message: expect.stringContaining('no open image with id 3230838997'),
+      });
+    }
+  });
+
   it('refuses what=filter with no filter_id, naming the field', async () => {
     const { image } = await session.call<{ image: number }>('open', { path: rampPath });
     try {
