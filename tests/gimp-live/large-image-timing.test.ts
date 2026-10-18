@@ -61,7 +61,17 @@ function pngChunk(type: string, data: Buffer): Buffer {
 }
 
 /** A ~24MP synthetic PNG (6016x4000 — a common photo resolution), same construction as the other gimp-live fixtures, just larger. */
-function writeSyntheticPng(path: string, width: number, height: number): void {
+function writeSyntheticPng(
+  path: string,
+  width: number,
+  height: number,
+  { noise = 0 }: { noise?: number } = {}
+): void {
+  let seed = 1;
+  const jitter = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return noise ? (seed % (2 * noise + 1)) - noise : 0;
+  };
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
@@ -77,9 +87,9 @@ function writeSyntheticPng(path: string, width: number, height: number): void {
     raw[offset++] = 0;
     for (let x = 0; x < width; x++) {
       const v = Math.round(((x + y) / (width + height)) * 255);
-      raw[offset++] = v;
-      raw[offset++] = v;
-      raw[offset++] = v;
+      raw[offset++] = Math.min(255, Math.max(0, v + jitter()));
+      raw[offset++] = Math.min(255, Math.max(0, v + jitter()));
+      raw[offset++] = Math.min(255, Math.max(0, v + jitter()));
     }
   }
 
@@ -315,6 +325,78 @@ describe.skipIf(!install || !PERF)(
         budget('gimp_get_selection_preview') * MARGIN
       );
     }, 180_000);
+
+    it('gimp_export to a layered .psd (~24MP, 8 layers, filters on each, a filtered group) within its budget', async () => {
+      const MEASUREMENT_TIMEOUT_MS = 120_000;
+      const call = <T>(op: string, args: Record<string, unknown>) =>
+        session.call<T>(op, args, { timeoutMs: MEASUREMENT_TIMEOUT_MS });
+
+      // Noisy content: a smooth ramp would flatter PSD's RLE compression.
+      const pngPath = join(workDir, 'synthetic-24mp-psd.png');
+      writeSyntheticPng(pngPath, WIDTH, HEIGHT, { noise: 24 });
+      const { image } = await call<{ image: number }>('open', { path: pngPath });
+      const layers = await call<{ layers: Array<{ layer_id: number }> }>('describe', {
+        image,
+        what: 'layers',
+      });
+      const background = layers.layers[0]!.layer_id;
+      // Duplicates first: a layer that already carries a filter can't be duplicated.
+      for (let i = 0; i < 6; i++) {
+        const dup = await call<{ layer_id: number }>('layer', {
+          image,
+          op: 'duplicate',
+          layer_id: background,
+        });
+        await call('adjust', {
+          image,
+          layer_id: dup.layer_id,
+          type: 'brightness_contrast',
+          brightness: i * 5,
+        });
+      }
+      await call('adjust', { image, layer_id: background, type: 'exposure', exposure: 0.3 });
+      const group = await call<{ layer_id: number }>('layer', {
+        image,
+        op: 'create_group',
+        name: 'Toned',
+      });
+      await call('layer', {
+        image,
+        op: 'create',
+        name: 'Inner',
+        width: WIDTH,
+        height: HEIGHT,
+        fill: 'white',
+        parent_group: group.layer_id,
+      });
+      await call('adjust', {
+        image,
+        layer_id: group.layer_id,
+        type: 'brightness_contrast',
+        brightness: -20,
+      });
+
+      for (const bitDepth of [8, 16]) {
+        const psdPath = join(workDir, `export-large-${bitDepth}.psd`);
+        const { result, ms } = await timed(`export ~24MP, 8 layers -> ${bitDepth}-bit PSD`, () =>
+          call<{ bytes: number; layers: number; merged_groups: string[] }>('export', {
+            image,
+            path: psdPath,
+            bit_depth: bitDepth,
+          })
+        );
+        // eslint-disable-next-line no-console -- the size is the other number this measures.
+        console.log(
+          `[timing] ${bitDepth}-bit PSD size: ${(result.bytes / 2 ** 20).toFixed(1)} MiB`
+        );
+        expect(result.layers).toBe(8);
+        expect(result.merged_groups).toEqual(['Toned']);
+        const exportBudget = TOOL_TIMEOUT_BUDGETS_MS.gimp_export ?? DEFAULT_SCRIPT_TIMEOUT_MS;
+        expect(ms, `export ${bitDepth}-bit PSD`).toBeLessThan(exportBudget * 0.7);
+        rmSync(psdPath, { force: true });
+      }
+      await call('close', { image });
+    }, 300_000);
 
     it(
       'gimp_select (sample point) and gimp_modify_selection (border, the morphology cap) on the ' +

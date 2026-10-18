@@ -19,7 +19,9 @@
 
 import math
 import os
+import shutil
 import sys
+import tempfile
 import time
 import traceback
 
@@ -2460,15 +2462,7 @@ def _export_stripped(dup, path, options=None):
         raise ValueError(
             'export path must end in .jpg, .jpeg, .png, .webp, .tif, or .tiff (got %r)' % ext
         )
-    if fmt in ('png', 'tiff'):
-        bit_depth = lib.validate_choice('bit_depth', options.get('bit_depth', 8), lib.BIT_DEPTHS)
-    else:
-        bit_depth = 8
-    target_precision = (
-        Gimp.Precision.U16_NON_LINEAR if bit_depth == 16 else Gimp.Precision.U8_NON_LINEAR
-    )
-    if dup.get_precision() != target_precision:
-        dup.convert_precision(target_precision)
+    _export_precision(dup, options if fmt in ('png', 'tiff') else {})
     try:
         dup.set_metadata(Gimp.Metadata.new())
     except Exception:
@@ -2500,6 +2494,68 @@ def _export_stripped(dup, path, options=None):
     cfg.set_property('image', dup)
     cfg.set_property('file', Gio.File.new_for_path(path))
     _strip_metadata(cfg, fmt)
+    if _has_editors_profile(dup):
+        cfg.set_property('include-color-profile', False)
+    _run_export(proc, cfg, path)
+
+
+def _has_editors_profile(img):
+    """Whether `img` carries the editor's built-in color profile (or none of its own), which
+    exports leave out: see `lib.profile_is_editors_own`."""
+    profile = img.get_color_profile()
+    if profile is None:
+        return lib.profile_is_editors_own(None)
+    texts = []
+    for getter in ('get_description', 'get_manufacturer', 'get_model', 'get_copyright'):
+        try:
+            texts.append(getattr(profile, getter)())
+        except Exception:
+            pass
+    return lib.profile_is_editors_own(texts)
+
+
+def _drop_psd_resource(path, resource_id):
+    """Rewrite the PSD at `path` without image resource `resource_id`. Only the header and the
+    resource section are read into memory; the layer and image data are copied through as they
+    are, to a temporary file in the same folder that then replaces the original."""
+    # Dot-prefixed, so nothing that lists the folder for files to serve can pick up a leftover.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or '.', prefix='.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'wb') as dst, open(path, 'rb') as src:
+            head = src.read(26)
+            color_len = src.read(4)
+            color = src.read(int.from_bytes(color_len, 'big'))
+            res_len = int.from_bytes(src.read(4), 'big')
+            section = src.read(res_len)
+            try:
+                if head[:4] != b'8BPS' or len(section) != res_len:
+                    raise ValueError('truncated header')
+                kept = lib.psd_resources_without(section, resource_id)
+            except ValueError:
+                raise lib.OpError('gimp_op_failed', 'could not finish %s' % os.path.basename(path))
+            dst.write(head + color_len + color + len(kept).to_bytes(4, 'big') + kept)
+            shutil.copyfileobj(src, dst, 1 << 20)
+        shutil.copymode(path, tmp)  # mkstemp's 0600 would otherwise replace the export's own mode
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _export_precision(img, options):
+    """Convert `img` to the requested 8/16-bit non-linear precision before it is written, so a
+    16/32-bit `precision` promotion at open time never leaks into an export that didn't ask for
+    it."""
+    bit_depth = lib.validate_choice('bit_depth', options.get('bit_depth', 8), lib.BIT_DEPTHS)
+    target = Gimp.Precision.U16_NON_LINEAR if bit_depth == 16 else Gimp.Precision.U8_NON_LINEAR
+    if img.get_precision() != target:
+        img.convert_precision(target)
+
+
+def _run_export(proc, cfg, path):
     # A failed write does not raise: run() returns an EXECUTION_ERROR status with GIMP's message
     # as the second value (verified live, GIMP 3.2.6, writing into a missing directory).
     result = proc.run(cfg)
@@ -2514,12 +2570,86 @@ def _export_stripped(dup, path, options=None):
         raise lib.OpError('gimp_op_failed', 'could not write %s: %s' % (name, detail))
 
 
+def _export_layered(img, path, options):
+    """Write `img` to a layered .psd, from a duplicate so the live document is never touched.
+
+    PSD has no live filters, so on the duplicate: hidden filters are deleted (they render nothing),
+    every other layer's filters are baked in place, and a group carrying its own filter is merged
+    into one raster layer (`lib.layered_bake_plan`; the exporter silently drops a group's filter,
+    verified live on GIMP 3.2.6). Layer masks, opacity, blend modes, visibility and the other
+    groups survive the round trip. Text layers are written as pixels: GIMP's PSD exporter has no
+    text-layer support.
+
+    Photoshop blends layers in gamma space while GIMP blends most modes in linear light, so a
+    layer below 100% opacity, or with a mode other than normal, can look different there
+    (measured: a 60% normal layer drifted ~22 levels on average; multiply ~4; screen and overlay
+    0). Those layers are listed in the result rather than silently "fixed", since no PSD setting
+    can carry GIMP's blend space.
+
+    Metadata: same rule as `_export_stripped` -- the duplicate's `Gimp.Metadata` is cleared and
+    file-psd-export's own include-exif/xmp/iptc/thumbnail switches are turned off (verified live
+    that with them off the file has no EXIF (1058) or XMP (1060) image resource)."""
+    lib.validate_choice('bit_depth', options.get('bit_depth', 8), lib.BIT_DEPTHS)
+    dup = img.duplicate()
+    try:
+        layers = _all_layers(dup)
+        rasterized_text = [l.get_name() for l in layers if l.is_text_layer()]
+        for layer in layers:
+            for f in layer.get_filters():
+                if not f.get_visible():
+                    f.delete()
+        nodes = []
+        for layer in layers:
+            parent = layer.get_parent()
+            nodes.append((layer.get_id(), parent.get_id() if parent else None, layer.is_group(),
+                          bool(layer.get_filters())))
+        merge_groups, bake_layers = lib.layered_bake_plan(nodes)
+        for layer_id in bake_layers:
+            _bake_one(Gimp.Layer.get_by_id(layer_id))
+        merged_groups = []
+        for group_id in merge_groups:
+            group = Gimp.Layer.get_by_id(group_id)
+            merged_groups.append(group.get_name())
+            group.merge()
+        _export_precision(dup, options)
+        try:
+            dup.set_metadata(Gimp.Metadata.new())
+        except Exception:
+            pass
+
+        proc = Gimp.get_pdb().lookup_procedure('file-psd-export')
+        cfg = proc.create_config()
+        cfg.set_property('image', dup)
+        cfg.set_property('file', Gio.File.new_for_path(path))
+        _strip_metadata(cfg, 'psd')
+        _run_export(proc, cfg, path)
+        # file-psd-export writes the profile whatever include-color-profile says (verified live,
+        # GIMP 3.2.6), so the editor's own is taken out of the written file instead.
+        if _has_editors_profile(dup):
+            _drop_psd_resource(path, lib.PSD_ICC_RESOURCE)
+
+        final = _all_layers(dup)
+        may_blend_differently = [
+            l.get_name() for l in final
+            if l.get_visible() and (l.get_opacity() < 100.0 or l.get_mode() != Gimp.LayerMode.NORMAL)
+        ]
+        return {
+            'layers': len(final),
+            'merged_groups': merged_groups,
+            'rasterized_text': rasterized_text,
+            'may_blend_differently': may_blend_differently,
+        }
+    finally:
+        dup.delete()
+
+
 def op_export(args):
-    """Writes path by extension: .xcf saves the live document, anything else exports a flattened
-    copy via `_export_stripped` (metadata stripped; jpeg quality 1-100 default 90; png compression
-    0-9 default 3 -- GIMP's own default of 9 measured far slower for negligible size gain; webp
-    quality 0-100 default 90 + lossless; tiff compression, default 'none'; png/tiff bit_depth 8 or
-    16, default 8).
+    """Writes path by extension: .xcf saves the live document, .psd writes a layered copy via
+    `_export_layered` (filters baked, metadata stripped, bit_depth 8 or 16, default 8), anything
+    else exports a flattened copy via `_export_stripped` (metadata stripped; jpeg quality 1-100
+    default 90; png compression 0-9 default 3 -- GIMP's own default of 9 measured far slower for
+    negligible size gain; webp quality 0-100 default 90 + lossless; tiff compression, default
+    'none'; png/tiff bit_depth 8 or 16, default 8).
 
     `keep_alpha` (png / webp only) merges the visible layers onto a transparent canvas instead of
     flattening onto the background color, so the file keeps its transparency.
@@ -2538,6 +2668,9 @@ def op_export(args):
                 'could not save %s (check that the folder exists and is writable)'
                 % os.path.basename(path),
             )
+    elif os.path.splitext(path)[1].lower() in lib.LAYERED_EXPORT_FORMATS:
+        report = _export_layered(img, path, args)
+        return dict({'path': path, 'bytes': os.path.getsize(path)}, **report)
     else:
         if keep_alpha:
             dup = img.duplicate()

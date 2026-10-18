@@ -106,7 +106,7 @@ const saveXcfSchema: JsonSchemaObject = {
       description:
         'Absolute path ending in .xcf. Saves the LIVE GIMP document — every filter stays in ' +
         "place and re-editable afterward (matches ps_save_psd's framing for .psd). For a " +
-        'flattened deliverable, use gimp_export instead.',
+        'deliverable (flattened, or a layered .psd), use gimp_export instead.',
     },
     overwrite: {
       type: 'boolean',
@@ -127,7 +127,7 @@ async function gimpSaveXcf(
     if (extname(filePath).toLowerCase() !== '.xcf') {
       throw new GimpError(
         'invalid_argument',
-        `"file_path" must end in .xcf, got "${filePath}" — use gimp_export for a flattened deliverable.`
+        `"file_path" must end in .xcf, got "${filePath}" — use gimp_export for a deliverable.`
       );
     }
     refuseExistingGimpFile(filePath, args.overwrite as boolean | undefined, existsSync);
@@ -149,7 +149,12 @@ async function gimpSaveXcf(
   }
 }
 
-const EXPORT_FORMAT_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff'] as const;
+const FLAT_EXPORT_FORMAT_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff'] as const;
+const LAYERED_EXPORT_FORMAT_EXTENSIONS = ['.psd'] as const;
+const EXPORT_FORMAT_EXTENSIONS = [
+  ...FLAT_EXPORT_FORMAT_EXTENSIONS,
+  ...LAYERED_EXPORT_FORMAT_EXTENSIONS,
+] as const;
 
 const exportSchema: JsonSchemaObject = {
   type: 'object',
@@ -158,9 +163,10 @@ const exportSchema: JsonSchemaObject = {
     file_path: {
       type: 'string',
       description:
-        'Absolute path. The extension picks the format: jpg/jpeg, png, webp, tif/tiff. Refuses ' +
-        ".xcf outright — that is gimp_save_xcf's job. Metadata (EXIF/XMP/IPTC/GPS, thumbnail) is " +
-        'ALWAYS stripped on export, unconditionally — never carried over from the source.',
+        'Absolute path. The extension picks the format: jpg/jpeg, png, webp, tif/tiff (flattened), ' +
+        "or psd (layered). Refuses .xcf outright — that is gimp_save_xcf's job. Metadata " +
+        '(EXIF/XMP/IPTC/GPS, thumbnail) is ALWAYS stripped on export, unconditionally — never ' +
+        'carried over from the source.',
     },
     overwrite: {
       type: 'boolean',
@@ -203,7 +209,7 @@ const exportSchema: JsonSchemaObject = {
       type: 'integer',
       enum: [8, 16],
       default: 8,
-      description: 'PNG/TIFF only: output bit depth. JPEG/WebP are always 8-bit.',
+      description: 'PNG/TIFF/PSD only: output bit depth. JPEG/WebP are always 8-bit.',
     },
     keep_alpha: {
       type: 'boolean',
@@ -217,6 +223,49 @@ const exportSchema: JsonSchemaObject = {
   required: ['image', 'file_path'],
 };
 
+interface LayeredExportResult {
+  path: string;
+  bytes: number;
+  layers: number;
+  merged_groups: string[];
+  rasterized_text: string[];
+  may_blend_differently: string[];
+}
+
+const LAYER_NAMES_SHOWN = 10;
+
+function layerNames(names: string[]): string {
+  const shown = names.slice(0, LAYER_NAMES_SHOWN).map((n) => `"${n}"`);
+  const more = names.length - shown.length;
+  return more > 0 ? `${shown.join(', ')} and ${more} more` : shown.join(', ');
+}
+
+function layeredExportText(result: LayeredExportResult): string {
+  const parts = [
+    `Exported ${result.bytes.toLocaleString()} bytes to ${result.path} as a layered PSD with ` +
+      `${result.layers} layers. Live filters were baked into their layers' pixels.`,
+  ];
+  if (result.merged_groups.length > 0) {
+    parts.push(
+      `Groups merged into one layer each, because PSD cannot store a filter on a group: ` +
+        `${layerNames(result.merged_groups)}.`
+    );
+  }
+  if (result.rasterized_text.length > 0) {
+    parts.push(
+      `Text layers written as pixels, not editable text: ${layerNames(result.rasterized_text)}.`
+    );
+  }
+  if (result.may_blend_differently.length > 0) {
+    parts.push(
+      'Photoshop blends partly transparent layers and blend modes in gamma space, so these ' +
+        `may look slightly different there: ${layerNames(result.may_blend_differently)}.`
+    );
+  }
+  parts.push('Metadata (EXIF/XMP/IPTC/GPS, thumbnail) was stripped.');
+  return parts.join(' ');
+}
+
 async function gimpExport(
   gimp: GimpBackend,
   rawArgs: Record<string, unknown>
@@ -228,7 +277,7 @@ async function gimpExport(
     if (ext === '.xcf') {
       throw new GimpError(
         'invalid_argument',
-        '"file_path" must not be a .xcf file — gimp_export writes a flattened deliverable; use ' +
+        '"file_path" must not be a .xcf file — gimp_export writes a deliverable; use ' +
           'gimp_save_xcf to save the live, re-editable document.'
       );
     }
@@ -266,11 +315,20 @@ async function gimpExport(
     } else if (ext === '.tif' || ext === '.tiff') {
       bridgeArgs.compression = args.tiff_compression;
       bridgeArgs.bit_depth = args.bit_depth;
+    } else if (ext === '.psd') {
+      bridgeArgs.bit_depth = args.bit_depth;
     }
     if (keepAlpha) bridgeArgs.keep_alpha = true;
 
-    const result = await gimp.call<{ path: string; bytes: number }>('export', bridgeArgs);
     const format = ext.replace('.', '');
+    if (ext === '.psd') {
+      const result = await gimp.call<LayeredExportResult>('export', bridgeArgs);
+      return {
+        content: [{ type: 'text' as const, text: layeredExportText(result) }],
+        structuredContent: { ...result, format },
+      };
+    }
+    const result = await gimp.call<{ path: string; bytes: number }>('export', bridgeArgs);
     return {
       content: [
         {
@@ -330,7 +388,7 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
         name: 'gimp_close_document',
         description:
           'Headless GIMP: close an image WITHOUT saving. Save first with gimp_save_xcf (keeps filters live) or ' +
-          'gimp_export (flattened deliverable) if the work should be kept.',
+          'gimp_export (deliverable) if the work should be kept.',
         inputSchema: closeSchema,
         outputSchema: { type: 'object', properties: { closed: { type: 'number' } } },
         annotations: {
@@ -363,7 +421,8 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
           'to overwrite an existing file unless overwrite: true. Save early: on a very large ' +
           'document a save can take tens of seconds, and if any call times out the GIMP session ' +
           'restarts and every unsaved open image and filter is lost — save before long operations, ' +
-          'not after. For a flattened, shippable copy with metadata stripped, use gimp_export instead.',
+          'not after. For a shippable copy with metadata stripped (flattened, or a layered .psd), ' +
+          'use gimp_export instead.',
         inputSchema: saveXcfSchema,
         outputSchema: {
           type: 'object',
@@ -383,14 +442,20 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
       tool: {
         name: 'gimp_export',
         description:
-          'Headless GIMP: write a FLATTENED deliverable to disk — every live filter is baked in, ' +
-          'and ALL metadata (EXIF/XMP/IPTC/GPS, thumbnail) is stripped unconditionally, never ' +
-          'carried over from the source. Format is picked from the file_path extension (jpg/jpeg, ' +
-          'png, webp, tif/tiff); any other extension is refused, and .xcf is refused outright — ' +
-          'use gimp_save_xcf for the live, re-editable document instead. Refuses to overwrite an ' +
-          'existing file unless overwrite: true (with it, the existing file is replaced). By ' +
-          'default transparency is flattened onto white; keep_alpha: true (png or webp only) ' +
-          'keeps it, so a cut-out exports with a transparent background.',
+          'Headless GIMP: write a deliverable to disk — every live filter is baked in, and ALL ' +
+          'metadata (EXIF/XMP/IPTC/GPS, thumbnail) is stripped unconditionally, never carried ' +
+          'over from the source. Format is picked from the file_path extension: jpg/jpeg, png, ' +
+          'webp and tif/tiff write a FLATTENED image; psd writes a LAYERED file for finishing in ' +
+          'Photoshop or another editor. In a PSD, layers keep their masks, opacity, blend modes, ' +
+          'visibility and groups; filters are baked into each layer; a group with its own filter ' +
+          'is merged into one layer; text layers become pixels. Photoshop blends partly ' +
+          'transparent layers and blend modes in gamma space, so those can look slightly ' +
+          'different there — the result lists them. Any other extension is refused, and .xcf is ' +
+          'refused outright — use gimp_save_xcf for the live, re-editable document instead. ' +
+          'Refuses to overwrite an existing file unless overwrite: true (with it, the existing ' +
+          'file is replaced). A flattened image is composited onto white by default; keep_alpha: ' +
+          'true (png or webp only) keeps transparency, so a cut-out exports with a transparent ' +
+          'background.',
         inputSchema: exportSchema,
         outputSchema: {
           type: 'object',
@@ -398,6 +463,23 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
             path: { type: 'string' },
             bytes: { type: 'number' },
             format: { type: ['string', 'null'] },
+            layers: { type: 'number', description: 'PSD only: layers written, groups included.' },
+            merged_groups: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'PSD only: groups merged into one layer to keep their own filter.',
+            },
+            rasterized_text: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'PSD only: text layers written as pixels.',
+            },
+            may_blend_differently: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'PSD only: visible layers below 100% opacity or with a non-normal blend mode.',
+            },
           },
         },
         annotations: {
