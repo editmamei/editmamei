@@ -236,7 +236,7 @@ export function createSkyTools(
       tool: {
         name: 'ps_replace_sky',
         description:
-          "Run Photoshop's Sky Replacement (Adobe Sensei): detect the sky, composite a replacement, and relight/colour-grade the foreground to match. Non-destructive — everything lands in a \"Sky Replacement Group\" of editable layers above the original, so the result can be tuned or deleted afterwards. Pick one of Photoshop's built-in skies by name with sky (no path needed), or pass sky_file with an ABSOLUTE path to ANY image on disk; with neither, Photoshop's Blue Sky 001 is used (or the first installed sky). Reach for harmonization_opacity and foreground_lighting_opacity when the composite reads as pasted-on; those two carry most of the believability. Fails cleanly when the image has no detectable sky (indoor or closed compositions).",
+          'Run Photoshop\'s Sky Replacement (Adobe Sensei): detect the sky, composite a replacement, and relight/colour-grade the foreground to match. Non-destructive — everything lands in a "Sky Replacement Group" of editable layers above the original, so the result can be tuned or deleted afterwards. Pick one of Photoshop\'s built-in skies by name with sky (no path needed; sky "list" names them), or pass sky_file with an ABSOLUTE path to ANY image on disk; with neither, Photoshop\'s Blue Sky 001 is used (or the first installed sky). Reach for harmonization_opacity and foreground_lighting_opacity when the composite reads as pasted-on; those two carry most of the believability. Fails cleanly when the image has no detectable sky (indoor or closed compositions).',
         inputSchema: replaceSkyInputSchema,
         outputSchema: {
           type: 'object',

@@ -130,14 +130,20 @@ func init() {
         for (var wi = 0; wi < words.length; wi++) {
           if (hay.indexOf(words[wi]) >= 0) score += wi === 0 ? 2 : 1;
         }
-        if (score > 0) scored.push({ score: score, label: fam + ' = ' + psName });
+        if (score > 0) scored.push({ score: score, family: fam, label: fam + ' = ' + psName });
       }
       scored.sort(function (a, b) {
         return b.score - a.score || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0);
       });
+      // At most 3 styles per family, so one family with twenty weights can't
+      // crowd out its siblings (Helvetica LT Std hiding Helvetica Neue).
       var fuzzy = [];
+      var perFamily = {};
       for (var si = 0; si < scored.length && fuzzy.length < 15; si++) {
         if (scored[si].score < scored[0].score - 1) break;
+        var sf = scored[si].family;
+        perFamily[sf] = (perFamily[sf] || 0) + 1;
+        if (perFamily[sf] > 3) continue;
         fuzzy.push(scored[si].label);
       }
       all.sort();
