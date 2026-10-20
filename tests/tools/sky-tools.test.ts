@@ -182,6 +182,17 @@ describe('createSkyTools', () => {
     expect(snippetClient.lastBuild().params.skyPath).toBe('C:\\ps\\Sky_Presets\\d36f.jpg');
   });
 
+  it('treats a blank sky name as no name', async () => {
+    const res = await callTool(withPresets(), 'ps_replace_sky', { sky: '  ' });
+    expect(res.isError).toBeFalsy();
+    expect(snippetClient.lastBuild().params.skyPath).toBe('C:\\ps\\Sky_Presets\\d36f.jpg');
+  });
+
+  it('reports a file sky by path even when it shares a preset label', async () => {
+    const res = await callTool(withPresets(), 'ps_replace_sky', { sky_file: SKY });
+    expect(JSON.stringify(res.content)).toContain('dramatic-sunset.jpg');
+  });
+
   it('lets sky_file win over sky, and keeps its path checks', async () => {
     await callTool(withPresets(), 'ps_replace_sky', { sky: 'Spectacular 4', sky_file: SKY });
     expect(snippetClient.lastBuild().params.skyPath).toBe(SKY);

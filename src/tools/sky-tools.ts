@@ -58,7 +58,7 @@ const replaceSkyInputSchema: JsonSchemaObject = {
     sky: {
       type: 'string',
       description:
-        'Name of one of Photoshop\'s built-in skies, e.g. "Blue Sky 002", "Spectacular 004" or "Sunset Sky 003" (skies the user saved in Photoshop work too). The server finds the image itself, so no file or folder access is needed. An unknown name returns the list of installed skies. Omit both sky and sky_file to use Photoshop\'s default blue sky.',
+        'Name of one of Photoshop\'s built-in skies, e.g. "Blue Sky 002", "Spectacular 004" or "Sunset Sky 003" (skies the user saved in Photoshop work too). The server finds the image itself, so no file or folder access is needed. An unknown name returns the list of installed skies. Omit both sky and sky_file to use Photoshop\'s Blue Sky 001 (or the first installed sky).',
     },
     sky_file: {
       type: 'string',
@@ -126,18 +126,23 @@ const replaceSkyInputSchema: JsonSchemaObject = {
 };
 
 interface ResolvedSky {
+  kind: 'file' | 'preset';
   path: string;
   label: string;
 }
 
 /**
  * The image the composite uses: `sky_file` when given (local-path checked), else the built-in sky
- * `sky` names, else Photoshop's default blue sky. Throws with the installed sky names when `sky`
+ * `sky` names, else the default (see defaultSkyPreset). Throws with the installed sky names when `sky`
  * matches none, and with a sky_file hint when this machine has no sky presets at all.
  */
 function resolveSky(args: Record<string, unknown>, presets: () => SkyPreset[]): ResolvedSky {
   if (args.sky_file !== undefined) {
-    return { path: requireLocalPath('sky_file', args.sky_file), label: 'Custom Sky' };
+    return {
+      kind: 'file',
+      path: requireLocalPath('sky_file', args.sky_file),
+      label: 'Custom Sky',
+    };
   }
   const installed = presets();
   if (installed.length === 0) {
@@ -145,7 +150,8 @@ function resolveSky(args: Record<string, unknown>, presets: () => SkyPreset[]): 
       "Photoshop's built-in skies were not found on this computer (the Sky_Presets folder in Photoshop's settings). Pass sky_file with the absolute path to any image to use as the sky."
     );
   }
-  const query = args.sky as string | undefined;
+  // A blank name means no name: the default, not a failed lookup.
+  const query = typeof args.sky === 'string' && args.sky.trim() !== '' ? args.sky : undefined;
   const preset =
     query === undefined ? defaultSkyPreset(installed) : matchSkyPreset(installed, query);
   if (!preset) {
@@ -153,7 +159,7 @@ function resolveSky(args: Record<string, unknown>, presets: () => SkyPreset[]): 
       `No built-in sky matches "${query}". Installed skies: ${installed.map((p) => p.name).join('; ')}.`
     );
   }
-  return { path: preset.file, label: preset.name };
+  return { kind: 'preset', path: preset.file, label: preset.name };
 }
 
 async function replaceSky(
@@ -188,9 +194,9 @@ async function replaceSky(
       };
     },
     successText: () =>
-      sky?.label === 'Custom Sky' || !sky
-        ? `Sky replaced using ${sky?.path ?? 'the given file'}`
-        : `Sky replaced using Photoshop's built-in sky "${sky.label}"`,
+      sky?.kind === 'preset'
+        ? `Sky replaced using Photoshop's built-in sky "${sky.label}"`
+        : `Sky replaced using ${sky?.path ?? 'the given file'}`,
   });
 }
 
@@ -210,7 +216,7 @@ export function createSkyTools(
       tool: {
         name: 'ps_replace_sky',
         description:
-          "Run Photoshop's Sky Replacement (Adobe Sensei): detect the sky, composite a replacement, and relight/colour-grade the foreground to match. Non-destructive — everything lands in a \"Sky Replacement Group\" of editable layers above the original, so the result can be tuned or deleted afterwards. Pick one of Photoshop's built-in skies by name with sky (no path needed), or pass sky_file with an ABSOLUTE path to ANY image on disk; with neither, Photoshop's default blue sky is used. Reach for harmonization_opacity and foreground_lighting_opacity when the composite reads as pasted-on; those two carry most of the believability. Fails cleanly when the image has no detectable sky (indoor or closed compositions).",
+          "Run Photoshop's Sky Replacement (Adobe Sensei): detect the sky, composite a replacement, and relight/colour-grade the foreground to match. Non-destructive — everything lands in a \"Sky Replacement Group\" of editable layers above the original, so the result can be tuned or deleted afterwards. Pick one of Photoshop's built-in skies by name with sky (no path needed), or pass sky_file with an ABSOLUTE path to ANY image on disk; with neither, Photoshop's Blue Sky 001 is used (or the first installed sky). Reach for harmonization_opacity and foreground_lighting_opacity when the composite reads as pasted-on; those two carry most of the believability. Fails cleanly when the image has no detectable sky (indoor or closed compositions).",
         inputSchema: replaceSkyInputSchema,
         outputSchema: {
           type: 'object',

@@ -58,10 +58,11 @@ export function parseSkyPresets(buf: Buffer, dir: string): SkyPreset[] {
   ) {
     const name = readText(pos + NAME_KEY.length);
     if (!name) continue;
-    // The id field follows the name directly: a 4-byte key length, then `SzidTEXT`.
-    const idAt = buf.indexOf(ID_KEY, name.end);
-    if (idAt === -1 || idAt - name.end > 16) continue;
-    const id = readText(idAt + ID_KEY.length);
+    // The id field follows the name directly: a 4-byte key length, then `SzidTEXT`. Look only
+    // there, so a name without an id never takes the next sky's.
+    const rel = buf.subarray(name.end, name.end + 16 + ID_KEY.length).indexOf(ID_KEY);
+    if (rel === -1) continue;
+    const id = readText(name.end + rel + ID_KEY.length);
     if (!id || !GUID_RE.test(id.text)) continue;
     const file = join(dir, `${id.text}.jpg`);
     if (existsSync(file)) out.push({ name: prettySkyName(name.text), file });
@@ -115,9 +116,10 @@ export function loadSkyPresets(dir: string | null = findSkyPresetsDir()): SkyPre
   }
 }
 
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+// Letters and digits in any script, so a sky the user saved under a non-Latin name still matches.
+const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 const familyAndNumber = (s: string) => {
-  const m = /^([a-z]+?)(\d+)/.exec(norm(s));
+  const m = /^(\p{L}+?)(\d+)/u.exec(norm(s));
   return m ? { family: m[1], num: Number(m[2]) } : null;
 };
 

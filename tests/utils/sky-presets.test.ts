@@ -97,6 +97,24 @@ describe('parseSkyPresets', () => {
     expect(loadSkyPresets(dir).map((s) => s.name)).toEqual(['Blue Sky 001 by Photoshop']);
   });
 
+  it("never pairs a name that has no id with the next sky's id", () => {
+    // A name, then descriptor bytes but no Szid, then a complete entry: the orphan must be dropped,
+    // not labelled with the following sky's image.
+    const orphan = Buffer.concat([
+      text('skpN', 'Orphan'),
+      Buffer.from('\u0000\u0000\u0000\u0000sRoiObjc Rct1 Top long padding', 'latin1'),
+    ]);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'Skies.psp'),
+      Buffer.concat([orphan, psp([['BlueSky001byPhotoshop', GUIDS.blue001]])])
+    );
+    writeFileSync(join(dir, `${GUIDS.blue001}.jpg`), 'jpg');
+    expect(loadSkyPresets(dir)).toEqual([
+      { name: 'Blue Sky 001 by Photoshop', file: join(dir, `${GUIDS.blue001}.jpg`) },
+    ]);
+  });
+
   it('never builds a path from an id that is not a GUID', () => {
     writeSkies(dir, [['Sneaky', '..\\..\\Windows\\win']], []);
     expect(loadSkyPresets(dir)).toEqual([]);
@@ -168,6 +186,11 @@ describe('matchSkyPreset and defaultSkyPreset', () => {
     ['my lake', 'f'],
   ])('%s -> %s', (query, file) => {
     expect(matchSkyPreset(skies, query)?.file).toBe(file);
+  });
+
+  it('matches a user-saved sky with a non-Latin name', () => {
+    const own = [...skies, { name: 'Небо над озером', file: 'g' }];
+    expect(matchSkyPreset(own, 'небо над озером')?.file).toBe('g');
   });
 
   it('finds nothing for an unknown or empty name', () => {
