@@ -448,9 +448,8 @@ func init() {
     if (!skyFile.exists) {
       throw new Error(
         'Sky image not found on disk: ' + skyPath + '\n' +
-        'sky_file must be an absolute path to an image Photoshop can open. Built-in Photoshop ' +
-        'skies live under the Sky_Presets folder in your Photoshop settings directory; any ' +
-        'ordinary JPEG/PNG works too.'
+        'Pass sky with the name of a built-in Photoshop sky (sky: "list" shows the installed ' +
+        'ones), or sky_file with an absolute path to any image Photoshop can open.'
       );
     }
 

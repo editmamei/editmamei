@@ -110,13 +110,19 @@ func init() {
       for (var pi = 0; pi < reqParts.length; pi++) {
         if (reqParts[pi].length >= 3) words.push(reqParts[pi].toLowerCase());
       }
+      // A short request ("Ar", "MS") has no part long enough to score on, so
+      // match it whole, as a substring.
+      if (words.length === 0 && String(requested).length > 0) {
+        words.push(String(requested).toLowerCase());
+      }
       var seenFamilies = {};
       var scored = [];
       var all = [];
-      for (var fi = 0; fi < app.fonts.length; fi++) {
+      var fontList = app.fonts;
+      for (var fi = 0; fi < fontList.length; fi++) {
         // Two property reads per font (each crosses into Photoshop's DOM); the
         // PostScript name already carries the style, e.g. AcuminProWide-Black.
-        var fnt = app.fonts[fi];
+        var fnt = fontList[fi];
         var fam = fnt.family;
         var psName = fnt.postScriptName;
         if (!seenFamilies[fam]) {
@@ -153,7 +159,7 @@ func init() {
         msg += ' Closest installed fonts (family = PostScript name to pass): ' + fuzzy.join('; ') + '.';
       } else {
         var sample = all.slice(0, 30);
-        msg += ' No installed family contains "' + requested + '". Sample of installed families: ' + sample.join(', ');
+        msg += ' No installed font matches "' + requested + '". Sample of installed families: ' + sample.join(', ');
         if (all.length > sample.length) {
           msg += ' (' + (all.length - sample.length) + ' more)';
         }
