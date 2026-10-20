@@ -58,7 +58,7 @@ const replaceSkyInputSchema: JsonSchemaObject = {
     sky: {
       type: 'string',
       description:
-        'Name of one of Photoshop\'s built-in skies, e.g. "Blue Sky 002", "Spectacular 004" or "Sunset Sky 003" (skies the user saved in Photoshop work too). The server finds the image itself, so no file or folder access is needed. An unknown name returns the list of installed skies. Omit both sky and sky_file to use Photoshop\'s Blue Sky 001 (or the first installed sky).',
+        'Name of one of Photoshop\'s built-in skies, e.g. "Blue Sky 002", "Spectacular 004" or "Sunset Sky 003" (skies the user saved in Photoshop work too). The server finds the image itself, so no file or folder access is needed. Pass "list" to get the installed skies\' names without changing the document. Omit both sky and sky_file to use Photoshop\'s Blue Sky 001 (or the first installed sky).',
     },
     sky_file: {
       type: 'string',
@@ -168,6 +168,26 @@ async function replaceSky(
   rawArgs: Record<string, unknown>,
   presets: () => SkyPreset[]
 ): Promise<ToolResult> {
+  // `sky: "list"` answers what a model otherwise finds out by passing a name it knows is wrong:
+  // which skies are installed. Nothing is built or run.
+  if (
+    rawArgs.sky_file === undefined &&
+    typeof rawArgs.sky === 'string' &&
+    rawArgs.sky.trim().toLowerCase() === 'list'
+  ) {
+    const names = presets().map((p) => p.name);
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: names.length
+            ? `Installed skies: ${names.join('; ')}.`
+            : "Photoshop's built-in skies were not found on this computer. Pass sky_file with the absolute path to any image to use as the sky.",
+        },
+      ],
+      structuredContent: { replaced: false, skies: names },
+    };
+  }
   let sky: ResolvedSky | undefined;
   return runSnippetTool({
     connection,
@@ -235,6 +255,12 @@ export function createSkyTools(
             },
             sky_file: { type: 'string' },
             sky_name: { type: 'string' },
+            skies: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Installed sky names; returned instead of a composite when sky is "list".',
+            },
             context: { type: 'object' },
           },
         },

@@ -182,6 +182,27 @@ describe('createSkyTools', () => {
     expect(snippetClient.lastBuild().params.skyPath).toBe('C:\\ps\\Sky_Presets\\d36f.jpg');
   });
 
+  // In the 2026-10-20 recordings Claude found the skies by passing names it knew were wrong
+  // ("Sunset Sky 999", "list"): each cost a failed call and an approval. "list" now just answers.
+  it('lists the installed skies for sky "list" without building or running anything', async () => {
+    const res = await callTool(withPresets(), 'ps_replace_sky', { sky: ' List ' });
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent).toEqual({
+      replaced: false,
+      skies: PRESETS.map((p) => p.name),
+    });
+    expect(JSON.stringify(res.content)).toContain('Spectacular 004 by Russell Brown');
+    expect(snippetClient.allBuilds()).toEqual([]);
+    expect(conn.allScripts()).toEqual([]);
+  });
+
+  it('says how to proceed when listing finds no presets', async () => {
+    const res = await callTool(withPresets([]), 'ps_replace_sky', { sky: 'list' });
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent).toEqual({ replaced: false, skies: [] });
+    expect(JSON.stringify(res.content)).toContain('sky_file');
+  });
+
   it('treats a blank sky name as no name', async () => {
     const res = await callTool(withPresets(), 'ps_replace_sky', { sky: '  ' });
     expect(res.isError).toBeFalsy();
