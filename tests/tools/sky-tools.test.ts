@@ -188,9 +188,13 @@ describe('createSkyTools', () => {
     expect(snippetClient.lastBuild().params.skyPath).toBe('C:\\ps\\Sky_Presets\\d36f.jpg');
   });
 
-  it('reports a file sky by path even when it shares a preset label', async () => {
-    const res = await callTool(withPresets(), 'ps_replace_sky', { sky_file: SKY });
-    expect(JSON.stringify(res.content)).toContain('dramatic-sunset.jpg');
+  it('words the result by where the sky came from, not by its label', async () => {
+    // A user-saved preset may be called "Custom Sky", the same label a sky_file gets.
+    const tools = withPresets([{ name: 'Custom Sky', file: 'C:\\ps\\Sky_Presets\\abcd.jpg' }]);
+    const preset = await callTool(tools, 'ps_replace_sky', { sky: 'Custom Sky' });
+    expect(JSON.stringify(preset.content)).toContain('built-in sky \\"Custom Sky\\"');
+    const file = await callTool(tools, 'ps_replace_sky', { sky_file: SKY });
+    expect(JSON.stringify(file.content)).toContain('dramatic-sunset.jpg');
   });
 
   it('lets sky_file win over sky, and keeps its path checks', async () => {
