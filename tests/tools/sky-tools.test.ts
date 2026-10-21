@@ -51,10 +51,15 @@ describe('createSkyTools', () => {
     expect(tools.map((t) => t.tool.name)).toEqual(['ps_replace_sky']);
   });
 
-  it('requires sky_file', () => {
+  it('requires nothing: a built-in sky by name, a file, or the default', () => {
     const tools = createSkyTools(conn.asConnection(), snippetClient);
-    const schema = tools[0].tool.inputSchema as unknown as { required: string[] };
-    expect(schema.required).toEqual(['sky_file']);
+    const schema = tools[0].tool.inputSchema as unknown as {
+      required?: string[];
+      properties: Record<string, unknown>;
+    };
+    expect(schema.required ?? []).toEqual([]);
+    expect(schema.properties.sky).toBeDefined();
+    expect(schema.properties.sky_file).toBeDefined();
   });
 
   // Removal guard, 2026-08-16: Photoshop IGNORES the descriptor's lightingMode
@@ -150,10 +155,99 @@ describe('createSkyTools', () => {
 
   // ---------- rejection + failure paths ----------
 
-  it('rejects a call with no sky_file (required is actually enforced)', async () => {
-    const tools = createSkyTools(conn.asConnection(), snippetClient);
-    const result = await callTool(tools, 'ps_replace_sky', {});
-    expect(result.isError).toBe(true);
+  // ---------- built-in skies by name ----------
+  // Claude used to need folder access to find a sky: the built-ins sit under GUID file names in
+  // Photoshop's settings folder. The server now resolves a name itself.
+
+  const PRESETS = [
+    { name: 'Blue Sky 000 by Rick Mandia', file: 'C:\\ps\\Sky_Presets\\e1ec.jpg' },
+    { name: 'Blue Sky 001 by Photoshop', file: 'C:\\ps\\Sky_Presets\\d36f.jpg' },
+    { name: 'Spectacular 004 by Russell Brown', file: 'C:\\ps\\Sky_Presets\\5a68.jpg' },
+  ];
+  const withPresets = (list = PRESETS) =>
+    createSkyTools(conn.asConnection(), snippetClient, { presets: () => list });
+
+  it('resolves a built-in sky by name to its image and labels the operation with it', async () => {
+    const res = await callTool(withPresets(), 'ps_replace_sky', { sky: 'Spectacular 4' });
+    expect(res.isError).toBeFalsy();
+    const { params } = snippetClient.lastBuild();
+    expect(params.skyPath).toBe('C:\\ps\\Sky_Presets\\5a68.jpg');
+    expect(params.skyName).toBe('Spectacular 004 by Russell Brown');
+    expect(JSON.stringify(res.content)).toContain('Spectacular 004 by Russell Brown');
+  });
+
+  it("uses Photoshop's own blue sky when neither sky nor sky_file is given", async () => {
+    const res = await callTool(withPresets(), 'ps_replace_sky', {});
+    expect(res.isError).toBeFalsy();
+    expect(snippetClient.lastBuild().params.skyPath).toBe('C:\\ps\\Sky_Presets\\d36f.jpg');
+  });
+
+  // In the 2026-10-20 recordings Claude found the skies by passing names it knew were wrong
+  // ("Sunset Sky 999", "list"): each cost a failed call and an approval. "list" now just answers.
+  it('lists the installed skies for sky "list" without building or running anything', async () => {
+    const res = await callTool(withPresets(), 'ps_replace_sky', { sky: ' List ' });
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent).toEqual({
+      replaced: false,
+      skies: PRESETS.map((p) => p.name),
+    });
+    expect(JSON.stringify(res.content)).toContain('Spectacular 004 by Russell Brown');
+    expect(snippetClient.allBuilds()).toEqual([]);
+    expect(conn.allScripts()).toEqual([]);
+  });
+
+  it('says how to proceed when listing finds no presets', async () => {
+    const res = await callTool(withPresets([]), 'ps_replace_sky', { sky: 'list' });
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent).toEqual({ replaced: false, skies: [] });
+    expect(JSON.stringify(res.content)).toContain('sky_file');
+  });
+
+  it('treats a blank sky name as no name', async () => {
+    const res = await callTool(withPresets(), 'ps_replace_sky', { sky: '  ' });
+    expect(res.isError).toBeFalsy();
+    expect(snippetClient.lastBuild().params.skyPath).toBe('C:\\ps\\Sky_Presets\\d36f.jpg');
+  });
+
+  it('words the result by where the sky came from, not by its label', async () => {
+    // A user-saved preset may be called "Custom Sky", the same label a sky_file gets.
+    const tools = withPresets([{ name: 'Custom Sky', file: 'C:\\ps\\Sky_Presets\\abcd.jpg' }]);
+    const preset = await callTool(tools, 'ps_replace_sky', { sky: 'Custom Sky' });
+    expect(JSON.stringify(preset.content)).toContain('built-in sky \\"Custom Sky\\"');
+    const file = await callTool(tools, 'ps_replace_sky', { sky_file: SKY });
+    expect(JSON.stringify(file.content)).toContain('dramatic-sunset.jpg');
+  });
+
+  it('lets sky_file win over sky, and keeps its path checks', async () => {
+    await callTool(withPresets(), 'ps_replace_sky', { sky: 'Spectacular 4', sky_file: SKY });
+    expect(snippetClient.lastBuild().params.skyPath).toBe(SKY);
+    expect(snippetClient.lastBuild().params.skyName).toBe('Custom Sky');
+    const unc = await callTool(withPresets(), 'ps_replace_sky', {
+      sky: 'Spectacular 4',
+      sky_file: String.raw`\\attacker.example\share\sky.jpg`,
+    });
+    expect(unc.isError).toBe(true);
+  });
+
+  it('keeps an explicit sky_name over the built-in label', async () => {
+    await callTool(withPresets(), 'ps_replace_sky', { sky: 'Blue Sky 0', sky_name: 'Morning' });
+    expect(snippetClient.lastBuild().params.skyName).toBe('Morning');
+  });
+
+  it('lists the installed skies when a name matches none, without running anything', async () => {
+    const res = await callTool(withPresets(), 'ps_replace_sky', { sky: 'Storm 9' });
+    expect(res.isError).toBe(true);
+    const text = JSON.stringify(res.content);
+    expect(text).toContain('Storm 9');
+    expect(text).toContain('Blue Sky 001 by Photoshop');
+    expect(snippetClient.allBuilds()).toEqual([]);
+  });
+
+  it('points at sky_file when this machine has no sky presets', async () => {
+    const res = await callTool(withPresets([]), 'ps_replace_sky', {});
+    expect(res.isError).toBe(true);
+    expect(JSON.stringify(res.content)).toContain('sky_file');
+    expect(snippetClient.allBuilds()).toEqual([]);
   });
 
   it('rejects out-of-range tuning values', async () => {

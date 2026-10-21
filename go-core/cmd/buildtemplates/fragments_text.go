@@ -99,27 +99,67 @@ func init() {
       // the LLM has to guess font names blindly — the 2026-06-06 demo
       // session burned a tool call on "Helvetica" then went silent on
       // text-styling because it couldn't recover.
-      var reqLower = String(requested).toLowerCase();
+      //
+      // Match on the request's word parts, not the whole string: a guessed
+      // PostScript name like "AcuminProWide-Black" is contained in no family,
+      // but its parts (acumin, pro, wide, black) point straight at
+      // "Acumin Pro Wide" Black. The 2026-10-20 poster recordings burned six
+      // calls guessing names because the whole-string match found nothing.
+      var reqParts = String(requested).replace(/([a-z])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/);
+      var words = [];
+      for (var pi = 0; pi < reqParts.length; pi++) {
+        if (reqParts[pi].length >= 3) words.push(reqParts[pi].toLowerCase());
+      }
+      // A short request ("Ar", "MS") has no part long enough to score on, so
+      // match it whole, as a substring.
+      if (words.length === 0 && String(requested).length > 0) {
+        words.push(String(requested).toLowerCase());
+      }
       var seenFamilies = {};
-      var fuzzy = [];
+      var scored = [];
       var all = [];
-      for (var fi = 0; fi < app.fonts.length; fi++) {
-        var fam = app.fonts[fi].family;
-        if (seenFamilies[fam]) continue;
-        seenFamilies[fam] = true;
-        all.push(fam);
-        if (String(fam).toLowerCase().indexOf(reqLower) >= 0 && fuzzy.length < 20) {
-          fuzzy.push(fam);
+      var fontList = app.fonts;
+      for (var fi = 0; fi < fontList.length; fi++) {
+        // Two property reads per font (each crosses into Photoshop's DOM); the
+        // PostScript name already carries the style, e.g. AcuminProWide-Black.
+        var fnt = fontList[fi];
+        var fam = fnt.family;
+        var psName = fnt.postScriptName;
+        if (!seenFamilies[fam]) {
+          seenFamilies[fam] = true;
+          all.push(fam);
         }
+        var hay = (fam + ' ' + psName).toLowerCase();
+        var score = 0;
+        // The first part is nearly always the family ("acumin"); it counts
+        // double so common parts like "pro" or "black" can't outrank it.
+        for (var wi = 0; wi < words.length; wi++) {
+          if (hay.indexOf(words[wi]) >= 0) score += wi === 0 ? 2 : 1;
+        }
+        if (score > 0) scored.push({ score: score, family: fam, label: fam + ' = ' + psName });
+      }
+      scored.sort(function (a, b) {
+        return b.score - a.score || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0);
+      });
+      // At most 3 styles per family, so one family with twenty weights can't
+      // crowd out its siblings (Helvetica LT Std hiding Helvetica Neue).
+      var fuzzy = [];
+      var perFamily = {};
+      for (var si = 0; si < scored.length && fuzzy.length < 15; si++) {
+        if (scored[si].score < scored[0].score - 1) break;
+        var sf = scored[si].family;
+        perFamily[sf] = (perFamily[sf] || 0) + 1;
+        if (perFamily[sf] > 3) continue;
+        fuzzy.push(scored[si].label);
       }
       all.sort();
       var msg = 'Font not found: ' + requested +
         '. textItem.font wants the PostScript name (e.g. "ArialMT" not "Arial"); family name also accepted if installed.';
       if (fuzzy.length > 0) {
-        msg += ' Families containing "' + requested + '": ' + fuzzy.join(', ') + '.';
+        msg += ' Closest installed fonts (family = PostScript name to pass): ' + fuzzy.join('; ') + '.';
       } else {
         var sample = all.slice(0, 30);
-        msg += ' No installed family contains "' + requested + '". Sample of installed families: ' + sample.join(', ');
+        msg += ' No installed font matches "' + requested + '". Sample of installed families: ' + sample.join(', ');
         if (all.length > sample.length) {
           msg += ' (' + (all.length - sample.length) + ' more)';
         }
