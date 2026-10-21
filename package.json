@@ -1,11 +1,12 @@
 {
   "name": "editmamei",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "private": true,
   "description": "Photoshop MCP server: natural-language AI photo editing in desktop Photoshop",
   "mcpName": "io.github.editmamei/editmamei",
   "editmamei": {
     "fixesByVersion": {
+      "1.9.1": ["ps_replace_sky"],
       "1.9.0": ["ps_save_psd"],
       "1.4.0": [
         "ps_read_scene",
@@ -13,7 +14,6 @@
         "ps_select",
         "ps_modify_selection"
       ],
-      "1.2.0": ["ps_delete_layer", "ps_select_layer"],
       "1.2.1": ["ps_read_scene"]
     }
   },
