@@ -10,6 +10,19 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-10-21
+
+### Fixed
+
+- **Sky replacement finds Photoshop's own skies by name.** `ps_replace_sky` no longer needs a file
+  path: name a built-in sky, ask for the list, or leave it out to get Blue Sky 001.
+  - `sky` takes a sky's name, such as "Blue Sky 002" or "Sunset Sky 003". Skies you saved in
+    Photoshop work too. `sky: "list"` returns the installed skies without changing the image.
+  - `sky_file` is now optional and still takes any image on disk.
+- **A missing font comes back with names you can use.** When `ps_text` can't find a font, it
+  suggests installed fonts that match parts of the name you asked for, at most three styles per
+  family.
+
 ## [1.9.0] — 2026-10-18
 
 ### Added
