@@ -167,10 +167,10 @@ Environment variables, typically set in the client's `env` block, override for a
 
 ## Privacy and network
 
-Editing needs no network: the server talks to your editor through local processes. It makes these requests, and none of them carries image content, document data, file paths or your prompts:
+Editing needs no network: the server talks to your editor through local processes. It makes these requests, and none of them carries image content, file paths or your prompts:
 
-- **Usage telemetry** (on by default, `telemetry.usage`) to Editmamei's own endpoint: tool name, success or error category, duration, response size, versions, OS, install channel, which AI client connected, per-session counts and a random install ID.
-- **Diagnostics** (off by default, `telemetry.diagnostics`) to the same endpoint: a sanitized error message and error-output tail, with paths reduced to file names.
+- **Usage telemetry** (on by default, `telemetry.usage`) to Editmamei's own endpoint: tool name, success or error category, duration, response size, versions, OS and CPU architecture, install channel, which AI client connected and its capability flags, per-session counts and a random install ID.
+- **Diagnostics** (off by default, `telemetry.diagnostics`) to the same endpoint: the failing tool and step, a sanitized error message and error-output tail (paths reduced to file names), Photoshop's locale, and the open document's bit depth and color mode.
 - **Update check** (on by default, `update_check`) to the public npm registry, with no identifiers.
 - **Pro only:** activation (the license key and a hashed device ID) and a daily license check (the key) to the licensing service, and a check for a newer Pro module, with the key, to Editmamei's delivery service at each start.
 
