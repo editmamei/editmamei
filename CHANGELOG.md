@@ -10,6 +10,14 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.9.2] — 2026-10-24
+
+### Changed
+
+- **Listed in the MCP Registry as `io.github.editmamei/editmamei-photoshop-mcp`.** The
+  registry's search matches server names only, so the new name makes Editmamei show up when
+  people search for Photoshop. The npm package name and existing setups are unchanged.
+
 ## [1.9.1] — 2026-10-21
 
 ### Fixed
