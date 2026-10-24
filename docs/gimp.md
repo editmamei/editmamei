@@ -1,12 +1,11 @@
-# GIMP (beta)
+# GIMP
 
 Editmamei drives GIMP the same way it drives Photoshop: you describe the edit, the AI plans it, and
 GIMP carries it out with its own real filters and tools. This page covers what's different about
 the GIMP side: it runs headless, it's newer, and today it covers a smaller slice of editing than
 the Photoshop surface does.
 
-This is a **beta**. The `gimp_*` tools are new to Community as of 1.6.0, and the surface will grow
-from here. If something behaves oddly, [open an issue](https://github.com/editmamei/editmamei/issues).
+The `gimp_*` tools joined Community in 1.6.0, and the surface is still growing. If something behaves oddly, [open an issue](https://github.com/editmamei/editmamei/issues).
 
 ---
 
@@ -111,7 +110,7 @@ metadata (including any GPS location); only `gimp_export` removes it.
 
 ---
 
-## What the beta covers
+## What it covers
 
 - **Documents:** open (most formats GIMP can load: JPEG, PNG, TIFF, WebP, HEIC/HEIF, XCF, and more),
   create a blank one, close, save as `.xcf` (live, re-editable), export flattened to

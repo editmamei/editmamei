@@ -81,7 +81,7 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**112 tools total.** The Photoshop surface is **83 tools across 16 capability groups** (62 Community, 21 Pro), covering the work in groups rather than one tool per Photoshop feature. Every one is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. Alongside it, a second, independent editor surface drives headless GIMP: **29 `gimp_*` tools, Community, currently in beta**, see [GIMP (beta)](#gimp-beta) below. Pro's additions are Photoshop-only; GIMP has no Pro tier.
+**112 tools total.** The Photoshop surface is **83 tools across 16 capability groups** (62 Community, 21 Pro), covering the work in groups rather than one tool per Photoshop feature. Every one is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. Alongside it, a second, independent editor surface drives headless GIMP: **29 `gimp_*` tools, Community**, see [GIMP](#gimp) below. Pro's additions are Photoshop-only; GIMP has no Pro tier.
 
 | Group | Edition | Tools |
 | --- | --- | --- |
@@ -107,11 +107,11 @@ These are the choices that shape the surface, and the reason an AI assistant can
 | **Templates** | Pro | `template_create_evidence` · `template_save` · `template_list` · `template_apply` · `template_verify` · `template_recall` · `template_delete` |
 | **Automation** | Pro | `list_actions` · `play_action` · `execute_script` · `batch` |
 
-**GIMP (beta), a separate namespace, all Community:**
+**GIMP, a separate namespace, all Community:**
 
 | Group | Edition | Tools |
 | --- | --- | --- |
-| **GIMP** | Community (beta) | `gimp_ping` · `gimp_overview` · `gimp_open_document` · `gimp_close_document` · `gimp_save_xcf` · `gimp_export` · `gimp_inspect` · `gimp_add_adjustment` · `gimp_add_effect` · `gimp_filter` · `gimp_bake` · `gimp_layer` · `gimp_transform_layer` · `gimp_text` · `gimp_select` · `gimp_modify_selection` · `gimp_layer_mask` · `gimp_get_selection_preview` · `gimp_create_document` · `gimp_place_image` · `gimp_canvas` · `gimp_convert_image_mode` · `gimp_crop_document` · `gimp_resize_image` · `gimp_transform_canvas` · `gimp_checkpoint` · `gimp_get_preview` · `gimp_get_histogram` · `gimp_compare` |
+| **GIMP** | Community | `gimp_ping` · `gimp_overview` · `gimp_open_document` · `gimp_close_document` · `gimp_save_xcf` · `gimp_export` · `gimp_inspect` · `gimp_add_adjustment` · `gimp_add_effect` · `gimp_filter` · `gimp_bake` · `gimp_layer` · `gimp_transform_layer` · `gimp_text` · `gimp_select` · `gimp_modify_selection` · `gimp_layer_mask` · `gimp_get_selection_preview` · `gimp_create_document` · `gimp_place_image` · `gimp_canvas` · `gimp_convert_image_mode` · `gimp_crop_document` · `gimp_resize_image` · `gimp_transform_canvas` · `gimp_checkpoint` · `gimp_get_preview` · `gimp_get_histogram` · `gimp_compare` |
 
 ## Editions
 
@@ -124,11 +124,11 @@ The split is detailed in [pro-features.md](docs/pro-features.md). Pricing is at 
 
 This repository holds the Community source. Pro is a separately licensed module and its source is not published here; Community never imports it, so this tree builds and runs on its own.
 
-## GIMP (beta)
+## GIMP
 
 Editmamei can also drive GIMP, headless, as a second editor alongside (or instead of) Photoshop. When GIMP 3.2+ is detected on your machine, a `gimp_*` tool set registers next to the `ps_*` one; use it when you ask for GIMP, or when Photoshop isn't available. There's no visible window: edits happen in a background `gimp-console` process, and you follow along through rendered previews in the conversation instead of watching a window change.
 
-The beta covers documents (open, create, save `.xcf`, export), layers and groups, placing one photo into another, 13 non-destructive adjustment types and six effects (vignette, black and white, motion and lens blur, noise, drop shadow), selections (shapes, color range, magic wand, gradients) you can attach as layer masks, live text layers, moving, scaling and rotating layers, crop/resize/rotate/flip, canvas extension, color/grayscale conversion, checkpoints you can restore, and the same preview/histogram/compare verification primitives the Photoshop side has. It doesn't yet cover heal/clone or AI subject and sky selection. Full details, requirements, and troubleshooting: [docs/gimp.md](docs/gimp.md).
+It covers documents (open, create, save `.xcf`, export), layers and groups, placing one photo into another, 13 non-destructive adjustment types and six effects (vignette, black and white, motion and lens blur, noise, drop shadow), selections (shapes, color range, magic wand, gradients) you can attach as layer masks, live text layers, moving, scaling and rotating layers, crop/resize/rotate/flip, canvas extension, color/grayscale conversion, checkpoints you can restore, and the same preview/histogram/compare verification primitives the Photoshop side has. It doesn't yet cover heal/clone or AI subject and sky selection. Full details, requirements, and troubleshooting: [docs/gimp.md](docs/gimp.md).
 
 ## Build from source
 
@@ -172,7 +172,7 @@ The source in this repository is the same code published to npm, so none of the 
 - **FAQ:** [docs/faq.md](docs/faq.md)
 - **AI clients:** [docs/clients.md](docs/clients.md)
 - **Troubleshooting:** [docs/troubleshooting.md](docs/troubleshooting.md)
-- **GIMP (beta):** [docs/gimp.md](docs/gimp.md)
+- **GIMP:** [docs/gimp.md](docs/gimp.md)
 - **Pro features:** [docs/pro-features.md](docs/pro-features.md)
 - **Roadmap:** [docs/roadmap.md](docs/roadmap.md)
 - **Bugs and feature requests:** [the issue tracker](https://github.com/editmamei/editmamei/issues). If something's broken, ask your assistant to "report a problem" (or run `editmamei report`) to drop an anonymized diagnostic bundle in your Downloads folder, then attach it to the issue.
