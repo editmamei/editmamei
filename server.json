@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.editmamei/editmamei",
+  "name": "io.github.editmamei/editmamei-photoshop-mcp",
   "description": "Photoshop MCP server: natural-language AI photo editing in desktop Photoshop. AI orchestration.",
   "websiteUrl": "https://editmamei.com",
   "repository": {
@@ -8,7 +8,7 @@
     "source": "github"
   },
   "version": "1.9.1",
-  "mcpName": "io.github.editmamei/editmamei",
+  "mcpName": "io.github.editmamei/editmamei-photoshop-mcp",
   "packages": [
     {
       "registryType": "npm",

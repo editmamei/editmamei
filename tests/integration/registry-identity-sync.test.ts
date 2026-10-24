@@ -25,7 +25,8 @@ const serverJson = JSON.parse(readFileSync(join(ROOT, 'server.json'), 'utf8'));
 describe('MCP registry identity sync', () => {
   it('package.json carries an mcpName in the registry namespace we authenticate as', () => {
     // GitHub-authenticated publishes may only claim io.github.<owner>/* names.
-    expect(pkg.mcpName).toBe('io.github.editmamei/editmamei');
+    // The registry's search matches the name only, so it carries "photoshop".
+    expect(pkg.mcpName).toBe('io.github.editmamei/editmamei-photoshop-mcp');
   });
 
   it('server.json name and mcpName match package.json mcpName', () => {
