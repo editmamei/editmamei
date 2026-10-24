@@ -3,7 +3,7 @@
   "version": "1.9.1",
   "private": true,
   "description": "Photoshop MCP server: natural-language AI photo editing in desktop Photoshop",
-  "mcpName": "io.github.editmamei/editmamei",
+  "mcpName": "io.github.editmamei/editmamei-photoshop-mcp",
   "editmamei": {
     "fixesByVersion": {
       "1.9.1": ["ps_replace_sky"],
