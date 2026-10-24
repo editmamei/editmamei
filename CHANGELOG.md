@@ -18,6 +18,11 @@ earlier versions are preserved in the archived wiki repository's
   registry's search matches server names only, so the new name makes Editmamei show up when
   people search for Photoshop. The npm package name and existing setups are unchanged.
 
+### Security
+
+- **Dependencies updated for published advisories.** Picks up fixed releases of zod, body-parser,
+  hono, fast-uri and ip-address, which address denial-of-service and URL-parsing issues.
+
 ## [1.9.1] — 2026-10-21
 
 ### Fixed
