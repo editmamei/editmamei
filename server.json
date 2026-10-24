@@ -7,14 +7,14 @@
     "url": "https://github.com/editmamei/editmamei",
     "source": "github"
   },
-  "version": "1.9.1",
+  "version": "1.9.2",
   "mcpName": "io.github.editmamei/editmamei-photoshop-mcp",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "editmamei",
-      "version": "1.9.1",
+      "version": "1.9.2",
       "transport": {
         "type": "stdio"
       }
