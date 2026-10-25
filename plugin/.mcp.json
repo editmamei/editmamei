@@ -2,7 +2,7 @@
   "mcpServers": {
     "editmamei": {
       "command": "npx",
-      "args": ["-y", "editmamei@1.9.2"],
+      "args": ["-y", "editmamei@1.9.3"],
       "env": {
         "EDITMAMEI_INSTALL_CHANNEL": "plugin"
       }
