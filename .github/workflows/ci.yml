@@ -93,10 +93,15 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - run: npm ci --ignore-scripts
+      - id: install
+        run: npm ci --ignore-scripts
 
       - name: audit
         run: npm run audit:ci
+
+      - name: registry signatures
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm audit signatures
 
   macos:
     # GATING, as of 2026-08-07. macOS is a supported platform and this is its only
