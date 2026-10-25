@@ -88,6 +88,10 @@ jobs:
           go test ./...
       - name: audit production dependencies
         run: npm run audit:ci
+      # The CE tarball bundles what this install pulled, so check every package
+      # against its registry signature before any of it is packed and published.
+      - name: verify registry signatures
+        run: npm audit signatures
 
       - name: Build CE bundle
         run: npm run build:ce

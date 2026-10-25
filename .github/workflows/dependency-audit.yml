@@ -1,0 +1,38 @@
+# Weekly dependency check against the committed lockfile.
+#
+# The shipped artifacts carry exactly the versions the lockfile pins, so an
+# upstream fix only reaches users through a release. This run surfaces a new
+# advisory, or a registry signature that no longer verifies, in a quiet week
+# when no pull request would have run the `audit` job. A red run here is the
+# prompt to cut a patch release.
+
+name: Dependency audit
+
+on:
+  schedule:
+    - cron: '17 6 * * 1' # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: audit (scheduled)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - name: advisories in production dependencies
+        run: npm run audit:ci
+
+      - name: registry signatures and provenance
+        if: ${{ !cancelled() }}
+        run: npm audit signatures
