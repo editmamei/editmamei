@@ -265,6 +265,17 @@ describe.skipIf(!install)('gimp_text against real headless GIMP', () => {
     expect(node.font).toBe(fontA);
     expect(node.font_size).toBeCloseTo(40, 1);
 
+    // set_font without a font_name keeps the current font.
+    const sizeOnly = await text({ image, op: 'set_font', layer_id: id, font_size: 30 });
+    expect(sizeOnly.isError, errorText(sizeOnly)).toBeFalsy();
+    node = await textNode(image, id);
+    expect(node.font).toBe(fontA);
+    expect(node.font_size).toBeCloseTo(30, 1);
+
+    const neither = await text({ image, op: 'set_font', layer_id: id });
+    expect(neither.isError).toBe(true);
+    expect(errorText(neither)).toMatch(/font_name, font_size, or both/);
+
     const color = await text({
       image,
       op: 'set_color',

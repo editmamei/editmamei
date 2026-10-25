@@ -4158,20 +4158,25 @@ def _op_text_set_content(img, args):
 
 
 def _op_text_set_font(img, args):
-    font_name = lib.require(args, 'font_name')
+    font_name = args.get('font_name')
     size_pt = lib.validate_font_size_pt(args['font_size']) if args.get('font_size') is not None else None
-    font = _resolved_font(_font_list(), font_name)
+    if font_name is None and size_pt is None:
+        raise ValueError('set_font needs font_name, font_size, or both')
+    # No font_name: the layer keeps its font and only the size changes.
+    font = _resolved_font(_font_list(), font_name) if font_name is not None else None
     new_size_px = lib.pt_to_px(size_pt, _image_ppi(img)) if size_pt is not None else None
 
     def precheck_fn(layer):
         if _text_enforce_box(layer):
             return
         size_px = new_size_px if new_size_px is not None else _text_size_px(layer)
-        _check_estimated_text_size(layer.get_text(), font, size_px, img, layer)
+        _check_estimated_text_size(layer.get_text(), font or layer.get_font(), size_px, img, layer)
 
     def apply_fn(layer):
+        if font is None:
+            layer.set_font_size(new_size_px, Gimp.Unit.pixel())
         # Shrinking: size first, so the new font never renders at the larger old size.
-        if new_size_px is not None and new_size_px < _text_size_px(layer):
+        elif new_size_px is not None and new_size_px < _text_size_px(layer):
             layer.set_font_size(new_size_px, Gimp.Unit.pixel())
             layer.set_font(font)
         else:
