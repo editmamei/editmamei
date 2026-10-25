@@ -10,6 +10,23 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.9.3] — 2026-10-25
+
+### Fixed
+
+- **Text in GIMP can change size without naming a font.** Asking for a new size alone keeps the
+  layer's current font instead of being refused.
+  - `gimp_text` with `op: "set_font"` accepts `font_size` on its own. With neither a font nor a
+    size, it says so.
+
+### Security
+
+- **Every install gets exactly the dependencies the release was tested with.** The npm package now
+  carries its own dependency tree, so installing it fetches nothing else from the registry.
+  - Applies to `npx editmamei`, global installs, and the Claude plugin. The download is larger,
+    about 35 MB.
+  - Release builds check every dependency's registry signature before packaging it.
+
 ## [1.9.2] — 2026-10-24
 
 ### Changed
