@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "editmamei": {
-      "command": "npx",
-      "args": ["-y", "editmamei@1.9.3"],
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/node_modules/editmamei/dist/index.js"],
       "env": {
         "EDITMAMEI_INSTALL_CHANNEL": "plugin"
       }

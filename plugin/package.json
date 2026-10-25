@@ -1,0 +1,9 @@
+{
+  "name": "editmamei-plugin",
+  "version": "1.9.3",
+  "private": true,
+  "license": "FSL-1.1-MIT",
+  "dependencies": {
+    "editmamei": "1.9.3"
+  }
+}
