@@ -88,8 +88,8 @@ jobs:
           go test ./...
       - name: audit production dependencies
         run: npm run audit:ci
-      # The CE tarball bundles what this install pulled, so check every package
-      # against its registry signature before any of it is packed and published.
+      # The CE tarball bundles these same lockfile-pinned packages, so check each
+      # one against its registry signature before anything is packed and published.
       - name: verify registry signatures
         run: npm audit signatures
 

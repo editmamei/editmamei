@@ -28,11 +28,12 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - run: npm ci --ignore-scripts
+      - id: install
+        run: npm ci --ignore-scripts
 
       - name: advisories in production dependencies
         run: npm run audit:ci
 
       - name: registry signatures and provenance
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm audit signatures
