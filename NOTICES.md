@@ -6,14 +6,17 @@ required by their licenses.
 
 ---
 
-## Open-Source Dependencies (resolved via npm)
+## Open-Source Dependencies (bundled)
 
-Editmamei's shipped tarball contains the compiled `dist/` output plus this
-notice file, the LICENSE, and the README. Runtime dependencies are NOT
-bundled into the tarball — they are resolved from npm at install time and
-land under the consumer's `node_modules/`. The full license text and any
-`NOTICE` file for each dependency travels with that dependency's published
-package.
+Editmamei's npm tarball bundles its runtime dependencies under
+`node_modules/`, at the exact versions recorded in this repository's
+`package-lock.json`, so an install resolves nothing from the registry. Each
+bundled package keeps its own published files, including its license text and
+any `NOTICE` file. The packages that publish no license file of their own are
+listed below with their terms reproduced.
+
+One bundled package is modified: `onnxruntime-web` ships without the WebAssembly
+variants Editmamei never loads. Only `ort-wasm-simd-threaded.wasm` is kept.
 
 To enumerate the dependency set and inspect each license, run from the
 project root after `npm install`:
@@ -31,29 +34,83 @@ npx license-checker --production --out THIRD_PARTY_LICENSES.txt
 
 ### License Summary
 
-The runtime dependency closure resolves under MIT, Apache-2.0, ISC,
-BSD-2-Clause, BSD-3-Clause, Python-2.0, BlueOak-1.0.0, and 0BSD — all
-permissive and compatible with redistribution.
+The bundled runtime dependencies are licensed under MIT, Apache-2.0, ISC,
+BSD-2-Clause, and BSD-3-Clause, all permissive and compatible with
+redistribution. The build refuses to bundle a package under any other license.
 
 ### Apache-2.0 NOTICE Files
 
-For any Apache-2.0-licensed dependency that includes a `NOTICE` file, that
-file is shipped inside the dependency's own npm package. Section 4(d) of
-Apache 2.0 requires redistributors to preserve those NOTICE contents; because
-Editmamei does not bundle the dependencies into its own tarball, the
-preservation requirement is satisfied by the dependency's own published
-artifact rather than by inlining the text here.
+Section 4(d) of Apache 2.0 requires redistributors to preserve a work's
+`NOTICE` contents. Any `NOTICE` file a bundled Apache-2.0 package publishes is
+redistributed unchanged inside that package's directory under `node_modules/`.
+
+### Packages without a license file of their own
+
+These packages declare their license in `package.json` but publish no license
+file, so the terms are reproduced here.
+
+### `onnxruntime-web`
+
+### `onnxruntime-common`
+
+Both are part of ONNX Runtime (https://github.com/microsoft/onnxruntime),
+licensed under the MIT License:
+
+```
+MIT License
+
+Copyright (c) Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### `guid-typescript`
+
+Published by its author as "nicolas"
+(https://github.com/NicolasDeveloper/guid-typescript) under the ISC License,
+as declared in its `package.json`:
+
+```
+ISC License
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
 
 ---
 
 ## Bundled Machine-Learning Models
 
-Unlike the npm dependencies above, the local-vision ONNX model weights are
-**bundled** in Editmamei's tarball (under `dist/models/`) and redistributed with
-it, so their notices are reproduced here. The models run entirely on-device; no
-image data is transmitted. The ONNX runtime that executes them
-(`onnxruntime-web`, MIT) is a resolved npm dependency covered by the section
-above.
+The local-vision ONNX model weights are also bundled in Editmamei's tarball
+(under `dist/models/`) and redistributed with it, so their notices are
+reproduced here. The models run entirely on-device; no image data is
+transmitted. The ONNX runtime that executes them (`onnxruntime-web`, MIT) is a
+bundled npm dependency covered by the section above.
 
 ### Ultraface (`ultraface-rfb-320.onnx`) — face detection
 

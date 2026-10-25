@@ -335,6 +335,10 @@ export function buildPackageJson(
     bugs: src.bugs,
     engines: src.engines,
     dependencies: src.dependencies,
+    // The CE tarball carries its tested node_modules (installBundledDependencies),
+    // so an install resolves nothing from the registry. The Pro build is a signed
+    // module the host extracts itself and never goes through npm.
+    ...(edition === 'community' ? { bundleDependencies: Object.keys(src.dependencies) } : {}),
   };
 }
 
@@ -380,6 +384,136 @@ export function writeChecksums(edition: Edition): void {
     sums.push(`${hash}  ${relative(out, file).replace(/\\/g, '/')}`);
   });
   writeFileSync(join(out, 'SHA256SUMS'), sums.join('\n') + '\n', 'utf8');
+}
+
+/**
+ * Prune the unused `onnxruntime-web` WASM/backend variants from a node_modules
+ * tree. The package ships ~10 WASM variants (~133 MB installed) but `ps_detect`
+ * is the ONLY consumer, and its runtime (`src/detection/runtime.ts`) forces
+ * `numThreads = 1` with the default WASM backend, so it loads exactly one
+ * variant: `ort-wasm-simd-threaded.wasm`. Drop the others so the bundled
+ * dependencies don't carry ~120 MB of dead weight. The kept name is the ort-web
+ * default simd+threaded artifact — the only one the detection path ever fetches.
+ */
+export function pruneOnnxWasm(pkgRoot: string, tag = 'build'): void {
+  const KEEP = 'ort-wasm-simd-threaded.wasm';
+  const ortDist = join(pkgRoot, 'node_modules', 'onnxruntime-web', 'dist');
+  if (!existsSync(ortDist)) return;
+  const pruned: string[] = [];
+  for (const name of readdirSync(ortDist)) {
+    if (name.endsWith('.wasm') && name !== KEEP) {
+      rmSync(join(ortDist, name));
+      pruned.push(name);
+    }
+  }
+  if (pruned.length) {
+    console.error(
+      `[${tag}] pruned ${pruned.length} unused onnxruntime-web wasm variant(s) (kept ${KEEP}): ${pruned.join(', ')}`
+    );
+  }
+}
+
+/** Licenses the CE tarball may redistribute inside its bundled node_modules. */
+export const BUNDLEABLE_LICENSES = new Set([
+  '0BSD',
+  'Apache-2.0',
+  'BlueOak-1.0.0',
+  'BSD-2-Clause',
+  'BSD-3-Clause',
+  'ISC',
+  'MIT',
+  'Python-2.0',
+]);
+
+/** One installed package, as checkBundledLicenses sees it. */
+export interface BundledPackage {
+  name: string;
+  license: unknown;
+  hasLicenseFile: boolean;
+}
+
+/** Every package under <pkgRoot>/node_modules, nested trees included. */
+export function listBundledPackages(pkgRoot: string): BundledPackage[] {
+  const out: BundledPackage[] = [];
+  const visit = (nm: string) => {
+    if (!existsSync(nm)) return;
+    for (const entry of readdirSync(nm)) {
+      if (entry.startsWith('.')) continue;
+      const dirs = entry.startsWith('@')
+        ? readdirSync(join(nm, entry)).map((s) => join(nm, entry, s))
+        : [join(nm, entry)];
+      for (const dir of dirs) {
+        const pj = join(dir, 'package.json');
+        if (!existsSync(pj)) continue;
+        const pkg = JSON.parse(readFileSync(pj, 'utf8'));
+        out.push({
+          name: pkg.name,
+          license: pkg.license,
+          hasLicenseFile: readdirSync(dir).some((f) => /^(licen[cs]e|copying)/i.test(f)),
+        });
+        visit(join(dir, 'node_modules'));
+      }
+    }
+  };
+  visit(join(pkgRoot, 'node_modules'));
+  return out;
+}
+
+/**
+ * Returns the reasons the bundled tree can't be redistributed as-is: a license
+ * outside BUNDLEABLE_LICENSES, or a package with no license file of its own
+ * whose terms NOTICES.md doesn't reproduce under a "### `<name>`" heading.
+ * Empty means clean. Pure, so the rules are unit-testable without an install.
+ */
+export function checkBundledLicenses(packages: BundledPackage[], notices: string): string[] {
+  const problems: string[] = [];
+  for (const p of packages) {
+    if (typeof p.license !== 'string' || !BUNDLEABLE_LICENSES.has(p.license)) {
+      problems.push(`${p.name}: license ${JSON.stringify(p.license)} is not cleared for bundling`);
+    } else if (
+      !p.hasLicenseFile &&
+      !new RegExp(`^### \`${p.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\``, 'm').test(notices)
+    ) {
+      problems.push(`${p.name}: ships no license file and NOTICES.md does not reproduce its terms`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Installs the production dependency tree into <packageDir>/node_modules so the
+ * tarball ships it (see bundleDependencies in buildPackageJson). `npm ci` against
+ * the root lockfile installs exactly the versions the release gate tested and
+ * fails if package.json and the lockfile disagree. `--ignore-scripts` keeps
+ * dependency install scripts out of the build; none of the runtime set needs one.
+ */
+export function installBundledDependencies(edition: Edition, tag = 'build'): void {
+  const pkgDir = packageDir(edition);
+  const lockCopy = join(pkgDir, 'package-lock.json');
+  copyFileSync(join(REPO_ROOT, 'package-lock.json'), lockCopy);
+  try {
+    // shell: true so the npm.cmd shim resolves on Windows (mirrors packPackage).
+    const res = spawnSync('npm ci --omit=dev --ignore-scripts --no-audit --no-fund', {
+      cwd: pkgDir,
+      stdio: ['ignore', 'inherit', 'inherit'],
+      shell: true,
+    });
+    if (res.status !== 0) {
+      throw new Error(`npm ci failed with exit code ${res.status}`);
+    }
+  } finally {
+    rmSync(lockCopy, { force: true });
+  }
+  pruneOnnxWasm(pkgDir, tag);
+  const packages = listBundledPackages(pkgDir);
+  const problems = checkBundledLicenses(
+    packages,
+    readFileSync(join(REPO_ROOT, 'NOTICES.md'), 'utf8')
+  );
+  if (problems.length) {
+    throw new Error(`bundled dependencies can't ship:\n  ${problems.join('\n  ')}`);
+  }
+  console.error(`[${tag}] bundled ${packages.length} runtime package(s) → node_modules/`);
 }
 
 /**

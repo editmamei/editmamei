@@ -10,6 +10,10 @@
  * CE build (`EDITION='community'`) also skips `loadModules()` at runtime, so the
  * pruned dynamic import is never reached.
  *
+ * Installs the production dependencies into `packages/ce/node_modules/` from
+ * the root lockfile; the published manifest lists them in `bundleDependencies`,
+ * so the tarball carries the exact tree the release gate tested.
+ *
  * Also runs `npm pack` to produce a `.tgz` next to the `dist/` tree. CE
  * doesn't strictly need a local tarball for the publish flow (npm runs
  * pack server-side at publish time), but having one in place is useful
@@ -21,10 +25,18 @@
  * now so the gate is easy to verify.
  */
 
-import { runBuild, packPackage, appendTarballToChecksums } from './lib/build-common.js';
+import {
+  runBuild,
+  installBundledDependencies,
+  packPackage,
+  appendTarballToChecksums,
+} from './lib/build-common.js';
 
 async function main(): Promise<void> {
   await runBuild('community', 'build-ce');
+  // The tarball ships its tested dependency tree (bundleDependencies), so the
+  // install happens here, against the root lockfile, rather than on the user's machine.
+  installBundledDependencies('community', 'build-ce');
   const tarballName = packPackage('community');
   appendTarballToChecksums('community', tarballName);
   console.error(`[build-ce] packed → ${tarballName}`);

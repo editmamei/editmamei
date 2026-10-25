@@ -21,19 +21,17 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import AdmZip from 'adm-zip';
-import { packageDir, REPO_ROOT, requiredDistributionDocs, runBuild } from './lib/build-common.js';
+import {
+  packageDir,
+  pruneOnnxWasm,
+  REPO_ROOT,
+  requiredDistributionDocs,
+  runBuild,
+} from './lib/build-common.js';
 
 /** MCP Bundle manifest spec version this generator targets. */
 const MANIFEST_VERSION = '0.3';
@@ -253,34 +251,6 @@ function installProdDeps(stagingDir: string): void {
   }
 }
 
-/**
- * Prune the unused `onnxruntime-web` WASM/backend variants from the bundled
- * node_modules. The package ships ~10 WASM variants (~133 MB installed) but
- * `ps_detect` is the ONLY consumer, and its runtime
- * (`src/detection/runtime.ts`) forces `numThreads = 1` with the default WASM
- * backend, so it loads exactly one variant: `ort-wasm-simd-threaded.wasm`.
- * Drop the other `*.wasm` files so the one-click `.mcpb` doesn't carry ~120 MB
- * of dead weight. The kept name is the ort-web default simd+threaded artifact —
- * the only one the detection path ever fetches.
- */
-export function pruneOnnxWasm(stagingDir: string): void {
-  const KEEP = 'ort-wasm-simd-threaded.wasm';
-  const ortDist = join(stagingDir, 'node_modules', 'onnxruntime-web', 'dist');
-  if (!existsSync(ortDist)) return;
-  const pruned: string[] = [];
-  for (const name of readdirSync(ortDist)) {
-    if (name.endsWith('.wasm') && name !== KEEP) {
-      rmSync(join(ortDist, name));
-      pruned.push(name);
-    }
-  }
-  if (pruned.length) {
-    console.error(
-      `[build-mcpb] pruned ${pruned.length} unused onnxruntime-web wasm variant(s) (kept ${KEEP}): ${pruned.join(', ')}`
-    );
-  }
-}
-
 /** Zips the staging dir into the .mcpb (manifest.json at the zip root).
  *
  * NOTE: adm-zip on Windows can't set the unix exec bit on the bundled darwin
@@ -325,7 +295,7 @@ export async function buildMcpb(opts: BuildMcpbOptions = {}): Promise<{ destPath
   installProdDeps(stagingDir);
   // Trim the unused onnxruntime-web WASM variants before zipping so the bundle
   // doesn't balloon (ps_detect uses exactly one).
-  pruneOnnxWasm(stagingDir);
+  pruneOnnxWasm(stagingDir, 'build-mcpb');
 
   const destPath = opts.destPath ?? join(REPO_ROOT, 'packages', `editmamei-${version}.mcpb`);
   if (existsSync(destPath)) rmSync(destPath);
