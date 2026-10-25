@@ -413,17 +413,22 @@ export function pruneOnnxWasm(pkgRoot: string, tag = 'build'): void {
   }
 }
 
-/** Licenses the CE tarball may redistribute inside its bundled node_modules. */
+/**
+ * Licenses the CE tarball may redistribute inside its bundled node_modules.
+ * NOTICES.md names this exact set, so adding one means updating both.
+ */
 export const BUNDLEABLE_LICENSES = new Set([
-  '0BSD',
   'Apache-2.0',
-  'BlueOak-1.0.0',
   'BSD-2-Clause',
   'BSD-3-Clause',
   'ISC',
   'MIT',
-  'Python-2.0',
 ]);
+
+/** A package's own license file: LICENSE, LICENCE.md, LICENSE-MIT, COPYING.txt and the like. */
+export function isLicenseFileName(name: string): boolean {
+  return /^(licen[cs]e|copying)(-\w+)?(\.(md|markdown|txt|rst))?$/i.test(name);
+}
 
 /** One installed package, as checkBundledLicenses sees it. */
 export interface BundledPackage {
@@ -449,7 +454,7 @@ export function listBundledPackages(pkgRoot: string): BundledPackage[] {
         out.push({
           name: pkg.name,
           license: pkg.license,
-          hasLicenseFile: readdirSync(dir).some((f) => /^(licen[cs]e|copying)/i.test(f)),
+          hasLicenseFile: readdirSync(dir).some(isLicenseFileName),
         });
         visit(join(dir, 'node_modules'));
       }
@@ -499,7 +504,9 @@ export function installBundledDependencies(edition: Edition, tag = 'build'): voi
       shell: true,
     });
     if (res.status !== 0) {
-      throw new Error(`npm ci failed with exit code ${res.status}`);
+      throw new Error(
+        `npm ci failed with exit code ${res.status}${res.error ? ` (${res.error.message})` : ''}`
+      );
     }
   } finally {
     rmSync(lockCopy, { force: true });

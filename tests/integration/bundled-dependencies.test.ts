@@ -4,8 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  BUNDLEABLE_LICENSES,
   buildPackageJson,
   checkBundledLicenses,
+  isLicenseFileName,
   type BundledPackage,
   type SourcePackageJson,
 } from '../../scripts/lib/build-common.js';
@@ -59,11 +61,29 @@ describe('bundled dependencies', () => {
         return {
           name: installed.name,
           license: installed.license,
-          hasLicenseFile: readdirSync(dir).some((f) => /^(licen[cs]e|copying)/i.test(f)),
+          hasLicenseFile: readdirSync(dir).some(isLicenseFileName),
         };
       });
     expect(packages.length).toBeGreaterThan(0);
     expect(checkBundledLicenses(packages, notices)).toEqual([]);
+  });
+});
+
+describe('license guard', () => {
+  it('NOTICES.md names every license the build will bundle', () => {
+    // NOTICES.md tells recipients which licenses the tarball redistributes;
+    // widening the cleared set without updating it would make that untrue.
+    const summary = notices.match(/### License Summary\n([\s\S]*?)\n###/)?.[1] ?? '';
+    for (const license of BUNDLEABLE_LICENSES) expect(summary, license).toContain(license);
+  });
+
+  it('recognizes license files by name, not by prefix', () => {
+    for (const f of ['LICENSE', 'license.md', 'LICENCE.txt', 'LICENSE-MIT', 'COPYING']) {
+      expect(isLicenseFileName(f), f).toBe(true);
+    }
+    for (const f of ['licenses.js', 'license.js', 'license-checker.json', 'README.md']) {
+      expect(isLicenseFileName(f), f).toBe(false);
+    }
   });
 });
 
