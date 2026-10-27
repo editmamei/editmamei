@@ -51,11 +51,33 @@ export class Session {
     return this.sessionId;
   }
 
+  /**
+   * Boot warmup: connect only to a Photoshop that is already open. Never throws.
+   *
+   * `connect()` pings through `executeScript`, which launches Photoshop when it
+   * is closed. A server boot is not a request to edit, so a closed Photoshop
+   * stays closed here; the first real tool call still launches it on demand.
+   * Detection runs first because `isCurrentlyRunning()` reports false until an
+   * install is known.
+   */
   async initialize(): Promise<void> {
     this.logger.info('Starting session', this.sessionId);
-    if (this.config.autoConnect) {
-      await this.connect();
+    if (!this.config.autoConnect) return;
+    try {
+      const connection = this.ensureConnection();
+      if (!(await connection.ensureDetected())) {
+        this.logger.info('No Photoshop install detected; skipping the boot warmup');
+        return;
+      }
+      if (!(await connection.isCurrentlyRunning())) {
+        this.logger.info('Photoshop is not running; skipping the boot warmup');
+        return;
+      }
+    } catch (error) {
+      this.logger.warn('Could not check whether Photoshop is running', error);
+      return;
     }
+    await this.connect();
   }
 
   /** Reach Photoshop and report whether it answered. Never throws. */

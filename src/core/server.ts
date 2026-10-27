@@ -1655,8 +1655,8 @@ export class EditmameiServer {
 
     // Connect the transport FIRST so the MCP `initialize` handshake answers
     // immediately. The Photoshop warmup below MUST NOT gate this: session.initialize()
-    // pings Photoshop over osascript/COM, which blocks for the runner's full 30s
-    // timeout when PS isn't reachable at boot (closed, launching, or the macOS
+    // pings a running Photoshop over osascript/COM, which blocks for the runner's full
+    // 30s timeout when PS doesn't answer at boot (still launching, or the macOS
     // Automation permission ungranted). Awaiting it here delayed the `initialize`
     // response by ~30s, which Claude Desktop surfaces as "Unable to connect to
     // extension server" (diagnosed 2026-06-27 from the client MCP logs).
@@ -1673,10 +1673,10 @@ export class EditmameiServer {
       // Warm the Photoshop connection in the background — fire-and-forget. Every tool
       // call (and ps_ping) establishes the connection lazily on first use, so
       // nothing here is required for correctness; this just pays the first-connect cost
-      // ahead of the first real tool call when PS is already up. connect() swallows its
-      // own errors, so an unreachable Photoshop at boot is a silent no-op here. The
-      // trailing .catch guards the one path connect() can't — a synchronous throw from
-      // the PhotoshopConnection constructor — so it can't surface as an unhandledRejection.
+      // ahead of the first real tool call when PS is already up. initialize() never
+      // launches Photoshop: when it isn't running, the warmup stops after detection.
+      // It also swallows its own errors; the trailing .catch is a backstop so nothing
+      // here can surface as an unhandledRejection.
       void this.session.initialize().catch(() => undefined);
 
       // Background self-heal — the FIRST network of boot, deliberately AFTER connect
