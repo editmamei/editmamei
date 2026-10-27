@@ -38,6 +38,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Logger } from '../../utils/logger.js';
 import { userOwnedTempRoot } from '../../utils/temp.js';
+import { windowsSystemTool } from '../../platform/windows-system-tool.js';
 import { GimpError, GIMP_ERROR_CODES, type GimpErrorCode } from './errors.js';
 import type { GimpInstall } from './detect.js';
 
@@ -259,7 +260,9 @@ const PYTHON_INTERPRETER_MISSING_RE =
 export function defaultTreeKill(proc: ChildProcess): void {
   if (hasExited(proc) || proc.pid === undefined) return; // already exited
   if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true });
+    spawnSync(windowsSystemTool('taskkill.exe'), ['/PID', String(proc.pid), '/T', '/F'], {
+      windowsHide: true,
+    });
     return;
   }
   try {

@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import { access, constants } from 'fs/promises';
 import { Logger } from '../utils/logger.js';
 import type { PhotoshopInfo } from './ports.js';
+import { windowsSystemTool } from './windows-system-tool.js';
 
 const execAsync = promisify(exec);
 
@@ -65,7 +66,7 @@ export class WindowsDetector {
 
       for (const key of productKeys) {
         try {
-          const { stdout } = await execAsync(`reg query "${key}" /s`);
+          const { stdout } = await execAsync(`"${windowsSystemTool('reg.exe')}" query "${key}" /s`);
           const entries = this.readRegistryEntries(stdout);
           if (entries.length > 0) {
             const newest = entries.sort((a, b) => b.version.localeCompare(a.version))[0];
@@ -85,7 +86,9 @@ export class WindowsDetector {
 
       for (const key of comRegistrations) {
         try {
-          const { stdout } = await execAsync(`reg query "${key}" /ve`);
+          const { stdout } = await execAsync(
+            `"${windowsSystemTool('reg.exe')}" query "${key}" /ve`
+          );
           const exePath = this.readComServerPath(stdout);
           if (exePath) {
             const info = await this.inspectPath(exePath);

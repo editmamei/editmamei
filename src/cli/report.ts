@@ -28,7 +28,7 @@ export async function runReport(opts: ReportOptions = {}): Promise<void> {
   const { path } = await write(bundle);
   out(`\n  Wrote an anonymized diagnostic bundle to:\n    ${path}\n\n`);
   out(
-    `  It contains recent logs + system info — no images, no full file paths, no tool arguments.\n`
+    `  It contains recent logs + system info — no images, no full file paths, and no tool arguments outside error messages.\n`
   );
   out(`  Attach this file to a new issue at ${ISSUES_URL} so the maintainers can debug.\n\n`);
 }

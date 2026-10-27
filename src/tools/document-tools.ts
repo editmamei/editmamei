@@ -11,7 +11,7 @@ import {
   getToolTimeoutMs,
 } from '../utils/operation-timeouts.js';
 import { toolErrorResult, runSnippetTool } from '../utils/tool-helpers.js';
-import { checkOutputPath, recordOutputPath, requireLocalPath } from '../utils/local-path.js';
+import { checkOutputPath, recordOutputPath, requireLocalImagePath } from '../utils/local-path.js';
 import { purgeSceneChannels } from '../perception/region-precompute.js';
 import { Logger } from '../utils/logger.js';
 
@@ -762,7 +762,7 @@ async function openDocumentPipeline(
   let filePath: string | undefined;
   try {
     const args = validateArgs(openDocumentSchema, rawArgs);
-    filePath = requireLocalPath('file_path', args.file_path);
+    filePath = requireLocalImagePath('file_path', args.file_path);
     const suppressDialogs = args.suppress_dialogs as boolean;
     const bitDepth = args.bit_depth as number | undefined;
 

@@ -121,6 +121,37 @@ export function requireLocalPath(
   }
 }
 
+/** `path` without trailing dots and spaces (a loop, not a regex: no backtracking on a long run). */
+function withoutTrailingDotsAndSpaces(path: string): string {
+  let end = path.length;
+  while (end > 0 && (path[end - 1] === '.' || path[end - 1] === ' ')) end--;
+  return path.slice(0, end);
+}
+
+// Files Photoshop runs or loads instead of opening as an image: scripts, Actions and presets.
+const NOT_AN_IMAGE_EXT_RE = /\.(jsx|jsxbin|jsxinc|js|psjs|atn|abr|pat|asl|grd|tpl)$/i;
+
+/**
+ * requireLocalPath for a file Photoshop will open or place as an image. Also refuses scripts,
+ * Actions and presets: a page or photo the model read can name one sitting in Downloads, and
+ * Photoshop would run or load it instead of opening it.
+ */
+export function requireLocalImagePath(
+  field: string,
+  value: unknown,
+  opts: LocalPathOptions = {}
+): string {
+  const path = requireLocalPath(field, value, opts);
+  // Windows drops trailing dots and spaces when it opens a file, so `x.jsx.` opens `x.jsx`.
+  if (NOT_AN_IMAGE_EXT_RE.test(withoutTrailingDotsAndSpaces(path))) {
+    throw new PathArgumentError(
+      `"${field}" is a script, Action or preset file, not an image: "${String(value)}". ` +
+        'Open or place an image or document instead.'
+    );
+  }
+  return path;
+}
+
 // A `%` followed by two hex digits: ExtendScript's File decodes it, Node's fs does not.
 const PERCENT_ESCAPE_RE = /%[0-9A-Fa-f]{2}/;
 // A Windows device name as a file's base name (`CON.jpg`, `nul.psd`, `COM1.png`, `CONIN$.jpg`,

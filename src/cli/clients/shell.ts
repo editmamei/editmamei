@@ -10,6 +10,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { windowsSystemTool } from '../../platform/windows-system-tool.js';
 
 /**
  * Returns true if `cmd` resolves to a binary on the current PATH.
@@ -21,7 +22,7 @@ import { spawn } from 'node:child_process';
 export async function isOnPath(cmd: string): Promise<boolean> {
   const probe =
     process.platform === 'win32'
-      ? spawn('where', [cmd], { stdio: 'ignore', windowsHide: true })
+      ? spawn(windowsSystemTool('where.exe'), [cmd], { stdio: 'ignore', windowsHide: true })
       : spawn('command', ['-v', cmd], { stdio: 'ignore', shell: '/bin/sh' });
 
   return new Promise<boolean>((resolve) => {

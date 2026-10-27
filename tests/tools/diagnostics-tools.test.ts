@@ -64,7 +64,7 @@ describe('createDiagnosticsTools', () => {
     expect(def.tool.annotations?.readOnlyHint).toBe(false);
     expect(def.tool.annotations?.openWorldHint).toBe(true);
     // Description states the privacy posture so the LLM relays it accurately.
-    expect(def.tool.description).toMatch(/no tool arguments/i);
+    expect(def.tool.description).toMatch(/carries NO tool arguments/i);
     expect(def.tool.description).toMatch(/anonymized/i);
   });
 

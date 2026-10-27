@@ -125,7 +125,7 @@ export function sanitizeMessage(input: string, maxLen: number = MAX_MESSAGE_LEN)
   out = redactGenericUserDirs(out);
   out = basenamePaths(out);
   // Everything after a "not found:" marker is user content: the requested
-  // name (a tool argument — the privacy doc promises arguments never ship)
+  // name (a tool argument, often a layer name)
   // and the "Have:" / "(have: …)" inventories of OTHER layer/group/channel
   // names off the user's canvas. One rule drops all of it to end-of-line.
   // Per-line on purpose: a multi-line stderr tail keeps its later lines
