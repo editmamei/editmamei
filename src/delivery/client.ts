@@ -123,6 +123,7 @@ const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
 // Named UA for parity with the license client (CF 1010-blocks bare urllib UAs).
 const USER_AGENT = 'editmamei-delivery-client/1';
 const HEADER_KEY = 'x-editmamei-license-key';
+const HEADER_ACTIVATION = 'x-editmamei-activation-id';
 
 const defaultFetch: DeliveryFetch = (url, init) =>
   fetch(url, init) as unknown as Promise<DeliveryResponse>;
@@ -163,12 +164,18 @@ export class DeliveryClient {
   private readonly sleep: Sleep;
   private readonly minIntervalMs: number;
   private readonly maxArtifactBytes: number;
+  private readonly activationId: string | undefined;
   private lastRequestAt = 0;
 
   constructor(
     opts: {
       config?: DeliveryConfig;
       fetchImpl?: DeliveryFetch;
+      /**
+       * This device's Polar activation id, sent with every request so the server can hold the
+       * key to the machines it was activated on.
+       */
+      activationId?: string;
       /** Override the retry policy (tests). Defaults to 4 attempts, 1s exponential backoff. */
       retry?: Partial<RetryConfig>;
       /** Injected backoff/pacing delay (tests pass a no-op so they don't actually wait). */
@@ -185,6 +192,7 @@ export class DeliveryClient {
     this.sleep = opts.sleep ?? defaultSleep;
     this.minIntervalMs = opts.minRequestIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
     this.maxArtifactBytes = opts.maxArtifactBytes ?? MAX_ARTIFACT_BYTES;
+    this.activationId = opts.activationId || undefined;
     if (!this.cfg.baseUrl) {
       throw new DeliveryError(
         'Delivery endpoint is not configured. Set EDITMAMEI_DELIVERY_URL ' +
@@ -313,7 +321,11 @@ export class DeliveryClient {
     try {
       return await this.fetchImpl(`${this.cfg.baseUrl}${path}`, {
         method: 'GET',
-        headers: { 'user-agent': USER_AGENT, [HEADER_KEY]: key },
+        headers: {
+          'user-agent': USER_AGENT,
+          [HEADER_KEY]: key,
+          ...(this.activationId ? { [HEADER_ACTIVATION]: this.activationId } : {}),
+        },
       });
     } catch (err) {
       throw new DeliveryError(
