@@ -9,6 +9,10 @@
 [![License](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](LICENSE.md)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey.svg)](docs/installation.md)
 
+**Directory ratings:**
+[![Glama score](https://glama.ai/mcp/servers/editmamei/editmamei/badges/score.svg)](https://glama.ai/mcp/servers/editmamei/editmamei)
+[![agentmods](https://agentmods.dev/badge/plugins/editmamei/editmamei/plugin/github.svg)](https://agentmods.dev/plugins/editmamei/editmamei/plugin)
+
 Editmamei is a Model Context Protocol (MCP) server that drives desktop Adobe Photoshop. You describe the edit in plain words, your AI assistant plans the steps, and Photoshop carries them out with its standard adjustment layers, masks, selections, and filters. The AI directs and Photoshop edits. No generative model touches your pixels, and no image is uploaded to perform an edit.
 
 It serves photographers and retouchers who want to edit by conversation just as much as developers wiring Photoshop into an AI pipeline. To learn more or get started, visit **[editmamei.com](https://editmamei.com)**.
