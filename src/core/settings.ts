@@ -167,9 +167,9 @@ export function setFeatureDetails(
 }
 
 /**
- * A brand-new install's settings. The person chose to install with the policy in front of them,
- * so nothing is asked and Feature details starts on. Only this path sets that default: `defaults`
- * also backs existing and unreadable files, where a missing key must stay missing.
+ * A brand-new install's settings. The policy is available before installing, so nothing is asked
+ * and Feature details starts on. Only this path sets that default: `defaults` also backs existing
+ * and unreadable files, where a missing key must stay missing.
  */
 function newInstallSettings(installId: string): Settings {
   const settings = defaults(installId);
@@ -327,8 +327,9 @@ export function loadSettings(opts: LoadSettingsOptions = {}): LoadSettingsResult
       saveSettings(settings, opts);
       return { settings, created: true };
     } catch (err) {
+      // An unreachable file also reads as missing here, so this may not be a new install at all.
       logger.warn(`could not write initial settings.json: ${errMsg(err)}`);
-      return { settings, created: false };
+      return { settings: defaults(settings.telemetry.install_id), created: false, degraded: true };
     }
   }
   try {

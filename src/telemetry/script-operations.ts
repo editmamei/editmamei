@@ -9,7 +9,7 @@
  * against the list, so a file path or on-image text has nowhere to go.
  *
  * Runs on the user's machine. The script is scanned once and not stored by this feature. The scan
- * is one linear pass over a capped input, with no regular expressions over the script.
+ * is linear in a capped input, and no regular expression runs over the script as a whole.
  */
 
 import { SCRIPT_TOOL } from '../core/tool-activity.js';
@@ -389,7 +389,6 @@ const LANGUAGE_METHODS: ReadonlySet<string> = new Set([
   'search',
   'test',
   'exec',
-  'trim',
   'toString',
   'toSource',
   'toFixed',

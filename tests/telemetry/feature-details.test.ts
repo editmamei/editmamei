@@ -2,7 +2,11 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { optionValues, toFeatureToken } from '@editmamei/telemetry/feature-details.ts';
+import {
+  FEATURE_TOKEN_PATTERN,
+  optionValues,
+  toFeatureToken,
+} from '@editmamei/telemetry/feature-details.ts';
 import { TelemetryClient } from '@editmamei/telemetry/client.ts';
 import { appendOutboxSync, readOutbox } from '@editmamei/telemetry/outbox.ts';
 import type { TelemetryEvent } from '@editmamei/telemetry/events.ts';
@@ -66,9 +70,21 @@ describe('toFeatureToken', () => {
     expect(toFeatureToken(raw)).toBe(token);
   });
 
-  it('caps the length and rejects nothing it can fit', () => {
+  it('caps the length, and returns null for what the server would refuse', () => {
     expect(toFeatureToken('a'.repeat(100))).toHaveLength(64);
     expect(toFeatureToken('')).toBeNull();
+    expect(toFeatureToken('.png')).toBeNull();
+    expect(toFeatureToken('Smith Wedding.PSD')).toBeNull();
+  });
+
+  it('keeps a value out of the event when it would not fit', () => {
+    const schema = { properties: { format: { enum: ['.png'] } } };
+    expect(optionValues('ps_export', schema, { format: '.png' })).toEqual([]);
+  });
+
+  it('matches the telemetry server shape', () => {
+    expect(FEATURE_TOKEN_PATTERN.test('gaussian_blur')).toBe(true);
+    expect(FEATURE_TOKEN_PATTERN.test('photo.jpeg')).toBe(false);
   });
 });
 

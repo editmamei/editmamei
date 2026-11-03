@@ -1,7 +1,7 @@
 /**
- * The consent questions, one entry per setting a prompt can ask about. Raising a question's
- * `version` asks everyone with an older answer again, so a change to what a setting covers
- * reaches existing installs. Kept free of imports so settings.ts can read it.
+ * A consent question. Raising its `version` asks everyone with an older answer again, so a change
+ * to what a setting covers reaches existing installs. Kept free of imports so settings.ts can
+ * read it.
  */
 
 export type ConsentQuestionId = 'features';
@@ -20,5 +20,3 @@ export const FEATURES_QUESTION: ConsentQuestion = {
     'Share the names of editing features Editmamei uses? No files, text or scripts are sent. ' +
     'You can change this in settings.',
 };
-
-export const CONSENT_QUESTIONS: readonly ConsentQuestion[] = [FEATURES_QUESTION];

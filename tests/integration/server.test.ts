@@ -1,4 +1,4 @@
-import { optionValues } from '@editmamei/telemetry/feature-details.ts';
+import { FEATURE_TOKEN_PATTERN, optionValues } from '@editmamei/telemetry/feature-details.ts';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1330,9 +1330,6 @@ describe('telemetry: feature details', () => {
   });
 
   it('only ever sends enum values the server token shape accepts', () => {
-    // A copy of FEATURE_TOKEN_PATTERN in the telemetry server. One rejected token fails a batch.
-    const serverToken =
-      /^(?!.*\.(?:psd|psb|jpe?g|png|tiff?|gif|webp|heic|bmp|pdf|svg|raw|dng|arw|cr2|cr3|nef|orf|raf)$)[A-Za-z0-9_$.#-]{1,64}$/i;
     const server = new EditmameiServer() as unknown as FeatureServer;
     const tools = server.toolRegistry.list();
     let checked = 0;
@@ -1342,8 +1339,8 @@ describe('telemetry: feature details', () => {
         for (const value of spec.enum.filter((v) => typeof v === 'string')) {
           const found = optionValues(tool.name, tool.inputSchema, { [name]: value });
           expect(found).toHaveLength(1);
-          expect(found[0].name).toMatch(serverToken);
-          expect(found[0].value).toMatch(serverToken);
+          expect(found[0].name).toMatch(FEATURE_TOKEN_PATTERN);
+          expect(found[0].value).toMatch(FEATURE_TOKEN_PATTERN);
           checked += 1;
         }
       }

@@ -29,7 +29,7 @@ const logger = new Logger('Consent');
 
 /** Long enough for a person to come back to the window, short enough not to linger. */
 const PROMPT_TIMEOUT_MS = 5 * 60_000;
-/** Closing the prompt without answering is asked about again, this many times in all. */
+/** A prompt closed or left unanswered is shown this many times in all. */
 export const MAX_DISMISSALS = 3;
 
 export type PromptOutcome = 'accepted' | 'declined' | 'dismissed' | 'timed_out' | 'failed';
@@ -59,7 +59,7 @@ export interface ConsentDeps {
     questionVersion: number;
     result: PromptOutcome | 'unsupported' | 'install_default';
     via: 'elicitation' | 'install' | 'cli' | 'desktop';
-  }) => void;
+  }) => void | Promise<void>;
   storage?: LoadSettingsOptions;
   now?: () => Date;
 }
@@ -74,6 +74,8 @@ export function clientSupportsForm(elicitation: unknown): boolean {
 /** Whether this question is due. A hand-set value with no record counts as a choice. */
 export function shouldAsk(settings: Settings): boolean {
   if (!settings.telemetry.usage) return false;
+  // An off Claude Desktop toggle wins over any answer, so there is nothing to ask.
+  if (settings.desktop_toggles?.features === false) return false;
   const record = settings.consent?.features;
   if (record) {
     if (record.version >= FEATURES_QUESTION.version) return false;
@@ -95,20 +97,20 @@ export function shouldAsk(settings: Settings): boolean {
 export async function runConsentPrompt(deps: ConsentDeps): Promise<void> {
   try {
     if (deps.degraded || !deps.telemetryActive) return;
-    reportUnsentAnswer(deps);
+    await reportUnsentAnswer(deps);
     if (!shouldAsk(deps.settings)) return;
     if (!deps.supportsForm) {
-      reportOutcome(deps, 'unsupported');
+      await reportOutcome(deps, 'unsupported');
       return;
     }
     const outcome = await ask(deps);
     if (outcome === 'accepted' || outcome === 'declined') {
       storeAnswer(deps, outcome === 'accepted');
-      reportUnsentAnswer(deps);
+      await reportUnsentAnswer(deps);
       return;
     }
-    if (outcome === 'dismissed') storeDismissal(deps);
-    reportOutcome(deps, outcome);
+    if (outcome === 'dismissed' || outcome === 'timed_out') storeDismissal(deps);
+    await reportOutcome(deps, outcome);
   } catch (err) {
     logger.debug(`consent prompt skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -138,8 +140,11 @@ async function ask(deps: ConsentDeps): Promise<PromptOutcome> {
   }
 }
 
-function reportOutcome(deps: ConsentDeps, result: PromptOutcome | 'unsupported'): void {
-  deps.report({
+async function reportOutcome(
+  deps: ConsentDeps,
+  result: PromptOutcome | 'unsupported'
+): Promise<void> {
+  await deps.report({
     question: FEATURES_QUESTION.id,
     questionVersion: FEATURES_QUESTION.version,
     result,
@@ -176,12 +181,13 @@ function storeDismissal(deps: ConsentDeps): void {
 /**
  * Send a stored answer the server hasn't seen. Choices made through the CLI or in Claude Desktop
  * happen where no telemetry runs, so this is the one path every answer leaves by. Waits while
- * usage stats are off, because a person who opted out sends nothing.
+ * usage stats are off, because a person who opted out sends nothing. Marked as sent only after
+ * the send settles, so a process killed first sends it again next session.
  */
-function reportUnsentAnswer(deps: ConsentDeps): void {
+async function reportUnsentAnswer(deps: ConsentDeps): Promise<void> {
   const record = deps.settings.consent?.features;
   if (!record || record.reported || !deps.settings.telemetry.usage) return;
-  deps.report({
+  await deps.report({
     question: FEATURES_QUESTION.id,
     questionVersion: record.version,
     result: record.answer,
@@ -189,6 +195,9 @@ function reportUnsentAnswer(deps: ConsentDeps): void {
   });
   update(deps, (settings) => {
     const stored = settings.consent?.features;
-    if (stored) settings.consent = { ...settings.consent, features: { ...stored, reported: true } };
+    // A different answer saved meanwhile hasn't been sent, so it stays unmarked.
+    if (stored?.answer === record.answer && stored.via === record.via) {
+      settings.consent = { ...settings.consent, features: { ...stored, reported: true } };
+    }
   });
 }
