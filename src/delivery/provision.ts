@@ -23,7 +23,7 @@ import {
 } from './signing.js';
 import { installModule, readInstalledModule } from './store.js';
 import { KERNEL_ABI } from '../kernel/host-api.js';
-import type { LicenseStoreOptions } from '../license/store.js';
+import { readLicense, type LicenseStoreOptions } from '../license/store.js';
 import { Logger } from '../utils/logger.js';
 
 const logger = new Logger('Modules');
@@ -107,12 +107,18 @@ export async function provisionModules(
     notConfigured: false,
   };
 
+  // The stored activation for this key, so the server can check the key is used from a
+  // machine it was activated on. Absent (not yet written, or another key): sent without it.
+  const license = readLicense(opts);
+  const activationId = license?.key === key ? license.activation_id : undefined;
+
   let client: DeliveryClient;
   try {
     client = new DeliveryClient({
       config: opts.config,
       fetchImpl: opts.fetchImpl,
       sleep: opts.sleep,
+      activationId,
     });
   } catch (e) {
     if (e instanceof DeliveryError && e.code === 'not_configured') {

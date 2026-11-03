@@ -2,7 +2,7 @@ import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
 import { runSnippetTool } from '../utils/tool-helpers.js';
-import { requireLocalPath } from '../utils/local-path.js';
+import { requireLocalImagePath } from '../utils/local-path.js';
 import { type JsonSchemaObject } from '../utils/validate.js';
 import { SKY_REPLACEMENT_TIMEOUT_MS } from '../utils/operation-timeouts.js';
 import {
@@ -140,7 +140,7 @@ function resolveSky(args: Record<string, unknown>, presets: () => SkyPreset[]): 
   if (args.sky_file !== undefined) {
     return {
       kind: 'file',
-      path: requireLocalPath('sky_file', args.sky_file),
+      path: requireLocalImagePath('sky_file', args.sky_file),
       label: 'Custom Sky',
     };
   }

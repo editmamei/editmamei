@@ -42,7 +42,7 @@ export function createDiagnosticsTools(
       tool: {
         name: 'ps_report_problem',
         description:
-          "Collect an ANONYMIZED diagnostic bundle and write it to the user's Downloads folder so they can attach it to a bug report — use when Editmamei misbehaves (won't connect, a tool keeps failing, unexpected results). The bundle holds recent server logs, system info (Editmamei/OS/Photoshop versions), and a content-free summary of recent tool calls (name, success, duration, error class). It contains NO image content, NO tool arguments, and file paths reduced to basenames. Does not touch Photoshop; writes one JSON file. After calling, tell the user the file path and that they can attach it to a new issue at " +
+          "Collect an ANONYMIZED diagnostic bundle and write it to the user's Downloads folder so they can attach it to a bug report — use when Editmamei misbehaves (won't connect, a tool keeps failing, unexpected results). The bundle holds recent server logs, system info (Editmamei/OS/Photoshop versions), and a content-free summary of recent tool calls (name, success, duration, error class). It contains NO image content, the tool-call summary carries NO tool arguments, and file paths are reduced to basenames; log lines can still quote a layer name or a value from an error message. Does not touch Photoshop; writes one JSON file. After calling, tell the user the file path and that they can attach it to a new issue at " +
           ISSUES_URL +
           '.',
         inputSchema: reportSchema,
@@ -75,7 +75,7 @@ export function createDiagnosticsTools(
               type: 'text' as const,
               text:
                 `Wrote an anonymized diagnostic bundle to:\n  ${path}\n\n` +
-                `It contains recent logs + system info — no images, no full file paths, no tool arguments. ` +
+                `It contains recent logs + system info — no images, no full file paths, and no tool arguments outside error messages. ` +
                 `Attach this file to a new issue at ${ISSUES_URL} so the maintainers can debug.`,
             },
           ],

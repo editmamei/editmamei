@@ -69,16 +69,14 @@ export function withholdImages(result: ToolResult): ToolResult {
   const stripped = strip(result, counter) as ToolResult;
   if (counter.n === 0) return result;
   const what = counter.n === 1 ? 'An image was' : `${counter.n} images were`;
+  const text =
+    `${what} withheld because the user's privacy.send_previews_to_llm setting is off. ` +
+    'Work from the text and numbers; ask the user if you need to see the image.';
   return {
     ...stripped,
-    content: [
-      ...(stripped.content ?? []),
-      {
-        type: 'text' as const,
-        text:
-          `${what} withheld because the user's privacy.send_previews_to_llm setting is off. ` +
-          'Work from the text and numbers; ask the user if you need to see the image.',
-      },
-    ],
+    content: [...(stripped.content ?? []), { type: 'text' as const, text }],
+    ...(stripped.structuredContent
+      ? { structuredContent: { ...stripped.structuredContent, images_withheld: text } }
+      : {}),
   };
 }

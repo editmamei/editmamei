@@ -629,7 +629,9 @@ describe('gimp_canvas: extend-only, anchor xor explicit offsets', () => {
   });
   it("fill's transparent option states the literal gimp_export/flatten behaviour (background color, not transparency)", () => {
     const text = field('gimp_canvas', 'fill').replace(/\s+/g, ' ');
-    expect(text).toMatch(/gimp_export and gimp_layer op=flatten both flatten first/);
+    expect(text).toMatch(
+      /gimp_export \(unless keep_alpha or a layered psd\) and gimp_layer op=flatten flatten first/
+    );
     expect(text).toMatch(/GIMP's ambient background color \(white/);
     expect(text).toMatch(/not with transparency/);
   });

@@ -150,7 +150,7 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
         type: 'boolean',
         title: 'Share error diagnostics (opt-in)',
         description:
-          'When a tool fails, also send a sanitized error detail (basenames only — never images or full paths) to help fix bugs. Off by default.',
+          'When a tool fails, also send a sanitized error detail (basenames only — never images or full paths) to help fix bugs. The error text can name a layer or repeat a value you passed. Off by default.',
         required: false,
         default: false,
       },

@@ -8,7 +8,7 @@
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
-import { type JsonSchemaObject } from '../utils/validate.js';
+import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { runSnippetTool } from '../utils/tool-helpers.js';
 
 const addGuideSchema: JsonSchemaObject = {
@@ -108,6 +108,11 @@ async function guides(
   snippetClient: SnippetClient,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
+  // Only the discriminator here: each delegate still validates its own params.
+  validateArgs(
+    { type: 'object', properties: { op: { type: 'string' } }, required: ['op'] },
+    rawArgs
+  );
   const op = rawArgs.op;
   const { op: _omit, ...rest } = rawArgs;
   switch (op) {

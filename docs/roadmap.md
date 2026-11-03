@@ -14,9 +14,9 @@ If a tool or capability appears here but not in [`pro-features.md`](pro-features
 
 ---
 
-## In development
+## Exploring
 
-These capabilities are being built and live-tested against Photoshop right now. None of them are in a shipped build yet, and the edition each one lands in (Community or Pro) is decided when it's verified and promoted.
+These are ideas we're looking at, not work in progress. None of them are in a shipped build, any of them may change or be dropped, and the edition each one lands in (Community or Pro) is decided if it ships.
 
 ### Brush strokes
 

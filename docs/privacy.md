@@ -20,12 +20,18 @@ goes to that assistant; covered under "Your AI assistant is a cloud service" bel
 
 There is one line Editmamei does not cross, on any setting or edition:
 
-- **Your image and document content.** No photos, previews, thumbnails, layer renders, or
-  Photoshop document data are ever sent to Editmamei.
+- **Your images.** No photos, previews, thumbnails, layer renders, or other pixel data are ever
+  sent to Editmamei.
 - **Your file paths.** Full paths stay local. Where a path is unavoidable in an opt-in
   diagnostic message, it's reduced to a bare filename first (see [Sanitization](#sanitization)).
 - **Your metadata.** Camera info, GPS, and author fields are never sent to Editmamei. Your
   AI assistant can read them (for example when it requests a document's metadata).
+
+**Names in error messages, only if you opt in.** Diagnostics are off by default. If you turn them
+on, an error message is sent as Photoshop or Editmamei wrote it, after the cleanup in
+[Sanitization](#sanitization). An error can name what it was about, such as a layer, group or
+channel, or a value you gave a tool, and that name is sent as written. See
+[Diagnostic event](#diagnostic-event-only-if-you-opt-in).
 
 The previews your AI assistant looks at are a separate matter: that's your AI client talking
 to its own cloud, not Editmamei. See [Your AI assistant is a cloud service](#your-ai-assistant-is-a-cloud-service).
@@ -41,10 +47,11 @@ uploads it. You review the file and attach it to a bug report yourself.
 
 The bundle is sanitized to the same hard line as everything above:
 
-- **No image or document content**, **no tool arguments**, and file paths reduced to basenames.
+- **No images**, and file paths reduced to basenames.
 - It holds recent server log lines, your OS / Editmamei / Photoshop versions, your
   `install_id`, and a content-free summary of recent tool calls (name, success, duration, error
-  class, never the arguments). If a Claude Desktop log is present, a redacted tail is included
+  class, never the arguments). The log lines include error messages, which can name a layer or
+  repeat a value you passed a tool. If a Claude Desktop log is present, a redacted tail is included
   with every request and response **body** removed; only method names and timing are kept.
 
 Because it's a local file, you can open it and see exactly what you're sharing before you send it.
@@ -109,7 +116,7 @@ editmamei config set telemetry.diagnostics true  # opt in to diagnostic detail
 
 Boolean values accept `true`/`false`, `on`/`off`, `yes`/`no`, or `1`/`0`.
 
-`automation.allow_execute_script` (default `true`): set to `false` to make tools that run script code refuse.
+`automation.allow_execute_script` (default `true`): set to `false` to make every tool that runs code refuse: arbitrary scripts (`ps_execute_script`) and recorded Actions (`ps_play_action`), since an Action can contain a script step.
 
 **In Claude Desktop.** The one-click extension has no terminal, so the same two switches appear in
 the extension's own settings (Settings → Extensions → Editmamei): **Share usage stats**
@@ -122,10 +129,11 @@ log so the default is never a surprise:
 > First run: Editmamei collects content-free usage telemetry (tool name, success,
 > duration, bytes returned, version/edition/OS/PS-version, install channel, which AI client
 > connected, Node/OS/architecture versions, and per-session counts like edits made and retries)
-> to find what breaks. It never sends image content, file paths, or tool arguments. The only
-> identifier is a random install ID. Opt out anytime: `editmamei config set telemetry.usage false`
-> (or edit `~/.editmamei/settings.json`). Opt in to sanitized diagnostics:
-> `editmamei config set telemetry.diagnostics true`.
+> to find what breaks. Usage telemetry never sends image content, file paths, or tool
+> arguments. The only identifier is a random install ID. Opt out anytime:
+> `editmamei config set telemetry.usage false` (or edit `~/.editmamei/settings.json`). Opt in
+> to sanitized diagnostics (error messages, which can name a layer or repeat a value you
+> passed): `editmamei config set telemetry.diagnostics true`.
 
 > **Note:** Editmamei reads the settings file once at startup. After changing a setting, restart
 > your AI client so the server picks it up.
@@ -362,6 +370,11 @@ This adds a sanitized error message, the name of the failing step (`snippet`), a
 tail of error output, enough to trace a bug without you mailing a log by hand. Still no image
 content.
 
+The message is the error's own text, so it can include a name from your document (a layer, group
+or channel name) or a value you passed a tool, such as the name of a sky you asked for. Only file
+paths and the name lists after `not found:` are cleaned out (see [Sanitization](#sanitization));
+other names are sent as written. Leave diagnostics off if you'd rather not share them.
+
 | Field | Meaning |
 |---|---|
 | `doc_depth` | The open document's bit depth at the last successful connection to Photoshop: `8`, `16`, or `32` — present only for a document at one of those three depths. Omitted if no document was open, or its depth is none of the three. |
@@ -370,8 +383,9 @@ content.
 
 ### What is deliberately never in any event
 
-- The arguments you passed a tool (no prompts, no values, no text).
-- Any image, preview, thumbnail, or document content.
+- The arguments you passed a tool (no prompts, no values, no text). The one exception is an
+  opt-in diagnostic message, which repeats a value when the error itself does (see above).
+- Any image, preview, thumbnail, or pixel data.
 - Full file paths.
 - A precise timestamp (day-granularity only).
 - A session ID or anything that links events back to a specific editing session beyond the
@@ -387,8 +401,9 @@ Before any diagnostic string leaves, it runs through a fixed cleanup pass:
 2. Absolute paths collapsed to their final filename (`C:\photos\client\shot.psd` → `shot.psd`).
 3. Name-miss detail redacted: everything after a `not found:` marker (the name that was
    asked for and any list of the layer/group/channel names that exist) becomes
-   `[redacted]`. Layer names are your content; the full message stays in the local
-   session log on your machine only.
+   `[redacted]`, and the full message stays in the local session log on your machine only.
+   Names an error quotes in any other form (for example "Cannot fill a fully locked layer:
+   Background") are not redacted.
 4. Backslashes normalized to forward slashes; leading separators stripped.
 5. Length capped (error message 2000 chars, step name 128, error-output tail 4000).
 
@@ -442,7 +457,8 @@ public data `npm` itself reads.
 Separately from telemetry, Editmamei keeps a richer local log of each session at
 `~/.editmamei/sessions/<session-id>.ndjson`. This is used for debugging and by the Templates
 system to reconstruct an edit. It **stays on your disk**; it is not transmitted, and telemetry
-is only the small content-free subset described above, never this file. There's no automatic
+is only the small subset described above (content-free, plus opt-in diagnostics), never this
+file. There's no automatic
 cleanup; delete the files whenever you like.
 
 ---

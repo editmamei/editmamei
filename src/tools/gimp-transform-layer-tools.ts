@@ -8,7 +8,8 @@ import {
   GIMP_LAYER_ID_PROP,
   pickSchemaDeclaredKeys,
 } from './gimp-shared.js';
-import { EFFECT_UPDATE_FAILURES_PROP, effectUpdateFailuresNote } from './gimp-geometry-tools.js';
+import { EFFECT_UPDATE_FAILURES_PROP } from './gimp-geometry-tools.js';
+import { effectUpdateFailuresNote } from './gimp-shared.js';
 
 /**
  * gimp_transform_layer — the per-LAYER twin of ps_transform_layer, discriminated by `op`: fit |
@@ -77,8 +78,8 @@ const transformLayerSchema: JsonSchemaObject = {
       // field check below on every op OTHER than fit. The bridge applies this op's own default
       // ('fit') itself when the field is genuinely absent.
       description:
-        "fit only. 'fit' letterboxes inside the canvas (shorter edge touches); 'fill' covers it " +
-        '(longer edge touches, overflow is left outside the canvas, not cropped). Defaults to ' +
+        "fit only. 'fit' letterboxes the whole layer inside the canvas; 'fill' covers the canvas " +
+        '(overflow is left outside the canvas, not cropped). Defaults to ' +
         "'fit'.",
     },
     scale_percent: {

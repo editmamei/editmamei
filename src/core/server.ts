@@ -105,10 +105,12 @@ export const FIRST_RUN_DISCLOSURE =
   'First run: Editmamei collects content-free usage telemetry (tool name, ' +
   'success, duration, bytes returned, version/edition/OS/PS-version, install channel, ' +
   'which AI client connected, Node/OS/architecture versions, and per-session counts like ' +
-  'edits made and retries) to find what breaks. It never sends image content, file paths, ' +
-  'or tool arguments. The only identifier is a random install ID. Opt out anytime: ' +
-  '`editmamei config set telemetry.usage false` (or edit ~/.editmamei/settings.json). ' +
-  'Opt in to sanitized diagnostics: `editmamei config set telemetry.diagnostics true`.';
+  'edits made and retries) to find what breaks. Usage telemetry never sends image content, ' +
+  'file paths, or tool arguments. The only identifier is a random install ID. Opt out ' +
+  'anytime: `editmamei config set telemetry.usage false` (or edit ' +
+  '~/.editmamei/settings.json). Opt in to sanitized diagnostics (error messages, which can ' +
+  'name a layer or repeat a value you passed): ' +
+  '`editmamei config set telemetry.diagnostics true`.';
 
 /**
  * Timeout for the background ps_version probe (resolveLiveVersionInBackground) —
@@ -724,7 +726,7 @@ export class EditmameiServer {
         tool: {
           name: 'ps_ping',
           description:
-            'Test connection to Photoshop and report session-start discovery signals. Read-only and idempotent. Call this once at the start of a session to confirm liveness before invoking any other tool. **If the user has given you an open-ended editing task, ALSO call `ps_overview` after this** — it returns the workflow contract + capabilities map + verification primitives so you can plan well. Returns `version` (folds the removed get-version tool), `custom_action_sets` (count of Action Sets loaded in the Photoshop Actions palette — non-zero means recorded workflows exist; if action tools are available in this build they will appear in `tools/list`), `user_templates` (count of saved Editmamei templates), and `open_documents` (names of documents already open in Photoshop, so the LLM does not have to ask which doc to edit).',
+            'Test connection to Photoshop and report session-start discovery signals. Read-only and idempotent. Call this once at the start of a session to confirm liveness before invoking any other tool. **If the user has given you an open-ended editing task, ALSO call `ps_overview` after this** — it returns the workflow contract + capabilities map + verification primitives so you can plan well. Returns `version` (folds the removed get-version tool), `custom_action_sets` (count of Action Sets loaded in the Photoshop Actions palette — non-zero means recorded workflows exist; if action tools are available in this build they will appear in `tools/list`), `user_templates` (count of saved Editmamei templates), and `open_documents` (names of documents already open in Photoshop, so the LLM can see which document to target).',
           inputSchema: {
             type: 'object',
             properties: {},

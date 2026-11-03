@@ -30,6 +30,13 @@ describe('createTransformCanvasTools', () => {
     expect(schema.required).toContain('op');
   });
 
+  it('names `op` when it is missing', async () => {
+    const tools = createTransformCanvasTools(conn.asConnection(), sc);
+    await expect(callTool(tools, 'ps_transform_canvas', {})).rejects.toThrow(
+      'Missing required argument: op'
+    );
+  });
+
   it('an unknown op returns an error without dispatching', async () => {
     const tools = createTransformCanvasTools(conn.asConnection(), sc);
     const result = await callTool(tools, 'ps_transform_canvas', { op: 'bogus' });
