@@ -145,7 +145,7 @@ request goes to your AI client rather than into a tool result, and your client d
 it. If you decline, close it, or your client doesn't show it, the new data stays off and your other
 settings don't change. A prompt you close or leave unanswered is shown at most 3 times. A new
 install isn't asked, because this policy is available before you install. Anyone with
-`telemetry.usage` off isn't asked.
+`telemetry.usage` off, or with the Claude Desktop toggle for that setting off, isn't asked.
 
 **First-run notice.** The first time Editmamei creates the settings file, it prints this to its
 log so the default is never a surprise:
