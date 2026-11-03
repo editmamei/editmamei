@@ -74,7 +74,7 @@ Once the basics work, try one of these:
 
 > "Save this current edit as a template called 'warm coastal'. Then later, apply 'warm coastal' to every image in `C:\Photos\new-shoot\`."
 
-More workflow examples are on the [product page](https://editmamei.com/product).
+More workflow examples are on the [Desktop page](https://editmamei.com/desktop).
 
 ---
 

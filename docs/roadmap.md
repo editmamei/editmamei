@@ -10,7 +10,7 @@ If a tool or capability appears here but not in [`pro-features.md`](pro-features
 
 **Community is live.** Install it free from npm (`npm install -g editmamei`), or as a one-click `.mcpb` extension for Claude Desktop. See [installation.md](installation.md). The [CHANGELOG](../CHANGELOG.md) tracks what's landed.
 
-**Pro is live.** Buy at [editmamei.com/pricing](https://editmamei.com/pricing) and activate with a license key. Pro is delivered as a downloaded module: activating fetches the signed Pro module and loads it alongside your Community install, so nothing gets reinstalled. Activation steps are in [installation.md "Pro"](installation.md#pro), [pro-features.md "Activating Pro"](pro-features.md#activating-pro), [faq.md](faq.md#how-do-i-activate-a-pro-license), and at [editmamei.com/activate](https://editmamei.com/activate).
+**Pro is live.** Buy at [editmamei.com/desktop/pricing](https://editmamei.com/desktop/pricing) and activate with a license key. Pro is delivered as a downloaded module: activating fetches the signed Pro module and loads it alongside your Community install, so nothing gets reinstalled. Activation steps are in [installation.md "Pro"](installation.md#pro), [pro-features.md "Activating Pro"](pro-features.md#activating-pro), [faq.md](faq.md#how-do-i-activate-a-pro-license), and at [editmamei.com/desktop/activate](https://editmamei.com/desktop/activate).
 
 ---
 

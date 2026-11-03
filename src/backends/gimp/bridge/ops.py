@@ -1691,7 +1691,7 @@ def op_filter(args):
     if fop == 'reorder':
         raise ValueError(
             'filter reorder is not supported: GIMP has no reorder primitive for drawable '
-            'filters in this beta -- delete and re-create in the desired order instead'
+            'filters -- delete and re-create in the desired order instead'
         )
     raise ValueError('op must be one of list, set_visibility, delete (got %r)' % fop)
 
