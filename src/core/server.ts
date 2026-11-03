@@ -23,11 +23,7 @@ import {
   computeResultBytes,
   NO_ERROR_TEXT_CLASS,
 } from '../utils/session-log.js';
-import {
-  loadSettings,
-  applyTelemetryEnvOverrides,
-  applyUpdateCheckEnvOverride,
-} from './settings.js';
+import { loadSettings, applyDesktopToggles } from './settings.js';
 import { itemsFromResult } from '../telemetry/activity.js';
 import { TelemetryClient } from '../telemetry/client.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
@@ -432,11 +428,10 @@ export class EditmameiServer {
     // the install_id on first run (salted random, never derived from PII, but stable —
     // pseudonymous, not anonymous) and never throws; the client is inert in the dev edition
     // and under the test runner, so this is a no-op outside CE/Pro builds.
-    const { settings, created } = loadSettings();
-    // In Claude Desktop (no terminal for `editmamei config`), the .mcpb manifest's telemetry
-    // toggles arrive as env vars and override consent for this process; settings.json still
-    // stands on the npm / CLI path. File stays the source of truth (override is in-memory).
-    const effectiveSettings = applyUpdateCheckEnvOverride(applyTelemetryEnvOverrides(settings));
+    const { settings, created, degraded } = loadSettings();
+    // In Claude Desktop (no terminal for `editmamei config`), the .mcpb manifest's toggles
+    // arrive as env vars. A no-op on the npm / CLI path.
+    const effectiveSettings = applyDesktopToggles(settings, process.env, { persist: !degraded });
     this.telemetry = new TelemetryClient({
       settings: effectiveSettings,
       getPsVersion: () => this.psVersion,

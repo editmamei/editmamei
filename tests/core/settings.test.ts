@@ -8,8 +8,7 @@ import {
   saveSettings,
   settingsPath,
   mintInstallId,
-  applyTelemetryEnvOverrides,
-  applyUpdateCheckEnvOverride,
+  applyDesktopToggles,
   applyEditorEnvOverride,
   type Settings,
 } from '@editmamei/core/settings.ts';
@@ -153,74 +152,221 @@ describe('loadSettings — existing / malformed', () => {
   });
 });
 
-describe('applyTelemetryEnvOverrides (Claude Desktop manifest toggles)', () => {
-  const base: Settings = {
-    telemetry: { usage: true, diagnostics: false, install_id: 'x'.repeat(32) },
+describe('applyDesktopToggles (Claude Desktop manifest toggles)', () => {
+  const base = (
+    overrides: Partial<Settings> = {},
+    usage = true,
+    diagnostics = false
+  ): Settings => ({
+    telemetry: { usage, diagnostics, install_id: 'x'.repeat(32) },
     privacy: { send_previews_to_llm: true },
     automation: { allow_execute_script: true },
     ps_path: null,
     update_check: true,
     editor: 'auto',
     gimp_path: null,
-  };
-
-  it('returns the same object (no override) when no telemetry env vars are set', () => {
-    expect(applyTelemetryEnvOverrides(base, {})).toBe(base);
+    ...overrides,
+  });
+  const onDisk = () => loadSettings({ dir }).settings;
+  const desktop = (usage: string, diagnostics: string, updateCheck: string) => ({
+    EDITMAMEI_TELEMETRY_USAGE: usage,
+    EDITMAMEI_TELEMETRY_DIAGNOSTICS: diagnostics,
+    EDITMAMEI_UPDATE_CHECK: updateCheck,
   });
 
-  it('disables usage on EDITMAMEI_TELEMETRY_USAGE=false, non-mutating', () => {
-    const out = applyTelemetryEnvOverrides(base, { EDITMAMEI_TELEMETRY_USAGE: 'false' });
-    expect(out.telemetry.usage).toBe(false);
-    expect(out.telemetry.diagnostics).toBe(false);
-    expect(base.telemetry.usage).toBe(true); // original untouched
+  it('returns the same object and writes nothing off Desktop', () => {
+    const settings = base();
+    expect(applyDesktopToggles(settings, {}, { dir })).toBe(settings);
+    expect(existsSync(settingsPath({ dir }))).toBe(false);
   });
 
-  it('enables diagnostics on EDITMAMEI_TELEMETRY_DIAGNOSTICS=true', () => {
-    const out = applyTelemetryEnvOverrides(base, { EDITMAMEI_TELEMETRY_DIAGNOSTICS: 'true' });
-    expect(out.telemetry.diagnostics).toBe(true);
-    expect(out.telemetry.usage).toBe(true);
+  it('treats an unsubstituted ${...} token or junk as no toggle', () => {
+    const settings = base();
+    expect(
+      applyDesktopToggles(
+        settings,
+        {
+          EDITMAMEI_TELEMETRY_USAGE: '${user_config.telemetry_usage}',
+          EDITMAMEI_UPDATE_CHECK: 'maybe',
+        },
+        { dir }
+      )
+    ).toBe(settings);
+    expect(existsSync(settingsPath({ dir }))).toBe(false);
   });
 
-  it('treats an unsubstituted ${...} token / junk as no override (file value stands)', () => {
-    const out = applyTelemetryEnvOverrides(base, {
-      EDITMAMEI_TELEMETRY_USAGE: '${user_config.telemetry_usage}',
-    });
-    expect(out).toBe(base);
-  });
-
-  it('accepts 1/0 and preserves install_id + other settings', () => {
-    const out = applyTelemetryEnvOverrides(base, { EDITMAMEI_TELEMETRY_USAGE: '0' });
+  it('does not mutate its input and keeps install_id and other settings', () => {
+    const settings = base();
+    const out = applyDesktopToggles(settings, desktop('0', '0', '1'), { dir });
+    expect(settings.telemetry.usage).toBe(true);
+    expect(settings.desktop_toggles).toBeUndefined();
     expect(out.telemetry.usage).toBe(false);
     expect(out.telemetry.install_id).toBe('x'.repeat(32));
     expect(out.privacy.send_previews_to_llm).toBe(true);
   });
-});
 
-describe('applyUpdateCheckEnvOverride (Claude Desktop manifest toggle)', () => {
-  const base: Settings = {
-    telemetry: { usage: true, diagnostics: false, install_id: 'y'.repeat(32) },
-    privacy: { send_previews_to_llm: true },
-    automation: { allow_execute_script: true },
-    ps_path: null,
-    update_check: true,
-    editor: 'auto',
-    gimp_path: null,
-  };
+  describe('first launch that sees the toggles', () => {
+    it('keeps a CLI opt-out when the toggle is at its on default', () => {
+      const out = applyDesktopToggles(base({}, false), desktop('true', 'false', 'true'), { dir });
+      expect(out.telemetry.usage).toBe(false);
+      expect(onDisk().telemetry.usage).toBe(false);
+    });
 
-  it('returns the same object when EDITMAMEI_UPDATE_CHECK is unset', () => {
-    expect(applyUpdateCheckEnvOverride(base, {})).toBe(base);
+    it('keeps an update-check opt-out when the toggle is at its on default', () => {
+      const out = applyDesktopToggles(
+        base({ update_check: false }),
+        desktop('true', 'false', 'true'),
+        { dir }
+      );
+      expect(out.update_check).toBe(false);
+      expect(onDisk().update_check).toBe(false);
+    });
+
+    it('honors a toggle already switched off', () => {
+      const out = applyDesktopToggles(base(), desktop('false', 'false', 'false'), { dir });
+      expect(out.telemetry.usage).toBe(false);
+      expect(out.update_check).toBe(false);
+      expect(onDisk().telemetry.usage).toBe(false);
+    });
+
+    it('honors a diagnostics opt-in already switched on', () => {
+      const out = applyDesktopToggles(base(), desktop('true', 'true', 'true'), { dir });
+      expect(out.telemetry.diagnostics).toBe(true);
+      expect(onDisk().telemetry.diagnostics).toBe(true);
+    });
+
+    it('does not send diagnostics from Desktop on a file opt-in while the toggle is off', () => {
+      const out = applyDesktopToggles(base({}, true, true), desktop('true', 'false', 'true'), {
+        dir,
+      });
+      expect(out.telemetry.diagnostics).toBe(false);
+      expect(onDisk().telemetry.diagnostics).toBe(true);
+    });
+
+    it('records what it saw', () => {
+      applyDesktopToggles(base(), desktop('true', 'false', 'true'), { dir });
+      expect(onDisk().desktop_toggles).toEqual({
+        usage: true,
+        diagnostics: false,
+        update_check: true,
+      });
+    });
   });
 
-  it('disables the check on EDITMAMEI_UPDATE_CHECK=false, non-mutating', () => {
-    const out = applyUpdateCheckEnvOverride(base, { EDITMAMEI_UPDATE_CHECK: 'false' });
-    expect(out.update_check).toBe(false);
-    expect(base.update_check).toBe(true); // original untouched
+  describe('later launches', () => {
+    const seen = { usage: true, diagnostics: false, update_check: true };
+
+    it('keeps a CLI opt-out made after the toggle was seen', () => {
+      saveSettings(base({ desktop_toggles: seen }, false), { dir });
+      const out = applyDesktopToggles(onDisk(), desktop('true', 'false', 'true'), { dir });
+      expect(out.telemetry.usage).toBe(false);
+      expect(onDisk().telemetry.usage).toBe(false);
+    });
+
+    it('keeps a diagnostics withdrawal made in the CLI while the toggle stays on', () => {
+      saveSettings(base({ desktop_toggles: { ...seen, diagnostics: true } }), { dir });
+      const out = applyDesktopToggles(onDisk(), desktop('true', 'true', 'true'), { dir });
+      expect(out.telemetry.diagnostics).toBe(false);
+    });
+
+    it('applies and saves a toggle moved off', () => {
+      saveSettings(base({ desktop_toggles: seen }), { dir });
+      const out = applyDesktopToggles(onDisk(), desktop('false', 'false', 'true'), { dir });
+      expect(out.telemetry.usage).toBe(false);
+      expect(onDisk().telemetry.usage).toBe(false);
+      expect(onDisk().desktop_toggles?.usage).toBe(false);
+    });
+
+    it('applies and saves a toggle moved back on', () => {
+      saveSettings(base({ desktop_toggles: { ...seen, usage: false } }, false), { dir });
+      const out = applyDesktopToggles(onDisk(), desktop('true', 'false', 'true'), { dir });
+      expect(out.telemetry.usage).toBe(true);
+      expect(onDisk().telemetry.usage).toBe(true);
+    });
+
+    it('keeps sending off while the toggle is off, even after the file says on', () => {
+      saveSettings(base({ desktop_toggles: { ...seen, usage: false } }, true), { dir });
+      const out = applyDesktopToggles(onDisk(), desktop('false', 'false', 'true'), { dir });
+      expect(out.telemetry.usage).toBe(false);
+      expect(onDisk().telemetry.usage).toBe(true);
+    });
+
+    it('writes nothing when nothing changed', async () => {
+      saveSettings(base({ desktop_toggles: seen }), { dir });
+      const marked = (await readFile(settingsPath({ dir }), 'utf8')) + '\n';
+      await writeFile(settingsPath({ dir }), marked);
+      applyDesktopToggles(onDisk(), desktop('true', 'false', 'true'), { dir });
+      expect(await readFile(settingsPath({ dir }), 'utf8')).toBe(marked);
+    });
   });
 
-  it('treats an unsubstituted ${...} token as no override (file value stands)', () => {
-    expect(
-      applyUpdateCheckEnvOverride(base, { EDITMAMEI_UPDATE_CHECK: '${user_config.update_check}' })
-    ).toBe(base);
+  it('never overwrites a settings file it could not read', async () => {
+    saveSettings(base({}, false), { dir });
+    const malformed = '{ "telemetry": { "usage": false, } }';
+    await writeFile(settingsPath({ dir }), malformed);
+    const { settings, degraded } = loadSettings({ dir });
+    expect(degraded).toBe(true);
+    const out = applyDesktopToggles(settings, desktop('false', 'false', 'true'), {
+      dir,
+      persist: false,
+    });
+    expect(out.telemetry.usage).toBe(false);
+    expect(await readFile(settingsPath({ dir }), 'utf8')).toBe(malformed);
+  });
+
+  it('does not flag a readable file as degraded', () => {
+    saveSettings(base(), { dir });
+    expect(loadSettings({ dir }).degraded).toBeUndefined();
+  });
+
+  it('keeps the seen value of a toggle missing from this launch', () => {
+    saveSettings(
+      base({ desktop_toggles: { usage: true, diagnostics: true, update_check: true } }, true, true),
+      { dir }
+    );
+    const out = applyDesktopToggles(onDisk(), { EDITMAMEI_TELEMETRY_USAGE: 'false' }, { dir });
+    expect(out.telemetry.usage).toBe(false);
+    expect(out.telemetry.diagnostics).toBe(true);
+    expect(out.update_check).toBe(true);
+    expect(onDisk().desktop_toggles).toEqual({
+      usage: false,
+      diagnostics: true,
+      update_check: true,
+    });
+  });
+
+  it('tracks each toggle separately on later launches', () => {
+    saveSettings(
+      base({ desktop_toggles: { usage: true, diagnostics: false, update_check: true } }),
+      { dir }
+    );
+    const moved = applyDesktopToggles(onDisk(), desktop('true', 'true', 'false'), { dir });
+    expect(moved.telemetry.usage).toBe(true);
+    expect(moved.telemetry.diagnostics).toBe(true);
+    expect(moved.update_check).toBe(false);
+    expect(onDisk().telemetry.diagnostics).toBe(true);
+    expect(onDisk().update_check).toBe(false);
+    const movedBack = applyDesktopToggles(onDisk(), desktop('true', 'false', 'true'), { dir });
+    expect(movedBack.telemetry.diagnostics).toBe(false);
+    expect(movedBack.update_check).toBe(true);
+    expect(onDisk().telemetry.diagnostics).toBe(false);
+    expect(onDisk().update_check).toBe(true);
+  });
+
+  it('still honors the result for this launch when the save fails', async () => {
+    const blocked = join(dir, 'not-a-dir');
+    await writeFile(blocked, '');
+    const out = applyDesktopToggles(base(), desktop('false', 'false', 'true'), { dir: blocked });
+    expect(out.telemetry.usage).toBe(false);
+  });
+
+  it('survives a settings round trip and ignores a malformed record', async () => {
+    saveSettings(base({ desktop_toggles: { usage: true } }), { dir });
+    expect(onDisk().desktop_toggles).toEqual({ usage: true });
+    const raw = JSON.parse(await readFile(settingsPath({ dir }), 'utf8'));
+    raw.desktop_toggles = { usage: 'yes', diagnostics: 1 };
+    await writeFile(settingsPath({ dir }), JSON.stringify(raw));
+    expect(onDisk().desktop_toggles).toBeUndefined();
   });
 });
 
