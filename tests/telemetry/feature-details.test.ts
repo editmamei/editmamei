@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -258,8 +258,7 @@ describe('TelemetryClient feature details', () => {
 
     it('records a no, even with Feature details off', async () => {
       const { client, sent } = makeClient(settings({ features: false }));
-      client.recordConsentResult(info);
-      await client.flush();
+      await client.recordConsentResult(info);
       expect(sent[0]).toMatchObject({
         type: 'consent_result',
         install_id: 'a'.repeat(32),
@@ -273,20 +272,17 @@ describe('TelemetryClient feature details', () => {
 
     it('goes out straight away, or to the outbox if the send fails', async () => {
       const live = makeClient(settings());
-      live.client.recordConsentResult(info);
-      await vi.waitFor(() => expect(live.sent).toHaveLength(1));
+      await expect(live.client.recordConsentResult(info)).resolves.toBe(true);
+      expect(live.sent).toHaveLength(1);
 
       const down = makeClient(settings(), { fail: true });
-      down.client.recordConsentResult(info);
-      await vi.waitFor(() =>
-        expect(readOutbox({ dir: down.dir }).map((e) => e.type)).toEqual(['consent_result'])
-      );
+      await expect(down.client.recordConsentResult(info)).resolves.toBe(true);
+      expect(readOutbox({ dir: down.dir }).map((e) => e.type)).toEqual(['consent_result']);
     });
 
     it('sends nothing with usage stats off', async () => {
       const { client, sent } = makeClient(settings({ usage: false }));
-      client.recordConsentResult(info);
-      await client.flush();
+      await expect(client.recordConsentResult(info)).resolves.toBe(false);
       expect(sent).toEqual([]);
     });
   });

@@ -59,7 +59,7 @@ export interface ConsentDeps {
     questionVersion: number;
     result: PromptOutcome | 'unsupported' | 'install_default';
     via: 'elicitation' | 'install' | 'cli' | 'desktop';
-  }) => void | Promise<void>;
+  }) => boolean | Promise<boolean>;
   storage?: LoadSettingsOptions;
   now?: () => Date;
 }
@@ -181,22 +181,27 @@ function storeDismissal(deps: ConsentDeps): void {
 /**
  * Send a stored answer the server hasn't seen. Choices made through the CLI or in Claude Desktop
  * happen where no telemetry runs, so this is the one path every answer leaves by. Waits while
- * usage stats are off, because a person who opted out sends nothing. Marked as sent only after
- * the send settles, so a process killed first sends it again next session.
+ * usage stats are off, because a person who opted out sends nothing. Marked as sent only once it
+ * is delivered or in the outbox, so a process killed first sends it again next session.
  */
 async function reportUnsentAnswer(deps: ConsentDeps): Promise<void> {
   const record = deps.settings.consent?.features;
   if (!record || record.reported || !deps.settings.telemetry.usage) return;
-  await deps.report({
+  const settled = await deps.report({
     question: FEATURES_QUESTION.id,
     questionVersion: record.version,
     result: record.answer,
     via: record.via,
   });
+  if (!settled) return;
   update(deps, (settings) => {
     const stored = settings.consent?.features;
     // A different answer saved meanwhile hasn't been sent, so it stays unmarked.
-    if (stored?.answer === record.answer && stored.via === record.via) {
+    if (
+      stored?.version === record.version &&
+      stored.answer === record.answer &&
+      stored.via === record.via
+    ) {
       settings.consent = { ...settings.consent, features: { ...stored, reported: true } };
     }
   });

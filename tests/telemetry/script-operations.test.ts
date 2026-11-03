@@ -25,6 +25,10 @@ describe('scriptFeatures: DOM calls', () => {
     ]);
   });
 
+  it('names trim, a Photoshop document method', () => {
+    expect(scriptFeatures('doc.trim(TrimType.TOPLEFT);')).toEqual([op('trim')]);
+  });
+
   it('counts each name once per script', () => {
     expect(scriptFeatures('d.flatten(); d.flatten(); d.flatten();')).toEqual([op('flatten')]);
   });
