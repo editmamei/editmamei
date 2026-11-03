@@ -13,6 +13,7 @@
 import {
   loadSettings,
   saveSettings,
+  setFeatureDetails,
   type Settings,
   type LoadSettingsOptions,
 } from '../core/settings.js';
@@ -79,6 +80,14 @@ const KEYS: Record<string, KeySpec> = {
     get: (s) => s.telemetry.diagnostics,
     set: (s, v) => {
       s.telemetry.diagnostics = v as boolean;
+    },
+    coerce: coerceBool,
+  },
+  'telemetry.features': {
+    // Unset until a new install or an answer sets it, and it reads as off until then.
+    get: (s) => s.telemetry.features ?? 'not asked (off)',
+    set: (s, v) => {
+      setFeatureDetails(s, v as boolean, 'cli');
     },
     coerce: coerceBool,
   },
