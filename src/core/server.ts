@@ -104,8 +104,8 @@ export const FIRST_RUN_DISCLOSURE =
   'success, duration, bytes returned, version/edition/OS/PS-version, install channel, ' +
   'which AI client connected, Node/OS/architecture versions, and per-session counts like ' +
   'edits made and retries) to find what breaks. It also sends the names of editing features ' +
-  'used, from a published list. It never sends image content, file paths, or anything you or ' +
-  'your assistant typed. The only identifier is a random install ID. Opt out anytime: ' +
+  'used, from a published list. It never sends image content, file paths, script text, or other ' +
+  'free-form text. The only identifier is a random install ID. Opt out anytime: ' +
   '`editmamei config set telemetry.usage false` (or edit ~/.editmamei/settings.json), or ' +
   '`editmamei config set telemetry.features false` for feature names alone. ' +
   'Opt in to sanitized diagnostics: `editmamei config set telemetry.diagnostics true`.';

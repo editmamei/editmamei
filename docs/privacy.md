@@ -131,11 +131,12 @@ setting existed, it stays off until you answer the question below or move the to
 Editmamei's first start, or moved either way later, counts as your answer.
 
 **When a setting's scope changes.** If a change to this policy widens what a setting covers, existing
-installs are asked about that change through their AI client's own prompt (MCP elicitation), once
-per change. The prompt goes straight to your AI client's interface, not through the AI model. If
-you decline, close it, or your client doesn't show it, the new data stays off and your other
-settings don't change. A closed prompt is asked again at most 3 times. A new install isn't asked,
-because this policy is available before you install. Anyone with `telemetry.usage` off isn't asked.
+installs are asked about that change through their AI client's own prompt (MCP elicitation). The
+request goes to your AI client rather than into a tool result, and your client decides how to show
+it. If you decline, close it, or your client doesn't show it, the new data stays off and your other
+settings don't change. A prompt you close or leave unanswered is shown at most 3 times. A new
+install isn't asked, because this policy is available before you install. Anyone with
+`telemetry.usage` off isn't asked.
 
 **First-run notice.** The first time Editmamei creates the settings file, it prints this to its
 log so the default is never a surprise:
@@ -144,7 +145,7 @@ log so the default is never a surprise:
 > duration, bytes returned, version/edition/OS/PS-version, install channel, which AI client
 > connected, Node/OS/architecture versions, and per-session counts like edits made and retries)
 > to find what breaks. It also sends the names of editing features used, from a published list.
-> It never sends image content, file paths, or anything you or your assistant typed. The only
+> It never sends image content, file paths, script text, or other free-form text. The only
 > identifier is a random install ID. Opt out anytime: `editmamei config set telemetry.usage false`
 > (or edit `~/.editmamei/settings.json`), or `editmamei config set telemetry.features false` for
 > feature names alone. Opt in to sanitized diagnostics:
@@ -457,8 +458,8 @@ content.
 
 ### What is deliberately never in any event
 
-- Anything you or your assistant typed: no prompts, script text, file paths, layer names, on-image
-  text or numbers. The only argument values ever sent are fixed values a tool's schema declares
+- Free-form input: no prompts, script text, file paths, layer names, on-image text or numbers. The
+  only argument values ever sent are fixed values a tool's schema declares
   (see [Feature usage](#feature-usage-how-often-a-named-feature-was-used-on-by-default-for-new-installs)).
 - Any image, preview, thumbnail, or document content.
 - Full file paths.

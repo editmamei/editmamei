@@ -238,6 +238,18 @@ describe('Feature details setting', () => {
     expect(settings.telemetry.features).toBe(true);
   });
 
+  it('stays off if a first save fails, since the file may just be unreachable', async () => {
+    // A file where the settings directory should be: it reads as missing, and can't be written.
+    const blocked = join(dir, 'blocked');
+    await writeFile(blocked, '');
+    const { settings, created, degraded } = loadSettings({ dir: blocked });
+    expect(created).toBe(false);
+    expect(degraded).toBe(true);
+    expect(settings.telemetry).not.toHaveProperty('features');
+    expect(settings).not.toHaveProperty('consent');
+    expect(featureDetailsEnabled(settings)).toBe(false);
+  });
+
   it('honors a hand-edited setting with no record', async () => {
     await writeFile(
       settingsPath({ dir }),

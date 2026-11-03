@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { FEATURE_TOKEN_PATTERN } from '@editmamei/telemetry/feature-details.ts';
 import {
   ACTION_OPERATIONS,
   DOM_OPERATIONS,
@@ -186,9 +187,8 @@ describe('scriptFeatures: nothing in a script leaves it', () => {
   });
 
   it('keeps every listed name inside the server token shape', () => {
-    const token = /^[A-Za-z0-9_$.#-]{1,64}$/;
     for (const list of [DOM_OPERATIONS, ACTION_OPERATIONS, SCRIPT_CAPABILITIES]) {
-      for (const name of list) expect(name.replace(/ /g, '_')).toMatch(token);
+      for (const name of list) expect(name.replace(/ /g, '_')).toMatch(FEATURE_TOKEN_PATTERN);
     }
   });
 });

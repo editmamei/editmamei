@@ -384,8 +384,8 @@ export class TelemetryClient {
 
   /**
    * Record what came back from a consent question. Gated on usage stats alone, on purpose. Sent
-   * now rather than on the timer: the caller marks an answer as reported once, so a host killing
-   * this process must not be able to lose it. A failed send lands in the outbox.
+   * now rather than on the timer, and settles once it's delivered or in the outbox, so the caller
+   * knows when an answer can be marked as reported.
    */
   recordConsentResult(info: {
     clientName: string | undefined;
@@ -393,10 +393,10 @@ export class TelemetryClient {
     questionVersion: number;
     result: ConsentResultEvent['result'];
     via: ConsentResultEvent['via'];
-  }): void {
-    if (!this.active || !this.settings.telemetry.usage) return;
+  }): Promise<void> {
+    if (!this.active || !this.settings.telemetry.usage) return Promise.resolve();
     this.enqueue(buildConsentResult(this.dims, info, this.now()));
-    void this.flush();
+    return this.flush();
   }
 
   /** Move the rolled-up feature counts onto the queue, or drop them if consent was withdrawn. */

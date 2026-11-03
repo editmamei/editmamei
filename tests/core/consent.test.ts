@@ -121,6 +121,31 @@ describe('who is asked', () => {
     expect(featureDetailsEnabled(settings)).toBe(false);
   });
 
+  it('does not ask while the Claude Desktop toggle is off', async () => {
+    const settings = await existingInstall({
+      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      desktop_toggles: { features: false },
+      consent: {
+        features: {
+          version: FEATURES_QUESTION.version - 1,
+          answer: 'declined',
+          via: 'desktop',
+          date: '2026-01-01',
+          reported: true,
+        },
+      },
+    });
+    expect(shouldAsk(settings)).toBe(false);
+  });
+
+  it('asks again when a stored record is malformed', async () => {
+    const settings = await existingInstall({
+      consent: { features: { version: 'one', answer: 'accepted', via: 'cli', date: 'today' } },
+    });
+    expect(settings).not.toHaveProperty('consent');
+    expect(shouldAsk(settings)).toBe(true);
+  });
+
   it('does not ask anyone with usage stats off, and sends nothing for them', async () => {
     const settings = await existingInstall({
       telemetry: { usage: false, install_id: 'x'.repeat(32) },
@@ -237,21 +262,34 @@ describe('no answer', () => {
     expect(featureDetailsEnabled(settings)).toBe(false);
   });
 
-  it.each([
-    ['a timeout', new McpError(ErrorCode.RequestTimeout, 'slow'), 'timed_out'],
-    ['an error', new Error('method not found'), 'failed'],
-  ])('stays off after %s, and does not count it', async (_label, err, result) => {
+  it('stays off after an error, and does not count it', async () => {
     const settings = await existingInstall();
     const { all, report } = deps({
       settings,
       elicit: async () => {
-        throw err;
+        throw new Error('method not found');
       },
     });
     await expect(runConsentPrompt(all)).resolves.toBeUndefined();
-    expect(report).toHaveBeenCalledWith(expect.objectContaining({ result }));
+    expect(report).toHaveBeenCalledWith(expect.objectContaining({ result: 'failed' }));
     expect(settings.telemetry).not.toHaveProperty('features');
     expect(loadSettings({ dir }).settings).not.toHaveProperty('consent_dismissals');
+  });
+
+  it('stays off after a timeout, and stops asking after the limit', async () => {
+    let settings = await existingInstall();
+    const elicit = vi.fn(async () => {
+      throw new McpError(ErrorCode.RequestTimeout, 'slow');
+    });
+    for (let i = 0; i < MAX_DISMISSALS; i++) {
+      const { all, report } = deps({ settings, elicit });
+      await runConsentPrompt(all);
+      expect(report).toHaveBeenCalledWith(expect.objectContaining({ result: 'timed_out' }));
+      settings = loadSettings({ dir }).settings;
+      expect(featureDetailsEnabled(settings)).toBe(false);
+    }
+    expect(elicit).toHaveBeenCalledTimes(MAX_DISMISSALS);
+    expect(shouldAsk(settings)).toBe(false);
   });
 
   it('does not make the caller wait on a client that never replies', async () => {
@@ -283,6 +321,54 @@ describe('no answer', () => {
       },
     });
     await expect(runConsentPrompt(all)).resolves.toBeUndefined();
+  });
+});
+
+describe('marking an answer as reported', () => {
+  const record = {
+    version: FEATURES_QUESTION.version,
+    answer: 'declined',
+    via: 'cli',
+    date: '2026-11-19',
+  };
+
+  it('waits for the send to settle', async () => {
+    const settings = await existingInstall({
+      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      consent: { features: record },
+    });
+    let finishSend: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => (finishSend = resolve));
+    const run = runConsentPrompt(deps({ settings, report: () => pending }).all);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(loadSettings({ dir }).settings.consent?.features?.reported).toBeUndefined();
+    finishSend();
+    await run;
+    expect(loadSettings({ dir }).settings.consent?.features?.reported).toBe(true);
+  });
+
+  it('leaves unmarked a different answer saved while the send was running', async () => {
+    const settings = await existingInstall({
+      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      consent: { features: record },
+    });
+    await runConsentPrompt(
+      deps({
+        settings,
+        report: async () => {
+          await writeFile(
+            settingsPath({ dir }),
+            JSON.stringify({
+              telemetry: { usage: true, features: true, install_id: 'x'.repeat(32) },
+              consent: { features: { ...record, answer: 'accepted' } },
+            })
+          );
+        },
+      }).all
+    );
+    const stored = loadSettings({ dir }).settings.consent?.features;
+    expect(stored?.answer).toBe('accepted');
+    expect(stored?.reported).toBeUndefined();
   });
 });
 
