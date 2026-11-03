@@ -399,7 +399,11 @@ export class TelemetryClient {
     }
   }
 
-  /** Record what came back from a consent question. Gated on usage stats alone, on purpose. */
+  /**
+   * Record what came back from a consent question. Gated on usage stats alone, on purpose. Sent
+   * now rather than on the timer: the caller marks an answer as reported once, so a host killing
+   * this process must not be able to lose it. A failed send lands in the outbox.
+   */
   recordConsentResult(info: {
     clientName: string | undefined;
     question: string;
@@ -409,6 +413,7 @@ export class TelemetryClient {
   }): void {
     if (!this.active || !this.settings.telemetry.usage) return;
     this.enqueue(buildConsentResult(this.dims, info, this.now()));
+    void this.flush();
   }
 
   /** Move the rolled-up feature counts onto the queue, or drop them if consent was withdrawn. */
