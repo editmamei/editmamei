@@ -735,6 +735,7 @@ export class EditmameiServer {
             type: 'object',
             properties: {
               connected: { type: 'boolean' },
+              message: { type: 'string' },
               version: { type: 'string' },
               custom_action_sets: { type: 'number' },
               user_templates: { type: 'number' },
@@ -1348,6 +1349,8 @@ export class EditmameiServer {
         ],
         structuredContent: {
           connected: false,
+          message:
+            'Photoshop does not appear to be running. Start Photoshop, then call ps_ping again.',
           update_available: this.updateInfo,
           notify_user: update.notify,
         },

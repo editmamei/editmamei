@@ -579,6 +579,7 @@ describe('ps_ping — fast-fail when no Photoshop process exists', () => {
 
     expect(res.structuredContent).toEqual({
       connected: false,
+      message: 'Photoshop does not appear to be running. Start Photoshop, then call ps_ping again.',
       update_available: null,
       notify_user: false,
     });
