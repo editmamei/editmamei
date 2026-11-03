@@ -13,18 +13,18 @@ import (
 // dependency — the binary cross-compiles with CGO_ENABLED=0 like every other
 // target, and go.mod stays at zero requires.
 var (
-	user32                = syscall.NewLazyDLL("user32.dll")
-	procEnumWindows       = user32.NewProc("EnumWindows")
-	procEnumChildWindows  = user32.NewProc("EnumChildWindows")
-	procGetWindowThreadPID = user32.NewProc("GetWindowThreadProcessId")
-	procGetWindowTextW    = user32.NewProc("GetWindowTextW")
-	procGetClassNameW     = user32.NewProc("GetClassNameW")
-	procIsWindowVisible   = user32.NewProc("IsWindowVisible")
-	procIsWindowEnabled   = user32.NewProc("IsWindowEnabled")
-	procIsWindow          = user32.NewProc("IsWindow")
-	procGetWindow         = user32.NewProc("GetWindow")
-	procGetDlgCtrlID      = user32.NewProc("GetDlgCtrlID")
-	procGetWindowLongPtrW = user32.NewProc("GetWindowLongPtrW")
+	user32                  = syscall.NewLazyDLL("user32.dll")
+	procEnumWindows         = user32.NewProc("EnumWindows")
+	procEnumChildWindows    = user32.NewProc("EnumChildWindows")
+	procGetWindowThreadPID  = user32.NewProc("GetWindowThreadProcessId")
+	procGetWindowTextW      = user32.NewProc("GetWindowTextW")
+	procGetClassNameW       = user32.NewProc("GetClassNameW")
+	procIsWindowVisible     = user32.NewProc("IsWindowVisible")
+	procIsWindowEnabled     = user32.NewProc("IsWindowEnabled")
+	procIsWindow            = user32.NewProc("IsWindow")
+	procGetWindow           = user32.NewProc("GetWindow")
+	procGetDlgCtrlID        = user32.NewProc("GetDlgCtrlID")
+	procGetWindowLongPtrW   = user32.NewProc("GetWindowLongPtrW")
 	procSendMessageTimeoutW = user32.NewProc("SendMessageTimeoutW")
 )
 
@@ -147,14 +147,13 @@ func resolveDialog(pids []int) (mainHwnd uintptr, candidates []uintptr, foundMai
 		if winLong(h, gwlExStyle)&wsExToolWindow != 0 || isChromeClass(winClass(h)) {
 			continue
 		}
-		// Modal-framed candidates first: when several popups qualify, describe
-		// the one most likely to be the blocker.
-		if winLong(h, gwlExStyle)&wsExDlgModal != 0 {
-			candidates = append([]uintptr{h}, candidates...)
-		} else {
-			candidates = append(candidates, h)
-		}
+		candidates = append(candidates, h)
 	}
+	// Modal-framed candidates first: when several popups qualify, describe the
+	// one most likely to be the blocker.
+	candidates = modalFirst(candidates, func(h uintptr) bool {
+		return winLong(h, gwlExStyle)&wsExDlgModal != 0
+	})
 	return
 }
 
@@ -292,6 +291,9 @@ func probeModal(target probeTarget, started time.Time) Report {
 func clickButton(target probeTarget, token string, buttonID int32, started time.Time) Report {
 	pids := target.PIDs
 	current := probeModal(target, started)
+	if current.Status == StatusUnknown {
+		return current
+	}
 	if current.Status != StatusDialog {
 		return Report{Status: StatusStale, Reason: "no-dialog-to-click", ProbeMs: time.Since(started).Milliseconds()}
 	}
@@ -301,10 +303,21 @@ func clickButton(target probeTarget, token string, buttonID int32, started time.
 			ProbeMs: time.Since(started).Milliseconds()}
 	}
 
+	// Locate the window again and check it against the token, so the click goes
+	// to the window just verified and not one that appeared since the probe.
 	_, candidates, _ := resolveDialog(pids)
-	_, popup, _ := findReadableDialog(candidates)
+	verified, popup, _ := findReadableDialog(candidates)
 	if popup == 0 || !winExists(popup) {
 		return Report{Status: StatusStale, Reason: "dialog-vanished"}
+	}
+	normalizeReport(&verified, pids[0], popup, idSchemeWin32)
+	if verified.Token != token {
+		return Report{Status: StatusStale, Reason: "token-mismatch", Token: verified.Token,
+			Title: verified.Title, Buttons: verified.Buttons,
+			ProbeMs: time.Since(started).Milliseconds()}
+	}
+	if !hasButton(verified.Buttons, buttonID) {
+		return Report{Status: StatusStale, Reason: "button-not-found"}
 	}
 
 	var targetBtn uintptr

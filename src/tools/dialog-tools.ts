@@ -114,6 +114,9 @@ export function createDialogTools(
         if (action === 'inspect') {
           return toResult(await probe.probe(target));
         }
+        if (action !== 'click') {
+          throw new Error(`ps_dialog: unknown action '${action}'. Use 'inspect' or 'click'.`);
+        }
 
         const token = args.token;
         const buttonId = args.button_id;

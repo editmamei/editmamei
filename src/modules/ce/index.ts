@@ -75,7 +75,7 @@ export const ceFactories = [
   createDiagnosticsTools,
   // ps_dialog — reads/clears a modal blocking Photoshop from outside the
   // scripting transport. Registered like any CE tool; tier 'dev' keeps it out
-  // of shipped editions until the macOS half exists.
+  // of shipped editions.
   createDialogTools,
   createRetouchTools,
   createBrushTools,

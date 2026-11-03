@@ -28,7 +28,9 @@ import (
 // osascriptTimeout bounds the whole AppleScript. System Events can itself block
 // when the target app is wedged, and a probe that hangs turns the recovery
 // mechanism into a second hang — the same reasoning as SendMessageTimeout on
-// the Windows side.
+// the Windows side. A click runs at most three scripts, so it ends within 18 s
+// plus its settle time: keep src/platform/dialog-probe.ts's macOS timeout above
+// that, or the server gives up while a script can still press the button.
 const osascriptTimeout = 6 * time.Second
 
 // The record protocol this file's scripts emit, and the parser for it, live in
@@ -74,6 +76,7 @@ tell application "System Events"
 	set dlgRef to missing value
 	set dlgIndex to 0
 	set depthCount to 0
+	set readFailed to false
 	set wi to 0
 	repeat with w in wins
 		set wi to wi + 1
@@ -85,6 +88,8 @@ tell application "System Events"
 					set dlgIndex to wi
 				end if
 			end if
+		on error
+			set readFailed to true
 		end try
 	end repeat
 	set wi to 0
@@ -98,10 +103,17 @@ tell application "System Events"
 					set dlgIndex to wi
 				end if
 			end if
+		on error
+			set readFailed to true
 		end try
 	end repeat
 
-	if dlgRef is missing value then return "STATUS" & FS & "clear"
+	if dlgRef is missing value then
+		-- A window we couldn't read may be the one holding the sheet, so this
+		-- can't be called clear.
+		if readFailed then return "STATUS" & FS & "unreadable"
+		return "STATUS" & FS & "clear"
+	end if
 
 	set outLines to {}
 
@@ -183,9 +195,10 @@ end tell
 `
 
 // clickScript presses one button by INDEX inside the same container the probe
-// found. Index, never name — §5.2 of the design: the evidencing customer runs a
-// German Photoshop, and a caption-addressed click is broken for every non-
-// English user.
+// found. Index, never name: a caption-addressed click is broken for every non-
+// English user. Names are only compared, first, against the buttons the token
+// check just saw (%EXPECT%), because each osascript run finds the dialog afresh
+// and another one may have appeared in between.
 const clickScript = `
 set FS to (ASCII character 31)
 tell application "System Events"
@@ -218,6 +231,17 @@ tell application "System Events"
 
 	try
 		set btns to buttons of dlgRef
+		set found to ""
+		repeat with bi from 1 to count of btns
+			if bi > %MAXBUTTONS% then exit repeat
+			set bName to ""
+			try
+				set bName to (name of item bi of btns) as text
+			end try
+			if bi > 1 then set found to found & " | "
+			set found to found & bName
+		end repeat
+		if found is not "%EXPECT%" then return "changed"
 		if (count of btns) < %INDEX% then return "noindex"
 		click (item %INDEX% of btns)
 		return "clicked"
@@ -295,6 +319,9 @@ func clickButton(target probeTarget, token string, buttonIndex int32, started ti
 	}
 
 	current := probeModal(target, started)
+	if current.Status == StatusUnknown {
+		return current
+	}
 	if current.Status != StatusDialog {
 		return withMs(Report{Status: StatusStale, Reason: "no-dialog-to-click"}, started)
 	}
@@ -304,12 +331,16 @@ func clickButton(target probeTarget, token string, buttonIndex int32, started ti
 			Title: current.Title, Buttons: current.Buttons,
 		}, started)
 	}
-	if buttonIndex < 1 {
+	if !hasButton(current.Buttons, buttonIndex) {
 		return withMs(Report{Status: StatusStale, Reason: "button-not-found"}, started)
 	}
 
-	script := strings.ReplaceAll(clickScript, "%APPNAME%", escapeForAppleScript(name))
-	script = strings.ReplaceAll(script, "%INDEX%", strconv.Itoa(int(buttonIndex)))
+	script := strings.NewReplacer(
+		"%APPNAME%", escapeForAppleScript(name),
+		"%INDEX%", strconv.Itoa(int(buttonIndex)),
+		"%MAXBUTTONS%", strconv.Itoa(maxButtons),
+		"%EXPECT%", escapeForAppleScript(expectedButtonNames(current.Buttons)),
+	).Replace(clickScript)
 	out, ok, reason := runOsascript(script)
 	if !ok {
 		return withMs(unknown(reason), started)
@@ -321,6 +352,8 @@ func clickButton(target probeTarget, token string, buttonIndex int32, started ti
 		return withMs(Report{Status: StatusStale, Reason: "button-not-found"}, started)
 	case "nodialog":
 		return withMs(Report{Status: StatusStale, Reason: "dialog-vanished"}, started)
+	case "changed":
+		return withMs(Report{Status: StatusStale, Reason: "dialog-changed"}, started)
 	default:
 		return withMs(unknown("click-failed"), started)
 	}

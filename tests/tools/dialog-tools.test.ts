@@ -50,6 +50,15 @@ describe('ps_dialog', () => {
     expect(def.tool.annotations?.destructiveHint).toBe(true);
   });
 
+  it('refuses an unknown action rather than treating it as a click', async () => {
+    const click = vi.fn();
+    const { def } = build({ click });
+    await expect(def.handler({ action: 'press', token: 't', button_id: 1 })).rejects.toThrow(
+      /unknown action/
+    );
+    expect(click).not.toHaveBeenCalled();
+  });
+
   it('inspect reports the blocking dialog with its buttons', async () => {
     const probe = vi.fn().mockResolvedValue(blockingDialog);
     const { def } = build({ probe });

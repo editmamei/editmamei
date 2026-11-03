@@ -18,8 +18,15 @@ import { resolveCoreBinaryPath } from '../api/snippet-client.js';
 import { Logger } from '../utils/logger.js';
 import { runChildWithTimeout } from './run-child.js';
 
-/** How long the probe child gets. Window enumeration measures in single-digit ms. */
-const PROBE_TIMEOUT_MS = 4000;
+/**
+ * How long the probe child gets. Window enumeration measures in single-digit ms.
+ * A macOS click runs up to three 6 s AppleScripts (`osascriptTimeout` in
+ * go-core/dialog_darwin.go); ending the child sooner would report a failure while
+ * a script it left running could still press the button.
+ */
+export function probeTimeoutMs(platform: string = process.platform): number {
+  return platform === 'darwin' ? 20_000 : 4000;
+}
 
 export interface DialogButton {
   index: number;
@@ -128,7 +135,7 @@ export class GoDialogProbe implements DialogProbe {
     }
     try {
       const { stdout, exitCode } = await probeOps.run(probeOps.resolveBinary(), args, {
-        timeout: PROBE_TIMEOUT_MS,
+        timeout: probeTimeoutMs(),
         diagLabel: 'editmamei-core dialog',
       });
       if (exitCode !== 0) {
@@ -152,7 +159,7 @@ export class GoDialogProbe implements DialogProbe {
  * Resolved fresh on every probe, never cached. A PID cached across a Photoshop
  * restart enumerates zero windows, and code that reads "zero windows" as "no
  * dialog" reports a confident `clear` about a Photoshop that is not even the
- * one running. (Observed during the spike: Photoshop restarted mid-session and
+ * one running. (Observed live: Photoshop restarted mid-session and
  * the stale PID silently returned an empty window list.)
  *
  * Returns every match because more than one Photoshop.exe can exist; the probe
@@ -213,11 +220,6 @@ export function parsePsOutput(stdout: string): DialogTarget {
     if (!appName) appName = base;
   }
   return { pids, appName };
-}
-
-/** @deprecated Use resolvePhotoshopTarget — macOS needs the name, not the PID. */
-export async function resolvePhotoshopPids(): Promise<number[]> {
-  return [...(await resolvePhotoshopTarget()).pids];
 }
 
 /**

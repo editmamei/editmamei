@@ -47,6 +47,10 @@ func parseProbeOutput(out string, pid int) (Report, bool) {
 		return unknown("no-photoshop-process"), false
 	case "nowindow":
 		return unknown("no-photoshop-window"), false
+	case "unreadable":
+		// A window couldn't be read and no dialog was found elsewhere. It may be
+		// the very window holding the sheet.
+		return unknown("window-read-failed"), false
 	case "clear":
 		return Report{Status: StatusClear, OwnerPID: pid}, true
 	case "dialog":
@@ -105,10 +109,9 @@ func parseProbeOutput(out string, pid int) (Report, bool) {
 }
 
 // macOS gates this behind TWO separate permissions that fail with different
-// codes. The design named only -1743 (Apple Events authorization); a live run
-// on 2026-08-19 hit -25211, assistive access, which is the one that actually
-// governs reading UI elements — Automation alone gets you far enough to name a
-// process and no further.
+// codes: -1743 (Apple Events authorization) and -25211, assistive access, which
+// is the one that actually governs reading UI elements — Automation alone gets
+// you far enough to name a process and no further.
 //
 // Both are fixed by the same user action, so both map to one reason. Both have
 // to be recognized, or the specific "turn on Accessibility" message degrades to
@@ -130,6 +133,18 @@ func classifyOsascriptFailure(stderr string) string {
 		return "osascript-failed"
 	}
 	return "osascript-error"
+}
+
+// expectedButtonNames is what the click script compares with the buttons it finds
+// just before clicking, so a dialog that took over since the token check isn't
+// clicked. Captions here are cleaned and the script's are raw, so a caption with an
+// accelerator or doubled spaces refuses the click: the safe way to be wrong.
+func expectedButtonNames(buttons []Button) string {
+	names := make([]string, len(buttons))
+	for i, b := range buttons {
+		names[i] = b.Caption
+	}
+	return strings.Join(names, " | ")
 }
 
 // escapeForAppleScript makes a value safe to embed in a double-quoted

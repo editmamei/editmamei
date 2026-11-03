@@ -56,8 +56,8 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // can self-serve a report.
   ps_report_problem: 'community',
   // Reads and clears a modal dialog blocking Photoshop, from outside the
-  // scripting transport. Windows-only so far, unverified on macOS, so it stays
-  // 'dev' until both halves exist and it has been run in anger.
+  // scripting transport. Both platform halves exist; it stays 'dev' until it has
+  // been run in anger.
   ps_dialog: 'dev',
 
   // action-tools

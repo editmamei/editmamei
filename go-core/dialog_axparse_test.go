@@ -34,6 +34,7 @@ func TestParseProbeNeverInventsClear(t *testing.T) {
 		"garbage":          "not a record stream at all",
 		"empty":            "",
 		"unknown status":   axStream("somethingelse"),
+		"unreadable":       axStream("unreadable"),
 		"truncated header": "STATUS",
 	}
 	for name, in := range tests {
@@ -135,6 +136,13 @@ func TestParseProbeIndexIDsAreNotReadAsWindowsControlIDs(t *testing.T) {
 	}
 	if r.Stakes != StakesDecision {
 		t.Errorf("stakes = %q, want %q", r.Stakes, StakesDecision)
+	}
+}
+
+func TestExpectedButtonNamesAreInListOrder(t *testing.T) {
+	got := expectedButtonNames([]Button{{Caption: "Don't Save"}, {Caption: "Cancel"}})
+	if got != "Don't Save | Cancel" {
+		t.Errorf("names = %q", got)
 	}
 }
 

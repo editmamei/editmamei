@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   GoDialogProbe,
-  resolvePhotoshopPids,
+  probeTimeoutMs,
+  resolvePhotoshopTarget,
   parsePsOutput,
   __setProbeOpsForTests,
   __resetProbeOpsForTests,
@@ -113,23 +114,34 @@ describe('GoDialogProbe', () => {
   });
 });
 
-describe('resolvePhotoshopPids', () => {
-  it('parses every Photoshop pid out of tasklist CSV', async () => {
-    // Two instances is a real configuration, and the probe checks them all.
-    stubRun({
-      stdout:
-        '"Photoshop.exe","31108","Console","1","2,897,000 K"\n"Photoshop.exe","52100","Console","1","1,000 K"\n',
-    });
-    const pids = await resolvePhotoshopPids();
-    if (process.platform === 'win32') {
+describe('resolvePhotoshopTarget', () => {
+  it.runIf(process.platform === 'win32')(
+    'parses every Photoshop pid out of tasklist CSV',
+    async () => {
+      // Two instances is a real configuration, and the probe checks them all.
+      stubRun({
+        stdout:
+          '"Photoshop.exe","31108","Console","1","2,897,000 K"\n"Photoshop.exe","52100","Console","1","1,000 K"\n',
+      });
+      const { pids } = await resolvePhotoshopTarget();
       expect(pids).toEqual([31108, 52100]);
     }
-  });
+  );
 
   it('returns nothing rather than throwing when the lookup fails', async () => {
     const run = vi.fn().mockRejectedValue(new Error('no tasklist'));
     __setProbeOpsForTests({ run });
-    await expect(resolvePhotoshopPids()).resolves.toEqual([]);
+    await expect(resolvePhotoshopTarget()).resolves.toEqual({ pids: [], appName: '' });
+  });
+});
+
+describe('probeTimeoutMs', () => {
+  it('outlasts the three 6 s scripts a macOS click can run', () => {
+    expect(probeTimeoutMs('darwin')).toBeGreaterThan(18_150);
+  });
+
+  it('stays short where the probe only reads window lists', () => {
+    expect(probeTimeoutMs('win32')).toBe(4000);
   });
 });
 

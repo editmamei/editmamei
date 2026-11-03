@@ -98,8 +98,8 @@ func TestClassifyStakes(t *testing.T) {
 	}
 }
 
-// Data-loss detection must not consult captions: the evidencing user runs a
-// German Photoshop, where the same dialog reads Ja / Nein.
+// Data-loss detection must not consult captions: a German Photoshop reads
+// Ja / Nein on the same dialog.
 func TestImpliesDataLossIgnoresLanguage(t *testing.T) {
 	german := []Button{{ID: 6, Caption: "Ja"}, {ID: 7, Caption: "Nein"}}
 	if !impliesDataLoss(german) {
@@ -114,19 +114,65 @@ func TestImpliesDataLossIgnoresLanguage(t *testing.T) {
 }
 
 func TestMakeTokenDetectsContentChangeOnRecycledHandle(t *testing.T) {
-	a := makeToken(100, 0xABC, "Adobe Photoshop", []Button{{Caption: "OK"}})
-	same := makeToken(100, 0xABC, "Adobe Photoshop", []Button{{Caption: "OK"}})
+	a := makeToken(100, 0xABC, "Adobe Photoshop", "", []Button{{Caption: "OK"}})
+	same := makeToken(100, 0xABC, "Adobe Photoshop", "", []Button{{Caption: "OK"}})
 	if a != same {
 		t.Fatal("token is not stable for identical input")
 	}
 	// Windows recycles HWNDs. Same handle + different content must not match,
 	// or a click lands on a dialog that inherited the handle.
-	recycled := makeToken(100, 0xABC, "Adobe Photoshop", []Button{{Caption: "Don't Save"}})
+	recycled := makeToken(100, 0xABC, "Adobe Photoshop", "", []Button{{Caption: "Don't Save"}})
 	if a == recycled {
 		t.Error("token collided across different dialog content on the same handle")
 	}
-	if a == makeToken(101, 0xABC, "Adobe Photoshop", []Button{{Caption: "OK"}}) {
+	if a == makeToken(101, 0xABC, "Adobe Photoshop", "", []Button{{Caption: "OK"}}) {
 		t.Error("token collided across different PIDs")
+	}
+}
+
+// Close All on a Mac: discarding A brings B's identical sheet to the same window
+// position, and only the message tells them apart.
+func TestMakeTokenSeparatesSamePromptForDifferentDocuments(t *testing.T) {
+	buttons := []Button{{ID: 1, Caption: "Don't Save"}, {ID: 2, Caption: "Cancel"}, {ID: 3, Caption: "Save"}}
+	if makeToken(1, 1, "", "Save changes to A?", buttons) == makeToken(1, 1, "", "Save changes to B?", buttons) {
+		t.Error("token collided across different messages")
+	}
+	moved := []Button{{ID: 2, Caption: "Don't Save"}, {ID: 1, Caption: "Cancel"}, {ID: 3, Caption: "Save"}}
+	if makeToken(1, 1, "", "m", buttons) == makeToken(1, 1, "", "m", moved) {
+		t.Error("token collided across different button ids")
+	}
+}
+
+func TestNormalizeTokenIgnoresARunningOperationsMessage(t *testing.T) {
+	report := func(text string) Report {
+		r := Report{Status: StatusDialog, Title: "Working", Text: text, HasProgress: true,
+			Buttons: []Button{{ID: 2, Caption: "Cancel"}}}
+		normalizeReport(&r, 1, 1, idSchemeWin32)
+		return r
+	}
+	if report("10%").Token != report("11%").Token {
+		t.Error("a progress update changed the token, so Cancel could never be clicked")
+	}
+}
+
+func TestModalFirstKeepsTopDownOrderWithinEachGroup(t *testing.T) {
+	modal := map[uintptr]bool{2: true, 4: true}
+	got := modalFirst([]uintptr{1, 2, 3, 4}, func(h uintptr) bool { return modal[h] })
+	want := []uintptr{2, 4, 1, 3}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v: the topmost modal must be described first", got, want)
+		}
+	}
+}
+
+func TestHasButtonOnlyAcceptsListedIDs(t *testing.T) {
+	buttons := []Button{{ID: 10}, {ID: 11}}
+	if !hasButton(buttons, 11) {
+		t.Error("listed id refused")
+	}
+	if hasButton(buttons, 12) {
+		t.Error("unlisted id accepted, so a click could reach a checkbox")
 	}
 }
 
