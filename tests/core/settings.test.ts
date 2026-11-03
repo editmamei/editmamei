@@ -10,8 +10,11 @@ import {
   mintInstallId,
   applyDesktopToggles,
   applyEditorEnvOverride,
+  featureDetailsEnabled,
+  setFeatureDetails,
   type Settings,
 } from '@editmamei/core/settings.ts';
+import { FEATURES_QUESTION } from '@editmamei/core/consent-questions.ts';
 
 let dir: string;
 
@@ -149,6 +152,111 @@ describe('loadSettings — existing / malformed', () => {
     expect(settings.telemetry.usage).toBe(true);
     expect(settings.telemetry.diagnostics).toBe(false);
     expect(settings.telemetry.install_id).toMatch(/^[a-f0-9]{32}$/);
+  });
+});
+
+describe('Feature details setting', () => {
+  it('starts on for a new install, with a record of why', () => {
+    const { settings, created } = loadSettings({ dir });
+    expect(created).toBe(true);
+    expect(settings.telemetry.features).toBe(true);
+    expect(settings.consent?.features).toMatchObject({
+      version: FEATURES_QUESTION.version,
+      answer: 'install_default',
+      via: 'install',
+    });
+    expect(featureDetailsEnabled(settings)).toBe(true);
+  });
+
+  it('stays absent and off for an existing install that upgrades', async () => {
+    await writeFile(
+      settingsPath({ dir }),
+      JSON.stringify({ telemetry: { usage: true, diagnostics: false, install_id: 'x'.repeat(32) } })
+    );
+    const { settings } = loadSettings({ dir });
+    expect(settings.telemetry).not.toHaveProperty('features');
+    expect(settings).not.toHaveProperty('consent');
+    expect(featureDetailsEnabled(settings)).toBe(false);
+  });
+
+  it('does not gain the setting when an older file is saved back', async () => {
+    await writeFile(
+      settingsPath({ dir }),
+      JSON.stringify({ telemetry: { usage: true, install_id: 'x'.repeat(32) } })
+    );
+    saveSettings(loadSettings({ dir }).settings, { dir });
+    const reread = JSON.parse(await readFile(settingsPath({ dir }), 'utf8')) as Settings;
+    expect(reread.telemetry).not.toHaveProperty('features');
+    expect(reread).not.toHaveProperty('consent');
+  });
+
+  it('reads as off when the file cannot be read', async () => {
+    await writeFile(settingsPath({ dir }), '{ "telemetry": { "features": true, } }');
+    const { settings, degraded } = loadSettings({ dir });
+    expect(degraded).toBe(true);
+    expect(settings.telemetry).not.toHaveProperty('features');
+    expect(featureDetailsEnabled(settings)).toBe(false);
+  });
+
+  it.each(['yes', 1, null])('ignores a malformed value (%s)', async (features) => {
+    await writeFile(
+      settingsPath({ dir }),
+      JSON.stringify({ telemetry: { features, install_id: 'x'.repeat(32) } })
+    );
+    expect(loadSettings({ dir }).settings.telemetry).not.toHaveProperty('features');
+  });
+
+  it('round-trips a stored choice and its record', async () => {
+    const { settings } = loadSettings({ dir });
+    setFeatureDetails(settings, false, 'elicitation', new Date('2026-11-20T10:00:00Z'));
+    saveSettings(settings, { dir });
+    const reread = loadSettings({ dir }).settings;
+    expect(reread.telemetry.features).toBe(false);
+    expect(reread.consent?.features).toEqual({
+      version: FEATURES_QUESTION.version,
+      answer: 'declined',
+      via: 'elicitation',
+      date: '2026-11-20',
+    });
+  });
+
+  it('drops a malformed record, so the question is asked again', async () => {
+    await writeFile(
+      settingsPath({ dir }),
+      JSON.stringify({
+        telemetry: { features: true, install_id: 'x'.repeat(32) },
+        consent: { features: { version: 'one', answer: 'accepted', via: 'cli', date: 'today' } },
+      })
+    );
+    expect(loadSettings({ dir }).settings).not.toHaveProperty('consent');
+  });
+
+  it('is off while usage stats are off, without changing the stored choice', () => {
+    const { settings } = loadSettings({ dir });
+    settings.telemetry.usage = false;
+    expect(featureDetailsEnabled(settings)).toBe(false);
+    expect(settings.telemetry.features).toBe(true);
+  });
+
+  it('honors a hand-edited setting with no record', async () => {
+    await writeFile(
+      settingsPath({ dir }),
+      JSON.stringify({ telemetry: { usage: true, features: true, install_id: 'x'.repeat(32) } })
+    );
+    expect(featureDetailsEnabled(loadSettings({ dir }).settings)).toBe(true);
+  });
+
+  it('is off when the stored answer is to an older version of the question', () => {
+    const { settings } = loadSettings({ dir });
+    settings.consent = {
+      features: {
+        version: FEATURES_QUESTION.version - 1,
+        answer: 'accepted',
+        via: 'elicitation',
+        date: '2026-01-01',
+      },
+    };
+    expect(featureDetailsEnabled(settings)).toBe(false);
   });
 });
 
