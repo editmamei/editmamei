@@ -15,13 +15,17 @@ export interface FeatureName {
 
 const MAX_TOKEN_LENGTH = 64;
 
+/** The telemetry server's shape for `name` and `value`. Keep the two identical. */
+export const FEATURE_TOKEN_PATTERN =
+  /^(?!.*\.(?:psd|psb|jpe?g|png|tiff?|gif|webp|heic|bmp|pdf|svg|raw|dng|arw|cr2|cr3|nef|orf|raf)$)[A-Za-z0-9_$.#-]{1,64}$/i;
+
 /**
  * Fit a name to the server's token shape: `soft light` becomes `soft_light`. One bad token
- * rejects a whole batch, so this runs on every name, listed or not. Null when nothing is left.
+ * rejects a whole batch, so this runs on every name, listed or not. Null when it can't fit.
  */
 export function toFeatureToken(raw: string): string | null {
   const token = raw.replace(/[^A-Za-z0-9_$.#-]+/g, '_').slice(0, MAX_TOKEN_LENGTH);
-  return token.length > 0 ? token : null;
+  return FEATURE_TOKEN_PATTERN.test(token) ? token : null;
 }
 
 /** The top-level string arguments whose value the tool's schema lists in an `enum`. */

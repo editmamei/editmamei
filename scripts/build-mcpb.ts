@@ -142,7 +142,7 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
         type: 'boolean',
         title: 'Share usage stats',
         description:
-          'Content-free counts (which tools run, success/duration) that help improve Editmamei, tied to a random install ID. No images, file paths, or anything you or your assistant typed is ever sent. On by default — turn off to opt out.',
+          'Content-free counts (which tools run, success/duration) that help improve Editmamei, tied to a random install ID. No images, file paths, script text, or other free-form text is ever sent. On by default — turn off to opt out.',
         required: false,
         default: true,
       },
