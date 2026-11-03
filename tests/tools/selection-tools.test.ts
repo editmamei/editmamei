@@ -732,8 +732,7 @@ describe('createSelectionTools', () => {
     expect(desc).toMatch(/[Aa]djustment layers/);
     expect(desc).toMatch(/If a selection is active.*reveals the selection/i);
     expect(desc).toMatch(/frame opening/i);
-    // The execute_script anti-pattern callout must survive so the LLM doesn't
-    // hand-roll the Mk Chnl AM workaround.
+    // Keeps the model from hand-rolling what this tool already does.
     expect(desc).toMatch(/hand-written mask script/i);
   });
 

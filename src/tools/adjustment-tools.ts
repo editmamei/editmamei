@@ -186,8 +186,8 @@ const addAdjustmentLayerSchema: JsonSchemaObject = {
     bw_tint_hue: {
       type: 'number',
       description:
-        'For type=black_and_white when bw_tint=true. Tint hue in degrees (0 to 360). Default 220 (cool blue).',
-      minimum: 0,
+        'For type=black_and_white when bw_tint=true. Tint hue in degrees (0 to 360; negative values wrap). Default 220 (cool blue).',
+      minimum: -180,
       maximum: 360,
       default: 220,
     },

@@ -69,11 +69,6 @@ export class ValidationError extends Error {
   }
 }
 
-/**
- * Validate and coerce `args` against `schema`. Throws ValidationError on
- * any violation. Returns a new object with defaults applied and string
- * numerics coerced.
- */
 /** The first `required` argument that is absent and has no schema default, if any. */
 export function missingRequiredArg(
   schema: { required?: string[]; properties?: object },
@@ -85,6 +80,11 @@ export function missingRequiredArg(
   );
 }
 
+/**
+ * Validate and coerce `args` against `schema`. Throws ValidationError on
+ * any violation. Returns a new object with defaults applied and string
+ * numerics coerced.
+ */
 export function validateArgs(
   schema: JsonSchemaObject,
   args: Record<string, unknown> | undefined

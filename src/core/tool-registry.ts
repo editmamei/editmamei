@@ -126,12 +126,12 @@ export class ToolRegistry {
     let error: string | undefined;
     let result: ToolResult | undefined;
     try {
+      const missing = missingRequiredArg(definition.tool.inputSchema, args);
       // Every script the handler runs — however many — is bounded by this
       // call's deadline, computed once here. A nested Kernel.invokeTool call
       // re-enters this same method while still inside the outer context, so
       // budgetContextFor caps the inner deadline at the outer's remaining
       // time automatically — see its doc comment. Read side: run-script.ts.
-      const missing = missingRequiredArg(definition.tool.inputSchema, args);
       result = missing
         ? {
             content: [{ type: 'text', text: `Missing required argument: ${missing}` }],

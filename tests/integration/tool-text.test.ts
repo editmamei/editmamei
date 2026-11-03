@@ -39,7 +39,7 @@ describe('tool text', () => {
     }
   });
 
-  it('does not advertise the paid edition', () => {
+  it('does not name an edition', () => {
     for (const tool of tools()) {
       expect(textOf(tool), tool.name).not.toMatch(/\bPro (adds|feature|landmark|face-mesh)\b/);
       expect(textOf(tool), tool.name).not.toMatch(/\bare a Pro\b/);
@@ -70,15 +70,15 @@ describe('tool text', () => {
 });
 
 describe('guidance reaches a client that shows only structuredContent', () => {
-  it('withWarning copies the warning tail, and adds nothing without one', () => {
-    expect(withWarning({ a: 1 }, 'Done. WARNING: blur is missing.')).toEqual({
+  it('withWarning adds the warning it is given, and nothing without one', () => {
+    expect(withWarning({ a: 1 }, ' WARNING: blur is missing.')).toEqual({
       a: 1,
       warning: 'WARNING: blur is missing.',
     });
-    expect(withWarning({ a: 1 }, 'Done.')).toEqual({ a: 1 });
+    expect(withWarning({ a: 1 }, '')).toEqual({ a: 1 });
   });
 
-  it('runGimpTool carries a warning from its success text', async () => {
+  it('runGimpTool takes no warning from a layer name in its success text', async () => {
     const gimp = { call: async () => ({ width: 4 }) } as unknown as GimpBackend;
     const result = await runGimpTool({
       gimp,
@@ -86,12 +86,26 @@ describe('guidance reaches a client that shows only structuredContent', () => {
       rawArgs: {},
       schema: { type: 'object' },
       errorPrefix: 'Error',
-      successText: () => 'Resized. WARNING: vignette was left behind.',
+      successText: () => 'Renamed to "WARNING: old".',
     });
-    expect(result.structuredContent).toEqual({
-      width: 4,
-      warning: 'WARNING: vignette was left behind.',
+    expect(result.structuredContent).toEqual({ width: 4 });
+  });
+
+  it('runGimpTool carries a filter that could not follow the change', async () => {
+    const gimp = {
+      call: async () => ({ width: 4, effect_update_failures: ['vignette'] }),
+    } as unknown as GimpBackend;
+    const result = await runGimpTool({
+      gimp,
+      op: 'x',
+      rawArgs: {},
+      schema: { type: 'object' },
+      errorPrefix: 'Error',
+      successText: () => 'Resized.',
     });
+    expect((result.structuredContent as { warning: string }).warning).toMatch(
+      /^WARNING: vignette could not be updated/
+    );
   });
 
   it('withholdImages says so in the structured result', () => {

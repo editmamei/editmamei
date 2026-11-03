@@ -132,16 +132,35 @@ export interface GimpPreviewDeps {
 export const defaultPreviewsAllowed = (): boolean =>
   loadSettings().settings.privacy.send_previews_to_llm;
 
+/** Appended to a rotate/flip/resize result's text when the bridge reports `effect_update_failures`
+ * -- a live GEGL update that failed partway through applying the geometry transform to one of
+ * gimp_add_effect's filters. The filter's OWN params are kept at their OLD position/angle/offset/
+ * size in the ledger (guaranteed, bridge/ops.py's `_apply_planned_effect_transform`), and the
+ * bridge also tries to restore those same OLD values to the live render (best effort -- it just
+ * didn't move with the rest of the image, though rarely even that restore can fail too). */
+export function effectUpdateFailuresNote(failures: string[] | undefined): string {
+  if (!failures || failures.length === 0) return '';
+  const plural = failures.length > 1;
+  const it = plural ? 'them' : 'it';
+  return (
+    ` WARNING: ${failures.join(', ')} could not be updated for this transform and ` +
+    `${plural ? 'were' : 'was'} left at ${plural ? 'their' : 'its'} old position/angle/offset/size ` +
+    `instead -- delete ${it} (gimp_filter op=delete) and re-create ${it} if ${plural ? 'they need' : 'it needs'} ` +
+    `to track the content (re-applying THIS SAME transform again would move ${it} a second time, ` +
+    `misaligning ${it} the other way).`
+  );
+}
+
 /**
  * A client may show only `structuredContent` when a result has it, so a warning the model must act
- * on goes there too: copies any `WARNING: ...` tail of `text` into the `warning` field.
+ * on goes there too. Takes the warning itself, not text around it: a layer name can say anything.
  */
 export function withWarning<T extends object>(
   structured: T,
-  text: string
+  note: string
 ): T & { warning?: string } {
-  const at = text.indexOf('WARNING: ');
-  return at < 0 ? structured : { ...structured, warning: text.slice(at) };
+  const warning = note.trim();
+  return warning ? { ...structured, warning } : structured;
 }
 
 export async function runGimpTool(spec: GimpToolSpec): Promise<ToolResult> {
@@ -149,10 +168,12 @@ export async function runGimpTool(spec: GimpToolSpec): Promise<ToolResult> {
     const args = validateArgs(spec.schema, spec.rawArgs);
     const bridgeArgs = spec.params ? spec.params(args) : pickSchemaDeclaredKeys(spec.schema, args);
     const result = await spec.gimp.call<Record<string, unknown>>(spec.op, bridgeArgs);
-    const text = spec.successText(result, args);
     return {
-      content: [{ type: 'text' as const, text }],
-      structuredContent: withWarning(result, text),
+      content: [{ type: 'text' as const, text: spec.successText(result, args) }],
+      structuredContent: withWarning(
+        result,
+        effectUpdateFailuresNote(result.effect_update_failures as string[] | undefined)
+      ),
     };
   } catch (error) {
     return toolGimpErrorResult(spec.errorPrefix, error);

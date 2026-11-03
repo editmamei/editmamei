@@ -8,7 +8,8 @@ import {
   GIMP_LAYER_ID_PROP,
   pickSchemaDeclaredKeys,
 } from './gimp-shared.js';
-import { EFFECT_UPDATE_FAILURES_PROP, effectUpdateFailuresNote } from './gimp-geometry-tools.js';
+import { EFFECT_UPDATE_FAILURES_PROP } from './gimp-geometry-tools.js';
+import { effectUpdateFailuresNote } from './gimp-shared.js';
 
 /**
  * gimp_transform_layer — the per-LAYER twin of ps_transform_layer, discriminated by `op`: fit |
