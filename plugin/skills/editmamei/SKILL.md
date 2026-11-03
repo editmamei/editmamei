@@ -49,7 +49,7 @@ After `ps_ping` succeeds, call `ps_overview` once to read the workflow brief and
 
 Never speculate that a tool exists. If you reference an operation that isn't in your `tools/list`, work around it or surface the gap to the user. The overview describes the workflow tier-agnostically; the inventory in your `tools/list` is what's actually available.
 
-# GIMP (second editor, beta)
+# GIMP (second editor)
 
 If your `tools/list` also includes `gimp_*` tools, that's a headless GIMP session running alongside (or instead of) Photoshop. Use `gimp_*` only when the user asked for GIMP, or when Photoshop isn't available: not as a default alternative to `ps_*`.
 

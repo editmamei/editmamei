@@ -106,7 +106,7 @@ describe('createGimpFilterTools', () => {
     expect((result.content?.[0] as { text: string }).text).toContain('Deleted filter 3');
   });
 
-  it("'reorder' is not a valid op (dropped from the beta — GIMP has no API for it)", async () => {
+  it("'reorder' is not a valid op (GIMP has no API for it)", async () => {
     const gimp = makeGimpBackend();
     const tools = createGimpFilterTools(gimp.asBackend());
     const result = await callTool(tools, 'gimp_filter', { image: 5, op: 'reorder' });

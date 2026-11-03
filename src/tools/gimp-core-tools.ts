@@ -116,7 +116,7 @@ async function gimpPing(gimp: GimpBackend): Promise<ToolResult> {
  */
 export const GIMP_OVERVIEW_MARKDOWN = `# Editmamei — driving headless GIMP with this MCP
 
-This is the second-editor beta surface: a headless \`gimp_*\` tool set
+This is the second-editor surface: a headless \`gimp_*\` tool set
 alongside (or instead of) the Photoshop \`ps_*\` surface, depending on
 what this build's boot detected. When both \`ps_*\` and \`gimp_*\` tools
 are registered, use \`gimp_*\` only when the user asked for GIMP or

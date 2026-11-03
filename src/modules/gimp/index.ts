@@ -1,5 +1,5 @@
 /**
- * The GIMP module — the second-editor beta tool set. Registers `gimp_*`
+ * The GIMP module — the second-editor tool set. Registers `gimp_*`
  * tools when a GIMP install was detected (or the `editor` pin forced it) at
  * boot; see `src/backends/detect-editors.ts` (`resolveEditorRegistration`)
  * for the matrix and `src/core/server.ts` for where the decision is applied.
