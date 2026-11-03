@@ -11,11 +11,15 @@ import { buildRegionSignals, scoreRegion } from '@editmamei/perception/region-sc
 //     aren't punished for breaking the "balanced" norm.
 
 const scene = (
-  over: Partial<{ horizonY: number; horizonConfidence: number; indoorObjectCount: number }> = {}
+  over: Partial<{
+    horizonY: number | null;
+    horizonConfidence: number;
+    indoorObjectCount: number;
+  }> = {}
 ) => ({
   docW: 1000,
   docH: 1000,
-  horizonY: over.horizonY ?? 400,
+  horizonY: over.horizonY === undefined ? 400 : over.horizonY,
   horizonConfidence: over.horizonConfidence ?? 0.7,
   indoorObjectCount: over.indoorObjectCount ?? 0,
 });
@@ -29,6 +33,29 @@ const info = (o: { bottom: number; top?: number; cov: number; fill?: number; edg
 });
 
 describe('region-scorer', () => {
+  it('a refused horizon yields no alignment and the neutral 0.5, not a score against a guess', () => {
+    // Frames whose horizon cannot be measured used to arrive here carrying a
+    // rule-of-thirds prior at confidence 0.2, so they were scored for alignment
+    // against a line nobody measured. They now arrive as an explicit refusal.
+    // The scorer's own logic is unchanged — it already gated alignment on
+    // confidence — but the scores for these frames move, so pin both halves.
+    const refused = scene({ horizonY: null, horizonConfidence: 0 });
+    const s = buildRegionSignals(info({ bottom: 400, cov: 0.35 }), refused);
+    expect(s.horizonAlignment).toBeNull();
+    expect(s.horizonConfidence).toBe(0);
+
+    // The same region measured against a real horizon at its lower edge scores
+    // strictly higher, which is the whole point of refusing to invent one.
+    const measured = buildRegionSignals(
+      info({ bottom: 400, cov: 0.35 }),
+      scene({ horizonY: 400, horizonConfidence: 0.7 })
+    );
+    expect(measured.horizonAlignment).not.toBeNull();
+    expect(scoreRegion('sky', measured, {}).confidence).toBeGreaterThan(
+      scoreRegion('sky', s, {}).confidence
+    );
+  });
+
   it('buildRegionSignals derives spatial signals from bounds', () => {
     const s = buildRegionSignals(info({ bottom: 1000, top: 0, cov: 1 }), scene());
     expect(s.touchesBottom).toBe(true);

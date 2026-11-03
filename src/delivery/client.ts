@@ -87,10 +87,17 @@ export class DeliveryError extends Error {
      * Stable code for callers; messages are not API. `server` keeps the grace
      * cache. `oversize` is a client-side refusal (declared or streamed body
      * exceeds the artifact byte cap) — never retried, same as
-     * not_entitled/not_found.
+     * not_entitled/not_found. `unavailable_in_region` is the server's 451 —
+     * never retried.
      */
     readonly code:
-      'not_entitled' | 'not_found' | 'server' | 'network' | 'not_configured' | 'oversize',
+      | 'not_entitled'
+      | 'not_found'
+      | 'server'
+      | 'network'
+      | 'not_configured'
+      | 'oversize'
+      | 'unavailable_in_region',
     /** From a 429/503 Retry-After header when the server supplied one (ms). */
     readonly retryAfterMs?: number
   ) {
@@ -116,6 +123,7 @@ const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
 // Named UA for parity with the license client (CF 1010-blocks bare urllib UAs).
 const USER_AGENT = 'editmamei-delivery-client/1';
 const HEADER_KEY = 'x-editmamei-license-key';
+const HEADER_ACTIVATION = 'x-editmamei-activation-id';
 
 const defaultFetch: DeliveryFetch = (url, init) =>
   fetch(url, init) as unknown as Promise<DeliveryResponse>;
@@ -156,12 +164,18 @@ export class DeliveryClient {
   private readonly sleep: Sleep;
   private readonly minIntervalMs: number;
   private readonly maxArtifactBytes: number;
+  private readonly activationId: string | undefined;
   private lastRequestAt = 0;
 
   constructor(
     opts: {
       config?: DeliveryConfig;
       fetchImpl?: DeliveryFetch;
+      /**
+       * This device's Polar activation id, sent with every request so the server can hold the
+       * key to the machines it was activated on.
+       */
+      activationId?: string;
       /** Override the retry policy (tests). Defaults to 4 attempts, 1s exponential backoff. */
       retry?: Partial<RetryConfig>;
       /** Injected backoff/pacing delay (tests pass a no-op so they don't actually wait). */
@@ -178,6 +192,7 @@ export class DeliveryClient {
     this.sleep = opts.sleep ?? defaultSleep;
     this.minIntervalMs = opts.minRequestIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
     this.maxArtifactBytes = opts.maxArtifactBytes ?? MAX_ARTIFACT_BYTES;
+    this.activationId = opts.activationId || undefined;
     if (!this.cfg.baseUrl) {
       throw new DeliveryError(
         'Delivery endpoint is not configured. Set EDITMAMEI_DELIVERY_URL ' +
@@ -306,7 +321,11 @@ export class DeliveryClient {
     try {
       return await this.fetchImpl(`${this.cfg.baseUrl}${path}`, {
         method: 'GET',
-        headers: { 'user-agent': USER_AGENT, [HEADER_KEY]: key },
+        headers: {
+          'user-agent': USER_AGENT,
+          [HEADER_KEY]: key,
+          ...(this.activationId ? { [HEADER_ACTIVATION]: this.activationId } : {}),
+        },
       });
     } catch (err) {
       throw new DeliveryError(
@@ -341,6 +360,13 @@ export class DeliveryClient {
     }
     if (status === 404) {
       return new DeliveryError('Requested module/version was not found.', 404, 'not_found');
+    }
+    if (status === 451) {
+      return new DeliveryError(
+        "Editmamei Pro downloads aren't available in your region.",
+        451,
+        'unavailable_in_region'
+      );
     }
     // 5xx (incl. Polar upstream_unavailable / a throttle the worker mapped 429→503) is transient
     // — callers keep their grace cache rather than treating it as a revocation; the retry honors

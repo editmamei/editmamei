@@ -30,14 +30,32 @@ export interface ThresholdPick {
   bright_fraction: number;
 }
 
-export interface HorizonFacet {
-  /** Horizon y in document pixels (the sky→ground vertical boundary estimate). */
-  y: number;
-  /** 0..1 placement of the horizon down the frame (y / docHeight). */
-  placement: number;
-  /** 0..1 rough confidence from how cleanly the histogram splits (bimodality). */
-  confidence: number;
-}
+/**
+ * The horizon — measured, or explicitly absent.
+ *
+ * `detected: false` is a real answer, not a placeholder, and the union exists so
+ * a caller cannot read `y` or `placement` without first branching on it. A
+ * confidence field alone does not carry that guarantee: it leaves a coordinate
+ * sitting there for anyone who takes it at face value.
+ *
+ * Nothing here may substitute a compositional default for a measurement. If the
+ * frame cannot be measured, the facet refuses.
+ */
+export type HorizonFacet =
+  | {
+      detected: true;
+      /** Horizon y in document pixels (the sky→ground vertical boundary estimate). */
+      y: number;
+      /** 0..1 placement of the horizon down the frame (y / docHeight). */
+      placement: number;
+      /** 0..1 rough confidence from how cleanly the histogram splits (bimodality). */
+      confidence: number;
+    }
+  | {
+      detected: false;
+      /** Why nothing was reported, so a caller can distinguish the cases. */
+      reason: 'no-row-profile' | 'no-luminance-crossing' | 'dominant-subject';
+    };
 
 export interface TonalZones {
   /** Inclusive 0..255 luminance bounds for each band, histogram-picked. */
@@ -113,8 +131,9 @@ export function pickThresholdLevel(hist: LumaHistogram): ThresholdPick {
  * the row where the running brightness crosses the histogram-picked threshold.
  *
  * `rowMeans` is a top→bottom array of mean luminance per row strip (length R,
- * each strip covering docHeight/R px). When row data isn't available we fall
- * back to a thirds-rule prior (horizon at 1/3 down) flagged with low confidence.
+ * each strip covering docHeight/R px). When row data isn't available, or no
+ * crossing survives the checks below, the facet refuses rather than inventing a
+ * line — see the discriminated union on HorizonFacet.
  */
 export function estimateHorizon(
   rowMeans: number[] | undefined,
@@ -140,14 +159,13 @@ export function estimateHorizon(
   const splitConfidence = Math.max(0, Math.min(1, 1 - Math.abs(0.5 - split) * 2)) * 0.6 + 0.2;
 
   if (!rowMeans || rowMeans.length === 0) {
-    // No row profile — thirds-rule prior, low confidence.
-    return { y: Math.round(docHeight / 3), placement: 1 / 3, confidence: 0.2 };
+    return { detected: false, reason: 'no-row-profile' };
   }
 
   const R = rowMeans.length;
   // Find the first row (scanning top→bottom) where the mean drops below the
   // threshold level — the sky→ground transition. If the whole frame is above or
-  // below threshold, there's no clear horizon; fall back to thirds.
+  // below threshold, there's no clear horizon and the facet refuses.
   let crossRow = -1;
   for (let r = 0; r < R; r++) {
     if (rowMeans[r] < pick.level) {
@@ -156,7 +174,7 @@ export function estimateHorizon(
     }
   }
   if (crossRow <= 0) {
-    return { y: Math.round(docHeight / 3), placement: 1 / 3, confidence: 0.2 };
+    return { detected: false, reason: 'no-luminance-crossing' };
   }
   const y = Math.round((crossRow / R) * docHeight);
 
@@ -168,20 +186,18 @@ export function estimateHorizon(
   // confidence 0.73 — there is no horizon in that frame at all.
   //
   // When a subject fills most of the frame AND the crossing falls inside that
-  // subject's box, the transition is explained by the subject, so demote to the
-  // same low-confidence thirds prior used when there's no row data. We demote
-  // rather than omit because the field is non-optional and downstream
-  // composition math consumes `placement`; 0.2 is the established "this is a
-  // prior, not a measurement" signal that ps_select_by_reference's gate and any
-  // reader can act on.
+  // subject's box, the transition is explained by the subject, so there is no
+  // horizon to report, so refuse. The union is what lets this branch say that
+  // instead of supplying a coordinate composition math would consume.
   if (
     (mainSubjectBox && isDominantSubjectCrossing(y, docHeight, mainSubjectBox)) ||
     (primaryFaceBox && isPortraitFaceCrossing(y, docHeight, primaryFaceBox))
   ) {
-    return { y: Math.round(docHeight / 3), placement: 1 / 3, confidence: 0.2 };
+    return { detected: false, reason: 'dominant-subject' };
   }
 
   return {
+    detected: true,
     y,
     placement: y / docHeight,
     confidence: Math.max(0, Math.min(1, splitConfidence)),

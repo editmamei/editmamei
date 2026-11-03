@@ -4,7 +4,33 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EditmameiServer } from '@editmamei/core/server.ts';
 import { TOOL_TIERS, isToolAllowedInEdition, tierOf } from '@editmamei/core/tool-tiers.ts';
+import { TOOL_GROUPS } from '@editmamei/core/tool-groups.ts';
+import type { GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
+
+/**
+ * Registers BOTH the ps_* and gimp_* surfaces for the universe-enumeration
+ * tests below — a plain `new EditmameiServer()` only ever registers ps_*
+ * (the no-`editors`-option default), which leaves every gimp_* tool
+ * unregistered and makes its gimp_* TOOL_TIERS rows look orphaned or
+ * unclassifiable, when the real gap is that this construction never asked
+ * for gimp_* at all. The install is a fake, plausible-looking path — nothing
+ * spawns at registration time, `GimpBackend` only starts a session lazily on
+ * its first `call()`, which these tests never make.
+ */
+const FAKE_GIMP_INSTALL: GimpInstall = {
+  source: 'conventional',
+  path: 'C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe',
+  launch: { command: 'C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe', args: [] },
+};
+const BOTH_EDITORS_OPTS = {
+  editors: {
+    registerPhotoshop: true,
+    registerGimp: true,
+    gimpInstall: FAKE_GIMP_INSTALL,
+    gimpDetectionTimedOut: false,
+  },
+};
 
 // Every `new EditmameiServer()` below builds its own SessionLog with no `dir`
 // override — redirect it to a per-test temp dir so this file's constructions
@@ -21,6 +47,31 @@ const PRO_SOURCES_PRESENT = existsSync(join(REPO_ROOT, 'src', 'modules', 'pro', 
 const proIt = PRO_SOURCES_PRESENT ? it : it.skip;
 
 /**
+ * Tier entries that are deliberately NOT registered by any current factory,
+ * and are therefore exempt from the orphan check below.
+ *
+ * These four names are retired warp variants. The classification tables have
+ * to outlive the tools by one release: the module that registers them is
+ * downloaded, and a newly fetched one only takes effect on the NEXT boot, so
+ * a host on this version can be paired with a previously-installed module
+ * that still registers all four. `tierOf`/`groupOf` throw on an unknown name
+ * and `assertToolsClassified()` runs them over the whole registered surface
+ * at startup, so dropping the rows early turns that pairing into a fatal boot
+ * failure rather than a missing tool.
+ *
+ * This list, the `tool-tiers.ts` rows, and their `tool-groups.ts`
+ * counterparts are deleted together, once no supported module registers
+ * these names. The allowance is an explicit name list on purpose — any OTHER
+ * orphan still fails.
+ */
+const TRANSITION_ORPHANS = new Set([
+  'ps_warp_layer_mesh',
+  'ps_warp_layer_along',
+  'ps_warp_layer_region',
+  'ps_warp_layer_to',
+]);
+
+/**
  * Pins the contract between the live tool surface and the tier-classification
  * table. The classification is the single source of truth for which tools
  * end up in each build bundle — drift here would silently leak tools into
@@ -28,12 +79,13 @@ const proIt = PRO_SOURCES_PRESENT ? it : it.skip;
  */
 describe('TOOL_TIERS classification table', () => {
   it('classifies every registered tool', async () => {
-    const server = new EditmameiServer() as unknown as {
+    const server = new EditmameiServer(BOTH_EDITORS_OPTS) as unknown as {
       toolRegistry: { list(): Array<{ name: string }> };
       loadModules(): Promise<void>;
     };
     // Pro is a downloaded module loaded via dynamic import; pull it in so the
-    // assertion covers the FULL live surface (CE built-in + Pro), not just CE.
+    // assertion covers the FULL live surface (CE built-in + Pro + gimp_*),
+    // not just CE.
     await server.loadModules();
     const registered = server.toolRegistry.list().map((t) => t.name);
     const missing = registered.filter((name) => !(name in TOOL_TIERS));
@@ -54,15 +106,18 @@ describe('TOOL_TIERS classification table', () => {
         for (const name of Object.keys(TOOL_TIERS)) {
           TOOL_TIERS[name] = 'community';
         }
-        const server = new EditmameiServer() as unknown as {
+        const server = new EditmameiServer(BOTH_EDITORS_OPTS) as unknown as {
           toolRegistry: { list(): Array<{ name: string }> };
           loadModules(): Promise<void>;
         };
         // Pro tools come from the downloaded module (dynamic import); load it so
-        // the orphan check sees the full registered surface.
+        // the orphan check sees the full registered surface (CE built-in + Pro
+        // + gimp_*).
         await server.loadModules();
         const registered = new Set(server.toolRegistry.list().map((t) => t.name));
-        const orphans = Object.keys(saved).filter((name) => !registered.has(name));
+        const orphans = Object.keys(saved).filter(
+          (name) => !registered.has(name) && !TRANSITION_ORPHANS.has(name)
+        );
         expect(orphans, `Orphan TOOL_TIERS entries: ${orphans.join(', ')}`).toEqual([]);
       } finally {
         for (const name of Object.keys(TOOL_TIERS)) delete TOOL_TIERS[name];
@@ -70,6 +125,25 @@ describe('TOOL_TIERS classification table', () => {
       }
     }
   );
+
+  // The allowance must not outlive the rows it covers. A name left in the set
+  // after its tier row is gone is a permanent, invisible hole in the orphan
+  // check — this runs in every checkout, including ones that skip the check
+  // above. Also pins the `tool-groups.ts` counterpart: `groupOf()` throws at
+  // boot on an unknown name exactly like `tierOf()` does, so a tier row kept
+  // without its group row would be just as fatal a boot failure.
+  it('every transition-orphan allowance still names a live TOOL_TIERS and TOOL_GROUPS entry', () => {
+    for (const name of TRANSITION_ORPHANS) {
+      expect(
+        Object.keys(TOOL_TIERS),
+        `${name} is allowed as a transition orphan but has no tier row`
+      ).toContain(name);
+      expect(
+        Object.keys(TOOL_GROUPS),
+        `${name} is allowed as a transition orphan but has no group row`
+      ).toContain(name);
+    }
+  });
 
   it('classifies every entry as a valid Tier value', () => {
     for (const [name, tier] of Object.entries(TOOL_TIERS)) {
@@ -87,6 +161,21 @@ describe('TOOL_TIERS classification table', () => {
 
   it('tierOf returns the matching tier for known tools', () => {
     expect(tierOf('ps_ping')).toBe('community');
+  });
+
+  // Promotion out of 'dev' is a user decision backed by live evidence, so a
+  // silent revert is a real regression rather than a formatting slip. Pinned
+  // per tool because the generic checks above pass at any tier.
+  it('keeps the user-authorized promotions at community tier', () => {
+    expect(tierOf('ps_document')).toBe('community');
+    expect(tierOf('ps_replace_sky')).toBe('community');
+  });
+
+  // Folded into ps_select as mode=focus_area — no standalone tool exists for
+  // the old name, so no tier or group row should either.
+  it('has no tier or group entry for the retired ps_select_focus_area', () => {
+    expect('ps_select_focus_area' in TOOL_TIERS).toBe(false);
+    expect('ps_select_focus_area' in TOOL_GROUPS).toBe(false);
   });
 });
 

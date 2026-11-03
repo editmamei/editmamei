@@ -38,16 +38,28 @@ npm run build
 npm test
 ```
 
-You need Node 22 or newer and a Go toolchain. `npm run build` compiles the `editmamei-core` Go
+You need Node 22 or newer and Go 1.21 or newer. `npm run build` compiles the `editmamei-core` Go
 binary that the server calls at runtime. It warns instead of failing when Go is missing, so a
 docs or test-only contributor is not blocked, but you will need Go to exercise anything that
 emits ExtendScript.
+
+The build needs Go 1.27, but you do not have to install it yourself: from 1.21 on, Go reads the
+version in `go-core/go.mod` and fetches a matching toolchain on demand, so any Go from 1.21 up
+works. Two things switch that off — `GOTOOLCHAIN` set to `local` or a fixed version, which some
+distro Go packages do by default, and an unreachable module proxy, since the toolchain is
+downloaded through it. In either case install Go 1.27 yourself.
 
 The Vitest suite runs entirely without Photoshop, which is what makes it fast and what limits it.
 It verifies the ExtendScript we generate, never that Photoshop accepted it. If your change
 touches snippet generation, say so in the PR and describe what you tested against a real
 Photoshop, including the version and platform. A maintainer will validate on the platforms you
 could not reach.
+
+The GIMP backend has a live suite in `tests/gimp-live` that drives a real headless GIMP 3.2. It
+is not part of `npm test`. With GIMP installed, run it with `npm run test:gimp` (build first:
+it also checks the bridge staged into `dist/`), or one file at a time with
+`npx vitest run tests/gimp-live/<file>`. Set `EDITMAMEI_REQUIRE_GIMP=1` to make a missing GIMP
+fail the run instead of skipping it.
 
 ## Pull requests
 

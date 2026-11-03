@@ -41,7 +41,8 @@ const cropDocumentSchema: JsonSchemaObject = {
       description:
         'ANCHOR-RELATIONAL crop (preferred over guessing pixels): a REGION relation (inside/gap) → the crop is the ' +
         'resolved region bounding box, verified by the gate. Crops ONLY if the gate PASSES. When set, ' +
-        'left/top/right/bottom are ignored. See ps_resolve_placement for the anchors + relation vocabulary.',
+        'left/top/right/bottom are ignored. See the placement-resolver tool, when this build has one, for the ' +
+        'anchors + relation vocabulary.',
     },
     left: {
       type: 'integer',

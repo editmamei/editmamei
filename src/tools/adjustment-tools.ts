@@ -4,7 +4,9 @@ import type { SnippetClient } from '../api/snippet-client.js';
 import { runScript } from '../utils/run-script.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolErrorResult, runSnippetTool, applyToActiveLayerProp } from '../utils/tool-helpers.js';
+import { looksLikePath, requireLocalPath } from '../utils/local-path.js';
 import { getPendingRawDevelop } from '../core/raw-develop-state.js';
+import { CAMERA_RAW_TOOL } from '../core/tool-activity.js';
 
 // On 2026-05-31 the four destructive bake adjustments — `auto_levels`,
 // `auto_contrast`, `desaturate`, `invert` — were removed. Each was a strict
@@ -184,9 +186,9 @@ const addAdjustmentLayerSchema: JsonSchemaObject = {
     bw_tint_hue: {
       type: 'number',
       description:
-        'For type=black_and_white when bw_tint=true. Tint hue in degrees (-180 to 180). Default 220 (cool blue).',
+        'For type=black_and_white when bw_tint=true. Tint hue in degrees (0 to 360; negative values wrap). Default 220 (cool blue).',
       minimum: -180,
-      maximum: 180,
+      maximum: 360,
       default: 220,
     },
     bw_tint_saturation: {
@@ -545,7 +547,7 @@ const addAdjustmentLayerSchema: JsonSchemaObject = {
     exp_gamma: {
       type: 'number',
       description:
-        'For type=exposure. Gamma correction (0.01 to 9.99). PS default 1.0 (identity). Values <1 brighten midtones; >1 darken them.',
+        'For type=exposure. Gamma correction (0.01 to 9.99). PS default 1.0 (identity). Values >1 brighten midtones; <1 darken them.',
       minimum: 0.01,
       maximum: 9.99,
       default: 1.0,
@@ -734,7 +736,7 @@ const APPLY_ADJUSTMENT_INPUT_SCHEMA: JsonSchemaObject = {
       type: 'string',
       enum: [...APPLY_ADJUSTMENT_TYPES],
       description:
-        'Which destructive adjustment to bake (none exist as adjustment layers in PS). ' +
+        'Which destructive adjustment to bake. shadows_highlights and equalize have no adjustment layer in PS; color_lookup does, and this bakes it instead. ' +
         'shadows_highlights: one-pass shadow/highlight recovery (shadow_amount, highlight_amount, …). ' +
         'equalize: parameter-free histogram equalization. ' +
         'color_lookup: bake a 3DLUT grade — cl_lut_name REQUIRED. ' +
@@ -756,7 +758,7 @@ export function createAdjustmentTools(
       tool: {
         name: 'ps_apply_adjustment',
         description:
-          "Apply a DESTRUCTIVE tonal adjustment that Photoshop does NOT offer as an adjustment layer — chosen via `type`. Runs on a DUPLICATE of the active layer by default (auto-duplicate-first — the original is preserved; revert by deleting the copy); pass `apply_to_active_layer: true` to bake in place. Auto-rasterizes text/smart-object layers. `shadows_highlights` recovers blown highlights + crushed shadows in one pass (defaults match Adobe's dialog: 35 shadow amount, +20 color correction); `equalize` stretches/flattens the histogram (parameter-free); `color_lookup` bakes a 3DLUT grade (cl_lut_name required — leaf name of a file in Presets/3DLUTs/ or an absolute .cube/.3dl/.look path). For EDITABLE tonal/color work, prefer ps_add_adjustment_layer.",
+          "Apply a DESTRUCTIVE tonal adjustment, baked into pixels — chosen via `type`. Runs on a DUPLICATE of the active layer by default (auto-duplicate-first — the original is preserved; revert by deleting the copy); pass `apply_to_active_layer: true` to bake in place. Auto-rasterizes text/smart-object layers. `shadows_highlights` recovers blown highlights + crushed shadows in one pass (defaults match Adobe's dialog: 35 shadow amount, +20 color correction); `equalize` stretches/flattens the histogram (parameter-free); `color_lookup` bakes a 3DLUT grade (cl_lut_name required — leaf name of a file in Presets/3DLUTs/ or an absolute .cube/.3dl/.look path). For EDITABLE tonal/color work, prefer ps_add_adjustment_layer.",
         inputSchema: APPLY_ADJUSTMENT_INPUT_SCHEMA,
         outputSchema: {
           type: 'object',
@@ -946,6 +948,13 @@ const FORWARDED_KEYS = new Set<string>([
   'thr_level',
 ]);
 
+/** A 3DLUT given by preset leaf name passes as is; one given as a path is held to the local-path rule. */
+function lutNameOrPath(value: unknown): string {
+  return typeof value === 'string' && looksLikePath(value)
+    ? requireLocalPath('cl_lut_name', value)
+    : (value as string);
+}
+
 async function addAdjustmentLayer(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
@@ -964,6 +973,8 @@ async function addAdjustmentLayer(
     for (const key of FORWARDED_KEYS) {
       if (args[key] !== undefined) params[key] = args[key];
     }
+    if (typeof params.cl_lut_name === 'string')
+      params.cl_lut_name = lutNameOrPath(params.cl_lut_name);
 
     // Conditional-required check: color_lookup without a LUT
     // name would create an empty / do-nothing CL adjustment layer. JSON
@@ -1005,7 +1016,7 @@ async function addAdjustmentLayer(
       const source = pendingRaw.documentName || pendingRaw.filePath || 'a raw source';
       const note =
         `This document was opened from raw source ${source} with no Camera Raw develop pass yet — ` +
-        'consider ps_apply_camera_raw first for global tone/color. Nothing failed; ignore if the ' +
+        `consider ${CAMERA_RAW_TOOL} first for global tone/color. Nothing failed; ignore if the ` +
         'user prescribed this exact layer or the file was already developed elsewhere.';
       if (typeof result === 'object' && result !== null) {
         structured.raw_develop_pending = note;
@@ -1040,7 +1051,7 @@ async function applyColorLookup(
     snippet: 'applyColorLookup',
     errorPrefix: 'Error applying color lookup',
     params: (args) => ({
-      lutName: args.cl_lut_name as string,
+      lutName: lutNameOrPath(args.cl_lut_name),
       applyToActiveLayer: (args.apply_to_active_layer as boolean) ?? false,
     }),
     successText: (result) =>

@@ -5,10 +5,17 @@ import { Logger } from '../utils/logger.js';
 import { ToolRegistry, type ToolResult } from './tool-registry.js';
 import { tierOf } from './tool-tiers.js';
 import { groupOf, GROUPS, type ToolGroup } from './tool-groups.js';
+import { CAMERA_RAW_TOOL, RAW_DEVELOP_TOOL } from './tool-activity.js';
+import { hasImageContent, withholdImages } from './preview-privacy.js';
 import { EDITION } from '../edition.js';
 import { VERSION } from '../version.js';
 import { Session } from './session.js';
-import { SessionLog, classifyError } from '../utils/session-log.js';
+import {
+  SessionLog,
+  classifyError,
+  computeResultBytes,
+  NO_ERROR_TEXT_CLASS,
+} from '../utils/session-log.js';
 import {
   loadSettings,
   applyTelemetryEnvOverrides,
@@ -17,11 +24,19 @@ import {
 import { TelemetryClient } from '../telemetry/client.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
 import { resolveInstallChannel } from '../install-channel.js';
-import { checkForUpdate, shouldCheckForUpdate, type UpdateInfo } from '../update/check.js';
+import {
+  checkForUpdateWithStatus,
+  shouldCheckForUpdate,
+  type UpdateInfo,
+} from '../update/check.js';
+import { previousSessionFailureCounts, relevantFixes } from '../update/session-fixes.js';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { GoSnippetClient, coreBinaryName } from '../api/snippet-client.js';
 import { isProEntitled } from '../license/entitlement.js';
 import { createPingLicenseRefresher } from '../license/ping-refresh.js';
+import { licenseAdvisory } from '../license/advisory.js';
+import type { LicenseStoreOptions } from '../license/store.js';
 import type { ProvisionOptions } from '../delivery/provision.js';
 import { runScript } from '../utils/run-script.js';
 import { listTemplates } from '../utils/template-storage.js';
@@ -32,6 +47,11 @@ import { ceModule } from '../modules/ce/index.js';
 import { hostDetectionRuntime } from '../detection/runtime.js';
 import { ModuleLifecycle, classifyModuleOutcome } from '../kernel/module-lifecycle.js';
 import { unsupportedHostReason } from '../platform/host-platform.js';
+import { gimpModule } from '../modules/gimp/index.js';
+import { GimpBackend } from '../backends/gimp/backend.js';
+import type { EditorRegistrationDecision } from '../backends/detect-editors.js';
+import { createDiagnosticsTools } from '../tools/diagnostics-tools.js';
+import type { EditmameiModule } from '../kernel/host-api.js';
 
 // Re-exported for tests + call sites that import the taxonomy from server.ts
 // (its historical home) rather than reaching into kernel/module-lifecycle.ts.
@@ -59,16 +79,38 @@ export function __resetLogScriptOnErrorWarnForTests(): void {
 }
 
 /**
+ * Hash a retry-detection key (tool name + args) so the raw args are never retained on the
+ * server instance, logged, or emitted — only a SHA-256 digest survives past this call.
+ * Returns null when `args` can't be serialized (e.g. a circular structure); the caller
+ * treats that as "not a retry" rather than letting the whole onCall hook throw.
+ */
+function hashRetryKey(tool: string, args: unknown): string | null {
+  try {
+    const json = JSON.stringify({ tool, args });
+    return createHash('sha256').update(json).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/**
  * First-run disclosure (see docs/privacy.md, "What you control"). The MCP server has no UI, so the
  * one place we can plainly state what Category-A telemetry collects + how to opt out is
  * stderr on the run that creates settings.json. Content-never guarantee stated up front.
+ * Exported so a test can assert this stays word-for-word what docs/privacy.md's first-run
+ * blockquote promises — the two are hand-maintained in separate files and have no other
+ * mechanism keeping them in sync.
  */
-const FIRST_RUN_DISCLOSURE =
-  'First run: Editmamei collects anonymous, content-free usage telemetry (tool name, ' +
-  'success, duration, version/edition/OS/PS-version, install channel) to find what breaks. ' +
-  'It never sends image content, file paths, or personal data. Opt out anytime: ' +
-  '`editmamei config set telemetry.usage false` (or edit ~/.editmamei/settings.json). ' +
-  'Opt in to sanitized diagnostics: `editmamei config set telemetry.diagnostics true`.';
+export const FIRST_RUN_DISCLOSURE =
+  'First run: Editmamei collects content-free usage telemetry (tool name, ' +
+  'success, duration, bytes returned, version/edition/OS/PS-version, install channel, ' +
+  'which AI client connected, Node/OS/architecture versions, and per-session counts like ' +
+  'edits made and retries) to find what breaks. Usage telemetry never sends image content, ' +
+  'file paths, or tool arguments. The only identifier is a random install ID. Opt out ' +
+  'anytime: `editmamei config set telemetry.usage false` (or edit ' +
+  '~/.editmamei/settings.json). Opt in to sanitized diagnostics (error messages, which can ' +
+  'name a layer or repeat a value you passed): ' +
+  '`editmamei config set telemetry.diagnostics true`.';
 
 /**
  * Timeout for the background ps_version probe (resolveLiveVersionInBackground) —
@@ -86,6 +128,66 @@ const FIRST_RUN_DISCLOSURE =
  */
 export const BACKGROUND_VERSION_PROBE_TIMEOUT_MS = 3_000;
 
+/** Error classes a failed pingState round trip may report as-is; see its catch in pingPhotoshop. */
+const PING_ROUND_TRIP_CLASSES: ReadonlySet<string> = new Set([
+  'timeout',
+  'ps_modal_blocking',
+  'ps_not_running',
+  'ps_general_error',
+  'file_io',
+]);
+
+/** Where ps_ping's not-found answer points: how to set PHOTOSHOP_PATH. On `main`, so it tracks released docs. */
+const PHOTOSHOP_PATH_DOCS_URL =
+  'https://github.com/editmamei/editmamei/blob/main/docs/installation.md#optional-pin-a-specific-photoshop-install';
+
+/**
+ * Test seam for the boot-time update check wired up in the constructor — production never
+ * passes either field and gets the real `shouldCheckForUpdate` / `checkForUpdateWithStatus`
+ * (which is always false under vitest, so the check normally never runs in the test suite
+ * at all). Lets a test force the check on and control its outcome without touching the
+ * network or leaving every other server test to reckon with a real fetch.
+ */
+export interface EditmameiServerOptions {
+  shouldCheckForUpdate?: typeof shouldCheckForUpdate;
+  checkForUpdateWithStatus?: typeof checkForUpdateWithStatus;
+  /**
+   * Source of the `ps_ping` license advisory (see `buildLicenseAdvisoryNote`).
+   * Production passes nothing and gets the real one; the default is inert under
+   * the test runner because it reads `~/.editmamei`, and without that gate every
+   * ping assertion in the suite would depend on the developer machine's own
+   * license state. A test that wants the advisory injects one here.
+   *
+   * It takes the same argument the real one does, so an injected source can still
+   * observe whether a background module update failed this session — that wiring
+   * is the whole reason the flag exists and would otherwise be untestable.
+   */
+  licenseAdvisory?: (opts: { moduleUpdateFailed: boolean }) => string | null;
+  /**
+   * Where the module lifecycle reads the license record and the check-state
+   * sidecar. Same hazard as `licenseAdvisory` above and the same cure: the stub
+   * registration and the freshness poll both read `~/.editmamei`, so on a machine
+   * that has ever activated Pro a lapsed record there would register Pro stubs
+   * into any test that builds a server, and a test injecting a delivery
+   * `fetchImpl` would write that machine's real sidecar and park its module poll.
+   * Defaults to the real directory, which is what the host wants.
+   */
+  licenseStore?: LicenseStoreOptions;
+  /**
+   * Which editor tool sets to register, resolved by `index.ts`'s boot-time
+   * `detectEditors()` + `resolveEditorRegistration()` BEFORE this constructor
+   * runs — never resolved here, so constructing the server stays
+   * filesystem/crypto-only, the same boot-ordering invariant `loadModules()`
+   * keeps (nothing that talks to an editor runs before `server.connect()`;
+   * `GimpBackend` itself starts its session lazily, on first `gimp_*` call,
+   * so even registering it here touches no process). Omitted — the default
+   * for every existing direct construction, including the whole pre-GIMP
+   * test corpus — reproduces today's behaviour exactly: `ps_*` registers,
+   * `gimp_*` does not.
+   */
+  editors?: EditorRegistrationDecision;
+}
+
 export class EditmameiServer {
   private server: Server;
   private logger: Logger;
@@ -93,6 +195,12 @@ export class EditmameiServer {
   private session: Session;
   private sessionLog: SessionLog;
   private telemetry: TelemetryClient;
+  /** Resolved once in the constructor; see `EditmameiServerOptions.editors`. */
+  private readonly editorOpts: EditorRegistrationDecision;
+  /** Set only when `editorOpts.registerGimp` — the GIMP surface's session-owning backend. */
+  private gimpBackend: GimpBackend | undefined;
+  /** Last GIMP version this session has logged to the session-log meta line — avoids a redundant re-emit per gimp_* call. */
+  private lastLoggedGimpVersion: string | undefined;
   /** The kernel — owns the registry, module loader, and invokeTool broker. Set in registerTools(). */
   private kernel!: Kernel;
   /**
@@ -153,6 +261,52 @@ export class EditmameiServer {
    */
   private lastPingReachedPs: boolean | null = null;
   /**
+   * Why the last `ps_ping` did not reach Photoshop: the error class and message its
+   * telemetry row and opt-in diagnostic carry. A not-connected ping is a normal result,
+   * not an `isError`, so the registry has no error text to classify; without this every
+   * unreachable ping read as `ps_not_running`, whether Photoshop was closed, not
+   * installed, or running but refusing the connection. Set alongside
+   * `lastPingReachedPs = false` and read by the same `onCall` hook, under the same
+   * ordering constraint described there.
+   */
+  private lastPingFailure: { errorClass: string; message: string } | null = null;
+  /**
+   * SHA-256 hash of JSON(tool+args) of the immediately preceding tool call, for telemetry's
+   * `retry` signal (RecordedCall.retry — mirrors SessionLog's own `lastCallKey`/
+   * `retry_signal`, kept as a SEPARATE field rather than reused: this one stays in memory
+   * and never leaves the process, while SessionLog's copy is built from sanitized args
+   * destined for disk). Hashed, not raw, so the args themselves are never retained on the
+   * instance between calls — see `hashRetryKey`.
+   */
+  private lastTelemetryCallKeyHash: string | null = null;
+  /**
+   * Photoshop's UI locale (`app.locale`), cached from the last successful `ps_ping` and
+   * carried on every diagnostic thereafter — see `recordDiagnostic`'s `ps_locale` param.
+   * null until the first successful ping (or on a host where the field is unavailable).
+   */
+  private lastPsLocale: string | null = null;
+  /**
+   * Active document's bit depth / color mode at the last `ps_ping` whose LIVE pingState
+   * round trip actually ran, carried on every diagnostic thereafter. Unlike lastPsLocale,
+   * this is overwritten (including back to null) by every ping whose round trip completed
+   * — a ping that completed and found no document open means the previously cached document
+   * really is gone (closed, or swapped for a different one), and reporting its stale
+   * depth/mode on a later failure would describe a document that no longer exists. Only a
+   * DEGRADED ping (the round trip itself did not run — see `pingStateObserved` in
+   * `pingPhotoshop`) leaves an already-known value alone, since it has no live answer to
+   * prefer over the cache.
+   *
+   * Also cleared on any of `pingPhotoshop`'s early returns that mean Photoshop itself is
+   * UNREACHABLE (no install found, the "does not appear to be running" check, and the
+   * "did not respond" response, which covers both the build()-failure-fallback ping and the
+   * pingState round trip itself; all go through `markPingUnreachable`) — an unreachable Photoshop is direct evidence the cached document no longer
+   * exists, same as a live round trip that finds none open. NOT cleared on a path that merely
+   * means a signal was skipped (e.g. the disk-detected version fallback) without saying
+   * anything about reachability.
+   */
+  private lastDocDepth: 8 | 16 | 32 | null = null;
+  private lastDocMode: 'rgb' | 'cmyk' | 'lab' | 'grayscale' | 'other' | null = null;
+  /**
    * One-shot latch for `resolveLiveVersionInBackground` — set only once we
    * actually commit to a round trip (Photoshop confirmed running RIGHT NOW),
    * and never cleared after that, whether the round trip succeeds or fails.
@@ -176,6 +330,30 @@ export class EditmameiServer {
   private liveVersionResolutionAttempted = false;
   /** A newer published version, if the boot-time check found one. Surfaced on ps_ping. */
   private updateInfo: UpdateInfo | null = null;
+  /**
+   * The in-flight boot-time check. `ps_ping` awaits this so the skill-mandated
+   * FIRST ping of a session renders the notice instead of racing the network fetch
+   * and silently losing (the pre-2026-08 shape: fire-and-forget assignment, first
+   * ping reads null, notice only ever appears on a LATER ping most sessions never
+   * make). `checkForUpdateWithStatus` self-caps at 4s and never rejects, and the
+   * constructor's own `.catch` is a second line of defense (e.g. against a test-injected
+   * override that does), so this await is bounded and throw-free; settled by the second
+   * ping, so it costs nothing after.
+   */
+  private updateCheck: Promise<void> | null = null;
+  /**
+   * One-shot latch: the relay-shaped notice renders on the first ping that has an
+   * update to report; later pings fall back to the passive one-liner so a session
+   * that pings repeatedly isn't re-instructed to interrupt the user every time.
+   */
+  private updateNoticeShown = false;
+  /**
+   * `privacy.send_previews_to_llm`, read fresh from settings.json whenever a result carries an
+   * image (so `editmamei config set` takes effect without a restart). A field so tests can
+   * replace it without touching the real settings file.
+   */
+  private previewsAllowed: () => boolean = () =>
+    loadSettings().settings.privacy.send_previews_to_llm;
   // The host/community Go snippet core seam — the CE go-core binary, used by the
   // CE module's tools, by the Pro module's composite client as the fallback for
   // the community snippets its handlers build, and by the server's own pingState
@@ -193,7 +371,40 @@ export class EditmameiServer {
    */
   private readonly refreshLicenseOnPing = createPingLicenseRefresher();
 
-  constructor() {
+  /**
+   * Set once a background Pro-module task reports a failed update this session.
+   * Feeds the license advisory — a module that could not be updated is one of the
+   * three things worth telling a license holder about.
+   */
+  private moduleUpdateFailed = false;
+
+  /** Source of the license advisory text; see EditmameiServerOptions. */
+  private readonly licenseAdvisorySource: (opts: { moduleUpdateFailed: boolean }) => string | null;
+  /** Store location for the module lifecycle's license reads; see EditmameiServerOptions. */
+  private readonly licenseStoreOptions: LicenseStoreOptions;
+
+  /**
+   * Whether this session has already delivered the license advisory. Once is the
+   * point: the reader pays for every token of it, and an advisory repeated on
+   * every ping is one the model learns to skip past.
+   */
+  private licenseAdvisoryShown = false;
+
+  constructor(opts: EditmameiServerOptions = {}) {
+    this.licenseStoreOptions = opts.licenseStore ?? {};
+    // Reproduces today's behaviour exactly when omitted — see the option's own doc comment.
+    this.editorOpts = opts.editors ?? {
+      registerPhotoshop: true,
+      registerGimp: false,
+      gimpInstall: null,
+      gimpDetectionTimedOut: false,
+    };
+    if (this.editorOpts.registerGimp) {
+      this.gimpBackend = new GimpBackend(this.editorOpts.gimpInstall, {
+        gimpDetectionTimedOut: this.editorOpts.gimpDetectionTimedOut,
+        gimpPath: this.editorOpts.gimpPathOverride,
+      });
+    }
     this.logger = new Logger('EditmameiServer');
     this.session = new Session();
 
@@ -204,8 +415,9 @@ export class EditmameiServer {
     this.logger.info(`Session ${this.session.getSessionId()} → ${this.sessionLog.path}`);
 
     // Telemetry client (content-free, consent-gated, fire-and-forget). loadSettings mints
-    // the anonymous install_id on first run and never throws; the client is inert in the
-    // dev edition and under the test runner, so this is a no-op outside CE/Pro builds.
+    // the install_id on first run (salted random, never derived from PII, but stable —
+    // pseudonymous, not anonymous) and never throws; the client is inert in the dev edition
+    // and under the test runner, so this is a no-op outside CE/Pro builds.
     const { settings, created } = loadSettings();
     // In Claude Desktop (no terminal for `editmamei config`), the .mcpb manifest's telemetry
     // toggles arrive as env vars and override consent for this process; settings.json still
@@ -230,10 +442,19 @@ export class EditmameiServer {
     // runner). One anonymous, content-free GET to the npm registry, fire-and-forget — the
     // result rides ps_ping (an MCP server's stderr never reaches the user, a tool
     // result does). checkForUpdate is fail-silent, so this never throws and never blocks boot.
-    if (shouldCheckForUpdate(effectiveSettings.update_check)) {
-      void checkForUpdate().then((info) => {
-        this.updateInfo = info;
-      });
+    const shouldCheckForUpdateFn = opts.shouldCheckForUpdate ?? shouldCheckForUpdate;
+    const checkForUpdateWithStatusFn = opts.checkForUpdateWithStatus ?? checkForUpdateWithStatus;
+    if (shouldCheckForUpdateFn(effectiveSettings.update_check)) {
+      this.updateCheck = checkForUpdateWithStatusFn()
+        .then((result) => {
+          this.updateInfo = result.info;
+          // setBehindLatest only on a CONFIRMED status — 'newer' -> true, 'current' -> false.
+          // 'failed' calls neither, so the field stays omitted (never resolved this session)
+          // rather than sending a false 'false' for a check that never actually ran.
+          if (result.status === 'newer') this.telemetry.setBehindLatest(true);
+          else if (result.status === 'current') this.telemetry.setBehindLatest(false);
+        })
+        .catch(() => undefined);
     }
 
     // LOG_SCRIPT_ON_ERROR=1 dumps fully-interpolated ExtendScript on every
@@ -266,17 +487,43 @@ export class EditmameiServer {
             this.resolveLiveVersionInBackground();
           }
         }
-        // Local NDJSON evidence log — fire-and-forget (append never throws).
-        void this.sessionLog.append(
-          {
-            tool: entry.tool,
-            args: entry.args,
-            success: entry.success,
-            duration_ms: entry.duration_ms,
-            ...(entry.error ? { error: entry.error } : {}),
-          },
-          entry.result
-        );
+        // Session-log meta line gains gimp_version once a GIMP session has
+        // reached readiness — mirrors the ps_version wiring above, but reads
+        // straight off the backend rather than needing its own probe: any
+        // successful gimp_* call already proves the session started.
+        // `lastLoggedGimpVersion` keeps this to one setGimpVersion call per
+        // distinct version rather than one per gimp_* success.
+        if (entry.success && entry.tool.startsWith('gimp_') && this.gimpBackend?.gimpVersion) {
+          const version = this.gimpBackend.gimpVersion;
+          if (version !== this.lastLoggedGimpVersion) {
+            this.lastLoggedGimpVersion = version;
+            void this.sessionLog.setGimpVersion(version);
+          }
+        }
+        // Computed once per call and threaded through to both consumers below. Both would
+        // otherwise walk the same content blocks independently, over what can be a
+        // hundreds-of-KB result, on every single tool call.
+        const resultBytes = computeResultBytes(entry.result);
+        // Local NDJSON evidence log — fire-and-forget. `append` builds its retry key with a
+        // bare JSON.stringify, so args that cannot serialize (a cycle, a throwing getter)
+        // would reject. Real MCP args are JSON.parse output and cannot be either, but this
+        // runs on EVERY call and an unhandled rejection is fatal to the process, so the
+        // evidence log is never allowed to take down a tool call it only observes.
+        void this.sessionLog
+          .append(
+            {
+              tool: entry.tool,
+              args: entry.args,
+              success: entry.success,
+              duration_ms: entry.duration_ms,
+              ...(entry.error ? { error: entry.error } : {}),
+            },
+            entry.result,
+            resultBytes
+          )
+          .catch((err) => {
+            this.logger.debug(`session log append failed: ${String(err)}`);
+          });
         // Tee the same call into content-free telemetry (Category A, opt-out). Failures
         // additionally feed an opt-in Category-B diagnostic (sanitized message). Both are
         // gated/inert inside the client; nothing here can throw into the tool-call path.
@@ -298,18 +545,49 @@ export class EditmameiServer {
         // Only the ping downgrade may claim ps_not_running: it is the one path
         // that knows Photoshop did not answer. Any other classless failure —
         // reachable if a handler ever returns isError with no text block — gets
-        // 'other', which is honest. What must never happen again is null on a
-        // failure, so the ternary has no branch that produces one.
+        // NO_ERROR_TEXT_CLASS, the SAME sentinel SessionLog.append() falls back
+        // to for the local NDJSON, so a diagnostics bundle (built from the local
+        // log) and a telemetry dashboard (built from this call) agree on one
+        // class for the same event instead of naming it two different things.
+        // What must never happen again is null on a failure, so the ternary has
+        // no branch that produces one.
         const isPingDowngrade =
           entry.tool === 'ps_ping' && !telemetrySuccess && entry.error === undefined;
+        const pingFailure = isPingDowngrade ? this.lastPingFailure : null;
         const errorClass =
           classifyError(entry.error) ??
-          (telemetrySuccess ? null : isPingDowngrade ? 'ps_not_running' : 'other');
+          (telemetrySuccess
+            ? null
+            : isPingDowngrade
+              ? (pingFailure?.errorClass ?? 'ps_not_running')
+              : NO_ERROR_TEXT_CLASS);
+        // Retry signal: same tool + deep-equal args as the IMMEDIATELY preceding call. Hashed
+        // (never the raw args themselves — nothing about args is retained, logged, or
+        // emitted). A hash failure (unserializable args, e.g. a circular structure) degrades
+        // to "not a retry" rather than aborting this hook; the stored hash is left untouched
+        // so the NEXT call still compares against the last successfully hashed key.
+        //
+        // KNOWN BIAS, orchestrated sessions: the wrappers (`ps_sequence`, `ps_batch`)
+        // dispatch their steps through this same hook, so the stream compared here is
+        // interleaved. A wrapper's own entry arrives AFTER its inner steps, meaning it is
+        // compared against its last step rather than against the previous wrapper — two
+        // identical back-to-back sequences therefore both read as "not a retry". The signal
+        // is directional for orchestrated work, not exact; read it that way.
+        //
+        // "Deep-equal" is by serialization, so it is key-order sensitive: a client that
+        // emits the same arguments in a different property order reads as a fresh call.
+        // That under-counts rather than over-counts, which is the safe direction here.
+        const telemetryCallKeyHash = hashRetryKey(entry.tool, entry.args);
+        const isTelemetryRetry =
+          telemetryCallKeyHash !== null && telemetryCallKeyHash === this.lastTelemetryCallKeyHash;
+        if (telemetryCallKeyHash !== null) this.lastTelemetryCallKeyHash = telemetryCallKeyHash;
         this.telemetry.recordCall({
           tool: entry.tool,
           success: telemetrySuccess,
           duration_ms: entry.duration_ms,
           error_class: errorClass,
+          result_bytes: resultBytes,
+          retry: isTelemetryRetry,
         });
         // Gate on the signal telemetry actually recorded, not the registry's raw
         // flag. Keying these two branches off different notions of failure is
@@ -317,15 +595,18 @@ export class EditmameiServer {
         if (!telemetrySuccess) {
           this.telemetry.recordDiagnostic({
             tool: entry.tool,
-            error_class: errorClass ?? 'other',
+            error_class: errorClass ?? NO_ERROR_TEXT_CLASS,
             // `||`, not `??`: a handler can return an isError result whose text
             // block is the empty string, which `??` would pass through and
             // leave the failure just as unnamed as a missing one.
             error_message:
               entry.error ||
               (isPingDowngrade
-                ? 'ps_ping did not reach Photoshop'
+                ? (pingFailure?.message ?? 'ps_ping did not reach Photoshop')
                 : 'tool reported failure with no message'),
+            ...(this.lastPsLocale !== null ? { ps_locale: this.lastPsLocale } : {}),
+            ...(this.lastDocDepth !== null ? { doc_depth: this.lastDocDepth } : {}),
+            ...(this.lastDocMode !== null ? { doc_mode: this.lastDocMode } : {}),
           });
         }
       },
@@ -356,56 +637,141 @@ export class EditmameiServer {
     };
     this.sessionLog.setMcpClientGetter(() => srv.getClientVersion?.() ?? null);
 
+    // client_connected (Category A telemetry): `oninitialized` fires from a notification
+    // handler the SDK's Server constructor wires up FOR ITSELF —
+    // `setNotificationHandler(InitializedNotificationSchema, () => this.oninitialized?.())`,
+    // read straight out of @modelcontextprotocol/sdk's server/index.js — not something
+    // `connect()` sets up. The callback can therefore be assigned any time after `this.server`
+    // exists; doing it here, before `connect()` even runs (in start()), is deliberate: connect()
+    // is the earliest a client's messages can arrive at all, so wiring the callback strictly
+    // before it removes any need to reason about a race between a very fast
+    // initialize -> initialized round trip and our own synchronous code. If the client never
+    // completes the handshake, this simply never fires — no event is the intended behavior.
+    //
+    // Once-latch: nothing in the MCP spec stops a client from sending a second
+    // `notifications/initialized` (a buggy or non-conforming one might), and
+    // recordClientConnected does not force its own flush, so a repeat would
+    // silently queue a duplicate event rather than visibly double-send. `client_connected`
+    // is a once-per-session signal — send it at most once no matter how many times this fires.
+    let clientConnectedSent = false;
+    this.server.oninitialized = () => {
+      if (clientConnectedSent) return;
+      clientConnectedSent = true;
+      const clientInfo = this.server.getClientVersion();
+      const caps = this.server.getClientCapabilities();
+      this.telemetry.recordClientConnected({
+        clientName: clientInfo?.name,
+        clientVersion: clientInfo?.version,
+        // `!= null`, not `!== undefined`: an explicit `null` capability is a client saying
+        // "I don't have this," the same as omitting it entirely — not a declaration.
+        capSampling: caps?.sampling != null,
+        capElicitation: caps?.elicitation != null,
+        capRoots: caps?.roots != null,
+      });
+    };
+
+    // Inert under the test runner unless a test injects one — the real advisory
+    // reads ~/.editmamei, and a suite whose ping output depended on the developer's
+    // own license would pass or fail by machine. Mirrors how refreshIfStale and
+    // ensureEntitledModuleFresh already gate their own real-world reads.
+    this.licenseAdvisorySource =
+      opts.licenseAdvisory ??
+      ((advisoryOpts) => {
+        if (process.env.VITEST !== undefined || process.env.NODE_ENV === 'test') return null;
+        return licenseAdvisory(advisoryOpts);
+      });
+
     this.registerTools();
     this.setupHandlers();
   }
 
+  /**
+   * The license advisory suffix for a `ps_ping` response — a leading space plus the
+   * advisory, or an empty string when there is nothing to say or it has already
+   * been said this session.
+   *
+   * Silent for a Community user and for a healthy Pro user, so the common case
+   * pays nothing at all. Never an error: `pingPhotoshop` deliberately answers with
+   * a normal content payload on every path, connected or not, and shaping this as
+   * a failure would bury the one thing we want relayed under an alarm about a ping
+   * that actually worked.
+   *
+   * Returns a `stamp()` alongside the text rather than latching here. The advisory
+   * is computed early in the ping but the response is built hundreds of lines
+   * later, down any of several branches — latching at computation would spend the
+   * session's one chance to speak on a ping that then threw on its way to a reply,
+   * and the user would never see it. `stamp()` is called as each branch builds its
+   * text, so the latch tracks delivery rather than intent.
+   */
+  private buildLicenseAdvisoryNote(): { note: string; stamp: () => void } {
+    if (this.licenseAdvisoryShown) return { note: '', stamp: () => {} };
+    const text = this.licenseAdvisorySource({ moduleUpdateFailed: this.moduleUpdateFailed });
+    if (!text) return { note: '', stamp: () => {} };
+    return {
+      note: ' ' + text,
+      stamp: () => {
+        this.licenseAdvisoryShown = true;
+      },
+    };
+  }
+
   private registerTools() {
-    // Register basic tools
-    this.toolRegistry.register('ps_ping', {
-      tool: {
-        name: 'ps_ping',
-        description:
-          'Test connection to Photoshop and report session-start discovery signals. Read-only and idempotent. Call this once at the start of a session to confirm liveness before invoking any other tool. **If the user has given you an open-ended editing task, ALSO call `ps_overview` after this** — it returns the workflow contract + capabilities map + verification primitives so you can plan well. Returns `version` (folds the removed get-version tool), `custom_action_sets` (count of Action Sets loaded in the Photoshop Actions palette — non-zero means recorded workflows exist; if action tools are available in this build they will appear in `tools/list`), `user_templates` (count of saved Editmamei templates), and `open_documents` (names of documents already open in Photoshop, so the LLM does not have to ask which doc to edit).',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-        },
-        outputSchema: {
-          type: 'object',
-          properties: {
-            connected: { type: 'boolean' },
-            version: { type: 'string' },
-            custom_action_sets: { type: 'number' },
-            user_templates: { type: 'number' },
-            open_documents: { type: 'array', items: { type: 'string' } },
-            degraded: {
-              type: 'array',
-              items: { type: 'string' },
-              description:
-                'List of optional discovery signals that could not be gathered (e.g. "pingState" if the go-core snippet builder itself failed to produce the in-PS state script — a broken/missing local install, unrelated to whether Photoshop is reachable; liveness falls back to a cheap ping probe in that case — "templates" if ~/.editmamei/templates was unreadable). Empty when all signals were collected cleanly. Returned defaults for any degraded field cannot be trusted as ground truth.',
-            },
-            update_available: {
-              type: ['object', 'null'],
-              description:
-                'Set when a newer Editmamei version is published, else null. When present, TELL THE USER: relay current → latest and how_to_update verbatim. { current, latest, channel (npm/mcpb/dev), how_to_update }. Anonymous npm-registry check at boot; opt out with `editmamei config set update_check false`.',
-              properties: {
-                current: { type: 'string' },
-                latest: { type: 'string' },
-                channel: { type: 'string' },
-                how_to_update: { type: 'string' },
+    // ps_ping only registers when the ps_* set does (GIMP-only sessions get
+    // gimp_ping, a real twin, instead — see gimp-core-tools.ts). The shared
+    // meta tools below (ps_list_capabilities, and ps_report_problem further
+    // down) register in EVERY matrix outcome — see the decision recorded in
+    // detect-editors.ts's resolveEditorRegistration doc comment.
+    if (this.editorOpts.registerPhotoshop)
+      this.toolRegistry.register('ps_ping', {
+        tool: {
+          name: 'ps_ping',
+          description:
+            'Test connection to Photoshop and report session-start discovery signals. Read-only and idempotent. Call this once at the start of a session to confirm liveness before invoking any other tool. **If the user has given you an open-ended editing task, ALSO call `ps_overview` after this** — it returns the workflow contract + capabilities map + verification primitives so you can plan well. Returns `version` (folds the removed get-version tool), `custom_action_sets` (count of Action Sets loaded in the Photoshop Actions palette — non-zero means recorded workflows exist; if action tools are available in this build they will appear in `tools/list`), `user_templates` (count of saved Editmamei templates), and `open_documents` (names of documents already open in Photoshop, so the LLM can see which document to target).',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+          outputSchema: {
+            type: 'object',
+            properties: {
+              connected: { type: 'boolean' },
+              version: { type: 'string' },
+              custom_action_sets: { type: 'number' },
+              user_templates: { type: 'number' },
+              open_documents: { type: 'array', items: { type: 'string' } },
+              degraded: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'List of optional discovery signals that could not be gathered (e.g. "pingState" if the go-core snippet builder itself failed to produce the in-PS state script — a broken/missing local install, unrelated to whether Photoshop is reachable; liveness falls back to a cheap ping probe in that case — "templates" if ~/.editmamei/templates was unreadable). Empty when all signals were collected cleanly. Returned defaults for any degraded field cannot be trusted as ground truth.',
+              },
+              update_available: {
+                type: ['object', 'null'],
+                description:
+                  'Set when a newer Editmamei version is published, else null: { current, latest, channel (npm/mcpb/dev), how_to_update, fixed_tools (tools whose recorded failures the newer version fixes) }. The relay instruction rides the ping TEXT on the first ping — see notify_user. Anonymous npm-registry check at boot; opt out with `editmamei config set update_check false`.',
+                properties: {
+                  current: { type: 'string' },
+                  latest: { type: 'string' },
+                  channel: { type: 'string' },
+                  how_to_update: { type: 'string' },
+                  fixed_tools: { type: 'array', items: { type: 'string' } },
+                },
+              },
+              notify_user: {
+                type: 'boolean',
+                description:
+                  'True on the one ping whose text carries the update notice — relay that notice to the user before continuing. False on later pings and when no update is available.',
               },
             },
           },
+          annotations: {
+            title: 'Ping Photoshop',
+            readOnlyHint: true,
+            idempotentHint: true,
+          },
         },
-        annotations: {
-          title: 'Ping Photoshop',
-          readOnlyHint: true,
-          idempotentHint: true,
-        },
-      },
-      handler: async () => await this.pingPhotoshop(),
-    });
+        handler: async () => await this.pingPhotoshop(),
+      });
 
     // ps_list_capabilities — a read-only, LIVE map of the whole tool
     // surface organized by capability group (each group's purpose + the tools
@@ -465,7 +831,13 @@ export class EditmameiServer {
     this.moduleLifecycle = new ModuleLifecycle({
       toolRegistry: this.toolRegistry,
       logger: this.logger,
+      licenseStore: this.licenseStoreOptions,
       assertToolsClassified: () => this.assertToolsClassified(),
+      classifyTool: (name) => this.classifyTool(name),
+      onModuleUpdate: (outcome) => {
+        if (outcome === 'failed') this.moduleUpdateFailed = true;
+        this.telemetry.setModuleUpdate(outcome);
+      },
     });
     const proModule = this.moduleLifecycle.resolveProModule();
     this.kernel = new Kernel({
@@ -477,6 +849,10 @@ export class EditmameiServer {
       // onnxruntime-web + CE weights instead of resolving from their relocated
       // bundle.
       detection: hostDetectionRuntime(),
+      // Handed to modules as `HostApi.gimp` — undefined unless this boot's
+      // matrix decided to register the GIMP surface (`gimpModule` is the
+      // only module that reads it).
+      gimp: this.gimpBackend,
       // A module that declares its own go-core snippets (the Pro module) is
       // built by its OWN binary; the kernel composes that with the host binary
       // for the community snippets its handlers also build. The Pro binary
@@ -492,8 +868,31 @@ export class EditmameiServer {
       logger: this.logger,
     });
     this.moduleLifecycle.setKernel(this.kernel);
-    this.kernel.loadBuiltins([ceModule]);
+    // The registration matrix (see resolveEditorRegistration): ceModule loads
+    // when ps_* should register, gimpModule when gimp_* should — either,
+    // both, or (the "neither detected" fallback) ceModule alone. Never
+    // neither: a totally empty built-in surface would be strictly worse than
+    // ps_*'s own clear "Photoshop not running" failure mode.
+    const builtins: EditmameiModule[] = [];
+    if (this.editorOpts.registerPhotoshop) builtins.push(ceModule);
+    if (this.editorOpts.registerGimp) builtins.push(gimpModule);
+    this.kernel.loadBuiltins(builtins);
     this.assertToolsClassified();
+
+    // ps_report_problem normally rides in via ceModule (createDiagnosticsTools,
+    // part of ceFactories) — when Photoshop isn't registering (a GIMP-only
+    // session), re-add it directly so problem reporting stays available.
+    // It's editor-agnostic (does not touch Photoshop) and this factory is a
+    // pure closure over (connection, snippetClient) — safe to call outside
+    // the kernel/module path. If ceModule DID load, this is skipped, since
+    // createDiagnosticsTools already registered it once.
+    if (!this.editorOpts.registerPhotoshop) {
+      const diagnosticsDefs = createDiagnosticsTools(
+        this.session.getConnection(),
+        this.snippetClient
+      ).filter((def) => def.tool.name === 'ps_report_problem');
+      this.toolRegistry.registerAll(diagnosticsDefs);
+    }
 
     this.logger.info(`Registered ${this.toolRegistry.count()} tools (edition: ${EDITION})`);
   }
@@ -509,8 +908,13 @@ export class EditmameiServer {
    * booting the stdio transport. Delegates to `ModuleLifecycle.loadModules` — see
    * there for the ABI gate / rollback nets and the filesystem-only boot-ordering
    * contract this must keep (awaited in start() BEFORE the transport connects).
+   *
+   * No-op when `editorOpts.registerPhotoshop` is false — the Pro module only
+   * ever contributes `ps_*` tools, and `registerPhotoshop` is false in exactly
+   * one case (pinned to 'gimp'), where there is nothing for it to add.
    */
   async loadModules(): Promise<void> {
+    if (!this.editorOpts.registerPhotoshop) return;
     return this.moduleLifecycle.loadModules();
   }
 
@@ -548,18 +952,30 @@ export class EditmameiServer {
   }
 
   /**
-   * Every registered tool must be classified in src/core/tool-tiers.ts (which
-   * EDITION it ships in) AND grouped in src/core/tool-groups.ts (which
-   * capability group presents it). Both `tierOf` and `groupOf` throw on unknown
-   * names — surface a startup-time error so a newly-added tool that was never
-   * tiered or grouped fails fast rather than slipping into the wrong build
-   * bundle (or landing ungroupable) silently. Run after each load phase (CE at
-   * construction, Pro after dynamic load).
+   * THE single source of the classification rule: a tool name must appear in
+   * BOTH src/core/tool-tiers.ts (which EDITION it ships in) AND
+   * src/core/tool-groups.ts (which capability group presents it). Throws when
+   * the name is unclassified (`tierOf`/`groupOf` each throw on an unknown
+   * name). Exposed to `ModuleLifecycle` via `ModuleLifecycleDeps.classifyTool`
+   * so the Pro dynamic-load path's per-tool forward-compat probe (`loadModules`,
+   * Net 2b) checks a single name against the exact same rule `assertToolsClassified`
+   * below checks the whole registry against, rather than a second copy drifting.
+   */
+  private classifyTool(name: string): void {
+    tierOf(name);
+    groupOf(name);
+  }
+
+  /**
+   * Every registered tool must be classified (see `classifyTool`) — surface a
+   * startup-time error so a newly-added tool that was never tiered or grouped
+   * fails fast rather than slipping into the wrong build bundle (or landing
+   * ungroupable) silently. Run after each load phase (CE at construction, Pro
+   * after dynamic load).
    */
   private assertToolsClassified(): void {
     for (const tool of this.toolRegistry.list()) {
-      tierOf(tool.name);
-      groupOf(tool.name);
+      this.classifyTool(tool.name);
     }
   }
 
@@ -635,6 +1051,7 @@ export class EditmameiServer {
       // Update session activity
       this.session.updateActivity();
       this.trackRawDevelopState(name, result);
+      if (hasImageContent(result) && !this.previewsAllowed()) return withholdImages(result);
       return result;
     } catch (error) {
       this.logger.error(`Tool execution failed: ${name}`, error);
@@ -653,7 +1070,7 @@ export class EditmameiServer {
     if (result.isError) return;
     if (name === 'ps_open_document') {
       const sc = result.structuredContent as { is_raw_source?: unknown } | undefined;
-      if (sc?.is_raw_source === true && this.toolRegistry.get('ps_apply_camera_raw')) {
+      if (sc?.is_raw_source === true && this.toolRegistry.get(CAMERA_RAW_TOOL)) {
         const opened = sc as { document_name?: unknown; file_path?: unknown };
         markRawOpened(String(opened.document_name ?? ''), String(opened.file_path ?? ''));
       } else {
@@ -661,7 +1078,15 @@ export class EditmameiServer {
         // pending flag now refers to a document that is no longer active.
         clearPendingRawDevelop();
       }
-    } else if (name === 'ps_apply_camera_raw' || name === 'ps_close_document') {
+    } else if (name === RAW_DEVELOP_TOOL) {
+      // ps_develop_raw develops the FILE before opening it, so a raw the model
+      // opened earlier is now developed and the advisory would otherwise send
+      // it into a redundant Camera Raw pass on exactly the workflow this tool
+      // provides. Only an actual open counts: mode='read' just inspects the
+      // sidecar and develops nothing.
+      const sc = result.structuredContent as { opened?: unknown } | undefined;
+      if (sc?.opened === true) clearPendingRawDevelop();
+    } else if (name === CAMERA_RAW_TOOL || name === 'ps_close_document') {
       clearPendingRawDevelop();
     }
   }
@@ -747,6 +1172,18 @@ export class EditmameiServer {
     })();
   }
 
+  /**
+   * Record that this ping did not reach Photoshop, and why. Drops the cached document
+   * depth/mode too: an unreachable Photoshop is evidence that document is gone (see
+   * lastDocDepth/lastDocMode's field doc).
+   */
+  private markPingUnreachable(errorClass: string, message: string): void {
+    this.lastPingReachedPs = false;
+    this.lastPingFailure = { errorClass, message };
+    this.lastDocDepth = null;
+    this.lastDocMode = null;
+  }
+
   private async pingPhotoshop() {
     // Reset the telemetry-only reached-Photoshop signal — see the field doc. Every
     // branch below that returns sets it explicitly; this default only survives an
@@ -755,11 +1192,33 @@ export class EditmameiServer {
     // Placed before everything else in this method, including the license refresh
     // below, so nothing can throw ahead of it.
     this.lastPingReachedPs = null;
+    this.lastPingFailure = null;
 
     // Piggyback a once-per-process license staleness refresh here (not
     // gated on the PS connection — license I/O is independent of Photoshop).
     // Fire-and-forget; never awaited, so the ping result never waits on it.
     this.refreshLicenseOnPing();
+
+    // The boot-time update check races the skill-mandated first ping; wait for it
+    // (bounded by its own 4s cap, never rejects) so the notice lands on the ping
+    // that matters. Settled from the second ping on, so the await is then free.
+    // Safe re lastPingReachedPs's LOAD-BEARING ordering note: that invariant
+    // covers the span between the field's FINAL assignment and the handler's
+    // return; the reset above is the fallback value, not a final assignment, and
+    // every path's final assignment comes after this await.
+    if (this.updateCheck) await this.updateCheck;
+    const update = await this.buildUpdateNotice();
+
+    // License advisory, appended to whichever branch below answers. Computed once
+    // per ping and empty unless this machine has a license problem worth naming.
+    // `withAdvisory` both appends it and marks it delivered, so the once-per-session
+    // latch is spent only by a branch that actually returns — see
+    // buildLicenseAdvisoryNote.
+    const advisory = this.buildLicenseAdvisoryNote();
+    const withAdvisory = (text: string): string => {
+      advisory.stamp();
+      return text + advisory.note;
+    };
 
     const connection = this.session.getConnection();
 
@@ -771,7 +1230,19 @@ export class EditmameiServer {
     // with real reads and the LLM had no way to tell them apart.
     let version = 'Unknown';
     let actionSetsCount = 0;
+    // Whether THIS ping's pingState round trip actually reported action_sets_count — see
+    // the telemetry.setInstallAssets() call near the end of this method, which sends only
+    // the fields this ping genuinely observed (never a stale 0 for a degraded field).
+    let actionSetsObserved = false;
     let openDocuments: string[] = [];
+    // Photoshop's UI locale (app.locale), telemetry's ps_locale diagnostic dimension — see
+    // lastPsLocale's field doc. null unless this ping's pingState round trip reports one.
+    let psLocale: string | null = null;
+    // Active document's bit depth / color mode, telemetry's doc_depth/doc_mode diagnostic
+    // dimensions — see lastDocDepth/lastDocMode's field doc. null unless this ping's
+    // pingState round trip had a document open to report on.
+    let docDepth: 8 | 16 | 32 | null = null;
+    let docMode: 'rgb' | 'cmyk' | 'lab' | 'grayscale' | 'other' | null = null;
     const degraded: string[] = [];
     // Tracks whether `version` came from the LIVE pingState query below, as opposed to
     // staying at connection.getVersion()'s disk-detected fallback from the try/catch
@@ -780,6 +1251,12 @@ export class EditmameiServer {
     // disk-detected fallback in the text/structuredContent below is pre-existing,
     // user-facing behavior, unrelated to telemetry's value-space requirement.
     let versionIsLive = false;
+    // Whether THIS ping's pingState round trip actually executed and reported (as opposed to
+    // a degraded ping where snippetClient.build() failed and the block below never ran) —
+    // gates the lastDocDepth/lastDocMode cache update near the end of this method: a live
+    // round trip's own null answer (no document open) is a fact worth caching over a stale
+    // one, but a degraded ping has no answer at all to prefer over the cache.
+    let pingStateObserved = false;
 
     // C3/Q4: getVersion() runs FIRST, ahead of the pingState build/execute
     // below. On the real PhotoshopConnection this call is what populates
@@ -789,11 +1266,92 @@ export class EditmameiServer {
     // throws "Photoshop info not available" whenever getPhotoshopInfo() is
     // still null, and runScript() below wraps this SAME connection
     // instance. Keep this call ahead of anything that reaches runScript().
+    // Kept rather than discarded: when it is the reason no install was found,
+    // it is what the not-found telemetry row reports.
+    let detectError: string | null = null;
     try {
       const detected = await connection.getVersion();
       if (detected) version = detected;
-    } catch {
-      /* fall through with default; pingState may still populate version */
+    } catch (err) {
+      detectError = err instanceof Error ? err.message : String(err);
+    }
+
+    // No install detected on a host Photoshop ships for. Every script needs a
+    // detected install, so nothing below could succeed; and "did not respond"
+    // would send the user to open an application this machine may not have.
+    // Unsupported hosts keep their own path below, which names the OS.
+    if (connection.getPhotoshopInfo() === null && unsupportedHostReason() === null) {
+      this.markPingUnreachable(
+        'ps_not_detected',
+        detectError ?? 'No Photoshop install was detected'
+      );
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: withAdvisory(
+              'Editmamei could not find a Photoshop install on this computer. Photoshop must be ' +
+                'installed on the same computer as Editmamei. ' +
+                // Already set means it is the path that failed, not a missing setting.
+                (process.env.PHOTOSHOP_PATH?.trim()
+                  ? 'PHOTOSHOP_PATH is set, but does not point at a Photoshop install: check it '
+                  : 'If it is installed in a custom location, set PHOTOSHOP_PATH to its full path ') +
+                "in your MCP client's Editmamei config (see " +
+                PHOTOSHOP_PATH_DOCS_URL +
+                '), restart the client, then call ps_ping again.' +
+                update.note
+            ),
+          },
+        ],
+        structuredContent: {
+          connected: false,
+          update_available: this.updateInfo,
+          notify_user: update.notify,
+        },
+      };
+    }
+
+    // Fast-fail when a DETECTED Photoshop install has no running process.
+    // Without this, the pingState round trip below walks into executeScript's
+    // ensureRunning() — which can sit out the full script budget (and even try
+    // to LAUNCH Photoshop) to report an absence a process-existence check
+    // answers in milliseconds. Deliberately NOT a shorter script timeout: a
+    // ping against a present but cold-starting Photoshop legitimately takes
+    // >10s and must keep the full budget — absence is the only case that
+    // deserves the shortcut. Scoped to detection SUCCESS on purpose:
+    // isCurrentlyRunning() is also false when no install was detected at all
+    // (photoshopInfo null), and those cases are answered by the not-found
+    // branch above or, on an unsupported host, by the paths below, rather
+    // than being misdiagnosed as "not running". Runs AFTER getVersion(), which is what
+    // populates photoshopInfo on the real connection. isCurrentlyRunning()
+    // self-catches to false, so this guard can never throw; the hedged
+    // "does not appear" wording covers a process-name miss on an exotic
+    // install, where a definitive claim could send the user chasing a
+    // Photoshop that is already open.
+    if (connection.getPhotoshopInfo() !== null && !(await connection.isCurrentlyRunning())) {
+      // The process-name probe is hedged (it can miss an exotic install), but clearing the
+      // cached document here errs toward omitting doc_depth/doc_mode rather than reporting
+      // a document that may already be gone.
+      this.markPingUnreachable(
+        'ps_not_running',
+        'Photoshop is installed but no Photoshop process is running'
+      );
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: withAdvisory(
+              'Photoshop does not appear to be running. Start Photoshop, then call ps_ping again.' +
+                update.note
+            ),
+          },
+        ],
+        structuredContent: {
+          connected: false,
+          update_available: this.updateInfo,
+          notify_user: update.notify,
+        },
+      };
     }
 
     // C1+C2: build the pingState snippet OUTSIDE the liveness try/catch
@@ -820,15 +1378,24 @@ export class EditmameiServer {
         // closed application and sends the reader after the wrong fix. The
         // host knows the real reason; say it.
         const reason = unsupportedHostReason();
-        this.lastPingReachedPs = false;
+        // A ping can time out transiently, but clearing the cached document errs toward
+        // omitting doc_depth/doc_mode rather than reporting a document that may be gone.
+        this.markPingUnreachable(
+          'ps_not_running',
+          reason ?? 'pingState snippet build failed and the fallback ping did not reach Photoshop'
+        );
         return {
           content: [
             {
               type: 'text' as const,
-              text: (reason ?? 'Photoshop did not respond') + this.updateNote(),
+              text: withAdvisory((reason ?? 'Photoshop did not respond') + update.note),
             },
           ],
-          structuredContent: { connected: false, update_available: this.updateInfo },
+          structuredContent: {
+            connected: false,
+            update_available: this.updateInfo,
+            notify_user: update.notify,
+          },
         };
       }
       degraded.push('pingState');
@@ -846,37 +1413,86 @@ export class EditmameiServer {
     // (unlike a build() failure above, which is caught before this point
     // and never reaches here).
     if (pingStateSnippet !== null) {
-      let state: { version?: string; action_sets_count?: number; open_documents?: string[] };
+      let state: {
+        version?: string;
+        action_sets_count?: number;
+        open_documents?: string[];
+        locale?: string;
+        doc_depth?: number;
+        doc_mode?: string;
+      };
       try {
         state = (await runScript(connection, pingStateSnippet)) as {
           version?: string;
           action_sets_count?: number;
           open_documents?: string[];
+          locale?: string;
+          doc_depth?: number;
+          doc_mode?: string;
         };
       } catch (err) {
-        this.logger.warn(
-          `pingState snippet failed: ${err instanceof Error ? err.message : String(err)}`
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`pingState snippet failed: ${message}`);
+        // The round trip did not complete. The message carries the real reason (a COM
+        // attach failure, a timeout). Only classes that describe a failed round trip are
+        // kept: classifyError is first-match over every tool's errors, so a COM
+        // description saying "invalid" would otherwise read as bad input to a tool that
+        // takes none. Everything else stays ps_not_running.
+        const errorClass = classifyError(message);
+        this.markPingUnreachable(
+          errorClass !== null && PING_ROUND_TRIP_CLASSES.has(errorClass)
+            ? errorClass
+            : 'ps_not_running',
+          message
         );
-        this.lastPingReachedPs = false;
         return {
           content: [
-            { type: 'text' as const, text: 'Photoshop did not respond' + this.updateNote() },
+            {
+              type: 'text' as const,
+              text: withAdvisory('Photoshop did not respond' + update.note),
+            },
           ],
-          structuredContent: { connected: false, update_available: this.updateInfo },
+          structuredContent: {
+            connected: false,
+            update_available: this.updateInfo,
+            notify_user: update.notify,
+          },
         };
       }
+      // Reached only when the round trip above actually completed — a failure returned
+      // early. Set before reading any individual field so it reflects "this ping has a
+      // live answer to report," independent of which fields that answer happened to carry.
+      pingStateObserved = true;
       if (state.version) {
         version = state.version;
         versionIsLive = true;
       }
-      if (typeof state.action_sets_count === 'number') actionSetsCount = state.action_sets_count;
+      if (typeof state.action_sets_count === 'number') {
+        actionSetsCount = state.action_sets_count;
+        actionSetsObserved = true;
+      }
       if (Array.isArray(state.open_documents)) openDocuments = state.open_documents;
+      if (typeof state.locale === 'string') psLocale = state.locale;
+      if (state.doc_depth === 8 || state.doc_depth === 16 || state.doc_depth === 32) {
+        docDepth = state.doc_depth;
+      }
+      if (
+        state.doc_mode === 'rgb' ||
+        state.doc_mode === 'cmyk' ||
+        state.doc_mode === 'lab' ||
+        state.doc_mode === 'grayscale' ||
+        state.doc_mode === 'other'
+      ) {
+        docMode = state.doc_mode;
+      }
     }
 
     let userTemplates = 0;
+    let templatesObserved = false;
     try {
       const templates = await listTemplates();
       userTemplates = templates.length;
+      templatesObserved = true;
     } catch (err) {
       this.logger.warn(`listTemplates failed: ${err instanceof Error ? err.message : String(err)}`);
       degraded.push('templates');
@@ -903,6 +1519,29 @@ export class EditmameiServer {
       // placeholder. Best-effort + content-free; never affects the ping result.
       this.telemetry.onPsVersionResolved();
     }
+    // Cache the locale for every diagnostic recorded for the rest of the session (see
+    // lastPsLocale's field doc) — only overwritten on a ping that actually reported one, so
+    // a later degraded ping doesn't blank out an already-known value. Doc depth/mode instead
+    // mirror the LIVE round trip's own answer whenever one ran (see lastDocDepth/
+    // lastDocMode's field docs): a genuine "no document open" report clears both to null,
+    // since the cached pair may describe a document the user has since closed — only a ping
+    // whose round trip never ran (pingStateObserved false) leaves them alone.
+    if (psLocale !== null) this.lastPsLocale = psLocale;
+    if (pingStateObserved) {
+      this.lastDocDepth = docDepth;
+      this.lastDocMode = docMode;
+    }
+    // Install-asset counts, alongside the other session_summary counters — a pure count,
+    // content-free like everything else this method reports. Only the fields THIS ping
+    // actually observed: action_sets needs the pingState round trip to have run at all;
+    // templates_saved needs listTemplates() to have succeeded. Sending an unobserved field
+    // as its stale default (0) would read as "confirmed zero" rather than "didn't check
+    // this time" — client.ts's setInstallAssets merges per field, so a degraded field here
+    // simply leaves an earlier good value (if any) alone instead of stomping it.
+    this.telemetry.setInstallAssets({
+      ...(templatesObserved ? { templates_saved: userTemplates } : {}),
+      ...(actionSetsObserved ? { action_sets: actionSetsCount } : {}),
+    });
 
     // Every path above that didn't already return early DID reach Photoshop — the
     // build-failure branch's degraded fallback included, since it only falls through
@@ -914,12 +1553,13 @@ export class EditmameiServer {
       content: [
         {
           type: 'text' as const,
-          text:
+          text: withAdvisory(
             `Connected to Photoshop (v${version}). ` +
-            `${actionSetsCount} custom action set(s), ${userTemplates} saved template(s), ` +
-            `${openDocuments.length} open document(s)${openDocuments.length ? ': ' + openDocuments.join(', ') : ''}` +
-            `${degradedNote}.` +
-            this.updateNote(),
+              `${actionSetsCount} custom action set(s), ${userTemplates} saved template(s), ` +
+              `${openDocuments.length} open document(s)${openDocuments.length ? ': ' + openDocuments.join(', ') : ''}` +
+              `${degradedNote}.` +
+              update.note
+          ),
         },
       ],
       structuredContent: {
@@ -930,16 +1570,82 @@ export class EditmameiServer {
         open_documents: openDocuments,
         degraded,
         update_available: this.updateInfo,
+        notify_user: update.notify,
       },
     };
   }
 
-  /** A one-line, user-facing "update available" suffix for the ping text, or '' when the
-   * boot check found nothing newer (or hasn't completed / is disabled). */
-  private updateNote(): string {
+  /**
+   * The ping-text update suffix plus the `notify_user` flag, or an empty note when
+   * the boot check found nothing newer (or is disabled).
+   *
+   * First render with an update available: an imperative, relay-shaped block. The
+   * reader of a tool RESULT is the model, and an instruction in result text is
+   * attended far more reliably than a "TELL THE USER" note in an output-schema
+   * description (where the old imperative lived — visible at tools/list time,
+   * effectively never at result time). When the previous session's failures
+   * intersect the tools this update fixes, the notice names them: "last session
+   * ps_delete_layer failed 10 times — fixed" is a reason to update, not a nag.
+   * Later pings fall back to the passive one-liner.
+   *
+   * Never throws: the session-log read is local and best-effort; any problem
+   * degrades to the plain notice.
+   */
+  private async buildUpdateNotice(): Promise<{ note: string; notify: boolean }> {
     const u = this.updateInfo;
-    if (!u) return '';
-    return ` Update available: v${u.current} → v${u.latest}. ${u.how_to_update}`;
+    if (!u) return { note: '', notify: false };
+    if (this.updateNoticeShown) {
+      return {
+        note: ` Update available: v${u.current} → v${u.latest}. ${u.how_to_update}`,
+        notify: false,
+      };
+    }
+    this.updateNoticeShown = true;
+    let fixNote = '';
+    if (u.fixed_tools.length > 0) {
+      try {
+        const counts = await previousSessionFailureCounts(this.session.getSessionId(), {
+          dir: this.sessionLog.directory,
+        });
+        const hits = relevantFixes(counts, u.fixed_tools);
+        if (hits.length > 0) {
+          // "Fixes known failures in X (failed N times)" — not "your N failures
+          // are fixed": the local log records failure COUNTS per tool, not
+          // causes, so the notice must not claim every one of those failures
+          // was the bug this release closes.
+          const named = hits
+            .map(
+              (h) =>
+                `${h.tool} (failed ${h.failures} time${h.failures === 1 ? '' : 's'} last session)`
+            )
+            .join(', ');
+          fixNote = ` v${u.latest} fixes known failures in ${named}.`;
+        }
+      } catch {
+        /* local log read is best-effort; fall through to the plain notice */
+      }
+    }
+    return {
+      note:
+        ` IMPORTANT — tell the user before continuing: Editmamei v${u.latest} is available` +
+        ` (this install runs v${u.current}).${fixNote} To update: ${u.how_to_update}` +
+        // Rides the first-render notice only, never the passive later ones, so
+        // it cannot repeat within a session. It DOES recur across sessions for
+        // as long as an update stays uninstalled: the server is a fresh process
+        // each time and this state is per-instance. Installing the update ends
+        // the notice and this line together.
+        //
+        // Marked not-urgent explicitly so it does not inherit the weight of the
+        // imperative above, which is about the update itself.
+        //
+        // The URL goes LAST and carries no trailing punctuation: this text is
+        // relayed verbatim into chat clients and terminals that auto-linkify,
+        // and many of them swallow a trailing period into the href, which would
+        // break the one link the sentence exists to offer. A test pins it.
+        ` Not urgent: they can also read and subscribe to release notes at` +
+        ` https://editmamei.com/blog?src=update_notice`,
+      notify: true,
+    };
   }
 
   async start() {
@@ -959,27 +1665,35 @@ export class EditmameiServer {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
 
-    // Warm the Photoshop connection in the background — fire-and-forget. Every tool
-    // call (and ps_ping) establishes the connection lazily on first use, so
-    // nothing here is required for correctness; this just pays the first-connect cost
-    // ahead of the first real tool call when PS is already up. connect() swallows its
-    // own errors, so an unreachable Photoshop at boot is a silent no-op here. The
-    // trailing .catch guards the one path connect() can't — a synchronous throw from
-    // the PhotoshopConnection constructor — so it can't surface as an unhandledRejection.
-    void this.session.initialize().catch(() => undefined);
+    // Every job in this block is Photoshop/Pro-only — skipped entirely when
+    // `registerPhotoshop` is false (pinned to 'gimp'). Without this gate,
+    // `ensureEntitledModuleFresh` reads the real on-disk license store
+    // (`isProEntitled`) and, on a machine that happens to carry a Pro
+    // entitlement, goes on to do real network refresh work for a module that
+    // was never loaded and contributes no tools to this boot at all.
+    if (this.editorOpts.registerPhotoshop) {
+      // Warm the Photoshop connection in the background — fire-and-forget. Every tool
+      // call (and ps_ping) establishes the connection lazily on first use, so
+      // nothing here is required for correctness; this just pays the first-connect cost
+      // ahead of the first real tool call when PS is already up. connect() swallows its
+      // own errors, so an unreachable Photoshop at boot is a silent no-op here. The
+      // trailing .catch guards the one path connect() can't — a synchronous throw from
+      // the PhotoshopConnection constructor — so it can't surface as an unhandledRejection.
+      void this.session.initialize().catch(() => undefined);
 
-    // Background self-heal — the FIRST network of boot, deliberately AFTER connect
-    // (v0.20.0 invariant: loadModules stays filesystem/crypto-only; nothing reaches
-    // the network before the handshake). No-op unless loadModules flagged a skipped
-    // module; fully swallowed, so an offline/lapsed/down delivery just stays Community.
-    void this.reprovisionIfModuleSkipped();
+      // Background self-heal — the FIRST network of boot, deliberately AFTER connect
+      // (v0.20.0 invariant: loadModules stays filesystem/crypto-only; nothing reaches
+      // the network before the handshake). No-op unless loadModules flagged a skipped
+      // module; fully swallowed, so an offline/lapsed/down delivery just stays Community.
+      void this.reprovisionIfModuleSkipped();
 
-    // Background auto-update — the complement to the self-heal on the HEALTHY path:
-    // when the on-disk Pro module loaded fine but a NEWER version is published, pull
-    // it (closes the .mcpb auto-update gap).
-    // Mutually exclusive with the self-heal above (that owns moduleSkipReason !== null),
-    // so exactly one runs per boot. Same post-connect, fire-and-forget, swallowed shape.
-    void this.ensureEntitledModuleFresh();
+      // Background auto-update — the complement to the self-heal on the HEALTHY path:
+      // when the on-disk Pro module loaded fine but a NEWER version is published, pull
+      // it (closes the .mcpb auto-update gap).
+      // Mutually exclusive with the self-heal above (that owns moduleSkipReason !== null),
+      // so exactly one runs per boot. Same post-connect, fire-and-forget, swallowed shape.
+      void this.ensureEntitledModuleFresh();
+    }
 
     // Start the periodic telemetry flush, and flush a final batch + session summary when
     // the client disconnects. Transport close (stdin EOF) is the session-end signal for
@@ -997,6 +1711,11 @@ export class EditmameiServer {
     void this.telemetry.flushOutboxOnStartup();
     this.server.onclose = () => {
       void this.telemetry.shutdown();
+      // GIMP session shutdown is memoized (GimpSession.shutdown()'s own
+      // shutdownPromise latch), so calling it from both exit paths (here AND
+      // stop(), which SIGTERM/SIGINT in index.ts awaits) is safe — whichever
+      // runs first does the real work, the other just awaits the same promise.
+      if (this.gimpBackend) void this.gimpBackend.shutdown();
     };
 
     this.logger.info('Editmamei is listening on stdio');
@@ -1004,6 +1723,7 @@ export class EditmameiServer {
 
   async stop() {
     await this.telemetry.shutdown();
+    if (this.gimpBackend) await this.gimpBackend.shutdown();
     await this.session.disconnect();
     // Release the session log's held append handle (opened lazily on first
     // write; harmless if never opened). After close, late fire-and-forget

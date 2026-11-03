@@ -3,6 +3,9 @@ import {
   toolErrorResult,
   runSnippetTool,
   applyToActiveLayerProp,
+  requireAbsoluteGimpPath,
+  toolGimpErrorResult,
+  refuseExistingGimpFile,
 } from '@editmamei/utils/tool-helpers.ts';
 import type { JsonSchemaObject } from '@editmamei/utils/validate.ts';
 import type { SnippetClient } from '@editmamei/api/snippet-client.ts';
@@ -246,5 +249,114 @@ describe('applyToActiveLayerProp — the auto-duplicate contract, once', () => {
     expect(prop.description).toContain('If false (default), the filter is applied to a duplicate');
     expect(prop.description).toContain('"<OpName> (<Original Name>)"');
     expect(prop.description).toContain('If true, the filter bakes directly into the active layer');
+  });
+});
+
+describe('toolGimpErrorResult — the gimp_* catch tail', () => {
+  it('extracts Error messages and preserves the site prefix, with no Photoshop-shaped hint', () => {
+    const r = toolGimpErrorResult(
+      'Error opening GIMP document',
+      new Error('gimp_not_installed: no GIMP install was found')
+    );
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe(
+      'Error opening GIMP document: gimp_not_installed: no GIMP install was found'
+    );
+    expect(textOf(r)).not.toContain('Commit or cancel it in Photoshop');
+  });
+
+  it('stringifies non-Error throwables', () => {
+    const r = toolGimpErrorResult('Error exporting GIMP document', 'raw string failure');
+    expect(textOf(r)).toBe('Error exporting GIMP document: raw string failure');
+  });
+});
+
+describe('requireAbsoluteGimpPath', () => {
+  // `platform` picks `path.win32` vs `path.posix` semantics explicitly — every
+  // case below pins it rather than trusting `process.platform`, so this suite
+  // gives the identical answer on a Windows dev box and a macOS CI runner.
+
+  it('accepts an ordinary drive-rooted Windows path, both slash directions, on win32', () => {
+    expect(requireAbsoluteGimpPath('file_path', 'C:\\photos\\dog.jpg', 'win32')).toBe(
+      'C:\\photos\\dog.jpg'
+    );
+    expect(requireAbsoluteGimpPath('file_path', 'C:/photos/dog.jpg', 'win32')).toBe(
+      'C:/photos/dog.jpg'
+    );
+  });
+
+  it('accepts an ordinary POSIX absolute path on darwin — no drive letter required', () => {
+    expect(requireAbsoluteGimpPath('file_path', '/Users/alex/photo.jpg', 'darwin')).toBe(
+      '/Users/alex/photo.jpg'
+    );
+  });
+
+  it('rejects a missing / non-string / empty value, on either platform', () => {
+    for (const platform of ['win32', 'darwin']) {
+      expect(() => requireAbsoluteGimpPath('file_path', undefined, platform)).toThrow(/required/);
+      expect(() => requireAbsoluteGimpPath('file_path', 42, platform)).toThrow(/required/);
+      expect(() => requireAbsoluteGimpPath('file_path', '', platform)).toThrow(/required/);
+    }
+  });
+
+  it('rejects a plain relative path on win32', () => {
+    expect(() => requireAbsoluteGimpPath('file_path', 'photo.jpg', 'win32')).toThrow(
+      /absolute path/
+    );
+    expect(() => requireAbsoluteGimpPath('file_path', '..\\photo.jpg', 'win32')).toThrow(
+      /absolute path/
+    );
+  });
+
+  it('rejects a plain relative path on darwin', () => {
+    expect(() => requireAbsoluteGimpPath('file_path', 'photo.jpg', 'darwin')).toThrow(
+      /absolute path/
+    );
+    expect(() => requireAbsoluteGimpPath('file_path', '../photo.jpg', 'darwin')).toThrow(
+      /absolute path/
+    );
+  });
+
+  it('rejects a Windows-shaped drive-rooted path on darwin — POSIX has no drive-letter root, so it reads as relative', () => {
+    expect(() => requireAbsoluteGimpPath('file_path', 'C:/photos/dog.jpg', 'darwin')).toThrow(
+      /absolute path/
+    );
+  });
+
+  it.each([
+    ['a UNC share', '\\\\server\\share\\photo.jpg'],
+    ['a UNC share with forward slashes', '//server/share/photo.jpg'],
+    ['a \\\\?\\ device path', '\\\\?\\C:\\photo.jpg'],
+    ['a \\\\.\\ device path', '\\\\.\\PhysicalDrive0'],
+  ])('rejects %s on either platform', (_label, value) => {
+    expect(() => requireAbsoluteGimpPath('file_path', value, 'win32')).toThrow(/UNC|device path/);
+    expect(() => requireAbsoluteGimpPath('file_path', value, 'darwin')).toThrow(/UNC|device path/);
+  });
+
+  it('on win32, rejects a path rooted at "\\" with no drive letter', () => {
+    const value = String.fromCharCode(92) + 'x.jpg'; // "\x.jpg" — a single leading backslash
+    expect(() => requireAbsoluteGimpPath('file_path', value, 'win32')).toThrow(/drive letter/);
+  });
+
+  it('on darwin, the same backslash-rooted value is rejected as not absolute at all — POSIX has no such root, so the drive-letter check never applies', () => {
+    const value = String.fromCharCode(92) + 'x.jpg'; // "\x.jpg"
+    expect(() => requireAbsoluteGimpPath('file_path', value, 'darwin')).toThrow(/absolute path/);
+  });
+});
+
+describe('refuseExistingGimpFile', () => {
+  it('refuses when the path exists and overwrite is not true', () => {
+    expect(() => refuseExistingGimpFile('/out.jpg', undefined, () => true)).toThrow(
+      /overwrite: true/
+    );
+    expect(() => refuseExistingGimpFile('/out.jpg', false, () => true)).toThrow(/overwrite: true/);
+  });
+
+  it('allows when the path does not exist, regardless of overwrite', () => {
+    expect(() => refuseExistingGimpFile('/out.jpg', undefined, () => false)).not.toThrow();
+  });
+
+  it('allows an existing path when overwrite is true', () => {
+    expect(() => refuseExistingGimpFile('/out.jpg', true, () => true)).not.toThrow();
   });
 });

@@ -1,8 +1,18 @@
 /**
  * Centralized per-operation timeout budgets (ms) — the third argument
  * `timeoutMs` handlers pass through `runScript()` to override the platform
- * runner's 30s default (`windows-runner.ts` / `macos-runner.ts`
- * `run()`).
+ * runner's default (`windows-runner.ts` / `macos-runner.ts` `run()`).
+ *
+ * Two layers live in this file. The overrides below predate the second layer
+ * and are a handler's own explicit choice, passed at its own `runScript`
+ * call sites. `getToolTimeoutMs()` at the bottom is the newer, coarser layer:
+ * one budget per MCP tool, consumed once at dispatch (`ToolRegistry.execute`,
+ * via `tool-budget-context.ts`) to compute that call's absolute DEADLINE —
+ * every script the handler runs is bounded by whichever is sooner, its own
+ * requested timeout or however much of that deadline is left. A call that
+ * runs several scripts spends the budget once across all of them; it is not
+ * handed fresh to each one. See `run-script.ts` for exactly how a script's
+ * effective timeout is derived from the deadline.
  *
  * Most tools never approach 30s. A handful of Photoshop operations
  * routinely do on real-world input — most notably a large RAW file's first
@@ -16,12 +26,28 @@
  * fix adds (`ps_open_document`, `ps_apply_camera_raw`).
  *
  * Raising a budget is a real tradeoff, not a free fix: a genuine hang now
- * takes longer to surface as an error. `ps_open_document` pairs its budget
- * with a post-timeout re-probe (`document-tools.ts`'s `reprobeOpenDocument`)
+ * takes longer to surface as an error. `ps_open_document` and
+ * `ps_save_psd` pair their budgets with a post-timeout re-probe
+ * (`document-tools.ts`'s `reprobeOpenDocument` / `reprobeSavedPsd`)
  * for exactly this reason — the probe only benefits the legitimately-slow
  * case; a genuine hang still surfaces via the original timeout path once the
  * probe also finds nothing.
  */
+
+import { Logger } from './logger.js';
+
+const logger = new Logger('operation-timeouts');
+
+/**
+ * Wall-clock budget for a single script when no per-tool budget below
+ * applies and the handler didn't override it directly. The single shared
+ * constant both platform runners import, so `getToolTimeoutMs()` can reason
+ * about "the tool's budget, or this fallback" in one place.
+ */
+export const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
+
+/** No per-tool budget in the table below goes under this, however fast the tool measures. */
+export const SCRIPT_TIMEOUT_FLOOR_MS = 5_000;
 
 /** `ps_open_document` — large RAW files can exceed 30s on first ACR engine init. */
 export const OPEN_DOCUMENT_TIMEOUT_MS = 120_000;
@@ -34,6 +60,24 @@ export const OPEN_DOCUMENT_TIMEOUT_MS = 120_000;
  */
 export const OPEN_DOCUMENT_REPROBE_TIMEOUT_MS = 10_000;
 
+/**
+ * `ps_save_psd` — writing a layered PSD scales with layer count and document
+ * pixels, and `maximize_compatibility` (the default) adds a full composite on
+ * top. The measured 32s budget timed out on 21 of 269 saves (2026-10-09..13)
+ * while Photoshop went on to write the file, so the caller got an error for a
+ * save that happened. Matches the other pixel-heavy operations, and is paired
+ * with a post-timeout file check (`document-tools.ts`'s `reprobeSavedPsd`).
+ */
+export const SAVE_PSD_TIMEOUT_MS = 120_000;
+
+/**
+ * Budget for `reprobeSavedPsd`'s readiness script. Photoshop runs one script
+ * at a time, so this script only returns once the save it kept running has
+ * finished; a probe that times out too means the save is still going, and the
+ * caller gets the original timeout error.
+ */
+export const SAVE_PSD_REPROBE_TIMEOUT_MS = 30_000;
+
 /** `ps_apply_camera_raw` — the Pro Camera Raw Filter headliner; structurally
  * exposed to the same first-engine-init cliff as ps_open_document. */
 export const CAMERA_RAW_FILTER_TIMEOUT_MS = 120_000;
@@ -45,7 +89,7 @@ export const SELECT_SUBJECT_TIMEOUT_MS = 120_000;
 export const SELECT_SKY_TIMEOUT_MS = 120_000;
 
 /**
- * `ps_select_focus_area` (Focus Area). Measured 3.4s on a 4000x6000 frame,
+ * `ps_select` mode=focus_area (Focus Area). Measured 3.4s on a 4000x6000 frame,
  * 2026-08-15; the ceiling matches the other native-AI selections because the
  * first call in a session pays a one-off model load.
  */
@@ -80,3 +124,357 @@ export const ANNOTATED_PREVIEW_TIMEOUT_MS = 90_000;
  * work. Matching the Sensei budgets keeps one number for "pixel-heavy PS op".
  */
 export const SCENE_CHANNEL_TIMEOUT_MS = 120_000;
+
+/**
+ * How long `ps_sequence` may keep STARTING steps, measured from its first one
+ * and checked only between them. A soft ceiling on the sequence as a whole: it
+ * never preempts a step already running, and it is not a bound on any script.
+ *
+ * Each step carries its own timeout regardless — that is the point of the
+ * `ps_sequence: Infinity` table entry below. This number exists so a long
+ * sequence of individually-legitimate calls still stops somewhere, not because
+ * anything downstream needs bounding.
+ */
+export const SEQUENCE_OVERALL_TIMEOUT_MS = 300_000;
+
+/**
+ * Per-tool dispatch budgets (ms) — see the file doc comment for how this
+ * layer relates to the overrides above.
+ *
+ * Derivation: for every row in the measured-latency data that a tool
+ * dispatches to — a consolidated tool maps to every op it now covers, not
+ * just a row sharing its own name — the candidate is
+ * `max(2 * p99_clean, 1.5 * max_clean)`; a row with any calls censored at
+ * the old flat 30s ceiling (`ceiling_hits > 0`) floors its candidate at
+ * 30000, since the clean subset of a censored row understates the true
+ * tail. The tool's budget is the max candidate across all its rows, rounded
+ * up to the nearest second. A false timeout is worse than a slow one —
+ * Photoshop keeps executing after the child is killed — so the max/1.5x
+ * term exists specifically to keep the budget at or above every duration
+ * already observed for that tool, not just its percentile.
+ *
+ * This table lists Community tools. A Community tool absent from it is on
+ * the `TOOLS_WITHOUT_A_BUDGET` allowlist below (fewer than 10 measured
+ * calls in every row it maps to — too little signal to derive a number
+ * from) and falls back to `DEFAULT_SCRIPT_TIMEOUT_MS`, exactly like a tool
+ * this table has never heard of. `getToolTimeoutMs()`'s own completeness is
+ * pinned by `tests/integration/tool-timeout-budgets.test.ts`.
+ *
+ * A tool that needs a bigger budget than whatever this table (or the
+ * default) resolves to isn't stuck with it: its own handler passes its own
+ * explicit `timeoutMs` at its own `runScript` call site instead, which
+ * always wins — see `run-script.ts`. The overrides above this table already
+ * do exactly that.
+ */
+export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
+  ps_open_document: OPEN_DOCUMENT_TIMEOUT_MS,
+  ps_select_subject: SELECT_SUBJECT_TIMEOUT_MS,
+  ps_select_sky: SELECT_SKY_TIMEOUT_MS,
+  ps_replace_sky: SKY_REPLACEMENT_TIMEOUT_MS,
+  ps_save_psd: SAVE_PSD_TIMEOUT_MS,
+
+  // DELIBERATE EXCEPTION to the derivation rule above: measured max_clean
+  // (33893ms, with 2 calls censored at the old ceiling) would put this well
+  // over 30s under the same formula every other row uses. Held at the
+  // shared default anyway — ps_ping is the tool a caller reaches for
+  // specifically to find out whether Photoshop is there at all, and a
+  // broken install's first impression should be an early, clear failure,
+  // not a long hang before the same failure.
+  // Deliberate exception to the derivation rule: the measured max sits just
+  // above 30 s, but the cold-start ping is a broken install's first
+  // impression, and a longer hang there is worse than an early failure.
+  ps_ping: 30_000,
+  ps_read_scene: 164_000,
+  ps_selection_channel: 123_000,
+
+  // Moderately long.
+  ps_select: 54_000,
+  ps_modify_selection: 37_000,
+  ps_filter: 31_000,
+  ps_get_histogram: 25_000,
+  ps_create_document: 20_000,
+  ps_detect: 19_000,
+  ps_get_preview: 17_000,
+  ps_resize_image: 16_000,
+  ps_get_selection_preview: 14_000,
+  ps_undo: 12_000,
+  ps_export: 9_000,
+  ps_path: 10_000,
+  ps_crop_document: 10_000,
+  ps_inspect: 7_000,
+  ps_duplicate_layer: 7_000,
+  ps_shape: 7_000,
+  ps_text: 7_000,
+  ps_set_layer: 6_000,
+  ps_bake_layer: 6_000,
+
+  // Rows carrying calls already censored at the old flat 30s ceiling — the
+  // formula's own max(...,30000) floor, not a hand-picked number.
+  ps_document: 30_000,
+  ps_apply_adjustment: 30_000,
+  ps_close_document: 30_000,
+  ps_group: 30_000,
+  ps_clipping_mask: 30_000,
+  ps_convert_image_mode: 30_000,
+  ps_convert_to_smart_object: 30_000,
+  ps_create_layer: 30_000,
+  ps_fill_layer: 30_000,
+  ps_select_layer: 30_000,
+  ps_transform_layer: 30_000,
+  ps_transform_canvas: 30_000,
+  ps_guides: 30_000,
+  ps_retouch: 30_000,
+  ps_select_by_reference: 30_000,
+
+  // Clean p99 well under the shared default; floored at SCRIPT_TIMEOUT_FLOOR_MS.
+  ps_list_capabilities: 5_000,
+  ps_add_adjustment_layer: 5_000,
+  ps_redo: 5_000,
+  ps_place_image: 5_000,
+  ps_move_layer_to_position: 5_000,
+  ps_rasterize_layer: 5_000,
+  ps_copy_to_new_layer: 5_000,
+  ps_merge: 5_000,
+  ps_add_layer_style: 5_000,
+  ps_delete_layer: 5_000,
+  ps_add_fill_layer: 5_000,
+  ps_overview: 5_000,
+  ps_get_layer_bounds_diff: 5_000,
+  ps_compare_regions: 5_000,
+  ps_layer_mask: 5_000,
+  ps_vector_mask: 5_000,
+  ps_apply_image: 5_000,
+
+  // No deadline of its own, deliberately — the one entry here that is not a
+  // duration. ps_sequence dispatches other tools and runs no script itself, so
+  // there is nothing for a deadline to bound that is not already bounded.
+  //
+  // A finite value here is actively harmful rather than merely unnecessary.
+  // budgetContextFor caps a NESTED deadline at min(own, outer.remaining), so
+  // whatever number sits here silently becomes the ceiling on every step too:
+  // a step late in the sequence gets a fraction of its own budget, and the
+  // rollback after a failure gets whatever is left, which is nothing. Infinity
+  // makes min(own, Infinity) === own, so every step and every rollback probe
+  // gets exactly the budget it would get standing alone. Nothing is unbounded
+  // that was ever bounded.
+  //
+  // The sequence as a whole is still limited, by SEQUENCE_OVERALL_TIMEOUT_MS,
+  // checked between steps where stopping is safe.
+  //
+  // Safe because ps_sequence calls no runScript: an Infinity deadline reaching
+  // one would be handed to a platform runner as a timeout. If this tool ever
+  // gains a direct script, give that call an explicit timeoutMs.
+  ps_sequence: Number.POSITIVE_INFINITY,
+
+  // ── gimp_* ──────────────────────────────────────────────────────────────
+  // Headroom for whichever op happens to pay the lazy session's cold start
+  // (measured live, GIMP 3.2.6: ~4-5.5s; paid once per server process, on
+  // the first gimp_* call of any kind). Most budgets below are still
+  // estimates; `gimp_resize_image` and `gimp_transform_canvas` are set from
+  // a real measurement (see tests/gimp-live's timing measurement) against a
+  // ~24MP synthetic image resized up to ~217MP — close to the bridge's own
+  // 250MP/30000px-per-side cap (`bridge/lib.py`'s MAX_RESIZE_MEGAPIXELS /
+  // MAX_RESIZE_SIDE_PX), the worst case these two tools can reach:
+  //   cold start ~5.4s + resize (24MP -> ~217MP) ~5.3s ≈ 10.7s measured
+  //   cold start ~5.4s + rotate+expand (on the ~217MP result) ~11.3s ≈ 16.7s measured
+  // Budgeted at roughly 3x the measured worst case, rounded up, to absorb a
+  // slower machine and a higher `precision` (16/32-bit moves 2-4x the bytes
+  // per pixel that measurement was taken at 8-bit). A timeout on either tool
+  // tree-kills the GIMP process (`session.ts`'s own contract) — the tool
+  // descriptions say so, since any unsaved work is lost when that happens.
+  gimp_ping: 20_000,
+  gimp_overview: 5_000, // pure static markdown, no bridge round trip — same as ps_overview
+  gimp_open_document: 30_000,
+  gimp_close_document: 15_000,
+  // Matched to gimp_export: saving a large document with live filters is no cheaper than
+  // exporting it, and a timeout here would destroy the very work the save was protecting.
+  gimp_save_xcf: 90_000,
+  gimp_export: 90_000,
+  // `what='channels'` reads EVERY named channel's full pixel buffer (`_channel_coverage`,
+  // ops.py) -- the same per-channel cost gimp_select's own budget below pays for a single one of.
+  // Measured live (GIMP 3.2.6, ~24MP) at ~120ms/channel. `_channels_described` also applies its
+  // own internal deadline (`CHANNELS_DESCRIBE_DEADLINE_S`, ops.py) so a document with many named
+  // channels stops and reports what it already read rather than run this dispatch budget out;
+  // this entry is the outer safety margin on top of that, on a slower machine or a document large
+  // enough that even the capped `document`/`layers` tree walk takes real time.
+  gimp_inspect: 30_000,
+  gimp_add_adjustment: 20_000,
+  gimp_filter: 15_000,
+  // Creates or re-edits a filter -- the same create/re-edit path, and the same 20s budget, as
+  // gimp_add_adjustment (not gimp_filter's own list/set_visibility/delete, 15s, which only manage
+  // the stack and never touch a filter's own config).
+  gimp_add_effect: 20_000,
+  gimp_crop_document: 20_000,
+  gimp_resize_image: 45_000,
+  gimp_transform_canvas: 60_000,
+  gimp_get_preview: 30_000,
+  // exact: true renders the full-resolution composite, the same work gimp_export does, and it
+  // is the recommended final check before export.
+  gimp_get_histogram: 90_000,
+  gimp_compare: 45_000,
+  // op=create dispatches the same `export` op gimp_save_xcf does (to an
+  // internal path instead of a caller-supplied one) — matched to
+  // gimp_save_xcf/gimp_export's own budget for the same reason: a timeout
+  // here tree-kills the very session the checkpoint exists to protect
+  // against. op=restore's open+close pair is comparatively cheap, and
+  // list/delete touch no bridge op at all, but the tool shares one timeout
+  // across whichever op a call makes.
+  gimp_checkpoint: 90_000,
+  // gimp_layer: merge_down and flatten render every touched layer's live filters at full
+  // resolution before compositing -- the same class of cost gimp_export/gimp_save_xcf/gimp_bake
+  // already budget 90s for -- and every other sub-op still pays a proxy rebuild on top of its own
+  // cost, so the whole tool shares that one, higher budget rather than a per-op split.
+  gimp_layer: 90_000,
+  // gimp_bake: `Drawable.merge_filters()` renders every live filter at full resolution -- the
+  // same class of cost gimp_export/gimp_save_xcf already budget 90s for, and `all: true` can do
+  // this for several layers in one call.
+  gimp_bake: 90_000,
+  // gimp_create_document: builds an image and its default preview proxy, no file I/O -- cheap,
+  // same order of magnitude as gimp_inspect.
+  gimp_create_document: 15_000,
+  // gimp_place_image: loads a file plus an optional scale of the placed layer -- matched to
+  // gimp_open_document's own budget for the same class of file-load cost.
+  gimp_place_image: 30_000,
+  // gimp_canvas: a resize-canvas primitive plus (unless fill is transparent) one full-canvas
+  // fill layer -- matched to gimp_resize_image's own budget for the same "grows the working set"
+  // reasoning, though canvas extend itself is cheaper since it never resamples existing pixels.
+  gimp_canvas: 30_000,
+  // gimp_convert_image_mode: a single base-type conversion pass over the whole image -- matched
+  // to gimp_resize_image's budget for the same "full-image pass" class of cost.
+  gimp_convert_image_mode: 30_000,
+  // gimp_text: a font-list read (retried while a fresh session loads its fonts) plus one text
+  // render, which scales with font size and text length.
+  gimp_text: 30_000,
+  // gimp_select: every mode measured live (GIMP 3.2.6, ~24MP) well under 3s -- mode=rectangle
+  // 0.58s, mode=color_range by sample point with sample_merged (the expensive path: a whole-image
+  // duplicate + flatten to read one composite pixel) 2.2s. Budgeted generously for a slower
+  // machine and combine != 'replace''s extra scratch-channel round trip, still a fraction of the
+  // heavier gimp_* budgets below.
+  gimp_select: 20_000,
+  // gimp_modify_selection: feather is flat ~0.5-0.6s regardless of radius (a GEGL blur); expand/
+  // contract/border are morphological ops whose cost scales with BOTH the radius and the
+  // document's own megapixels, so the cap itself shrinks on a large document
+  // (`effective_morphology_px`, bridge/lib.py) -- MAX_MORPHOLOGY_PX (150) only applies at or
+  // below MORPHOLOGY_BASELINE_MP (24). Measured live, border (the most expensive of the three) at
+  // its EFFECTIVE cap: ~30s at 150px on a ~24MP image, ~11.8s at the scaled 36px cap on ~100MP,
+  // ~27.2s at the scaled 17px cap on ~216.8MP (this bridge's own largest allowed document) -- all
+  // inside this budget, with headroom for a slower host.
+  gimp_modify_selection: 90_000,
+  // gimp_layer_mask: op=create from a channel measured live at ~34ms on a ~24MP image (a mask
+  // attach, not a full-canvas pixel scan) -- delete/apply/invert are all cheaper still. Budgeted
+  // in the same class as gimp_create_document/gimp_close_document for headroom on a slower
+  // machine, not because anything measured approaches it.
+  gimp_layer_mask: 15_000,
+  // gimp_get_selection_preview: measured live at ~7.9s at max_px=2048 (the largest allowed render)
+  // on a ~24MP image -- the same class of cost gimp_get_preview's own 30s budget covers.
+  gimp_get_selection_preview: 30_000,
+  // gimp_transform_layer: a per-LAYER transform (not the whole canvas every other geometry tool
+  // above moves). Measured live (GIMP 3.2.6, EDITMAMEI_GIMP_PERF=1 runs of tests/gimp-live's own
+  // timing tests), cold start excluded (paid once per session, on whichever gimp_* call happens
+  // to be first):
+  //   on a fresh ~24MP (6016x4000) 8-bit layer:
+  //     scale 2x (-> ~96MP) ~4.0s, rotate 33° ~1.8s, free (scale+rotate+offset) ~1.5s
+  //   on a result near the bridge's own precision-aware size cap (the actual worst case a
+  //   caller can reach without being refused outright) -- ~217MP at 8-bit, ~106MP at 16-bit:
+  //     scale ~8.7s (8-bit) / ~7.6s (16-bit), rotate ~7.7s (8-bit) / ~5.4s (16-bit)
+  // GitHub's hosted runners take far longer near the cap: Windows ~18-25s for all four, macOS
+  // ~22-24s at 8-bit and 38s (rotate) / 49s (scale) at 16-bit, where a ~120MP 16-bit layer and
+  // its result pass 2GB on a 7GB machine. A timeout kills the session and every open image with
+  // it, so the budget keeps that slowest case near 55% of it, as gimp_layer and gimp_bake allow.
+  gimp_transform_layer: 90_000,
+  // gimp_match_layer: two cropped throwaway renders plus the ring growth. Measured on a 24 MP
+  // (6016x4000) document: 1.4 s for a 600x400 layer, 6.4 s for 2000x1500, 22 s for a 4000x3000
+  // layer with the default 400 px surround (3.9 s with reference 'below', which skips the growth;
+  // edge options add ~1 s). Budgeted at ~3x the worst case.
+  gimp_match_layer: 70_000,
+  // gimp_retouch: spot_heal is the cost driver (a selection + histogram read per candidate, then
+  // ~9 heal dabs per spot, each as wide as 2.6x the radius). Measured on a 24 MP (6016x4000)
+  // document: 50 spots of radius 20 in 4.4 s, 50 of radius 100 in 55 s, 3 of radius 500 in 10 s
+  // (~3.5 s each, so 50 of them would take about 175 s). Budgeted at 240 s.
+  gimp_retouch: 240_000,
+  // gimp_fill: a canvas-sized layer plus one gradient render; a 24 MP document takes a few seconds.
+  gimp_fill: 60_000,
+};
+
+/**
+ * Community tools with no `TOOL_TIMEOUT_BUDGETS_MS` entry — every row they
+ * map to had fewer than 10 measured calls, too little signal to derive a
+ * number from — mapped to why the shared default is the deliberate choice
+ * here rather than an oversight. `getToolTimeoutMs()` falls back to
+ * `DEFAULT_SCRIPT_TIMEOUT_MS` for these exactly as it does for an
+ * unrecognized name.
+ */
+export const TOOLS_WITHOUT_A_BUDGET: Record<string, string> = {
+  ps_report_problem: 'n=3 measured calls',
+  ps_calculations: 'n=8 measured calls',
+};
+
+/**
+ * Optional global override for a machine slower than the ones the budgets
+ * above were measured on, read ONCE at module load — not per call, so it
+ * can't change mid-process — and applied only inside `getToolTimeoutMs()`.
+ * It never touches an explicit `timeoutMs` a handler passes directly to
+ * `runScript`, which always means exactly what the caller wrote, nor the
+ * deadline math in `run-script.ts`, which works in absolute remaining time
+ * regardless of how the budget it was given was computed.
+ *
+ * Set to a positive number of milliseconds, every table/default budget
+ * scales by `value / DEFAULT_SCRIPT_TIMEOUT_MS` — a tool with no table entry
+ * gets exactly this value; a tool with a derived budget keeps its
+ * proportion relative to the others instead of collapsing to one flat
+ * number. The scale is capped at 10x (documented alongside the variable
+ * itself — see docs/installation.md) so a typo'd extra zero doesn't turn every timeout in
+ * the process into a multi-hour hang; `getToolTimeoutMs()` clamps its
+ * RESULT to `SCRIPT_TIMEOUT_FLOOR_MS` separately, so a small value here
+ * can't push a tool below the floor either. A malformed value (not a
+ * positive number) is ignored with a warning rather than silently taken as
+ * 1x or crashing the process.
+ */
+const MAX_SCRIPT_TIMEOUT_SCALE = 10;
+
+function resolveScriptTimeoutScale(): number {
+  const raw = process.env.EDITMAMEI_SCRIPT_TIMEOUT_MS;
+  if (!raw) return 1;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    logger.warn(`EDITMAMEI_SCRIPT_TIMEOUT_MS="${raw}" is not a positive number — ignoring it.`);
+    return 1;
+  }
+  return Math.min(n / DEFAULT_SCRIPT_TIMEOUT_MS, MAX_SCRIPT_TIMEOUT_SCALE);
+}
+
+/**
+ * The resolved `EDITMAMEI_SCRIPT_TIMEOUT_MS` multiplier, fixed at module load.
+ *
+ * Exported for tests that need to pin scale-DEPENDENT behaviour rather than
+ * re-deriving the arithmetic themselves: a value computed in a test tracks what
+ * the test author believed, not what this function returns, so it goes on
+ * agreeing after the function changes.
+ */
+export const SCRIPT_TIMEOUT_SCALE = resolveScriptTimeoutScale();
+
+/**
+ * The budget for one MCP tool call — this tool's table entry if it has one,
+ * otherwise `DEFAULT_SCRIPT_TIMEOUT_MS`, scaled by
+ * `EDITMAMEI_SCRIPT_TIMEOUT_MS` if set, and floored at
+ * `SCRIPT_TIMEOUT_FLOOR_MS` regardless of how small that scaling would
+ * otherwise make it. Consumed once per dispatch by `ToolRegistry.execute`
+ * (see `tool-budget-context.ts`) to compute that call's deadline.
+ * `Object.hasOwn` guards a lookup name that collides with an inherited
+ * `Object.prototype` member (e.g. `'toString'`), which would otherwise read
+ * back a function instead of `undefined` and multiply to `NaN`.
+ *
+ * A non-finite entry (the deliberate opt-out — see `ps_sequence`) returns
+ * unchanged. Scaling it would not: a small enough `EDITMAMEI_SCRIPT_TIMEOUT_MS`
+ * underflows the scale to exactly 0, and `Infinity * 0` is `NaN`, which the
+ * floor's `Math.max` propagates rather than catching. A `NaN` deadline compares
+ * false against every bound, so it would reach a platform runner as a timeout
+ * and fail every script instantly.
+ */
+export function getToolTimeoutMs(toolName: string): number {
+  const base = Object.hasOwn(TOOL_TIMEOUT_BUDGETS_MS, toolName)
+    ? TOOL_TIMEOUT_BUDGETS_MS[toolName]
+    : DEFAULT_SCRIPT_TIMEOUT_MS;
+  if (!Number.isFinite(base)) return base;
+  return Math.max(Math.round(base * SCRIPT_TIMEOUT_SCALE), SCRIPT_TIMEOUT_FLOOR_MS);
+}

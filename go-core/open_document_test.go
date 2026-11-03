@@ -18,7 +18,7 @@ import (
 // probe_open_document_test.go parameterizes its sibling.
 
 func TestOpenDocumentPipelineActivatesAlreadyOpenDocument(t *testing.T) {
-	js := openDocumentPipelineForPlatform("C:/photos/a.jpg", true, true)
+	js := openDocumentPipelineForPlatform("C:/photos/a.jpg", true, 0, true)
 
 	// Scans open documents rather than going straight to app.open().
 	for _, want := range []string{
@@ -63,7 +63,7 @@ func TestOpenDocumentPipelineActivatesAlreadyOpenDocument(t *testing.T) {
 // narrower one where the scan matched but new File(path).exists still reads
 // false (permission/sandbox quirk, flaky network volume).
 func TestOpenDocumentPipelineSkipsTheExistsCheckWhenAlreadyOpen(t *testing.T) {
-	js := openDocumentPipelineForPlatform("C:/photos/a.jpg", true, true)
+	js := openDocumentPipelineForPlatform("C:/photos/a.jpg", true, 0, true)
 
 	if !strings.Contains(js, "if (!__mcpAlready && !imageFile.exists)") {
 		t.Error("the exists check is not gated on the already-open scan — a matched open document is rejected because its backing file did not resolve on disk (NOT the moved-file case; see this function's doc comment)")
@@ -107,7 +107,7 @@ func TestOpenDocumentPipelineCaseHandlingProbesTheVolume(t *testing.T) {
 		{"windows", "C:/photos/a.jpg", true},
 		{"unix", "/photos/a.jpg", false},
 	} {
-		js := openDocumentPipelineForPlatform(tc.path, true, tc.isWindows)
+		js := openDocumentPipelineForPlatform(tc.path, true, 0, tc.isWindows)
 
 		// An EXACT match is correct on every volume and must be taken first,
 		// without ever consulting the probe.
@@ -142,14 +142,14 @@ func TestOpenDocumentPipelineCaseHandlingProbesTheVolume(t *testing.T) {
 
 	// Windows still short-circuits the probe — NTFS is known case-insensitive,
 	// so it costs no extra File.exists call there.
-	win := openDocumentPipelineForPlatform("C:/photos/a.jpg", true, true)
+	win := openDocumentPipelineForPlatform("C:/photos/a.jpg", true, 0, true)
 	if !strings.Contains(win, "var __mcpIsWindows = true;") {
 		t.Error("windows emitter did not set __mcpIsWindows = true")
 	}
 	if !strings.Contains(win, "if (__mcpIsWindows) return true;") {
 		t.Error("windows does not short-circuit the volume probe")
 	}
-	unix := openDocumentPipelineForPlatform("/photos/a.jpg", true, false)
+	unix := openDocumentPipelineForPlatform("/photos/a.jpg", true, 0, false)
 	if !strings.Contains(unix, "var __mcpIsWindows = false;") {
 		t.Error("non-windows emitter did not set __mcpIsWindows = false")
 	}
@@ -158,7 +158,7 @@ func TestOpenDocumentPipelineCaseHandlingProbesTheVolume(t *testing.T) {
 func TestOpenDocumentPipelineEscapesThePath(t *testing.T) {
 	// Every path slot goes through jsLit — a quote in a filename must not break
 	// out of the string literal into executable script.
-	js := openDocumentPipelineForPlatform(`C:/photos/it's "x".jpg`, true, true)
+	js := openDocumentPipelineForPlatform(`C:/photos/it's "x".jpg`, true, 0, true)
 	if strings.Contains(js, `C:/photos/it's "x".jpg`) {
 		t.Error("raw unescaped path reached the emitted script")
 	}

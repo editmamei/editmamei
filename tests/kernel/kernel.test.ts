@@ -238,8 +238,18 @@ describe('Kernel.loadDownloaded', () => {
         host.registerTools([textTool('photoshop_future_dl', async () => okResult('no'))]);
       },
     };
-    await kernel.loadDownloaded(async () => ({ default: future }));
+    // Skipping stays SILENT (no throw, nothing registered), but the caller has
+    // to be able to tell this apart from a successful load — otherwise a module
+    // that registered nothing gets reported as loaded.
+    expect(await kernel.loadDownloaded(async () => ({ default: future }))).toBe('abi-too-new');
     expect(registry.count()).toBe(0);
+  });
+
+  it('reports a successful downloaded load as loaded', async () => {
+    const { kernel } = makeKernel();
+    expect(await kernel.loadDownloaded(async () => ({ default: proTool('photoshop_dl_ok') }))).toBe(
+      'loaded'
+    );
   });
 
   it('propagates an importer failure (caller decides whether to degrade)', async () => {

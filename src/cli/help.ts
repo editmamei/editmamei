@@ -39,13 +39,13 @@ Install options:
 
   --skip-skill               Skip copying the editmamei skill bundle to your Downloads folder.
                              By default, install drops editmamei-skill.zip in Downloads with
-                             instructions for uploading it to claude.ai (Settings > Customize >
-                             Skills). Pass this flag for headless / CI installs where the skill
+                             instructions for uploading it to claude.ai (Settings > Skills).
+                             Pass this flag for headless / CI installs where the skill
                              upload step doesn't apply.
 
 Config examples:
   editmamei config list                          Show all settings
-  editmamei config set telemetry.usage false     Opt out of anonymous usage telemetry
+  editmamei config set telemetry.usage false     Opt out of usage telemetry
   editmamei config set telemetry.diagnostics true Opt in to sanitized diagnostic detail
 
 Report options:
@@ -60,5 +60,6 @@ Per-user data and session logs live in ~/.editmamei/; uninstall preserves them.
 
 Docs: https://editmamei.com/docs
 Issues: https://github.com/editmamei/editmamei/issues
+Release notes by email: https://editmamei.com/blog?src=cli
 `);
 }

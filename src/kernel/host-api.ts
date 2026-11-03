@@ -14,6 +14,7 @@ import type { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
 import type { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { Logger } from '../utils/logger.js';
+import type { GimpBackend } from '../backends/gimp/backend.js';
 
 /**
  * Kernel ABI version. Bumped only when the HostApi gains a new capability type.
@@ -82,6 +83,19 @@ export interface HostApi {
    */
   invokeTool(name: string, args: Record<string, unknown>): Promise<ToolResult>;
 
+  /**
+   * Whether `name` is registered right now — answers "would
+   * invokeTool(name, …) dispatch?" without dispatching it. Backed directly by
+   * the registry, so the answer always matches the live tool surface rather
+   * than a fixed list computed some other way. Optional and additive: it does
+   * not raise `KERNEL_ABI`, because a module that calls it defensively
+   * (checking for the method before relying on it) works unchanged against an
+   * older host that lacks it. A module that comes to depend on it
+   * unconditionally should raise its manifest's required ABI when a future
+   * kernel bump promises it outright.
+   */
+  hasTool?(name: string): boolean;
+
   /** The live Photoshop connection (Windows COM / macOS AppleScript). */
   readonly connection: PhotoshopConnection;
 
@@ -108,6 +122,15 @@ export interface HostApi {
    * `useHostRuntime(host.detection, …)` in `src/detection/runtime.ts`.
    */
   readonly detection: HostDetection;
+
+  /**
+   * The GIMP backend, when a GIMP install was detected (or the `editor` pin
+   * forced it) at boot — `gimpModule.register` is the only module that reads
+   * this. Additive-optional: follows the `hasTool?` precedent (does not raise
+   * `KERNEL_ABI`) so an older module that never checks for it is unaffected.
+   * Absent whenever this boot didn't decide to register the GIMP surface.
+   */
+  readonly gimp?: GimpBackend;
 }
 
 /** A module's self-description. */

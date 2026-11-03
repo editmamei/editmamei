@@ -10,6 +10,7 @@ import {
   mintInstallId,
   applyTelemetryEnvOverrides,
   applyUpdateCheckEnvOverride,
+  applyEditorEnvOverride,
   type Settings,
 } from '@editmamei/core/settings.ts';
 
@@ -43,6 +44,8 @@ describe('loadSettings — first run', () => {
     expect(settings.privacy.send_previews_to_llm).toBe(true);
     expect(settings.ps_path).toBeNull();
     expect(settings.update_check).toBe(true); // opt-out default
+    expect(settings.editor).toBe('auto'); // the settled default, matching detect-editors' matrix
+    expect(settings.gimp_path).toBeNull();
     expect(settings.telemetry.install_id).toMatch(/^[a-f0-9]{32}$/);
   });
 
@@ -66,7 +69,53 @@ describe('loadSettings — existing / malformed', () => {
     expect(settings.telemetry.diagnostics).toBe(false); // defaulted
     expect(settings.telemetry.install_id).toBe('abc123def456'); // preserved
     expect(settings.privacy.send_previews_to_llm).toBe(true); // defaulted
+    expect(settings.automation.allow_execute_script).toBe(true); // defaulted
     expect(settings.update_check).toBe(true); // defaulted for an older file lacking the key
+    expect(settings.editor).toBe('auto'); // defaulted for an older file lacking the key
+    expect(settings.gimp_path).toBeNull();
+  });
+
+  it('preserves an explicit editor pin + gimp_path from disk', async () => {
+    // Absolute on whichever OS runs the suite (the load-time check uses host path rules).
+    const gimpPath = join(dir, 'tools', 'gimp-console-3.2.exe');
+    await writeFile(
+      settingsPath({ dir }),
+      JSON.stringify({
+        editor: 'gimp',
+        gimp_path: gimpPath,
+        telemetry: { install_id: 'keep0000000000' },
+      }),
+      'utf8'
+    );
+    const { settings } = loadSettings({ dir });
+    expect(settings.editor).toBe('gimp');
+    expect(settings.gimp_path).toBe(gimpPath);
+  });
+
+  it.each([
+    ['a relative path', 'tools/gimp-console-3.2.exe'],
+    ['a UNC share', '\\\\server\\share\\gimp-console-3.2.exe'],
+  ])(
+    'drops a hand-edited gimp_path that is %s back to auto-detect instead of spawning it',
+    async (_label, gimpPath) => {
+      await writeFile(
+        settingsPath({ dir }),
+        JSON.stringify({ gimp_path: gimpPath, telemetry: { install_id: 'keep0000000000' } }),
+        'utf8'
+      );
+      const { settings } = loadSettings({ dir });
+      expect(settings.gimp_path).toBeNull();
+    }
+  );
+
+  it('falls back editor to the default on an unrecognized value rather than throwing', async () => {
+    await writeFile(
+      settingsPath({ dir }),
+      JSON.stringify({ editor: 'nonsense', telemetry: { install_id: 'keep0000000000' } }),
+      'utf8'
+    );
+    const { settings } = loadSettings({ dir });
+    expect(settings.editor).toBe('auto');
   });
 
   it('preserves an explicit update_check=false from disk', async () => {
@@ -108,8 +157,11 @@ describe('applyTelemetryEnvOverrides (Claude Desktop manifest toggles)', () => {
   const base: Settings = {
     telemetry: { usage: true, diagnostics: false, install_id: 'x'.repeat(32) },
     privacy: { send_previews_to_llm: true },
+    automation: { allow_execute_script: true },
     ps_path: null,
     update_check: true,
+    editor: 'auto',
+    gimp_path: null,
   };
 
   it('returns the same object (no override) when no telemetry env vars are set', () => {
@@ -148,8 +200,11 @@ describe('applyUpdateCheckEnvOverride (Claude Desktop manifest toggle)', () => {
   const base: Settings = {
     telemetry: { usage: true, diagnostics: false, install_id: 'y'.repeat(32) },
     privacy: { send_previews_to_llm: true },
+    automation: { allow_execute_script: true },
     ps_path: null,
     update_check: true,
+    editor: 'auto',
+    gimp_path: null,
   };
 
   it('returns the same object when EDITMAMEI_UPDATE_CHECK is unset', () => {
@@ -169,13 +224,70 @@ describe('applyUpdateCheckEnvOverride (Claude Desktop manifest toggle)', () => {
   });
 });
 
+describe('applyEditorEnvOverride (Claude Desktop manifest toggle)', () => {
+  const base: Settings = {
+    telemetry: { usage: true, diagnostics: false, install_id: 'z'.repeat(32) },
+    privacy: { send_previews_to_llm: true },
+    automation: { allow_execute_script: true },
+    ps_path: null,
+    update_check: true,
+    editor: 'auto',
+    gimp_path: null,
+  };
+
+  it('returns the same object when EDITMAMEI_EDITOR is unset', () => {
+    expect(applyEditorEnvOverride(base, {})).toBe(base);
+  });
+
+  it('overrides the pin on a recognized value, non-mutating', () => {
+    const out = applyEditorEnvOverride(base, { EDITMAMEI_EDITOR: 'gimp' });
+    expect(out.editor).toBe('gimp');
+    expect(base.editor).toBe('auto'); // original untouched
+  });
+
+  it('is case-insensitive and trims whitespace', () => {
+    expect(applyEditorEnvOverride(base, { EDITMAMEI_EDITOR: ' Photoshop ' }).editor).toBe(
+      'photoshop'
+    );
+  });
+
+  it('treats an unrecognized value as no override (file value stands)', () => {
+    expect(applyEditorEnvOverride(base, { EDITMAMEI_EDITOR: 'nonsense' })).toBe(base);
+  });
+});
+
+describe('automation.allow_execute_script', () => {
+  it('defaults to true on first run', () => {
+    expect(loadSettings({ dir }).settings.automation.allow_execute_script).toBe(true);
+  });
+
+  it('survives a load/save round trip when false', () => {
+    const { settings } = loadSettings({ dir });
+    settings.automation.allow_execute_script = false;
+    saveSettings(settings, { dir });
+    expect(loadSettings({ dir }).settings.automation.allow_execute_script).toBe(false);
+  });
+
+  it('coerces a non-boolean to the default', async () => {
+    await writeFile(
+      settingsPath({ dir }),
+      JSON.stringify({ automation: { allow_execute_script: 'no' } }),
+      'utf8'
+    );
+    expect(loadSettings({ dir }).settings.automation.allow_execute_script).toBe(true);
+  });
+});
+
 describe('saveSettings', () => {
   it('round-trips and leaves no tmp file behind', async () => {
     const s: Settings = {
       telemetry: { usage: false, diagnostics: true, install_id: mintInstallId() },
       privacy: { send_previews_to_llm: false },
+      automation: { allow_execute_script: true },
       ps_path: '/Applications/Adobe Photoshop 2026/Photoshop.app',
       update_check: false,
+      editor: 'auto',
+      gimp_path: null,
     };
     saveSettings(s, { dir });
     const raw = JSON.parse(await readFile(settingsPath({ dir }), 'utf8')) as Settings;

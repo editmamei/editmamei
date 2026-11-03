@@ -1,0 +1,740 @@
+{
+  "gimp:curves": [
+    {
+      "name": "trc",
+      "type": "GimpTRCType",
+      "minimum": null,
+      "maximum": null,
+      "default": "perceptual"
+    },
+    {
+      "name": "channel",
+      "type": "GimpHistogramChannel",
+      "minimum": null,
+      "maximum": null,
+      "default": "value"
+    },
+    {
+      "name": "curve",
+      "type": "GimpCurve",
+      "minimum": null,
+      "maximum": null,
+      "default": [
+        [
+          0,
+          0
+        ],
+        [
+          255,
+          255
+        ]
+      ]
+    }
+  ],
+  "gimp:levels": [
+    {
+      "name": "trc",
+      "type": "GimpTRCType",
+      "minimum": null,
+      "maximum": null,
+      "default": "linear"
+    },
+    {
+      "name": "linear",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": true
+    },
+    {
+      "name": "channel",
+      "type": "GimpHistogramChannel",
+      "minimum": null,
+      "maximum": null,
+      "default": "value"
+    },
+    {
+      "name": "low-input",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "high-input",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 1
+    },
+    {
+      "name": "clamp-input",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": false
+    },
+    {
+      "name": "gamma",
+      "type": "gdouble",
+      "minimum": 0.1,
+      "maximum": 10,
+      "default": 1
+    },
+    {
+      "name": "low-output",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "high-output",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 1
+    },
+    {
+      "name": "clamp-output",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": false
+    }
+  ],
+  "gegl:exposure": [
+    {
+      "name": "black-level",
+      "type": "gdouble",
+      "minimum": -0.1,
+      "maximum": 0.1,
+      "default": 0
+    },
+    {
+      "name": "exposure",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0
+    }
+  ],
+  "gimp:brightness-contrast": [
+    {
+      "name": "brightness",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "contrast",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    }
+  ],
+  "gimp:hue-saturation": [
+    {
+      "name": "range",
+      "type": "GimpHueRange",
+      "minimum": null,
+      "maximum": null,
+      "default": "all"
+    },
+    {
+      "name": "hue",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "saturation",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "lightness",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "overlap",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0
+    }
+  ],
+  "gimp:color-balance": [
+    {
+      "name": "range",
+      "type": "GimpTransferMode",
+      "minimum": null,
+      "maximum": null,
+      "default": "midtones"
+    },
+    {
+      "name": "cyan-red",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "magenta-green",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "yellow-blue",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "preserve-luminosity",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": true
+    }
+  ],
+  "gegl:color-temperature": [
+    {
+      "name": "original-temperature",
+      "type": "gdouble",
+      "minimum": 1000,
+      "maximum": 12000,
+      "default": 6500
+    },
+    {
+      "name": "intended-temperature",
+      "type": "gdouble",
+      "minimum": 1000,
+      "maximum": 12000,
+      "default": 6500
+    }
+  ],
+  "gegl:shadows-highlights": [
+    {
+      "name": "shadows",
+      "type": "gdouble",
+      "minimum": -100,
+      "maximum": 100,
+      "default": 0
+    },
+    {
+      "name": "highlights",
+      "type": "gdouble",
+      "minimum": -100,
+      "maximum": 100,
+      "default": 0
+    },
+    {
+      "name": "whitepoint",
+      "type": "gdouble",
+      "minimum": -10,
+      "maximum": 10,
+      "default": 0
+    },
+    {
+      "name": "radius",
+      "type": "gdouble",
+      "minimum": 0.1,
+      "maximum": 1500,
+      "default": 100
+    },
+    {
+      "name": "compress",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 50
+    },
+    {
+      "name": "shadows-ccorrect",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 100
+    },
+    {
+      "name": "highlights-ccorrect",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 50
+    }
+  ],
+  "gegl:saturation": [
+    {
+      "name": "scale",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 10,
+      "default": 1
+    },
+    {
+      "name": "colorspace",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "Native"
+    }
+  ],
+  "gegl:vibrance": [
+    {
+      "name": "vibrance",
+      "type": "gdouble",
+      "minimum": -100,
+      "maximum": 100,
+      "default": 0
+    },
+    {
+      "name": "saturation",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 10,
+      "default": 1
+    }
+  ],
+  "gegl:unsharp-mask": [
+    {
+      "name": "std-dev",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1500,
+      "default": 3
+    },
+    {
+      "name": "scale",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 300,
+      "default": 0.5
+    },
+    {
+      "name": "threshold",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0
+    }
+  ],
+  "gegl:noise-reduction": [
+    {
+      "name": "iterations",
+      "type": "gint",
+      "minimum": 0,
+      "maximum": 32,
+      "default": 4
+    }
+  ],
+  "gegl:gaussian-blur": [
+    {
+      "name": "std-dev-x",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1500,
+      "default": 1.5
+    },
+    {
+      "name": "std-dev-y",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1500,
+      "default": 1.5
+    },
+    {
+      "name": "filter",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "auto"
+    },
+    {
+      "name": "abyss-policy",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "clamp"
+    },
+    {
+      "name": "clip-extent",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": true
+    }
+  ],
+  "gegl:vignette": [
+    {
+      "name": "shape",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "circle"
+    },
+    {
+      "name": "color",
+      "type": "GeglColor",
+      "minimum": null,
+      "maximum": null,
+      "default": [
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "name": "radius",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1.7976931348623157e+308,
+      "default": 1.2
+    },
+    {
+      "name": "softness",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.8
+    },
+    {
+      "name": "gamma",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1.7976931348623157e+308,
+      "default": 2
+    },
+    {
+      "name": "proportion",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 1
+    },
+    {
+      "name": "squeeze",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "x",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0.5
+    },
+    {
+      "name": "y",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0.5
+    },
+    {
+      "name": "rotation",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 360,
+      "default": 0
+    }
+  ],
+  "gegl:mono-mixer": [
+    {
+      "name": "preserve-luminosity",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": false
+    },
+    {
+      "name": "red",
+      "type": "gdouble",
+      "minimum": -5,
+      "maximum": 5,
+      "default": 0.333
+    },
+    {
+      "name": "green",
+      "type": "gdouble",
+      "minimum": -5,
+      "maximum": 5,
+      "default": 0.333
+    },
+    {
+      "name": "blue",
+      "type": "gdouble",
+      "minimum": -5,
+      "maximum": 5,
+      "default": 0.333
+    }
+  ],
+  "gegl:motion-blur-linear": [
+    {
+      "name": "length",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1000,
+      "default": 10
+    },
+    {
+      "name": "angle",
+      "type": "gdouble",
+      "minimum": -180,
+      "maximum": 180,
+      "default": 0
+    }
+  ],
+  "gegl:focus-blur": [
+    {
+      "name": "blur-type",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "gaussian"
+    },
+    {
+      "name": "blur-radius",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1500,
+      "default": 25
+    },
+    {
+      "name": "highlight-factor",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "highlight-threshold-low",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0
+    },
+    {
+      "name": "highlight-threshold-high",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 1
+    },
+    {
+      "name": "shape",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "circle"
+    },
+    {
+      "name": "x",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0.5
+    },
+    {
+      "name": "y",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0.5
+    },
+    {
+      "name": "radius",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1.7976931348623157e+308,
+      "default": 0.75
+    },
+    {
+      "name": "focus",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.25
+    },
+    {
+      "name": "midpoint",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.5
+    },
+    {
+      "name": "aspect-ratio",
+      "type": "gdouble",
+      "minimum": -1,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "rotation",
+      "type": "gdouble",
+      "minimum": -180,
+      "maximum": 180,
+      "default": 0
+    },
+    {
+      "name": "high-quality",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": false
+    }
+  ],
+  "gegl:noise-rgb": [
+    {
+      "name": "correlated",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": false
+    },
+    {
+      "name": "independent",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": true
+    },
+    {
+      "name": "linear",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": true
+    },
+    {
+      "name": "gaussian",
+      "type": "gboolean",
+      "minimum": null,
+      "maximum": null,
+      "default": true
+    },
+    {
+      "name": "red",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.2
+    },
+    {
+      "name": "green",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.2
+    },
+    {
+      "name": "blue",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.2
+    },
+    {
+      "name": "alpha",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0
+    },
+    {
+      "name": "seed",
+      "type": "guint",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "default": 0
+    }
+  ],
+  "gegl:dropshadow": [
+    {
+      "name": "x",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 20
+    },
+    {
+      "name": "y",
+      "type": "gdouble",
+      "minimum": -1.7976931348623157e+308,
+      "maximum": 1.7976931348623157e+308,
+      "default": 20
+    },
+    {
+      "name": "radius",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1.7976931348623157e+308,
+      "default": 10
+    },
+    {
+      "name": "grow-shape",
+      "type": "gchararray",
+      "minimum": null,
+      "maximum": null,
+      "default": "circle"
+    },
+    {
+      "name": "grow-radius",
+      "type": "gdouble",
+      "minimum": -100,
+      "maximum": 100,
+      "default": 0
+    },
+    {
+      "name": "color",
+      "type": "GeglColor",
+      "minimum": null,
+      "maximum": null,
+      "default": [
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "name": "opacity",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.5
+    }
+  ],
+  "gegl:bilateral-filter": [
+    {
+      "name": "blur-radius",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 1000,
+      "default": 4
+    },
+    {
+      "name": "edge-preservation",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 8
+    }
+  ]
+}

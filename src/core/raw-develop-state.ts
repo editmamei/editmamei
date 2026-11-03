@@ -3,9 +3,10 @@
  *
  * Set when ps_open_document reports is_raw_source: true in a session where
  * a camera-raw develop tool is registered; cleared when a develop pass runs
- * (any ps_apply_camera_raw mode), when a non-raw document is opened, or when
- * a document closes. ps_add_adjustment_layer reads it to attach a soft
- * advisory ("consider the develop pass first") to its result.
+ * (any ps_apply_camera_raw mode, or a ps_develop_raw that actually opened the
+ * file — mode='read' inspects a sidecar and develops nothing), when a non-raw
+ * document is opened, or when a document closes. ps_add_adjustment_layer reads
+ * it to attach a soft advisory ("consider the develop pass first").
  *
  * One slot matches the ps_detect / ps_read_scene caches: the consumer is one
  * MCP session working one document, so alternating documents thrashes but

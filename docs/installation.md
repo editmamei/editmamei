@@ -1,18 +1,21 @@
 # Installation
 
-Editmamei is an MCP server that drives your locally installed Adobe Photoshop. It installs two ways: a one-click `.mcpb` extension for Claude Desktop (no terminal, no Node), or the `editmamei` npm package for Claude Code, Cursor, and any other MCP client. Both deliver the same tools. On the npm path, the `editmamei install` subcommand detects your MCP clients and writes each one's config in a single pass; manual configuration is documented below as a fallback.
+Editmamei is an MCP server that drives desktop Adobe Photoshop. It installs two ways: a one-click `.mcpb` extension for Claude Desktop (no terminal, no Node), or the `editmamei` npm package for Claude Code, Cursor, and any other MCP client. Both deliver the same tools. On the npm path, the `editmamei install` subcommand detects your MCP clients and writes each one's config in a single pass; manual configuration is documented below as a fallback.
 
 ---
 
 ## Requirements: Photoshop 2026, Node 22+, Windows or macOS
 
 - **Adobe Photoshop 2026 (internal version 27.x).** The only version Editmamei has been verified against. Earlier majors may work but are unverified; see [faq.md](faq.md#which-photoshop-versions-are-supported) for the rationale.
-- **Operating system:** Windows 10/11 or macOS 12+.
+- **Operating system:** Windows 10/11 or macOS 13+.
 - **Node.js 22 or later** ([nodejs.org](https://nodejs.org/)), for the npm install path only. The `.mcpb` extension doesn't need it; Claude Desktop bundles its own runtime.
 - An **MCP-compatible client**, at least one of:
   - [Claude Desktop](https://claude.ai/download)
   - [Cursor](https://cursor.com/)
   - [Claude Code](https://claude.ai/code)
+
+  Editmamei ships no model of its own and runs on whichever client you connect, so every edit
+  spends that client's tokens. That client might be a subscription, an API key, or a model you run yourself.
 
 ---
 
@@ -37,7 +40,7 @@ For clients that already have Node. Confirm your Node.js version:
 node --version
 ```
 
-If you see `v20.x` or higher, install the CLI globally:
+If you see `v22` or higher, install the CLI globally:
 
 ```bash
 npm install -g editmamei
@@ -67,7 +70,7 @@ For each detected client, the command:
 
 If a client isn't detected, that line is reported as "skipped" and doesn't abort the run.
 
-The command also drops the Editmamei skill bundle (`editmamei-skill.zip`) into your Downloads folder and prints instructions for uploading it to claude.ai (Settings → Customize → Skills). The bundle is only for driving Editmamei from claude.ai; if you don't use claude.ai, ignore the file or pass `--skip-skill`.
+The command also drops the Editmamei skill bundle (`editmamei-skill.zip`) into your Downloads folder and prints instructions for uploading it to claude.ai (Settings > Skills, then Add > Upload skill). The bundle is only for driving Editmamei from claude.ai; if you don't use claude.ai, ignore the file or pass `--skip-skill`.
 
 Restart your AI client(s) after this completes. Config changes only take effect on a fresh boot.
 
@@ -96,7 +99,7 @@ Reports, per client, whether Editmamei is registered and what command would laun
 
 ## Manual configuration
 
-If `editmamei install` couldn't reach one of your clients (for example, because the `claude` binary isn't on your PATH, or you're using a different MCP-compatible client), register Editmamei by hand.
+If `editmamei install` couldn't reach one of your clients (for example, because the `claude` binary isn't on your PATH, or you're using a different MCP-compatible client), register Editmamei by hand. For other MCP clients (VS Code, Codex, Gemini CLI, Zed, Cline and more), see [clients.md](clients.md), which lists the config location and format for each.
 
 ### Claude Desktop
 
@@ -170,6 +173,10 @@ Editmamei auto-detects Photoshop. If you have multiple versions installed and wa
 }
 ```
 
+### Optional: raise script timeouts on a slow machine
+
+Each tool has its own timeout budget, tuned from typical execution times. If Photoshop is routinely slower than that on your machine — an older CPU, a heavily loaded system, a very large document — set `EDITMAMEI_SCRIPT_TIMEOUT_MS` in the same `env` block to scale every tool's budget up together, rather than each one failing early on your machine specifically. The value is milliseconds for what would otherwise be a 30-second budget; `"60000"` doubles every timeout, `"90000"` triples them. It's capped at 10x and ignored (with a warning in the server's logs) if it isn't a positive number.
+
 ---
 
 ## Verify
@@ -186,17 +193,37 @@ You should see your Photoshop version returned. If not, see [getting-started.md]
 
 ## Upgrade
 
-**npm install:**
+What you need to do depends on how Editmamei starts. The three paths behave differently, and two of
+them look identical from the outside.
+
+**`npx` (nothing to do).** If your client config runs `npx -y editmamei`, which is what every
+example config above uses, `npx` fetches the latest published version each time it starts. Restart
+your AI client and you're current. There is no command to run.
+
+**Global npm install (you have to ask).** If you installed with `npm install -g editmamei`, you
+stay on that version until you update it yourself:
 
 ```bash
 npm install -g editmamei@latest
 ```
 
-Restart your MCP client to pick up the new version.
+Restart your MCP client afterwards.
 
-**Claude Desktop (`.mcpb`):** download the latest [`editmamei.mcpb`](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb) and reinstall it under **Settings → Extensions**, then restart Claude Desktop.
+**Claude Desktop extension (replace the bundle).** The `.mcpb` is a frozen copy and never updates
+on its own. Download the current
+[`editmamei.mcpb`](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb),
+open **Settings → Extensions** in Claude Desktop, drag the new file onto that page to replace the
+installed one, then restart Claude Desktop.
 
-Either way, your existing templates and session logs at `~/.editmamei/` are preserved across upgrades.
+If you have Pro, check **Settings → Extensions → Editmamei → Pro license key** afterwards and paste
+your key back if the field came up empty. Your stored license keeps Pro working for a while even
+when that field is blank, so a missing key doesn't show up until days later.
+
+**Check what you're running.** Ask your assistant to run `ps_ping`. It reports the Editmamei
+version alongside the Photoshop connection.
+
+Your templates, session logs and license at `~/.editmamei/` are preserved across every upgrade path.
+Problems after an upgrade are covered in [troubleshooting.md](troubleshooting.md).
 
 ---
 
@@ -208,6 +235,17 @@ npm uninstall -g editmamei
 ```
 
 The `uninstall` subcommand removes Editmamei from your MCP client configs. The `npm uninstall` removes the package itself. Your per-user data at `~/.editmamei/` (templates, session logs) is left in place; delete it manually if you don't want it.
+
+---
+
+## GIMP (beta)
+
+Editmamei can also drive GIMP, headless, as a second editor. Nothing extra to install on the
+Editmamei side: if GIMP 3.2 is found in its usual install location, the `gimp_*` tools
+register automatically alongside the Photoshop ones the next time your AI client starts. If GIMP is
+installed somewhere non-standard, point at it with the `EDITMAMEI_GIMP_PATH` env var or the
+`gimp_path` setting; to force one editor over the other, pin `editor` to `photoshop` or `gimp`. Full
+requirements, detection locations, and troubleshooting: [docs/gimp.md](gimp.md).
 
 ---
 

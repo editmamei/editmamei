@@ -9,11 +9,17 @@
 [![License](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](LICENSE.md)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey.svg)](docs/installation.md)
 
-Editmamei is a Model Context Protocol (MCP) server that drives the Adobe Photoshop you already have. You describe the edit in plain words, your AI assistant plans the steps, and your own copy of Photoshop carries them out with its standard adjustment layers, masks, selections, and filters. The AI directs and Photoshop edits. No generative model touches your pixels, and no image is uploaded to perform an edit.
+Editmamei is a Model Context Protocol (MCP) server that drives desktop Adobe Photoshop. You describe the edit in plain words, your AI assistant plans the steps, and Photoshop carries them out with its standard adjustment layers, masks, selections, and filters. The AI directs and Photoshop edits. No generative model touches your pixels, and no image is uploaded to perform an edit.
 
 It serves photographers and retouchers who want to edit by conversation just as much as developers wiring Photoshop into an AI pipeline. To learn more or get started, visit **[editmamei.com](https://editmamei.com)**.
 
 **[editmamei.com](https://editmamei.com)** · [Docs](docs/getting-started.md) · [Report a bug](https://github.com/editmamei/editmamei/issues)
+
+<p align="center">
+  <a href="https://editmamei.com"><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/batch-flip.webp" width="540" alt="Seventy-three travel photos graded in Photoshop from one sentence: the prompt, the grading calls three photos at a time, and the finished set."></a>
+  <br>
+  <sub>A real run: 73 travel photos, one sentence, graded in Photoshop.</sub>
+</p>
 
 ## How it works
 
@@ -47,7 +53,7 @@ Then restart your AI client and ask it: _"Is Photoshop connected?"_
 
 Prefer not to use a terminal? Claude Desktop users can install the one-click [`.mcpb` extension](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb) directly (no system Node required, Claude Desktop ships its own runtime). Full walkthrough in the [install guide](docs/installation.md).
 
-**Requirements:** Adobe Photoshop 2026 (v27.x), Windows 10/11 or macOS 12+, Node.js 22+ (for the npm path), and an MCP-compatible AI client (Claude Desktop, Cursor, Claude Code).
+**Requirements:** Adobe Photoshop 2026 (v27.x), Windows 10/11 or macOS 13+, Node.js 22+ (for the npm path), and an MCP-compatible AI client (Claude Desktop, Cursor, Claude Code). Editmamei ships no model of its own and runs on whichever client you connect, so every edit spends that client's tokens.
 
 ## A session, end to end
 
@@ -75,14 +81,14 @@ These are the choices that shape the surface, and the reason an AI assistant can
 
 ## Tool surface
 
-**82 tools across 16 capability groups** (59 Community, 23 Pro). Every tool is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. `tools/list` reports eight more than the table below: the names superseded by `filter`, `group`, and `text` (`apply_filter`, `create_group`, `move_layer_to_group`, `set_group_blend_mode`, `ungroup`, `delete_group`, `create_text_layer`, `set_text`) stay registered as deprecated aliases for one release, so existing calls keep working.
+**112 tools total.** The Photoshop surface is **83 tools across 16 capability groups** (62 Community, 21 Pro), covering the work in groups rather than one tool per Photoshop feature. Every one is namespaced `ps_*` and discoverable at runtime via `tools/list`. Community tools ship in both editions; Pro tools unlock with a license. Alongside it, a second, independent editor surface drives headless GIMP: **29 `gimp_*` tools, Community, currently in beta**, see [GIMP (beta)](#gimp-beta) below. Pro's additions are Photoshop-only; GIMP has no Pro tier.
 
 | Group | Edition | Tools |
 | --- | --- | --- |
 | **Core** | Community | `ping` · `overview` · `list_capabilities` · `undo` · `redo` · `report_problem` |
 | **Inspect** | Community | `inspect` · `get_preview` |
 | **Verify** | Community | `get_histogram` · `compare_regions` · `get_layer_bounds_diff` · `get_selection_preview` |
-| **Document & canvas** | Community | `create_document` · `open_document` · `close_document` · `save_psd` · `export` · `place_image` · `resize_image` · `crop_document` · `convert_image_mode` · `transform_canvas` · `guides` |
+| **Document & canvas** | Community | `document` · `create_document` · `open_document` · `close_document` · `save_psd` · `export` · `place_image` · `resize_image` · `crop_document` · `convert_image_mode` · `transform_canvas` · `guides` |
 | **Selection** | Community | `select` · `modify_selection` · `selection_channel` |
 | **Adjustments** | Community | `add_adjustment_layer` · `apply_adjustment` |
 | **Filters** | Community | `filter` |
@@ -91,23 +97,38 @@ These are the choices that shape the surface, and the reason an AI assistant can
 | **Masks & paths** | Community | `layer_mask` · `clipping_mask` · `path` · `vector_mask` · `apply_image` · `calculations` |
 | **Type** | Community | `text` |
 | **Perception** | Community | `detect` · `read_scene` · `select_by_reference` |
-| **AI selection** | Community | `select_subject` · `select_sky` |
+| **AI selection** | Community | `select_subject` · `select_sky` · `replace_sky` |
+| **Automation** | Community | `sequence` |
 | **AI selection** | Pro | `select_subject_instance` · `select_object` |
-| **Filters** | Pro | `apply_camera_raw` |
-| **Layers (warp)** | Pro | `warp_layer` · `warp_layer_mesh` · `warp_layer_along` · `warp_layer_region` · `warp_layer_to` |
+| **Filters** | Pro | `apply_camera_raw` · `develop_raw` |
+| **Layers (warp)** | Pro | `warp_layer` |
 | **Perception** | Pro | `edit_object` · `add_text_to_object` · `resolve_placement` |
 | **Face mesh** | Pro | `detect_landmarks` · `select_face_feature` |
 | **Templates** | Pro | `template_create_evidence` · `template_save` · `template_list` · `template_apply` · `template_verify` · `template_recall` · `template_delete` |
-| **Automation** | Pro | `list_actions` · `play_action` · `execute_script` |
+| **Automation** | Pro | `list_actions` · `play_action` · `execute_script` · `batch` |
+
+**GIMP (beta), a separate namespace, all Community:**
+
+| Group | Edition | Tools |
+| --- | --- | --- |
+| **GIMP** | Community (beta) | `gimp_ping` · `gimp_overview` · `gimp_open_document` · `gimp_close_document` · `gimp_save_xcf` · `gimp_export` · `gimp_inspect` · `gimp_add_adjustment` · `gimp_add_effect` · `gimp_filter` · `gimp_bake` · `gimp_layer` · `gimp_transform_layer` · `gimp_text` · `gimp_select` · `gimp_modify_selection` · `gimp_layer_mask` · `gimp_get_selection_preview` · `gimp_create_document` · `gimp_place_image` · `gimp_canvas` · `gimp_convert_image_mode` · `gimp_crop_document` · `gimp_resize_image` · `gimp_transform_canvas` · `gimp_checkpoint` · `gimp_get_preview` · `gimp_get_histogram` · `gimp_compare` |
 
 ## Editions
 
 - **Community** is free and covers the everyday editing surface: documents, layers, selections (including AI Select Subject and Select Sky), non-destructive adjustments, filters, masks, type, retouching, on-device perception, and the inspect/verify primitives.
-- **Pro** adds Camera Raw develop, the grounded precision tools (warp, named-object masks, precision placement), subject-instance targeting, face-mesh perception, the reproducible-template system, and Photoshop Actions plus the scripting escape hatch.
+- **Pro** adds Camera Raw as a re-editable filter, raw files developed before they open, folder batch, the reproducible-template system, the grounded precision tools (warp, named-object masks, precision placement), subject-instance and face-mesh targeting, and Photoshop Actions plus the scripting escape hatch.
+
+Pro is a Photoshop-only upgrade: it adds nothing to the GIMP surface below.
 
 The split is detailed in [pro-features.md](docs/pro-features.md). Pricing is at [editmamei.com](https://editmamei.com).
 
 This repository holds the Community source. Pro is a separately licensed module and its source is not published here; Community never imports it, so this tree builds and runs on its own.
+
+## GIMP (beta)
+
+Editmamei can also drive GIMP, headless, as a second editor alongside (or instead of) Photoshop. When GIMP 3.2+ is detected on your machine, a `gimp_*` tool set registers next to the `ps_*` one; use it when you ask for GIMP, or when Photoshop isn't available. There's no visible window: edits happen in a background `gimp-console` process, and you follow along through rendered previews in the conversation instead of watching a window change.
+
+The beta covers documents (open, create, save `.xcf`, export), layers and groups, placing one photo into another, 13 non-destructive adjustment types and six effects (vignette, black and white, motion and lens blur, noise, drop shadow), selections (shapes, color range, magic wand, gradients) you can attach as layer masks, live text layers, moving, scaling and rotating layers, crop/resize/rotate/flip, canvas extension, color/grayscale conversion, checkpoints you can restore, and the same preview/histogram/compare verification primitives the Photoshop side has. It doesn't yet cover heal/clone or AI subject and sky selection. Full details, requirements, and troubleshooting: [docs/gimp.md](docs/gimp.md).
 
 ## Build from source
 
@@ -119,7 +140,7 @@ npm run build
 npm test
 ```
 
-You need Node.js 22+ and a Go toolchain (the build compiles the `editmamei-core` binary that generates Photoshop scripts). The build warns instead of failing when Go is missing, so you can still run the test suite; set `EDITMAMEI_CORE_BIN` to a prebuilt binary if you would rather not install Go.
+You need Node.js 22+ and Go 1.21+ (the build compiles the `editmamei-core` binary that generates Photoshop scripts; it needs Go 1.27, which Go fetches for you from 1.21 on). The build warns instead of failing when Go is missing, so you can still run the test suite; set `EDITMAMEI_CORE_BIN` to a prebuilt binary if you would rather not install Go.
 
 The test suite runs without Photoshop. It verifies the ExtendScript Editmamei generates, never that Photoshop accepted it, so live verification against a real Photoshop is a separate step.
 
@@ -131,7 +152,7 @@ Settings live in `~/.editmamei/settings.json`, managed by the `editmamei config`
 
 ```bash
 editmamei config list
-editmamei config set telemetry.usage false      # turn off anonymous usage telemetry
+editmamei config set telemetry.usage false      # turn off usage telemetry
 editmamei config set ps_path "/path/to/Photoshop"
 ```
 
@@ -139,7 +160,7 @@ editmamei config set ps_path "/path/to/Photoshop"
 
 ## Privacy
 
-Editmamei runs on your computer and edits in your own Photoshop. No image content, document data, or file paths are sent to Editmamei's servers. It reports anonymous, content-free usage telemetry (on by default, turn it off with `editmamei config set telemetry.usage false`). When your AI assistant needs to see a result, Editmamei sends it a downscaled preview, the same as dropping a photo into a chat with that assistant. Every field is documented in [privacy.md](docs/privacy.md).
+Editmamei runs on your computer and edits in desktop Photoshop. No image content, document data, or file paths are sent to Editmamei's servers. It reports content-free usage telemetry (on by default, turn it off with `editmamei config set telemetry.usage false`). When your AI assistant needs to see a result, Editmamei sends it a downscaled preview, the same as dropping a photo into a chat with that assistant. Every field is documented in [privacy.md](docs/privacy.md), including [your rights, and the legal basis](docs/privacy.md#your-rights-and-the-legal-basis).
 
 The source in this repository is the same code published to npm, so none of the above has to be taken on trust.
 
@@ -149,6 +170,9 @@ The source in this repository is the same code published to npm, so none of the 
 - **Install:** [docs/installation.md](docs/installation.md)
 - **Getting started:** [docs/getting-started.md](docs/getting-started.md)
 - **FAQ:** [docs/faq.md](docs/faq.md)
+- **AI clients:** [docs/clients.md](docs/clients.md)
+- **Troubleshooting:** [docs/troubleshooting.md](docs/troubleshooting.md)
+- **GIMP (beta):** [docs/gimp.md](docs/gimp.md)
 - **Pro features:** [docs/pro-features.md](docs/pro-features.md)
 - **Roadmap:** [docs/roadmap.md](docs/roadmap.md)
 - **Bugs and feature requests:** [the issue tracker](https://github.com/editmamei/editmamei/issues). If something's broken, ask your assistant to "report a problem" (or run `editmamei report`) to drop an anonymized diagnostic bundle in your Downloads folder, then attach it to the issue.

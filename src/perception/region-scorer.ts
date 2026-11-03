@@ -161,7 +161,8 @@ export function buildRegionSignals(
   scene: {
     docW: number;
     docH: number;
-    horizonY: number;
+    /** null when no horizon was measured — never substitute a prior. */
+    horizonY: number | null;
     horizonConfidence: number;
     /** Count of detected INDOOR furniture/appliance objects (bed/sofa/…). */
     indoorObjectCount?: number;
@@ -183,11 +184,15 @@ export function buildRegionSignals(
     centroidY = (bounds.top + bounds.bottom) / 2 / docH;
     touchesBottom = bounds.bottom >= docH * 0.97;
     touchesTop = bounds.top <= docH * 0.03;
-    // Gate the alignment signal on horizon CONFIDENCE (not horizonY validity):
-    // a zero-confidence horizon is treated as "no usable horizon", so alignment
-    // stays null and sky/ground fall back to the neutral 0.5 rather than trusting
-    // a guessed line.
-    if (scene.horizonConfidence > 0) {
+    // Alignment requires BOTH a positive confidence and a measured y. Confidence
+    // alone is the semantic gate — a zero-confidence horizon means "no usable
+    // horizon", so alignment stays null and sky/ground take the neutral 0.5
+    // rather than trusting a guessed line. The null check is not redundant:
+    // buildRegionSignals is exported, so a direct caller can pass a refused
+    // horizon, and `bounds.bottom - null` coerces to a subtraction of zero —
+    // a plausible-looking alignment measured against the frame top, which is
+    // worse than NaN because nothing downstream can detect it.
+    if (scene.horizonConfidence > 0 && scene.horizonY !== null) {
       // |edge − horizon| as a fraction of frame height → alignment in [0,1].
       lowerEdgeAlign = 1 - Math.min(1, Math.abs(bounds.bottom - scene.horizonY) / docH);
       upperEdgeAlign = 1 - Math.min(1, Math.abs(bounds.top - scene.horizonY) / docH);

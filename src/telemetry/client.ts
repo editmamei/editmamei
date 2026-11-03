@@ -21,18 +21,29 @@
  * is logged at debug. Telemetry must never break or block a tool call.
  */
 
+import { release } from 'node:os';
 import { Logger } from '../utils/logger.js';
 import { EDITION } from '../edition.js';
 import { VERSION } from '../version.js';
 import { resolveInstallChannel } from '../install-channel.js';
 import type { Settings } from '../core/settings.js';
 import {
+  READ_ONLY_TOOLS,
+  KEPT_WORK_TOOLS,
+  nodeMajor,
+  archToken,
+  osMajor,
+  boundMajor,
+} from './activity.js';
+import {
+  buildClientConnected,
   buildDiagnosticEvent,
   buildModuleStatus,
   buildSessionStart,
   buildSessionSummary,
   buildUsageEvent,
   dayBucket,
+  normalizeDayBucket,
   isContentSafe,
   PS_VERSION_UNKNOWN,
   type ModuleStatusInfo,
@@ -44,10 +55,9 @@ import { sanitizeMessage, sanitizeSnippet, sanitizeStderrTail } from './sanitize
 import { httpTransport, resolveEndpoint, type TelemetryTransport } from './transport.js';
 import {
   appendOutboxSync,
-  clearOutbox,
+  claimOrphanedSessionStates,
+  claimOutboxForDrain,
   clearSessionState,
-  readOutbox,
-  readSessionState,
   writeSessionStateSync,
   type OutboxOptions,
   type PersistedSessionState,
@@ -61,12 +71,21 @@ const MAX_QUEUE_SIZE = 500;
 const DEFAULT_FLUSH_INTERVAL_MS = 5 * 60_000;
 /** Min wall-clock between session-state persists (cheap, but no need to write every call). */
 const SESSION_PERSIST_THROTTLE_MS = 10_000;
+/** Cap for `session_summary.duration_s` (7 days) — see the field's doc on the interface. */
+const MAX_SESSION_DURATION_S = 604_800;
+/** Cap for `session_summary.templates_saved` / `action_sets` — matches the server's field spec. */
+const MAX_INSTALL_ASSET_COUNT = 100_000;
 
 export interface RecordedCall {
   tool: string;
   success: boolean;
   duration_ms: number;
   error_class: string | null;
+  /** Serialized result size in bytes (see utils/session-log.ts's computeResultBytes). */
+  result_bytes?: number;
+  /** Same tool + identically-serializing args as the immediately preceding call. Directional,
+   *  not exact — see the retry-signal comment in core/server.ts for the two known biases. */
+  retry?: boolean;
 }
 
 export interface RecordedDiagnostic {
@@ -75,6 +94,9 @@ export interface RecordedDiagnostic {
   error_message: string;
   snippet?: string;
   stderr_tail?: string;
+  doc_depth?: 8 | 16 | 32;
+  doc_mode?: 'rgb' | 'cmyk' | 'lab' | 'grayscale' | 'other';
+  ps_locale?: string;
 }
 
 export interface TelemetryClientOptions {
@@ -88,7 +110,8 @@ export interface TelemetryClientOptions {
    * passes the real value so telemetry reflects the loaded module, not the build.
    */
   edition?: string;
-  /** Install channel ('npm' | 'mcpb' | 'dev'). Defaults to `resolveInstallChannel()`. */
+  /** Install channel ('npx' | 'npm_global' | 'npm_local' | 'mcpb' | 'plugin' | 'source' | 'dev'). Defaults to
+   *  `resolveInstallChannel()`. */
   channel?: string;
   /**
    * Boot-time Pro module outcome, resolved by the server AFTER `loadModules()`. Returns
@@ -107,6 +130,16 @@ export interface TelemetryClientOptions {
   active?: boolean;
   /** Override the durable-outbox directory (tests). Defaults to `~/.editmamei`. */
   outboxDir?: string;
+  /**
+   * Stand in for another process sharing the outbox dir (tests). Defaults to `process.pid`.
+   *
+   * At most one TelemetryClient per pid and outbox dir. Session-state files and outbox claims
+   * are owned by pid, and the startup drain treats claims under its own pid as a dead
+   * predecessor's, so two clients sharing a pid would take each other's live files.
+   */
+  outboxPid?: number;
+  /** Liveness check for sibling processes' files (tests). Defaults to `isPidAlive`. */
+  isPidAlive?: (pid: number) => boolean;
 }
 
 function isTestEnv(): boolean {
@@ -125,6 +158,15 @@ export class TelemetryClient {
   private readonly active: boolean;
   private readonly outboxOpts: OutboxOptions;
   private readonly getModuleStatus: () => ModuleStatusInfo | null;
+  /**
+   * Memoized result of `getModuleStatus()` — resolved at most once per session, lazily on
+   * first use, rather than re-invoked on every persisted-state write. "Does this install
+   * have a license record" doesn't change mid-session, and `persistSessionStateThrottled`
+   * can call `summaryFields()` many times over a long session (throttled, but still). A
+   * boxed `{ value }` wrapper distinguishes "not yet resolved" from "resolved to null" (a
+   * pure-CE install), since `null` is itself a valid resolved value.
+   */
+  private resolvedModuleStatus: { value: ModuleStatusInfo | null } | null = null;
 
   private queue: TelemetryEvent[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -134,8 +176,68 @@ export class TelemetryClient {
   private toolCallCount = 0;
   private readonly distinctTools = new Set<string>();
   private anyFailures = false;
+  /** ms-epoch of the first / most recent recorded call this session — feeds duration_s. */
+  private firstCallAtMs: number | null = null;
+  private lastCallAtMs: number | null = null;
+  /** Calls whose tool + args matched the immediately preceding call. */
+  private retryCount = 0;
+  /** The most recently recorded call's success — null until a call has been recorded. */
+  private lastCallSuccess: boolean | null = null;
+  /** Successful calls outside READ_ONLY_TOOLS / inside KEPT_WORK_TOOLS (core/tool-activity.ts). */
+  private editsOk = 0;
+  private keptWork = 0;
+  /**
+   * Events dropped by `enqueue`'s MAX_QUEUE_SIZE trim this session — the IN-MEMORY drop
+   * count, which only moves when sends are failing fast enough for the queue to overrun.
+   *
+   * On its own this counter cannot answer whether events were lost: it watches one path of
+   * three, so a 0 here rules that path out and names no other. `droppedOutbox` and
+   * `droppedUnsafe` cover the rest, and together the three are exhaustive — a recorded event
+   * that never reaches the server was discarded by the in-memory trim, by the outbox, or by
+   * the content-safety filter.
+   */
+  private droppedEvents = 0;
+  /**
+   * Events the on-disk outbox discarded this RUN — its bound, a corrupt line, or a failed
+   * append. Not "this session": the startup drain observes discards belonging to a previous
+   * session's backlog. Same for the two below. They telescope across sessions; a single
+   * summary's ratio against its own tool_call_count is meaningless.
+   */
+  private droppedOutbox = 0;
+  /** Events `isContentSafe` refused to send this run (never sent dirty, never counted). */
+  private droppedUnsafe = 0;
+  /** Tool CALLS handed to a transport call that returned without throwing — not events. */
+  private usageCallsSent = 0;
+  /** Whether the boot-time update check found a strictly newer published version. null =
+   *  never determined this session (check disabled, or it hadn't resolved by shutdown). */
+  private behindLatest: boolean | null = null;
+  /** Boot-time Pro-module background refresh outcome; only meaningful (and only sent) for
+   *  installs with a license record — see doShutdown's getModuleStatus() gate. */
+  private moduleUpdate: 'none' | 'updated' | 'failed' = 'none';
+  /**
+   * On-disk asset counts, read at ps_ping time. Each field is present only once THAT field
+   * has actually been observed — merged per field (not replaced wholesale) by
+   * setInstallAssets, so a later ping that only re-confirms one field (the other having
+   * degraded that round) can't clobber an earlier good reading of the other.
+   */
+  private installAssets: { templates_saved?: number; action_sets?: number } = {};
   /** Throttle clock for session-state persistence. 0 = never persisted yet. */
   private lastSessionPersistMs = 0;
+  /** Whether this process has written its session-state file (the throttle clock can reset). */
+  private sessionStatePersisted = false;
+  /** The startup drain claims as this pid, so a second run would take the first's claims. */
+  private startupFlushStarted = false;
+  /**
+   * The day bucket this session is credited to — captured ONCE, on the first recorded call.
+   * Both the clean-shutdown summary and the persisted session state reuse it instead of
+   * re-deriving `dayBucket(this.now())` at their own call time, so a session crossing UTC
+   * midnight lands on the day its first call ran rather than being split across two days.
+   *
+   * Deliberately NOT claimed in `start()`. An MCP host can stay resident for days, so a
+   * server booted Monday and first used Wednesday would otherwise credit its summary to
+   * Monday while every usage event landed on Wednesday.
+   */
+  private startDayBucket: string | null = null;
 
   constructor(opts: TelemetryClientOptions) {
     this.settings = opts.settings;
@@ -145,7 +247,11 @@ export class TelemetryClient {
     this.flushIntervalMs = opts.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
     this.maxBatchSize = opts.maxBatchSize ?? MAX_BATCH_SIZE;
     this.active = opts.active ?? (EDITION !== 'dev' && !isTestEnv());
-    this.outboxOpts = opts.outboxDir ? { dir: opts.outboxDir } : {};
+    this.outboxOpts = {
+      ...(opts.outboxDir ? { dir: opts.outboxDir } : {}),
+      ...(opts.outboxPid !== undefined ? { pid: opts.outboxPid } : {}),
+      ...(opts.isPidAlive ? { isPidAlive: opts.isPidAlive } : {}),
+    };
     this.getModuleStatus = opts.getModuleStatus ?? (() => null);
     this.dims = {
       install_id: this.settings.telemetry.install_id,
@@ -173,30 +279,175 @@ export class TelemetryClient {
     // promptly so an install shows up without waiting out the periodic interval; a failed send
     // falls through to the outbox like any other batch.
     if (this.settings.telemetry.usage) {
-      this.enqueue(buildSessionStart(this.dims, this.now()));
+      // Bounded to the server's field range (0..999 for both) — an out-of-range or
+      // unparseable reading is omitted rather than risking a 400 on the whole batch.
+      const hostNodeMajor = boundMajor(nodeMajor(), 999);
+      const hostOsMajor = boundMajor(osMajor(process.platform, release()), 999);
+      this.enqueue(
+        buildSessionStart(this.dims, this.now(), {
+          ...(hostNodeMajor !== null ? { node_major: hostNodeMajor } : {}),
+          arch: archToken(),
+          ...(hostOsMajor !== null ? { os_major: hostOsMajor } : {}),
+        })
+      );
       // Pro module boot outcome, alongside the ping — emitted only for installs with a
-      // license record (getModuleStatus returns null otherwise), so a pure-CE host stays
-      // silent. This is the signal that answers "did the subscriber's module actually load?".
-      const moduleStatus = this.getModuleStatus();
+      // license record (moduleStatus() returns null otherwise), so a pure-CE host stays
+      // silent. Reports whether the licensed module actually loaded this boot.
+      const moduleStatus = this.moduleStatus();
       if (moduleStatus) this.enqueue(buildModuleStatus(this.dims, moduleStatus, this.now()));
       void this.flush();
     }
   }
 
+  /**
+   * Record the connected MCP client's identity + capabilities (Category A, opt-out), once
+   * per session from `Server.oninitialized` (see server.ts). Deliberately does NOT force its
+   * own flush — it rides whichever of the boot flush, the periodic timer, the next batch-fill
+   * flush, or (on a hard exit) the durable outbox gets to it first, the same as any other
+   * enqueued event.
+   */
+  recordClientConnected(info: {
+    clientName: string | undefined;
+    clientVersion: string | undefined;
+    capSampling: boolean;
+    capElicitation: boolean;
+    capRoots: boolean;
+  }): void {
+    if (!this.active || !this.settings.telemetry.usage) return;
+    this.enqueue(buildClientConnected(this.dims, info, this.now()));
+  }
+
   /** Record one tool call (Category A, opt-out). */
   recordCall(call: RecordedCall): void {
     if (!this.active || !this.settings.telemetry.usage) return;
+    this.ensureStartDayBucket();
+    const nowDate = this.now();
+    const nowMs = nowDate.getTime();
     this.toolCallCount += 1;
     this.distinctTools.add(call.tool);
     if (!call.success) this.anyFailures = true;
-    this.enqueue(buildUsageEvent(this.dims, call, this.now()));
+    this.lastCallSuccess = call.success;
+    if (call.retry) this.retryCount += 1;
+    if (call.success) {
+      if (!READ_ONLY_TOOLS.has(call.tool)) this.editsOk += 1;
+      if (KEPT_WORK_TOOLS.has(call.tool)) this.keptWork += 1;
+    }
+    if (this.firstCallAtMs === null) this.firstCallAtMs = nowMs;
+    this.lastCallAtMs = nowMs;
+    this.enqueue(buildUsageEvent(this.dims, call, nowDate));
     this.persistSessionStateThrottled();
+  }
+
+  /** Whether the boot-time update check found a strictly newer published version. */
+  setBehindLatest(value: boolean): void {
+    this.behindLatest = value;
+  }
+
+  /** Record the boot-time Pro-module background refresh outcome (self-heal / freshness
+   *  check in kernel/module-lifecycle.ts). */
+  setModuleUpdate(outcome: 'updated' | 'failed'): void {
+    this.moduleUpdate = outcome;
+  }
+
+  /**
+   * Record the install's on-disk asset counts, read at ps_ping time. Merges per field
+   * (rather than replacing the object) — pass only the fields this ping actually observed,
+   * so a degraded field on one ping doesn't erase a good value an earlier ping recorded this
+   * session. Each value is clamped to MAX_INSTALL_ASSET_COUNT before being kept, matching the
+   * server's field bound; a non-finite value (see clampCount) is treated the same as an
+   * unobserved field — left out of this merge entirely, never kept as 0.
+   */
+  setInstallAssets(assets: { templates_saved?: number; action_sets?: number }): void {
+    const templatesSaved =
+      assets.templates_saved !== undefined ? clampCount(assets.templates_saved) : null;
+    const actionSets = assets.action_sets !== undefined ? clampCount(assets.action_sets) : null;
+    this.installAssets = {
+      ...this.installAssets,
+      ...(templatesSaved !== null ? { templates_saved: templatesSaved } : {}),
+      ...(actionSets !== null ? { action_sets: actionSets } : {}),
+    };
+  }
+
+  /** Resolves + memoizes `getModuleStatus()` — see `resolvedModuleStatus`'s field doc. */
+  private moduleStatus(): ModuleStatusInfo | null {
+    if (this.resolvedModuleStatus === null) {
+      this.resolvedModuleStatus = { value: this.getModuleStatus() };
+    }
+    return this.resolvedModuleStatus.value;
+  }
+
+  /** Wall-clock from the first recorded call to the last, in seconds, clamped to
+   *  [0, MAX_SESSION_DURATION_S] — the lower bound guards a backward-stepping clock (a
+   *  system clock adjustment mid-session) from sending a negative duration. undefined until
+   *  a call has been recorded. */
+  private durationS(): number | undefined {
+    if (this.firstCallAtMs === null || this.lastCallAtMs === null) return undefined;
+    return Math.min(
+      Math.max(0, Math.floor((this.lastCallAtMs - this.firstCallAtMs) / 1000)),
+      MAX_SESSION_DURATION_S
+    );
+  }
+
+  /**
+   * The new accumulator fields, shared verbatim by the persisted session state (so a
+   * hard-killed session reconstructs the same summary a clean shutdown would have produced)
+   * and the session_summary event itself. Each field is omitted rather than sent as
+   * `unknown` when this session never learned it — see the module doc comment on events.ts.
+   */
+  private summaryFields(): {
+    duration_s?: number;
+    retry_count: number;
+    ended_after_failure?: boolean;
+    edits_ok: number;
+    kept_work: number;
+    behind_latest?: boolean;
+    dropped_events: number;
+    dropped_outbox: number;
+    dropped_unsafe: number;
+    usage_calls_sent: number;
+    module_update?: 'none' | 'updated' | 'failed';
+    templates_saved?: number;
+    action_sets?: number;
+  } {
+    const duration = this.durationS();
+    // module_update is sent ONLY for installs with a license record — a pure-CE install has
+    // no module to report freshness on, so moduleStatus() returning null here means
+    // "not applicable", not "unknown".
+    const moduleStatus = this.moduleStatus();
+    return {
+      ...(duration !== undefined ? { duration_s: duration } : {}),
+      retry_count: this.retryCount,
+      ...(this.lastCallSuccess !== null ? { ended_after_failure: !this.lastCallSuccess } : {}),
+      edits_ok: this.editsOk,
+      kept_work: this.keptWork,
+      ...(this.behindLatest !== null ? { behind_latest: this.behindLatest } : {}),
+      dropped_events: this.droppedEvents,
+      // Always present, like dropped_events: 0 is a real observation ("nothing was
+      // discarded"), and a field that disappears when it is 0 can't be told apart from a
+      // client too old to report it — the exact ambiguity this change exists to remove.
+      dropped_outbox: this.droppedOutbox,
+      dropped_unsafe: this.droppedUnsafe,
+      usage_calls_sent: this.usageCallsSent,
+      ...(moduleStatus !== null ? { module_update: this.moduleUpdate } : {}),
+      ...(this.installAssets.templates_saved !== undefined
+        ? { templates_saved: this.installAssets.templates_saved }
+        : {}),
+      ...(this.installAssets.action_sets !== undefined
+        ? { action_sets: this.installAssets.action_sets }
+        : {}),
+    };
   }
 
   /** Current ps_version token, mirroring events.ts (placeholder until the first ping). */
   private psVersion(): string {
     const v = this.dims.getPsVersion();
     return v && v.length > 0 ? v : PS_VERSION_UNKNOWN;
+  }
+
+  /** The session's start-day bucket, captured on first use — see the field doc. */
+  private ensureStartDayBucket(): string {
+    if (this.startDayBucket === null) this.startDayBucket = dayBucket(this.now());
+    return this.startDayBucket;
   }
 
   /**
@@ -216,7 +467,10 @@ export class TelemetryClient {
     this.lastSessionPersistMs = nowMs;
     const state: PersistedSessionState = {
       install_id: this.dims.install_id,
-      ts_bucket: dayBucket(this.now()),
+      // The session's START bucket, not "now" — see startDayBucket's field doc. This is
+      // what makes a hard-killed session's reconstructed summary (summaryFromState) agree
+      // with what a clean shutdown would have produced for the same session.
+      ts_bucket: this.ensureStartDayBucket(),
       editmamei_version: this.dims.editmamei_version,
       edition: this.dims.edition,
       platform: this.dims.platform,
@@ -224,8 +478,10 @@ export class TelemetryClient {
       tool_call_count: this.toolCallCount,
       distinct_tools: this.distinctTools.size,
       any_failures: this.anyFailures,
+      ...this.summaryFields(),
     };
     writeSessionStateSync(state, this.outboxOpts);
+    this.sessionStatePersisted = true;
   }
 
   /**
@@ -253,6 +509,9 @@ export class TelemetryClient {
           error_message: sanitizeMessage(diag.error_message),
           ...(diag.snippet ? { snippet: sanitizeSnippet(diag.snippet) } : {}),
           ...(diag.stderr_tail ? { stderr_tail: sanitizeStderrTail(diag.stderr_tail) } : {}),
+          ...(diag.doc_depth !== undefined ? { doc_depth: diag.doc_depth } : {}),
+          ...(diag.doc_mode !== undefined ? { doc_mode: diag.doc_mode } : {}),
+          ...(diag.ps_locale !== undefined ? { ps_locale: diag.ps_locale } : {}),
         },
         this.now()
       )
@@ -300,7 +559,9 @@ export class TelemetryClient {
     this.queue.push(event);
     if (this.queue.length > MAX_QUEUE_SIZE) {
       // Drop oldest — newer signal is more useful, and we must stay bounded.
-      this.queue.splice(0, this.queue.length - MAX_QUEUE_SIZE);
+      const excess = this.queue.length - MAX_QUEUE_SIZE;
+      this.queue.splice(0, excess);
+      this.droppedEvents += excess;
     }
     if (this.queue.length >= this.maxBatchSize) void this.flush();
   }
@@ -308,22 +569,23 @@ export class TelemetryClient {
   /**
    * Send one batch (up to MAX_BATCH_SIZE). Content-unsafe events are dropped (never sent
    * dirty) so one path-leaking value can't get the whole batch rejected. On send failure the
-   * batch is persisted to the durable outbox for a retry on next startup (was: dropped).
+   * batch is persisted to the durable outbox for a retry on next startup.
    * Never throws.
    */
   async flush(): Promise<void> {
     if (!this.active || this.queue.length === 0) return;
-    const batch = this.restampPsVersion(this.queue.splice(0, this.maxBatchSize)).filter(
-      isContentSafe
-    );
+    const picked = this.restampPsVersion(this.queue.splice(0, this.maxBatchSize));
+    const batch = picked.filter(isContentSafe);
+    this.droppedUnsafe += picked.length - batch.length;
     if (batch.length === 0) return;
     try {
       await this.transport(this.endpoint, JSON.stringify({ events: batch }));
+      this.usageCallsSent += countUsageCalls(batch);
     } catch (err) {
       this.logger.debug(
         `telemetry flush failed, persisting ${batch.length} event(s) to outbox: ${errMsg(err)}`
       );
-      appendOutboxSync(batch, this.outboxOpts);
+      this.droppedOutbox += appendOutboxSync(batch, this.outboxOpts);
     }
   }
 
@@ -354,71 +616,131 @@ export class TelemetryClient {
       this.timer = null;
     }
     if (!this.active) return;
-    if (this.settings.telemetry.usage && this.toolCallCount > 0) {
-      this.enqueue(
-        buildSessionSummary(
-          this.dims,
-          {
-            tool_call_count: this.toolCallCount,
-            distinct_tools: this.distinctTools.size,
-            any_failures: this.anyFailures,
-          },
-          this.now()
-        )
-      );
-    }
+    // Drain the pending events BEFORE building the summary. Their content-safety and outbox
+    // discards belong to THIS session, and a summary built first would be stale by exactly
+    // the numbers it exists to report — the ordering is the whole point, not a tidy-up.
     if (this.queue.length > 0) {
-      appendOutboxSync(
-        this.restampPsVersion(this.queue.splice(0)).filter(isContentSafe),
-        this.outboxOpts
+      const picked = this.restampPsVersion(this.queue.splice(0));
+      const batch = picked.filter(isContentSafe);
+      this.droppedUnsafe += picked.length - batch.length;
+      this.droppedOutbox += appendOutboxSync(batch, this.outboxOpts);
+    }
+    // A boot that did no tool work still emits a summary IF it has loss to report. The
+    // startup drain is the ONLY place the outbox bound's discards are ever observed, and it
+    // runs before any tool call — so gating purely on `toolCallCount > 0` threw away exactly
+    // the measurement this change exists to produce, on the boots most likely to have a
+    // backlog. Zero-work boots are a large share of real boots here, so this is the common
+    // case, not an edge.
+    //
+    // LOSS only — deliberately NOT `usageCallsSent > 0`. Every clean shutdown leaves a
+    // backlog, so a delivery-based gate would fire on essentially every zero-work boot that
+    // follows a working one, roughly doubling the server's `session_count` and stepping every
+    // per-session average at the release that shipped it. Actual discards are rare, so this
+    // gate stays rare. The cost of the narrower gate is that a zero-work boot which only
+    // *delivered* a backlog does not report its `usage_calls_sent`; that undercounts the
+    // denominator slightly, which is the better error to make.
+    const hasLossToReport =
+      this.droppedEvents > 0 || this.droppedOutbox > 0 || this.droppedUnsafe > 0;
+    if (this.settings.telemetry.usage && (this.toolCallCount > 0 || hasLossToReport)) {
+      const summary = buildSessionSummary(
+        this.dims,
+        {
+          tool_call_count: this.toolCallCount,
+          distinct_tools: this.distinctTools.size,
+          any_failures: this.anyFailures,
+          ...this.summaryFields(),
+        },
+        // Start-day bucket, not the shutdown-time day — see startDayBucket's field doc. On a
+        // loss-only boot no call ever ran, so this may be the first call of
+        // ensureStartDayBucket() — which is fine, it falls back to today.
+        this.ensureStartDayBucket(),
+        this.now()
       );
+      // Appended directly rather than enqueued, so it observes the drain above. It still
+      // goes through the content guard — a summary is all counters and enum tokens, but
+      // routing around the filter is not a precedent worth setting.
+      if (isContentSafe(summary)) {
+        // This append's own discards cannot appear in the summary it is writing. Usually
+        // that is the one-event self-reference and nothing more, but if THIS append is what
+        // crosses the byte cap, compaction can discard far more — unreportable either way,
+        // so surface it locally rather than letting it vanish entirely.
+        const lost = appendOutboxSync([summary], this.outboxOpts);
+        if (lost > 0) {
+          this.logger.debug(`outbox discarded ${lost} event(s) while writing the session summary`);
+        }
+      }
     }
     // Clean end — drop the marker so the startup path won't reconstruct a duplicate summary.
     clearSessionState(this.outboxOpts);
   }
 
   /**
-   * Deliver anything the previous run(s) left behind. Runs once at server start, when the
-   * event loop is healthy (the conditions an exit-time send lacks):
-   *   1. If a session-state marker survives, the previous session was killed before a clean
-   *      shutdown — reconstruct its summary and add it to the outbox.
-   *   2. Drain the outbox to the server in batches; clear it only if every batch is accepted.
+   * Deliver anything previous runs left behind. Runs once at server start, when the event
+   * loop is healthy (the conditions an exit-time send lacks):
+   *   1. Every session-state file whose process is no longer running belongs to a session
+   *      killed before a clean shutdown — reconstruct its summary and add it to the outbox.
+   *      Files of live sibling processes are left for their owners to clear.
+   *   2. Claim the outbox (an atomic rename) and drain it to the server in batches. Whatever
+   *      is not delivered is appended back to the live outbox, so the batches that did land
+   *      are never sent a second time, and an append a sibling made meanwhile is kept.
+   *
    * Respects CURRENT consent: if usage telemetry is now off, the backlog is dropped unsent.
    * Best-effort and fire-and-forget — never throws, never blocks boot.
    */
   async flushOutboxOnStartup(): Promise<void> {
-    if (!this.active) return;
+    if (!this.active || this.startupFlushStarted) return;
+    this.startupFlushStarted = true;
     try {
-      const stale = readSessionState(this.outboxOpts);
-      if (stale && this.settings.telemetry.usage && stale.tool_call_count > 0) {
-        appendOutboxSync([summaryFromState(stale)], this.outboxOpts);
+      const orphans = claimOrphanedSessionStates(this.outboxOpts, {
+        // This process's own file can only be a predecessor's until it has written one.
+        includeOwn: !this.sessionStatePersisted,
+      });
+      if (this.settings.telemetry.usage) {
+        const summaries = orphans.states.filter((s) => s.tool_call_count > 0).map(summaryFromState);
+        this.droppedOutbox += appendOutboxSync(summaries, this.outboxOpts);
       }
-      clearSessionState(this.outboxOpts);
+      orphans.release();
 
-      const pending = readOutbox(this.outboxOpts);
+      const claimed = claimOutboxForDrain(this.outboxOpts);
+      const { events: pending, discarded } = claimed;
+      // Anything the bound threw away is gone the moment the claim is released below — count
+      // it before it vanishes, or it is loss that leaves no trace anywhere.
+      this.droppedOutbox += discarded;
       if (pending.length === 0) {
-        clearOutbox(this.outboxOpts);
+        claimed.release([]);
         return;
       }
       // Consent is read live: a user who turned usage off between sessions doesn't want the
       // backlog sent. (Everything in the outbox was consented when recorded, but respect now.)
       if (!this.settings.telemetry.usage) {
-        clearOutbox(this.outboxOpts);
+        claimed.release([]);
         return;
       }
-      let allAccepted = true;
-      for (let i = 0; i < pending.length; i += this.maxBatchSize) {
-        const batch = pending.slice(i, i + this.maxBatchSize).filter(isContentSafe);
-        if (batch.length === 0) continue;
+      // Filter ONCE, up front, over the whole backlog — not per batch inside the loop.
+      // Filtering per batch counts only the slices the loop actually reached, so a drain that
+      // breaks early would silently discard the unsafe events beyond the break when it wrote
+      // the remainder back, with nothing counting them. One filter, one count, and the
+      // remainder is already safe by construction.
+      const sendable = pending.filter(isContentSafe);
+      this.droppedUnsafe += pending.length - sendable.length;
+      // How many of `sendable` are delivered. Used to hand back ONLY the undelivered
+      // remainder on a partial drain.
+      let settled = 0;
+      for (let i = 0; i < sendable.length; i += this.maxBatchSize) {
+        const batch = sendable.slice(i, i + this.maxBatchSize);
         try {
           await this.transport(this.endpoint, JSON.stringify({ events: batch }));
+          this.usageCallsSent += countUsageCalls(batch);
         } catch (err) {
           this.logger.debug(`startup outbox flush failed: ${errMsg(err)}`);
-          allAccepted = false;
           break; // keep the remainder for the next startup
         }
+        settled = i + batch.length;
       }
-      if (allAccepted) clearOutbox(this.outboxOpts);
+      // Partial drain: drop what went through, keep the rest. Keeping everything re-sends the
+      // delivered batches on the next startup and inflates the server's counters; keeping
+      // nothing would lose the undelivered tail.
+      this.droppedOutbox += claimed.release(sendable.slice(settled));
     } catch (err) {
       this.logger.debug(`startup outbox flush error: ${errMsg(err)}`);
     }
@@ -430,13 +752,26 @@ export class TelemetryClient {
   }
 }
 
-/** Reconstruct a session_summary event from persisted state (a killed-session recovery). */
+/**
+ * Reconstruct a session_summary event from persisted state (a killed-session recovery).
+ * Every new accumulator is optional on PersistedSessionState (backward-compat with a state
+ * file written by an older version), so each is carried through only when present rather
+ * than reconstructed as a false zero/false.
+ */
 function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
+  // Same clamp the clean path (setInstallAssets) gets: these values came off disk, where a
+  // hand-edited or differently-versioned file can hold anything (a fraction, a negative, a
+  // NaN), and one bad count rejects the whole batch. A non-finite value has no earlier good
+  // reading to fall back on here, so it's omitted rather than sent as a false 0.
+  const templatesSaved = s.templates_saved !== undefined ? clampCount(s.templates_saved) : null;
+  const actionSets = s.action_sets !== undefined ? clampCount(s.action_sets) : null;
   return {
     v: 2,
     type: 'session_summary',
     install_id: s.install_id,
-    ts_bucket: s.ts_bucket,
+    // Same clamp the clean path gets: this value came off disk, where a truncated or
+    // hand-edited file can hold anything, and one bad bucket rejects the whole batch.
+    ts_bucket: normalizeDayBucket(s.ts_bucket, new Date()),
     editmamei_version: s.editmamei_version,
     edition: s.edition,
     platform: s.platform,
@@ -444,9 +779,58 @@ function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
     tool_call_count: s.tool_call_count,
     distinct_tools: s.distinct_tools,
     any_failures: s.any_failures,
+    ...(s.duration_s !== undefined ? { duration_s: s.duration_s } : {}),
+    ...(s.retry_count !== undefined ? { retry_count: s.retry_count } : {}),
+    ...(s.ended_after_failure !== undefined ? { ended_after_failure: s.ended_after_failure } : {}),
+    ...(s.edits_ok !== undefined ? { edits_ok: s.edits_ok } : {}),
+    ...(s.kept_work !== undefined ? { kept_work: s.kept_work } : {}),
+    ...(s.behind_latest !== undefined ? { behind_latest: s.behind_latest } : {}),
+    ...(s.dropped_events !== undefined ? { dropped_events: s.dropped_events } : {}),
+    ...(s.dropped_outbox !== undefined ? { dropped_outbox: s.dropped_outbox } : {}),
+    ...(s.dropped_unsafe !== undefined ? { dropped_unsafe: s.dropped_unsafe } : {}),
+    ...(s.usage_calls_sent !== undefined ? { usage_calls_sent: s.usage_calls_sent } : {}),
+    ...(s.module_update !== undefined ? { module_update: s.module_update } : {}),
+    ...(templatesSaved !== null ? { templates_saved: templatesSaved } : {}),
+    ...(actionSets !== null ? { action_sets: actionSets } : {}),
   };
 }
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * How many tool CALLS these events represent — the population `usage_calls_sent` counts, and
+ * the only unit comparable against the server's `usage_daily.call_count`. Session summaries,
+ * boot pings and module-status events ride the same batches and must not inflate it.
+ *
+ * A usage event is exactly one call today — `UsageEvent` has no `count` — so this is a plain
+ * count of usage events. It is written as a sum rather than a length because the field it
+ * feeds is named for calls, and the day an event can stand for several, a `length`-based
+ * version would keep passing every test while reporting the wrong unit.
+ */
+function countUsageCalls(events: TelemetryEvent[]): number {
+  let n = 0;
+  for (const event of events) {
+    if (event.type !== 'usage') continue;
+    // Integer, not merely finite: a fractional count would put a fractional value in a field
+    // the server validates as an int, and one bad number rejects the whole batch.
+    const count = (event as { count?: number }).count;
+    n += typeof count === 'number' && Number.isInteger(count) && count > 0 ? count : 1;
+  }
+  return n;
+}
+
+/** Clamp an install-asset count to [0, MAX_INSTALL_ASSET_COUNT] — matches the server's field
+ *  bound on `templates_saved` / `action_sets`. Returns null for a non-finite input (NaN,
+ *  ±Infinity): the wire format has no way to distinguish a clamped 0 from a field that was
+ *  never actually observed, so the caller must treat null as "leave the field unset," never
+ *  send it as 0 or as `null` itself (the server rejects a null here and a rejected batch is
+ *  re-queued forever). Truncated to an integer AFTER the finite check (Math.trunc(NaN) is
+ *  itself NaN, so ordering doesn't matter there, but doing it after keeps the finite check
+ *  reading as the guard it is) — the server validates both fields as integers and rejects
+ *  the whole batch otherwise, so a fractional count is the same poison as NaN. */
+function clampCount(n: number): number | null {
+  if (!Number.isFinite(n)) return null;
+  return Math.min(Math.max(0, Math.trunc(n)), MAX_INSTALL_ASSET_COUNT);
 }

@@ -61,7 +61,7 @@ const pathInputSchema: JsonSchemaObject = {
     placement: {
       ...PLACEMENT_SCHEMA,
       description:
-        'create_from_placement only: NAME the curve the path follows, as an anchor-relational placement that resolves to a PATH (relation `along` a traced edge / a Pro landmark curve, or a `segment` between two anchors). The spatial-grounding resolver + objective gate produce AND verify the curve; the path is created ONLY if the gate PASSES. Name the curve — do NOT hand-type anchor points.',
+        'create_from_placement only: NAME the curve the path follows, as an anchor-relational placement that resolves to a PATH (relation `along` a traced edge / a landmark curve, where available, or a `segment` between two anchors). The spatial-grounding resolver + objective gate produce AND verify the curve; the path is created ONLY if the gate PASSES. Name the curve — do NOT hand-type anchor points.',
     },
     closed: {
       type: 'boolean',
@@ -100,7 +100,7 @@ const pathInputSchema: JsonSchemaObject = {
       type: 'string',
       enum: SUPPORTED_BRUSH_TOOLS,
       description:
-        "stroke only: which brush-family tool paints the path. Default 'brush'. Same 16-tool set as ps_apply_brush_stroke.",
+        "stroke only: which brush-family tool paints the path (see this field's own enum for the full supported set). Default 'brush'.",
       default: 'brush',
     },
     color: {

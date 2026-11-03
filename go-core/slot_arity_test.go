@@ -82,6 +82,9 @@ func safeBuild(name string, params map[string]any) (out string, err error) {
 // becomes actively arity-checked. Extending active coverage to these — the
 // mode-dispatched filters especially — is the documented next increment.
 var arityNeedsParams = []string{
+	// Requires a name or id: there is no sensible default target, and defaulting
+	// to the active document would make "activate" a silent no-op.
+	"activateDocument",
 	"addAdjustmentLayer",
 	"addGuide",
 	"applyBlurAdv",

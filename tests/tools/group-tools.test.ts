@@ -13,18 +13,10 @@ describe('createGroupTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('returns 7 well-formed tools', () => {
+  it('returns 2 well-formed tools', () => {
     const tools = createGroupTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
-    expect(tools.map((t) => t.tool.name).sort()).toEqual([
-      'ps_clipping_mask',
-      'ps_create_group',
-      'ps_delete_group',
-      'ps_group',
-      'ps_move_layer_to_group',
-      'ps_set_group_blend_mode',
-      'ps_ungroup',
-    ]);
+    expect(tools.map((t) => t.tool.name).sort()).toEqual(['ps_clipping_mask', 'ps_group']);
   });
 
   it('clipping_mask op=create dispatches the createClippingMask snippet', async () => {
@@ -99,23 +91,22 @@ describe('createGroupTools', () => {
     expect(textOf(result)).toMatch(/Released clipping mask on layer "Sky"/);
   });
 
-  it('create_group passes name and dispatches the createGroup snippet', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_create_group', { name: 'edits' });
-    const build = snippetClient.lastBuild();
-    expect(build.name).toBe('createGroup');
-    expect(build.params.name).toBe('edits');
-  });
+  // ===========================================================================
+  // ps_group — group lifecycle and membership under one op discriminator.
+  // Each op strips `op` and hands the rest to its own handler, which
+  // re-validates against its own per-op schema.
+  // ===========================================================================
 
-  it('create_group with layers list passes layers array param', async () => {
+  it('group op=create dispatches the createGroup snippet', async () => {
     const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_create_group', {
-      name: 'group A',
+    await callTool(tools, 'ps_group', {
+      op: 'create',
+      name: 'edits',
       layers: ['Sky', 'Foreground', 'Subject'],
     });
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('createGroup');
-    expect(build.params.name).toBe('group A');
+    expect(build.params.name).toBe('edits');
     expect(build.params.layerNames).toEqual(['Sky', 'Foreground', 'Subject']);
   });
 
@@ -131,33 +122,43 @@ describe('createGroupTools', () => {
   // create-nesting-test-group/adj-while-group-active/
   // layer-tree-nesting-check steps for the real-Photoshop verification.
   // ===========================================================================
-  it('create_group defaults into_active_group to false when omitted', async () => {
+  it('group op=create forwards into_active_group:true', async () => {
     const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_create_group', { name: 'edits' });
-    const build = snippetClient.lastBuild();
-    expect(build.params.into_active_group).toBe(false);
-  });
-
-  it('create_group forwards into_active_group:true', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_create_group', { name: 'edits', into_active_group: true });
+    await callTool(tools, 'ps_group', {
+      op: 'create',
+      name: 'edits',
+      into_active_group: true,
+    });
     const build = snippetClient.lastBuild();
     expect(build.params.into_active_group).toBe(true);
+  });
+
+  // The op=create dispatch test above passes the optional params explicitly,
+  // which hides a defaulting drift. Call it with the bare minimum and pin the
+  // defaults themselves — a hoist default that silently flips changes where
+  // every group lands.
+  it('group op=create with only a name applies the documented hoist default', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_group', { op: 'create', name: 'edits' });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('createGroup');
+    expect(build.params).toEqual({ name: 'edits', into_active_group: false });
   });
 
   // ===========================================================================
   // Bug I (createGroup) — em-dash normalization regression pin
   //
-  // Session 2026-06-04 (IMG_1022 grade) called create_group with a layers list
+  // Session 2026-06-04 (IMG_1022 grade) created a group with a layers list
   // ["Warm — 81", "Curves — S-pop", "Vibrance", "Levels — contrast"] and got
   // moved_count=1 — only "Vibrance" (no em-dash) matched. The other three
   // landed in notFound silently. moveLayerToGroup had been fixed for the same
   // class of bug, but the fix didn't propagate to createGroup. This pin matches
-  // the existing one on move_layer_to_group below.
+  // the existing one on op=add_layer below.
   // ===========================================================================
-  it('create_group passes em-dash layer names through to the snippet', async () => {
+  it('group op=create passes em-dash layer names through to the snippet', async () => {
     const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_create_group', {
+    await callTool(tools, 'ps_group', {
+      op: 'create',
       name: 'Hero grade',
       layers: ['Warm — 81', 'Curves — S-pop', 'Vibrance', 'Levels — contrast'],
     });
@@ -165,136 +166,6 @@ describe('createGroupTools', () => {
     expect(build.name).toBe('createGroup');
     expect(build.params.layerNames as string[]).toContain('Warm — 81');
     expect(build.params.layerNames as string[]).toContain('Curves — S-pop');
-  });
-
-  it('move_layer_to_group passes both layer and group names', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_move_layer_to_group', {
-      layer_name: 'Curves 1',
-      group_name: 'edits',
-    });
-    const build = snippetClient.lastBuild();
-    expect(build.name).toBe('moveLayerToGroup');
-    expect(build.params.layerName).toBe('Curves 1');
-    expect(build.params.groupName).toBe('edits');
-  });
-
-  // ===========================================================================
-  // Bug I — move_layer_to_group em-dash normalization regression pin
-  //
-  // The Windows 2026-05-29 session created a group named "EDITS — Full Workup"
-  // (em-dash U+2014) and a later move_layer_to_group call passed "EDITS - Full
-  // Workup" (hyphen-minus). The lookup did strict === and failed with "Group
-  // not found." The fix normalizes all dash variants and folds case + whitespace
-  // before comparing. This is now a Go binary test — the snippet normalization
-  // logic lives in the Go implementation, not the JSON params.
-  // ===========================================================================
-  it('move_layer_to_group passes em-dash names through to the snippet verbatim', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_move_layer_to_group', {
-      layer_name: 'High-Pass Sharpening',
-      group_name: 'EDITS - Full Workup',
-    });
-    const build = snippetClient.lastBuild();
-    expect(build.name).toBe('moveLayerToGroup');
-    expect(build.params.layerName).toBe('High-Pass Sharpening');
-    expect(build.params.groupName).toBe('EDITS - Full Workup');
-  });
-
-  it('set_group_blend_mode passes name and blend_mode params', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_set_group_blend_mode', {
-      name: 'edits',
-      blend_mode: 'NORMAL',
-    });
-    const build = snippetClient.lastBuild();
-    expect(build.name).toBe('setGroupBlendMode');
-    expect(build.params.groupName).toBe('edits');
-    expect(build.params.blendMode).toBe('NORMAL');
-  });
-
-  it('set_group_blend_mode rejects unknown blend modes at the schema layer', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    const result = await callTool(tools, 'ps_set_group_blend_mode', {
-      name: 'edits',
-      blend_mode: 'NOT_A_REAL_MODE',
-    });
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toMatch(/blend_mode/i);
-  });
-
-  it('ungroup refuses without confirm:true', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    const result = await callTool(tools, 'ps_ungroup', {
-      name: 'edits',
-      confirm: false,
-    });
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toMatch(/confirm:true/);
-    expect(conn.executions.length).toBe(0);
-  });
-
-  it('ungroup with confirm:true passes name to snippet', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_ungroup', {
-      name: 'edits',
-      confirm: true,
-    });
-    const build = snippetClient.lastBuild();
-    expect(build.name).toBe('ungroup');
-    expect(build.params.groupName).toBe('edits');
-  });
-
-  it('delete_group refuses without confirm:true', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    const result = await callTool(tools, 'ps_delete_group', {
-      name: 'edits',
-      confirm: false,
-    });
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toMatch(/confirm:true/);
-    expect(conn.executions.length).toBe(0);
-  });
-
-  it('delete_group with confirm:true passes name to snippet', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_delete_group', {
-      name: 'edits',
-      confirm: true,
-    });
-    const build = snippetClient.lastBuild();
-    expect(build.name).toBe('deleteGroup');
-    expect(build.params.name).toBe('edits');
-  });
-
-  it('every group walker dispatches exactly one script per call', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    // Trigger each handler so we confirm each dispatches
-    await callTool(tools, 'ps_create_group', { name: 'g' });
-    await callTool(tools, 'ps_move_layer_to_group', { layer_name: 'l', group_name: 'g' });
-    await callTool(tools, 'ps_set_group_blend_mode', { name: 'g', blend_mode: 'NORMAL' });
-    await callTool(tools, 'ps_ungroup', { name: 'g', confirm: true });
-    await callTool(tools, 'ps_delete_group', { name: 'g', confirm: true });
-    // 5 tools * 1 script each = 5 executions
-    expect(conn.executions.length).toBe(5);
-  });
-
-  // ===========================================================================
-  // ps_group (2026-08-13) — the five names above consolidated into one
-  // op-discriminated tool. Each op dispatches the exact same handler function
-  // (and therefore the exact same snippet) the deprecated standalone tool
-  // calls, so behavior-preservation is proven both by direct dispatch tests
-  // here and by the equivalence tests below (old route vs new route, same
-  // args in, same snippet + params out).
-  // ===========================================================================
-
-  it('group op=create dispatches the createGroup snippet', async () => {
-    const tools = createGroupTools(conn.asConnection(), snippetClient);
-    await callTool(tools, 'ps_group', { op: 'create', name: 'edits', layers: ['Sky'] });
-    const build = snippetClient.lastBuild();
-    expect(build.name).toBe('createGroup');
-    expect(build.params.name).toBe('edits');
-    expect(build.params.layerNames).toEqual(['Sky']);
   });
 
   it('group op=add_layer dispatches the moveLayerToGroup snippet', async () => {
@@ -310,6 +181,30 @@ describe('createGroupTools', () => {
     expect(build.params.groupName).toBe('edits');
   });
 
+  // ===========================================================================
+  // Bug I — add_layer em-dash normalization regression pin
+  //
+  // The Windows 2026-05-29 session created a group named "EDITS — Full Workup"
+  // (em-dash U+2014) and a later move call passed "EDITS - Full Workup"
+  // (hyphen-minus). The lookup did strict === and failed with "Group not
+  // found." The fix normalizes all dash variants and folds case + whitespace
+  // before comparing. That normalization is a Go binary test — the logic lives
+  // in the Go implementation, not the JSON params, so what this pins is that
+  // the names reach the snippet unmangled.
+  // ===========================================================================
+  it('group op=add_layer passes em-dash names through to the snippet verbatim', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_group', {
+      op: 'add_layer',
+      layer_name: 'High-Pass Sharpening',
+      group_name: 'EDITS - Full Workup',
+    });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('moveLayerToGroup');
+    expect(build.params.layerName).toBe('High-Pass Sharpening');
+    expect(build.params.groupName).toBe('EDITS - Full Workup');
+  });
+
   it('group op=set_blend_mode dispatches the setGroupBlendMode snippet', async () => {
     const tools = createGroupTools(conn.asConnection(), snippetClient);
     await callTool(tools, 'ps_group', {
@@ -321,6 +216,17 @@ describe('createGroupTools', () => {
     expect(build.name).toBe('setGroupBlendMode');
     expect(build.params.groupName).toBe('edits');
     expect(build.params.blendMode).toBe('NORMAL');
+  });
+
+  it('group op=set_blend_mode rejects unknown blend modes at the schema layer', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    const result = await callTool(tools, 'ps_group', {
+      op: 'set_blend_mode',
+      name: 'edits',
+      blend_mode: 'NOT_A_REAL_MODE',
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/blend_mode/i);
   });
 
   it('group op=ungroup refuses without confirm:true', async () => {
@@ -372,86 +278,18 @@ describe('createGroupTools', () => {
     expect(conn.executions.length).toBe(0);
   });
 
-  // The important equivalence: the five deprecated standalone tools and
-  // ps_group's op dispatch must produce identical behavior. Both routes call
-  // the same handler function, so this pins that fact rather than just
-  // hoping the two code paths stay in sync.
-  it('each deprecated standalone tool builds the identical snippet + params as the matching ps_group op', async () => {
-    const cases: Array<{
-      oldName: string;
-      oldArgs: Record<string, unknown>;
-      op: string;
-      newArgs: Record<string, unknown>;
-    }> = [
-      {
-        oldName: 'ps_create_group',
-        oldArgs: { name: 'Hero grade', layers: ['Sky', 'Foreground'], into_active_group: true },
-        op: 'create',
-        newArgs: { name: 'Hero grade', layers: ['Sky', 'Foreground'], into_active_group: true },
-      },
-      {
-        oldName: 'ps_delete_group',
-        oldArgs: { name: 'edits', confirm: true },
-        op: 'delete',
-        newArgs: { name: 'edits', confirm: true },
-      },
-      {
-        oldName: 'ps_ungroup',
-        oldArgs: { name: 'edits', confirm: true },
-        op: 'ungroup',
-        newArgs: { name: 'edits', confirm: true },
-      },
-      {
-        oldName: 'ps_move_layer_to_group',
-        oldArgs: { layer_name: 'Curves 1', group_name: 'edits' },
-        op: 'add_layer',
-        newArgs: { layer_name: 'Curves 1', group_name: 'edits' },
-      },
-      {
-        oldName: 'ps_set_group_blend_mode',
-        oldArgs: { name: 'edits', blend_mode: 'MULTIPLY' },
-        op: 'set_blend_mode',
-        newArgs: { name: 'edits', blend_mode: 'MULTIPLY' },
-      },
-    ];
-
-    for (const { oldName, oldArgs, op, newArgs } of cases) {
-      const oldClient = makeSnippetClient();
-      const newClient = makeSnippetClient();
-      const oldTools = createGroupTools(conn.asConnection(), oldClient);
-      const newTools = createGroupTools(conn.asConnection(), newClient);
-
-      await callTool(oldTools, oldName, oldArgs);
-      await callTool(newTools, 'ps_group', { op, ...newArgs });
-
-      const oldBuild = oldClient.lastBuild();
-      const newBuild = newClient.lastBuild();
-      expect(oldBuild.name, op).toBe(newBuild.name);
-      expect(oldBuild.params, op).toEqual(newBuild.params);
-    }
-  });
-
-  // The equivalence above passes every optional param explicitly, which hides
-  // a defaulting divergence: if one route applied `into_active_group` and the
-  // other didn't, both would still agree. Call each route with the bare
-  // minimum and let the defaults do the talking.
-  it('ps_group op=create with only a name defaults identically to ps_create_group with only a name', async () => {
-    const oldClient = makeSnippetClient();
-    const newClient = makeSnippetClient();
-    const oldTools = createGroupTools(conn.asConnection(), oldClient);
-    const newTools = createGroupTools(conn.asConnection(), newClient);
-
-    await callTool(oldTools, 'ps_create_group', { name: 'edits' });
-    await callTool(newTools, 'ps_group', { op: 'create', name: 'edits' });
-
-    const oldBuild = oldClient.lastBuild();
-    const newBuild = newClient.lastBuild();
-    expect(oldBuild.name).toBe('createGroup');
-    expect(newBuild.name).toBe(oldBuild.name);
-    expect(newBuild.params).toEqual(oldBuild.params);
-    // Pin the defaults themselves, so "identical" can't quietly become
-    // "identically wrong" if the hoist default flips on one route.
-    expect(newBuild.params).toEqual({ name: 'edits', into_active_group: false });
+  // Each op is one round trip to Photoshop. A handler that grew a second
+  // dispatch — a probe, a re-select, a retry — would double the cost of every
+  // group call without changing a single param assertion above.
+  it('every group op dispatches exactly one script per call', async () => {
+    const tools = createGroupTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_group', { op: 'create', name: 'g' });
+    await callTool(tools, 'ps_group', { op: 'add_layer', layer_name: 'l', group_name: 'g' });
+    await callTool(tools, 'ps_group', { op: 'set_blend_mode', name: 'g', blend_mode: 'NORMAL' });
+    await callTool(tools, 'ps_group', { op: 'ungroup', name: 'g', confirm: true });
+    await callTool(tools, 'ps_group', { op: 'delete', name: 'g', confirm: true });
+    // 5 ops * 1 script each = 5 executions
+    expect(conn.executions.length).toBe(5);
   });
 
   it('ps_group missing op errors with the unknown-discriminator message and dispatches nothing', async () => {

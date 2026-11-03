@@ -26,6 +26,7 @@ const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const TOOLS_DIR = join(REPO_ROOT, 'src', 'tools');
 const CE_INDEX = join(REPO_ROOT, 'src', 'modules', 'ce', 'index.ts');
 const PRO_INDEX = join(REPO_ROOT, 'src', 'modules', 'pro', 'index.ts');
+const GIMP_INDEX = join(REPO_ROOT, 'src', 'modules', 'gimp', 'index.ts');
 
 // Source of truth: every `src/tools/*.ts` file, derived from disk (not a hand
 // list) so a new tool file is picked up automatically.
@@ -64,17 +65,21 @@ const ceIndexSrc = readFileSync(CE_INDEX, 'utf8');
 // find wiring for anyway, so treat it as contributing no wired names rather
 // than failing to read a file that doesn't exist here.
 const proIndexSrc = existsSync(PRO_INDEX) ? readFileSync(PRO_INDEX, 'utf8') : '';
+// The GIMP module's index (src/modules/gimp/index.ts) — a third factory list,
+// alongside CE and Pro, for the gimp_* second-editor surface.
+const gimpIndexSrc = existsSync(GIMP_INDEX) ? readFileSync(GIMP_INDEX, 'utf8') : '';
 
 /**
  * A factory is "wired" if its exact identifier appears as a whole word
- * (import + array/call reference) in either module index file. Word-boundary
- * matching (not plain `.includes`) avoids a false negative/positive between
- * near-identical names — e.g. `createWarpTools` is a substring-adjacent
- * neighbor of `createWarpToTools` / `createWarpToolsPro`-shaped names.
+ * (import + array/call reference) in any of the three module index files.
+ * Word-boundary matching (not plain `.includes`) avoids a false negative/
+ * positive between near-identical names — e.g. `createWarpTools` is a
+ * substring-adjacent neighbor of `createWarpToTools` / `createWarpToolsPro`-
+ * shaped names.
  */
 function isWired(factoryName: string): boolean {
   const re = new RegExp(`\\b${factoryName}\\b`);
-  return re.test(ceIndexSrc) || re.test(proIndexSrc);
+  return re.test(ceIndexSrc) || re.test(proIndexSrc) || re.test(gimpIndexSrc);
 }
 
 describe('every src/tools/*.ts factory export is wired into a module factory list', () => {

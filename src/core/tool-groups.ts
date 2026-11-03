@@ -147,8 +147,9 @@ export const GROUPS: Record<ToolGroup, GroupInfo> = {
   },
   automation: {
     id: 'automation',
-    label: 'Automation (Pro)',
-    purpose: 'Batch files, play recorded Actions, and the ExtendScript escape hatch (Pro).',
+    label: 'Automation',
+    purpose:
+      'Run several tool calls in one round trip (community), plus batch files, recorded Actions, and the ExtendScript escape hatch (Pro).',
   },
 };
 
@@ -183,6 +184,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_get_selection_preview: 'verify',
 
   // document & canvas
+  ps_document: 'document',
   ps_create_document: 'document',
   ps_open_document: 'document',
   ps_close_document: 'document',
@@ -205,7 +207,6 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_select_sky: 'select_ai',
   ps_select_subject_instance: 'select_ai',
   ps_select_object: 'select_ai',
-  ps_select_focus_area: 'select_ai',
   // Not a selection — it composites a layer group — but it is the same Sensei
   // family and belongs beside its siblings for discovery.
   ps_replace_sky: 'select_ai',
@@ -214,11 +215,10 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_add_adjustment_layer: 'adjust',
   ps_apply_adjustment: 'adjust',
 
-  // filters — consolidated into ps_filter (2026-08-09); the pre-merge name
-  // stays registered as a deprecated alias for one release.
+  // filters
   ps_filter: 'filter',
-  ps_apply_filter: 'filter',
   ps_apply_camera_raw: 'filter',
+  ps_develop_raw: 'filter',
 
   // retouch
   ps_retouch: 'retouch',
@@ -241,18 +241,15 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_add_layer_style: 'layers',
   ps_transform_layer: 'layers',
   ps_warp_layer: 'layers',
+  // The four rows below are transition entries kept in lockstep with their
+  // `tool-tiers.ts` counterparts — see the comment there before removing any
+  // of them.
   ps_warp_layer_mesh: 'layers',
   ps_warp_layer_along: 'layers',
   ps_warp_layer_region: 'layers',
   ps_warp_layer_to: 'layers',
-  // group lifecycle/membership — consolidated into ps_group (2026-08-13); the
-  // five names below stay registered as deprecated aliases for one release.
+  // group lifecycle/membership
   ps_group: 'layers',
-  ps_create_group: 'layers',
-  ps_move_layer_to_group: 'layers',
-  ps_set_group_blend_mode: 'layers',
-  ps_ungroup: 'layers',
-  ps_delete_group: 'layers',
   // vector shape layers — creates a new vector layer
   ps_shape: 'layers',
 
@@ -265,11 +262,8 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_apply_image: 'masks',
   ps_calculations: 'masks',
 
-  // type — consolidated into ps_text (2026-08-13); the two names below stay
-  // registered as deprecated aliases for one release.
+  // type
   ps_text: 'type',
-  ps_create_text_layer: 'type',
-  ps_set_text: 'type',
 
   // perception (CE-destined local CV + detection-driven orchestrations)
   ps_detect: 'perception',
@@ -294,11 +288,52 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   ps_template_recall: 'templates',
   ps_template_delete: 'templates',
 
-  // automation (Pro)
+  // automation — ps_sequence is community; the rest are pro (see tool-tiers.ts)
+  ps_sequence: 'automation',
   ps_list_actions: 'automation',
   ps_play_action: 'automation',
   ps_execute_script: 'automation',
   ps_batch: 'automation',
+
+  // gimp_* — reuses the SAME capability groups as their ps_* counterparts,
+  // so ps_list_capabilities presents the second-editor surface inside the
+  // same mental model rather than a parallel taxonomy.
+  gimp_ping: 'core',
+  gimp_overview: 'core',
+  gimp_inspect: 'inspect',
+  gimp_get_preview: 'verify',
+  gimp_get_histogram: 'verify',
+  gimp_compare: 'verify',
+  gimp_open_document: 'document',
+  gimp_close_document: 'document',
+  gimp_save_xcf: 'document',
+  gimp_export: 'document',
+  gimp_crop_document: 'document',
+  gimp_resize_image: 'document',
+  gimp_transform_canvas: 'document',
+  gimp_add_adjustment: 'adjust',
+  gimp_filter: 'filter',
+  // Vignette/blur/noise/shadow effects — the same "blur/sharpen/noise/stylize" family as
+  // ps_filter, not a tonal adjustment.
+  gimp_add_effect: 'filter',
+  gimp_checkpoint: 'document',
+  gimp_layer: 'layers',
+  gimp_bake: 'layers',
+  gimp_transform_layer: 'layers',
+  gimp_create_document: 'document',
+  // Adds a LAYER to an already-open document (compositing), not a document-lifecycle op --
+  // grouped with gimp_layer/gimp_bake, not gimp_open_document/gimp_create_document.
+  gimp_place_image: 'layers',
+  gimp_canvas: 'document',
+  gimp_text: 'layers',
+  gimp_convert_image_mode: 'document',
+  gimp_select: 'select',
+  gimp_modify_selection: 'select',
+  gimp_layer_mask: 'masks',
+  gimp_get_selection_preview: 'verify',
+  gimp_match_layer: 'layers',
+  gimp_retouch: 'layers',
+  gimp_fill: 'layers',
 };
 
 /**

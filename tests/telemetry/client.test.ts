@@ -1,9 +1,20 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir, release } from 'node:os';
 import { join } from 'node:path';
+import { osMajor, nodeMajor, boundMajor } from '@editmamei/telemetry/activity.ts';
 import { TelemetryClient } from '@editmamei/telemetry/client.ts';
 import {
+  appendOutboxSync,
+  outboxPath,
   readOutbox,
   readSessionState,
   writeSessionStateSync,
@@ -16,8 +27,11 @@ function makeSettings(over: Partial<Settings['telemetry']> = {}): Settings {
   return {
     telemetry: { usage: true, diagnostics: false, install_id: 'a'.repeat(32), ...over },
     privacy: { send_previews_to_llm: true },
+    automation: { allow_execute_script: true },
     ps_path: null,
     update_check: true,
+    editor: 'auto',
+    gimp_path: null,
   };
 }
 
@@ -61,6 +75,9 @@ function makeClient(
     edition?: string;
     channel?: string;
     getModuleStatus?: () => ModuleStatusInfo | null;
+    now?: () => Date;
+    outboxPid?: number;
+    isPidAlive?: (pid: number) => boolean;
   } = {}
 ) {
   return new TelemetryClient({
@@ -75,6 +92,9 @@ function makeClient(
     ...(over.edition !== undefined ? { edition: over.edition } : {}),
     ...(over.channel !== undefined ? { channel: over.channel } : {}),
     ...(over.getModuleStatus !== undefined ? { getModuleStatus: over.getModuleStatus } : {}),
+    ...(over.now !== undefined ? { now: over.now } : {}),
+    ...(over.outboxPid !== undefined ? { outboxPid: over.outboxPid } : {}),
+    ...(over.isPidAlive !== undefined ? { isPidAlive: over.isPidAlive } : {}),
   });
 }
 
@@ -227,20 +247,27 @@ describe('start() boot ping', () => {
     const boot = rec.batches.flat().find((e) => e.type === 'session_start') as
       Record<string, unknown> | undefined;
     expect(boot).toBeDefined();
-    // content-free: exactly the shared Category A dimensions + channel, no counts / free text.
-    expect(Object.keys(boot!).sort()).toEqual(
-      [
-        'channel',
-        'edition',
-        'editmamei_version',
-        'install_id',
-        'platform',
-        'ps_version',
-        'ts_bucket',
-        'type',
-        'v',
-      ].sort()
-    );
+    // content-free: exactly the shared Category A dimensions + channel + arch, no counts /
+    // free text. node_major/os_major are asserted the SAME way the client itself decides
+    // whether to include them (bounded + non-null) — not assumed always-present, since a
+    // real host isn't guaranteed to resolve either one.
+    const expectedKeys = [
+      'arch',
+      'channel',
+      'edition',
+      'editmamei_version',
+      'install_id',
+      'platform',
+      'ps_version',
+      'ts_bucket',
+      'type',
+      'v',
+    ];
+    if (boundMajor(nodeMajor(), 999) !== null) expectedKeys.push('node_major');
+    if (boundMajor(osMajor(process.platform, release()), 999) !== null) {
+      expectedKeys.push('os_major');
+    }
+    expect(Object.keys(boot!).sort()).toEqual(expectedKeys.sort());
   });
 
   it('stamps the boot ping with the passed edition + channel (entitlement/install source)', async () => {
@@ -371,6 +398,577 @@ describe('shutdown → durable outbox', () => {
   });
 });
 
+describe('session_summary day attribution', () => {
+  it('a same-day session is credited to that day', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, {
+      now: () => new Date('2026-06-15T12:00:00.000Z'),
+    });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toBe('2026-06-15');
+  });
+
+  it('a session crossing UTC midnight is credited to the day it STARTED, not shutdown', async () => {
+    let cur = new Date('2026-06-15T23:59:30.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    // The state persisted mid-session already carries the start-day bucket.
+    expect(readSessionState({ dir })?.ts_bucket).toBe('2026-06-15');
+
+    cur = new Date('2026-06-16T00:00:30.000Z'); // crossed midnight
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toBe('2026-06-15'); // start day, not the shutdown day
+  });
+
+  it('a later persist does not advance the bucket past midnight', async () => {
+    // The persisted bucket must survive a persist that happens on a later day. The two
+    // calls have to be far enough apart to clear SESSION_PERSIST_THROTTLE_MS, or the
+    // second persist never runs and the assertion proves nothing.
+    let cur = new Date('2026-06-15T23:59:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    expect(readSessionState({ dir })?.ts_bucket).toBe('2026-06-15');
+
+    cur = new Date('2026-06-16T00:05:00.000Z'); // past midnight AND past the throttle
+    c.recordCall({ tool: 'photoshop_b', success: true, duration_ms: 1, error_class: null });
+    expect(readSessionState({ dir })?.ts_bucket).toBe('2026-06-15');
+  });
+
+  it('a resident server credits the day of its first CALL, not the day it booted', async () => {
+    // An MCP host can stay resident for days. Claiming the bucket in start() would credit
+    // the summary to the boot day while every usage event landed on the day of the work.
+    let cur = new Date('2026-06-15T08:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.start();
+    expect(readSessionState({ dir })).toBeNull(); // nothing claimed yet
+
+    cur = new Date('2026-06-17T10:00:00.000Z'); // first use, two days later
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toBe('2026-06-17');
+  });
+
+  it('clamps a corrupt persisted bucket so one bad file cannot reject the batch', async () => {
+    // The persisted state is a plain file on disk: truncation or a hand edit can put
+    // anything in ts_bucket, and the endpoint rejects a whole batch over one bad event.
+    const dir = freshOutboxDir();
+    const state: PersistedSessionState = {
+      install_id: 'i',
+      ts_bucket: 'not-a-bucket',
+      editmamei_version: '1.3.0',
+      edition: 'community',
+      platform: 'win32',
+      ps_version: 'unknown',
+      tool_call_count: 1,
+      distinct_tools: 1,
+      any_failures: false,
+    };
+    writeSessionStateSync(state, { dir });
+
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    const summary = rec.batches.flat().find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    expect(summary?.ts_bucket).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(summary?.ts_bucket).not.toBe('not-a-bucket');
+  });
+
+  it('crash reconstruction agrees with what a clean shutdown would have produced', async () => {
+    // Simulate a hard kill: the session-state marker persisted mid-session survives (no
+    // clean shutdown to clear it); the NEXT startup reconstructs the summary from it.
+    const cur = new Date('2026-06-15T23:59:45.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'photoshop_a', success: true, duration_ms: 1, error_class: null });
+    // (deliberately no shutdown() call — the process is presumed hard-killed here)
+
+    const rec2 = recorder();
+    const c2 = makeClient(makeSettings(), rec2, { outboxDir: dir });
+    await c2.flushOutboxOnStartup();
+    const summary = rec2.batches.flat().find((e) => e.type === 'session_summary') as
+      { ts_bucket: string } | undefined;
+    // Same start-day bucket a clean shutdown produces, so the two paths agree.
+    expect(summary?.ts_bucket).toBe('2026-06-15');
+  });
+});
+
+describe('session_summary accumulators', () => {
+  it('computes duration_s from the first call to the last, floored to whole seconds', async () => {
+    let cur = new Date('2026-06-15T12:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
+    cur = new Date('2026-06-15T12:02:10.500Z'); // +130.5s
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { duration_s: number } | undefined;
+    expect(summary?.duration_s).toBe(130);
+  });
+
+  it('caps duration_s at 604_800 (7 days)', async () => {
+    let cur = new Date('2026-06-01T00:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
+    cur = new Date('2026-06-20T00:00:00.000Z'); // way past 7 days later
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { duration_s: number } | undefined;
+    expect(summary?.duration_s).toBe(604_800);
+  });
+
+  it('clamps duration_s to 0 when the clock steps backward mid-session', async () => {
+    let cur = new Date('2026-06-15T12:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
+    cur = new Date('2026-06-15T11:59:00.000Z'); // clock stepped BACKWARD 60s
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { duration_s: number } | undefined;
+    expect(summary?.duration_s).toBe(0);
+  });
+
+  it('counts retries via the retry flag on RecordedCall', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_select_layer', success: true, duration_ms: 1, error_class: null });
+    c.recordCall({
+      tool: 'ps_select_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+      retry: true,
+    });
+    c.recordCall({
+      tool: 'ps_select_layer',
+      success: false,
+      duration_ms: 1,
+      error_class: 'other',
+      retry: true,
+    });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { retry_count: number } | undefined;
+    expect(summary?.retry_count).toBe(2);
+  });
+
+  it('ended_after_failure reflects only the LAST recorded call', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_a', success: false, duration_ms: 1, error_class: 'other' });
+    c.recordCall({ tool: 'ps_b', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { ended_after_failure: boolean } | undefined;
+    expect(summary?.ended_after_failure).toBe(false); // last call succeeded
+
+    const rec2 = recorder();
+    const { client: c2, dir: dir2 } = makeClientD(makeSettings(), rec2);
+    c2.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    c2.recordCall({ tool: 'ps_b', success: false, duration_ms: 1, error_class: 'other' });
+    await c2.shutdown();
+    const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
+      { ended_after_failure: boolean } | undefined;
+    expect(summary2?.ended_after_failure).toBe(true); // last call failed
+  });
+
+  it('edits_ok / kept_work use the shared READ_ONLY_TOOLS / KEPT_WORK_TOOLS lists', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    // Read-only success — counts toward neither.
+    c.recordCall({ tool: 'ps_ping', success: true, duration_ms: 1, error_class: null });
+    // An ordinary edit — counts toward edits_ok only.
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+    });
+    // A kept-work tool — counts toward BOTH edits_ok (not read-only) and kept_work.
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    // A failed edit — success:false, so it counts toward neither.
+    c.recordCall({
+      tool: 'ps_add_adjustment_layer',
+      success: false,
+      duration_ms: 1,
+      error_class: 'other',
+    });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { edits_ok: number; kept_work: number } | undefined;
+    expect(summary?.edits_ok).toBe(2);
+    expect(summary?.kept_work).toBe(1);
+  });
+
+  it('dropped_events reflects the in-memory MAX_QUEUE_SIZE trim', async () => {
+    const rec = recorder();
+    // Huge batch size disables auto-flush so the queue actually accumulates and trims.
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { maxBatchSize: 1_000_000 });
+    for (let i = 0; i < 600; i++) {
+      c.recordCall({ tool: `photoshop_${i}`, success: true, duration_ms: 1, error_class: null });
+    }
+    expect(c.pendingCount()).toBe(500); // MAX_QUEUE_SIZE
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { dropped_events: number } | undefined;
+    expect(summary?.dropped_events).toBe(100); // 600 recorded - 500 kept
+  });
+
+  it('omits behind_latest until setBehindLatest is called, then carries it through', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { behind_latest?: boolean } | undefined;
+    expect('behind_latest' in (summary ?? {})).toBe(false);
+
+    const rec2 = recorder();
+    const { client: c2, dir: dir2 } = makeClientD(makeSettings(), rec2);
+    c2.setBehindLatest(true);
+    c2.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c2.shutdown();
+    const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
+      { behind_latest?: boolean } | undefined;
+    expect(summary2?.behind_latest).toBe(true);
+  });
+
+  it('carries behind_latest: false when the install is confirmed already current', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.setBehindLatest(false);
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { behind_latest?: boolean } | undefined;
+    expect('behind_latest' in (summary ?? {})).toBe(true);
+    expect(summary?.behind_latest).toBe(false);
+  });
+
+  it('omits module_update for a pure-CE install even after setModuleUpdate is called', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec); // no getModuleStatus → null
+    c.setModuleUpdate('updated');
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { module_update?: string } | undefined;
+    expect('module_update' in (summary ?? {})).toBe(false);
+  });
+
+  it('includes module_update (default "none") for a licensed install', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, {
+      getModuleStatus: () => ({
+        module: 'pro',
+        outcome: 'loaded',
+        module_version: '1.0.0',
+        abi: 3,
+      }),
+    });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { module_update?: string } | undefined;
+    expect(summary?.module_update).toBe('none'); // never set this session, but the install IS licensed
+
+    const rec2 = recorder();
+    const { client: c2, dir: dir2 } = makeClientD(makeSettings(), rec2, {
+      getModuleStatus: () => ({
+        module: 'pro',
+        outcome: 'loaded',
+        module_version: '1.0.0',
+        abi: 3,
+      }),
+    });
+    c2.setModuleUpdate('failed');
+    c2.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c2.shutdown();
+    const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
+      { module_update?: string } | undefined;
+    expect(summary2?.module_update).toBe('failed');
+  });
+
+  it('includes templates_saved / action_sets only once setInstallAssets is called', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { templates_saved?: number; action_sets?: number } | undefined;
+    expect('templates_saved' in (summary ?? {})).toBe(false);
+    expect('action_sets' in (summary ?? {})).toBe(false);
+
+    const rec2 = recorder();
+    const { client: c2, dir: dir2 } = makeClientD(makeSettings(), rec2);
+    c2.setInstallAssets({ templates_saved: 6, action_sets: 2 });
+    c2.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c2.shutdown();
+    const summary2 = readOutbox({ dir: dir2 }).find((e) => e.type === 'session_summary') as
+      { templates_saved?: number; action_sets?: number } | undefined;
+    expect(summary2?.templates_saved).toBe(6);
+    expect(summary2?.action_sets).toBe(2);
+  });
+
+  it('setInstallAssets merges per field — a degraded second ping does not clobber the other', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    // First ping: both observed.
+    c.setInstallAssets({ templates_saved: 6, action_sets: 2 });
+    // Second ping: only templates_saved observed (action_sets degraded this round) —
+    // must NOT erase the action_sets value the first ping recorded.
+    c.setInstallAssets({ templates_saved: 7 });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { templates_saved?: number; action_sets?: number } | undefined;
+    expect(summary?.templates_saved).toBe(7);
+    expect(summary?.action_sets).toBe(2);
+  });
+
+  it('setInstallAssets clamps each field to MAX_INSTALL_ASSET_COUNT (100_000)', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.setInstallAssets({ templates_saved: 100_001, action_sets: -5 });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { templates_saved?: number; action_sets?: number } | undefined;
+    expect(summary?.templates_saved).toBe(100_000);
+    expect(summary?.action_sets).toBe(0);
+  });
+
+  it('setInstallAssets treats a non-finite field as unobserved — never clamped to 0, never sent as null', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    // A real earlier reading, then a NaN on a later ping (e.g. a bad parse) — the NaN must
+    // not overwrite the earlier good value, and must never surface as 0 or null on the wire.
+    c.setInstallAssets({ templates_saved: 6, action_sets: 2 });
+    c.setInstallAssets({ templates_saved: NaN, action_sets: Infinity });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { templates_saved?: number; action_sets?: number } | undefined;
+    expect(summary?.templates_saved).toBe(6);
+    expect(summary?.action_sets).toBe(2);
+  });
+
+  it('setInstallAssets omits templates_saved entirely when the only observation is non-finite (no earlier value to fall back on)', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.setInstallAssets({ templates_saved: NaN });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      Record<string, unknown> | undefined;
+    expect('templates_saved' in (summary ?? {})).toBe(false);
+  });
+
+  it('setInstallAssets truncates a fractional count to an integer', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.setInstallAssets({ action_sets: 6.5 });
+    c.recordCall({ tool: 'ps_a', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      { action_sets?: number } | undefined;
+    expect(summary?.action_sets).toBe(6);
+  });
+});
+
+describe('recordClientConnected', () => {
+  it('enqueues one client_connected event without forcing its own flush', async () => {
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { flushIntervalMs: 10_000_000 });
+    c.recordClientConnected({
+      clientName: 'claude-code',
+      clientVersion: '2.1.170',
+      capSampling: true,
+      capElicitation: false,
+      capRoots: true,
+    });
+    // Not sent yet — it rides the next flush (boot flush, periodic timer, batch-fill flush,
+    // or shutdown's outbox write), not a flush of its own.
+    expect(rec.batches).toHaveLength(0);
+    expect(c.pendingCount()).toBe(1);
+
+    await c.flush();
+    const ev = rec.batches.flat().find((e) => e.type === 'client_connected') as
+      { client: string; client_major: number | null; cap_sampling: boolean } | undefined;
+    expect(ev).toBeDefined();
+    expect(ev?.client).toBe('claude_code');
+    expect(ev?.client_major).toBe(2);
+    expect(ev?.cap_sampling).toBe(true);
+  });
+
+  it('is suppressed when usage telemetry is off', async () => {
+    const rec = recorder();
+    const c = makeClient(makeSettings({ usage: false }), rec, { flushIntervalMs: 10_000_000 });
+    c.recordClientConnected({
+      clientName: 'claude-ai',
+      clientVersion: '0.1.0',
+      capSampling: false,
+      capElicitation: false,
+      capRoots: false,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rec.batches.flat().some((e) => e.type === 'client_connected')).toBe(false);
+  });
+
+  it('is suppressed when inactive', async () => {
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { active: false, flushIntervalMs: 10_000_000 });
+    c.recordClientConnected({
+      clientName: 'claude-ai',
+      clientVersion: '0.1.0',
+      capSampling: false,
+      capElicitation: false,
+      capRoots: false,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rec.batches).toHaveLength(0);
+  });
+});
+
+describe('persisted session state carries the new accumulators', () => {
+  it('round-trips retry_count / edits_ok / kept_work through the session-state file', () => {
+    // persistSessionStateThrottled only writes once per SESSION_PERSIST_THROTTLE_MS (10s),
+    // so the second call's persist must land outside that window to actually hit disk.
+    let cur = new Date('2026-06-15T12:00:00.000Z');
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { now: () => cur });
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    cur = new Date('2026-06-15T12:00:11.000Z'); // +11s, past the throttle window
+    c.recordCall({
+      tool: 'ps_export',
+      success: true,
+      duration_ms: 1,
+      error_class: null,
+      retry: true,
+    });
+    const state = readSessionState({ dir });
+    expect(state?.retry_count).toBe(1);
+    expect(state?.edits_ok).toBe(2);
+    expect(state?.kept_work).toBe(2);
+  });
+
+  it('reconstructs a session_summary from an OLD-FORMAT state file missing the new fields', async () => {
+    const dir = freshOutboxDir();
+    // Simulates a state file written by a pre-this-change version — none of the new
+    // accumulator fields exist on disk.
+    const oldState: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '1.3.0',
+      edition: 'community',
+      platform: 'darwin',
+      ps_version: '27.7.0',
+      tool_call_count: 5,
+      distinct_tools: 2,
+      any_failures: false,
+    };
+    writeSessionStateSync(oldState, { dir });
+
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await expect(c.flushOutboxOnStartup()).resolves.toBeUndefined();
+
+    const summary = rec.batches.flat().find((e) => e.type === 'session_summary') as
+      Record<string, unknown> | undefined;
+    expect(summary).toBeDefined();
+    expect(summary?.tool_call_count).toBe(5);
+    // None of the new fields were on disk, so none should appear on the reconstructed event.
+    for (const key of [
+      'duration_s',
+      'retry_count',
+      'ended_after_failure',
+      'edits_ok',
+      'kept_work',
+      'behind_latest',
+      'dropped_events',
+      'module_update',
+      'templates_saved',
+      'action_sets',
+    ]) {
+      expect(key in summary!).toBe(false);
+    }
+  });
+
+  it('re-clamps templates_saved / action_sets read from a persisted state file', async () => {
+    // The persisted state is a plain file on disk: a hand edit or a differently-versioned
+    // writer can put anything in these fields, same reasoning as the ts_bucket clamp above —
+    // one bad count must not reject the whole batch.
+    const dir = freshOutboxDir();
+    const state: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '1.3.0',
+      edition: 'community',
+      platform: 'win32',
+      ps_version: 'unknown',
+      tool_call_count: 3,
+      distinct_tools: 1,
+      any_failures: false,
+      templates_saved: 6.5,
+      action_sets: NaN,
+    };
+    writeSessionStateSync(state, { dir });
+
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+
+    const summary = rec.batches.flat().find((e) => e.type === 'session_summary') as
+      { templates_saved?: number; action_sets?: number } | undefined;
+    expect(summary?.templates_saved).toBe(6);
+    expect('action_sets' in (summary ?? {})).toBe(false);
+  });
+});
 describe('flushOutboxOnStartup', () => {
   it('delivers a backlog left by a previous run, then clears the outbox', async () => {
     // Session 1: transport fails, so the batch + summary land in the outbox.
@@ -571,5 +1169,722 @@ describe('ps_version re-stamping at flush', () => {
     const mod = { type: 'module_status' };
     (c as unknown as { restampPsVersion(e: unknown[]): unknown[] }).restampPsVersion([mod]);
     expect('ps_version' in mod).toBe(false);
+  });
+});
+
+/** A transport that accepts the first `n` batches and then fails, like a mid-drain outage. */
+function failAfter(n: number) {
+  const batches: TelemetryEvent[][] = [];
+  let calls = 0;
+  const transport = async (_url: string, body: string) => {
+    calls += 1;
+    if (calls > n) throw new Error('network down');
+    batches.push((JSON.parse(body) as { events: TelemetryEvent[] }).events);
+  };
+  return { batches, transport };
+}
+
+function usageLine(tool: string): TelemetryEvent {
+  return {
+    v: 2,
+    type: 'usage',
+    install_id: 'a'.repeat(32),
+    ts_bucket: '2026-06-16',
+    editmamei_version: '0.16.4',
+    edition: 'community',
+    platform: 'darwin',
+    ps_version: '27.7.0',
+    tool,
+    success: true,
+    error_class: null,
+    duration_ms: 1,
+  };
+}
+
+type LossCounts = {
+  dropped_events: number;
+  dropped_outbox: number;
+  dropped_unsafe: number;
+  usage_calls_sent: number;
+  tool_call_count: number;
+};
+
+describe('telemetry loss accounting', () => {
+  it('reports all four counters, at 0, for an ordinary session', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    // Always present, never omitted-when-zero: a missing field can't be told apart from a
+    // client too old to report one, which is the ambiguity that hid this loss for weeks.
+    expect(summary).toMatchObject({
+      dropped_events: 0,
+      dropped_outbox: 0,
+      dropped_unsafe: 0,
+      usage_calls_sent: 0,
+    });
+  });
+
+  it('counts an event the content guard refused to send', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    // A tool name shaped like an absolute path fails isContentSafe, so flush drops it.
+    c.recordCall({ tool: '/usr/bin/leak', success: true, duration_ms: 1, error_class: null });
+    await c.flush();
+    expect(rec.batches).toHaveLength(0); // nothing went out…
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.dropped_unsafe).toBe(1); // …and the drop is on the record
+  });
+
+  it('counts a corrupt outbox line discarded by the startup drain', async () => {
+    const rec = recorder();
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_export')], { dir });
+    appendFileSync(outboxPath({ dir }), 'not json at all\n', 'utf8');
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.dropped_outbox).toBe(1);
+  });
+
+  it('counts only usage events in usage_calls_sent, and only once sent', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    c.recordCall({ tool: 'ps_save_psd', success: true, duration_ms: 1, error_class: null });
+    await c.flush();
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    // Two flushed; the third never left (it went to the outbox at shutdown), and the
+    // session_summary riding the same path must not inflate the denominator.
+    expect(summary?.usage_calls_sent).toBe(2);
+    expect(summary?.tool_call_count ?? 0).toBe(3);
+  });
+
+  it('does not count usage events toward sent when the transport fails', async () => {
+    const rec = recorder({ fail: true });
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.flush();
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.usage_calls_sent).toBe(0);
+  });
+});
+
+describe('startup outbox drain — partial delivery', () => {
+  it('keeps only the undelivered remainder when the drain fails midway', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(
+      ['a', 'b', 'c', 'd', 'e', 'f'].map((t) => usageLine(`ps_${t}`)),
+      { dir }
+    );
+    // Batches of 2: the first two go out, the third throws.
+    const rec = failAfter(2);
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+
+    expect(rec.batches).toHaveLength(2);
+    const remaining = readOutbox({ dir }).map((e) => (e as { tool: string }).tool);
+    // The four delivered events are GONE from the file. Before this fix the drain cleared
+    // nothing on a partial failure, so the next startup re-sent ps_a..ps_d and the server
+    // counted them twice — inflation, the mirror image of the loss being chased here.
+    expect(remaining).toEqual(['ps_e', 'ps_f']);
+  });
+
+  it('clears the outbox entirely when every batch lands', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(
+      ['a', 'b', 'c'].map((t) => usageLine(`ps_${t}`)),
+      { dir }
+    );
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    expect(readOutbox({ dir })).toHaveLength(0);
+  });
+
+  it('keeps everything when the very first batch fails', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(
+      ['a', 'b', 'c'].map((t) => usageLine(`ps_${t}`)),
+      { dir }
+    );
+    const rec = failAfter(0);
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    expect(readOutbox({ dir }).map((e) => (e as { tool: string }).tool)).toEqual([
+      'ps_a',
+      'ps_b',
+      'ps_c',
+    ]);
+  });
+});
+
+function startLine(): TelemetryEvent {
+  return {
+    v: 2,
+    type: 'session_start',
+    install_id: 'a'.repeat(32),
+    ts_bucket: '2026-06-16',
+    editmamei_version: '0.16.4',
+    edition: 'community',
+    platform: 'darwin',
+    ps_version: '27.7.0',
+    channel: 'npm',
+  };
+}
+
+describe('shutdown ordering and loss carry-through', () => {
+  it('the summary reports discards from its OWN shutdown drain', async () => {
+    // The discriminating test for the doShutdown reorder. The unsafe event is left IN THE
+    // QUEUE — never explicitly flushed — so it is only discarded during shutdown's drain.
+    // Build the summary first (the old order) and this reads 0; drain first and it reads 1.
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec, { maxBatchSize: 1_000_000 });
+    c.recordCall({ tool: '/usr/bin/leak', success: true, duration_ms: 1, error_class: null });
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.dropped_unsafe).toBe(1);
+  });
+
+  it('emits a summary for a run that made no tool calls but has loss to report', async () => {
+    // The startup drain is the ONLY place the outbox bound's discards are observed, and it
+    // runs before any tool call. Gating the summary on tool_call_count alone threw that
+    // measurement away on exactly the boots most likely to have a backlog.
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_export'), usageLine('ps_save_psd')], { dir });
+    appendFileSync(outboxPath({ dir }), 'not json at all\n', 'utf8'); // a real discard
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    await c.shutdown(); // no recordCall at all
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary).toBeDefined();
+    expect(summary).toMatchObject({ tool_call_count: 0, dropped_outbox: 1, usage_calls_sent: 2 });
+  });
+
+  it('does NOT emit a summary for a zero-call run that only delivered a backlog', async () => {
+    // The gate is loss, not delivery. Every clean shutdown leaves a backlog, so gating on
+    // delivery would fire on nearly every zero-work boot and roughly double session_count.
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_export')], { dir });
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    await c.shutdown();
+    expect(readOutbox({ dir }).filter((e) => e.type === 'session_summary')).toHaveLength(0);
+  });
+
+  it('still emits nothing for a run with neither calls nor loss', async () => {
+    const rec = recorder();
+    const { client: c, dir } = makeClientD(makeSettings(), rec);
+    await c.shutdown();
+    expect(readOutbox({ dir }).filter((e) => e.type === 'session_summary')).toHaveLength(0);
+  });
+
+  it('counts only usage events in usage_calls_sent when the batch is mixed', async () => {
+    // A mixed batch is the case that discriminates countUsageCalls from `batch.length` —
+    // the earlier flush-based test could never have contained a non-usage event.
+    const dir = freshOutboxDir();
+    appendOutboxSync([startLine(), usageLine('ps_a'), usageLine('ps_b'), usageLine('ps_c')], {
+      dir,
+    });
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    // A tool call so the run emits a summary at all — the gate is loss, not delivery.
+    c.recordCall({ tool: 'ps_export', success: true, duration_ms: 1, error_class: null });
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.usage_calls_sent).toBe(3); // 4 events delivered, 3 of them calls
+  });
+});
+
+describe('crash-recovered summary carries the loss counters', () => {
+  it('reconstructs them from a state file written by this build', async () => {
+    const dir = freshOutboxDir();
+    const state: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '0.16.4',
+      edition: 'community',
+      platform: 'darwin',
+      ps_version: '27.7.0',
+      tool_call_count: 12,
+      distinct_tools: 4,
+      any_failures: false,
+      dropped_outbox: 9,
+      dropped_unsafe: 1,
+      usage_calls_sent: 11,
+    };
+    writeSessionStateSync(state, { dir });
+    const rec = recorder({ fail: true }); // keep the reconstructed summary on disk
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary).toMatchObject({ dropped_outbox: 9, dropped_unsafe: 1, usage_calls_sent: 11 });
+  });
+
+  it('omits them for a state file written by an older build', async () => {
+    // The backward-compat contract: every field added after v2 is optional on the state file,
+    // so an older build's leftover state must reconstruct WITHOUT them, not as false zeroes.
+    const dir = freshOutboxDir();
+    const legacy: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '0.16.4',
+      edition: 'community',
+      platform: 'darwin',
+      ps_version: '27.7.0',
+      tool_call_count: 3,
+      distinct_tools: 2,
+      any_failures: false,
+    };
+    writeSessionStateSync(legacy, { dir });
+    const rec = recorder({ fail: true });
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      Record<string, unknown> | undefined;
+    expect(summary).toBeDefined();
+    expect(summary).toMatchObject({ tool_call_count: 3 });
+    expect('dropped_outbox' in (summary ?? {})).toBe(false);
+    expect('usage_calls_sent' in (summary ?? {})).toBe(false);
+  });
+});
+
+describe('startup outbox drain — remaining boundaries', () => {
+  it('keeps just the final batch when the LAST batch fails', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(
+      ['a', 'b', 'c', 'd'].map((t) => usageLine(`ps_${t}`)),
+      { dir }
+    );
+    const rec = failAfter(1); // batches of 2: first lands, second throws
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    expect(readOutbox({ dir }).map((e) => (e as { tool: string }).tool)).toEqual(['ps_c', 'ps_d']);
+  });
+
+  it('handles a non-multiple length with a partial failure', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(
+      ['a', 'b', 'c', 'd', 'e'].map((t) => usageLine(`ps_${t}`)),
+      { dir }
+    );
+    const rec = failAfter(2); // 2 + 2 land, the 1-event remainder throws
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    expect(readOutbox({ dir }).map((e) => (e as { tool: string }).tool)).toEqual(['ps_e']);
+  });
+
+  it('discards a wholly-unsafe batch rather than retrying it forever', async () => {
+    // A batch every one of whose events fails the content guard can never be sent. It must be
+    // counted and dropped, not written back — otherwise it is re-counted at every boot.
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('/usr/bin/leak'), usageLine('/etc/shadow')], { dir });
+    const rec = failAfter(0);
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    await c.shutdown();
+    expect(readOutbox({ dir }).filter((e) => e.type === 'usage')).toHaveLength(0);
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.dropped_unsafe).toBe(2);
+  });
+
+  it('does not re-count an unsafe event left behind by a failed drain', async () => {
+    // The unsafe event sits in a batch that fails to send. The remainder written back must
+    // exclude it, or the next boot counts the same single bad event all over again.
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('/usr/bin/leak'), usageLine('ps_export')], { dir });
+    const rec = failAfter(0);
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, maxBatchSize: 2 });
+    await c.flushOutboxOnStartup();
+    const kept = readOutbox({ dir }).map((e) => (e as { tool: string }).tool);
+    expect(kept).toEqual(['ps_export']); // the safe event retried, the unsafe one gone for good
+  });
+});
+
+describe('concurrent server processes sharing one outbox dir', () => {
+  // Several MCP clients (or windows of one) each run their own server process against the
+  // same ~/.editmamei. Each test stands in for those processes with distinct `outboxPid`s and
+  // an injected liveness check, so "is that sibling still running" is under test control.
+  const LIVE = 1001;
+  const NEW = 1002;
+  const alive =
+    (...pids: number[]) =>
+    (pid: number) =>
+      pids.includes(pid);
+  const summariesIn = (batches: TelemetryEvent[][]) =>
+    batches.flat().filter((e) => e.type === 'session_summary') as Array<{
+      tool_call_count: number;
+    }>;
+  const toolsIn = (events: TelemetryEvent[]) => events.map((e) => (e as { tool: string }).tool);
+  const record = (c: TelemetryClient, tool = 'ps_export') =>
+    c.recordCall({ tool, success: true, duration_ms: 1, error_class: null });
+  const claimFiles = (dir: string) => readdirSync(dir).filter((n) => n.includes('draining'));
+
+  it('a booting process does not report a LIVE sibling session as crashed', async () => {
+    const dir = freshOutboxDir();
+    const sibling = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: LIVE });
+    record(sibling);
+
+    const rec = recorder();
+    const booting = makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(LIVE),
+    });
+    await booting.flushOutboxOnStartup();
+    expect(summariesIn(rec.batches)).toHaveLength(0);
+    // The sibling's state is untouched, so its own shutdown still owns its summary.
+    expect(readSessionState({ dir, pid: LIVE })?.tool_call_count).toBe(1);
+
+    await sibling.shutdown();
+    expect(readOutbox({ dir }).filter((e) => e.type === 'session_summary')).toHaveLength(1);
+  });
+
+  it('many sibling boots during one live session report it zero times', async () => {
+    const dir = freshOutboxDir();
+    const sibling = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: LIVE });
+    record(sibling);
+    const rec = recorder();
+    for (let pid = 2000; pid < 2010; pid++) {
+      await makeClient(makeSettings(), rec, {
+        outboxDir: dir,
+        outboxPid: pid,
+        isPidAlive: alive(LIVE),
+      }).flushOutboxOnStartup();
+    }
+    expect(summariesIn(rec.batches)).toHaveLength(0);
+  });
+
+  it('a DEAD sibling session is reconstructed exactly once', async () => {
+    const dir = freshOutboxDir();
+    const killed = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: LIVE });
+    record(killed);
+    // No shutdown: the process was killed.
+
+    const first = recorder();
+    await makeClient(makeSettings(), first, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(),
+    }).flushOutboxOnStartup();
+    expect(summariesIn(first.batches).map((s) => s.tool_call_count)).toEqual([1]);
+
+    const second = recorder();
+    await makeClient(makeSettings(), second, {
+      outboxDir: dir,
+      outboxPid: NEW + 1,
+      isPidAlive: alive(),
+    }).flushOutboxOnStartup();
+    expect(summariesIn(second.batches)).toHaveLength(0);
+  });
+
+  // The claim phase is synchronous, so under Promise.all the two boots run back to back rather
+  // than interleaving; this pins that the second finds nothing left, not the rename itself.
+  it('two processes booting back to back reconstruct a dead session once', async () => {
+    const dir = freshOutboxDir();
+    const killed = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: LIVE });
+    record(killed);
+
+    const rec = recorder();
+    // Both booting processes are running while they drain; only the killed one is gone.
+    const a = makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(NEW, NEW + 1),
+    });
+    const b = makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW + 1,
+      isPidAlive: alive(NEW, NEW + 1),
+    });
+    await Promise.all([a.flushOutboxOnStartup(), b.flushOutboxOnStartup()]);
+    expect(summariesIn(rec.batches)).toHaveLength(1);
+  });
+
+  it('does not take its own state once it has persisted some', async () => {
+    const dir = freshOutboxDir();
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir, outboxPid: NEW });
+    record(c); // persists this process's live state
+    await c.flushOutboxOnStartup();
+    expect(summariesIn(rec.batches)).toHaveLength(0);
+    expect(readSessionState({ dir, pid: NEW })?.tool_call_count).toBe(1);
+  });
+
+  it('recovers the pre-upgrade shared session file once', async () => {
+    const dir = freshOutboxDir();
+    const legacy: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '1.7.0',
+      edition: 'community',
+      platform: 'darwin',
+      ps_version: '27.7.0',
+      tool_call_count: 4,
+      distinct_tools: 2,
+      any_failures: false,
+    };
+    writeFileSync(join(dir, 'telemetry-session.json'), JSON.stringify(legacy));
+
+    const rec = recorder();
+    await makeClient(makeSettings(), rec, { outboxDir: dir }).flushOutboxOnStartup();
+    expect(summariesIn(rec.batches).map((s) => s.tool_call_count)).toEqual([4]);
+    expect(existsSync(join(dir, 'telemetry-session.json'))).toBe(false);
+
+    const again = recorder();
+    await makeClient(makeSettings(), again, { outboxDir: dir }).flushOutboxOnStartup();
+    expect(summariesIn(again.batches)).toHaveLength(0);
+  });
+
+  it('keeps a batch a sibling appends while the drain is on the network', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_backlog')], { dir });
+    const sent: TelemetryEvent[][] = [];
+    const c = makeClient(
+      makeSettings(),
+      {
+        batches: sent,
+        transport: async (_url: string, body: string) => {
+          // A sibling's live flush fails mid-drain and falls back to the outbox.
+          appendOutboxSync([usageLine('ps_sibling')], { dir });
+          sent.push((JSON.parse(body) as { events: TelemetryEvent[] }).events);
+        },
+      },
+      { outboxDir: dir }
+    );
+    await c.flushOutboxOnStartup();
+    expect(toolsIn(sent.flat())).toEqual(['ps_backlog']);
+    expect(toolsIn(readOutbox({ dir }))).toEqual(['ps_sibling']);
+  });
+
+  it('two concurrent drains send each queued event once', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync(['ps_a', 'ps_b', 'ps_c', 'ps_d'].map(usageLine), { dir });
+    const rec = recorder();
+    const both = alive(NEW, NEW + 1);
+    const a = makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: both,
+      maxBatchSize: 1,
+    });
+    const b = makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW + 1,
+      isPidAlive: both,
+      maxBatchSize: 1,
+    });
+    await Promise.all([a.flushOutboxOnStartup(), b.flushOutboxOnStartup()]);
+    expect(toolsIn(rec.batches.flat()).sort()).toEqual(['ps_a', 'ps_b', 'ps_c', 'ps_d']);
+    expect(readOutbox({ dir })).toHaveLength(0);
+  });
+
+  it('hands an undelivered remainder back to the live outbox and leaves no claim behind', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_a'), usageLine('ps_b')], { dir });
+    const c = makeClient(makeSettings(), failAfter(1), { outboxDir: dir, maxBatchSize: 1 });
+    await c.flushOutboxOnStartup();
+    expect(toolsIn(readOutbox({ dir }))).toEqual(['ps_b']);
+    expect(claimFiles(dir)).toEqual([]);
+  });
+
+  it('re-drains a claim abandoned by a drain whose process died, but not a live one', async () => {
+    const dir = freshOutboxDir();
+    writeFileSync(
+      join(dir, `telemetry-outbox.draining.${LIVE}.0.ndjson`),
+      JSON.stringify(usageLine('ps_orphan')) + '\n'
+    );
+
+    const whileAlive = recorder();
+    await makeClient(makeSettings(), whileAlive, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(LIVE),
+    }).flushOutboxOnStartup();
+    expect(whileAlive.batches).toHaveLength(0);
+
+    const afterDeath = recorder();
+    await makeClient(makeSettings(), afterDeath, {
+      outboxDir: dir,
+      outboxPid: NEW + 1,
+      isPidAlive: alive(),
+    }).flushOutboxOnStartup();
+    expect(toolsIn(afterDeath.batches.flat())).toEqual(['ps_orphan']);
+    expect(claimFiles(dir)).toEqual([]);
+  });
+
+  it('recovers a compaction claim once its process has died, and only once', async () => {
+    const dir = freshOutboxDir();
+    writeFileSync(
+      join(dir, `telemetry-outbox.compacting.${LIVE}.0.ndjson`),
+      JSON.stringify(usageLine('ps_compacting')) + '\n'
+    );
+    const boot = async (pid: number, isPidAlive: (pid: number) => boolean) => {
+      const rec = recorder();
+      await makeClient(makeSettings(), rec, {
+        outboxDir: dir,
+        outboxPid: pid,
+        isPidAlive,
+      }).flushOutboxOnStartup();
+      return toolsIn(rec.batches.flat());
+    };
+
+    // While the compacting process runs, it owns the claim and will append back what it keeps.
+    expect(await boot(NEW, alive(LIVE))).toEqual([]);
+    expect(await boot(NEW + 1, alive())).toEqual(['ps_compacting']);
+    expect(await boot(NEW + 2, alive())).toEqual([]);
+    expect(readdirSync(dir).filter((n) => n.includes('compacting'))).toEqual([]);
+  });
+
+  it('a dead pid claim does not overwrite a leftover claim under this pid', async () => {
+    const dir = freshOutboxDir();
+    const write = (pid: number, tool: string) =>
+      writeFileSync(
+        join(dir, `telemetry-outbox.draining.${pid}.0.ndjson`),
+        JSON.stringify(usageLine(tool)) + '\n'
+      );
+    write(900, 'ps_dead'); // sorts first, and would be renamed onto NEW's first claim name
+    write(NEW, 'ps_predecessor'); // left by an earlier process that had this pid
+    const rec = recorder();
+    await makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(),
+    }).flushOutboxOnStartup();
+    expect(toolsIn(rec.batches.flat()).sort()).toEqual(['ps_dead', 'ps_predecessor']);
+    expect(claimFiles(dir)).toEqual([]);
+  });
+
+  it('carries over a sibling write that lands in the claimed file after it was read', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_backlog')], { dir });
+    const sent: TelemetryEvent[][] = [];
+    const c = makeClient(
+      makeSettings(),
+      {
+        batches: sent,
+        transport: async (_url: string, body: string) => {
+          // A sibling opened the outbox just before the rename, so its write lands in the claim.
+          const [claimFile] = claimFiles(dir);
+          appendFileSync(join(dir, claimFile!), JSON.stringify(usageLine('ps_late')) + '\n');
+          sent.push((JSON.parse(body) as { events: TelemetryEvent[] }).events);
+        },
+      },
+      { outboxDir: dir }
+    );
+    await c.flushOutboxOnStartup();
+    expect(toolsIn(sent.flat())).toEqual(['ps_backlog']);
+    expect(toolsIn(readOutbox({ dir }))).toEqual(['ps_late']);
+    expect(claimFiles(dir)).toEqual([]);
+  });
+
+  it('counts a remainder the hand-back could not write in the next summary', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_a'), usageLine('ps_b')], { dir });
+    let calls = 0;
+    const c = makeClient(
+      makeSettings(),
+      {
+        batches: [],
+        transport: async () => {
+          calls += 1;
+          if (calls === 1) {
+            // The live outbox path becomes unwritable before the remainder is handed back.
+            mkdirSync(outboxPath({ dir }));
+            return;
+          }
+          throw new Error('network down');
+        },
+      },
+      { outboxDir: dir, maxBatchSize: 1 }
+    );
+    await c.flushOutboxOnStartup();
+    rmSync(outboxPath({ dir }), { recursive: true });
+    record(c);
+    await c.shutdown();
+    const summary = readOutbox({ dir }).find((e) => e.type === 'session_summary') as
+      LossCounts | undefined;
+    expect(summary?.dropped_outbox).toBe(1);
+  });
+
+  it('with usage off, consumes dead sessions unreported and leaves live ones alone', async () => {
+    const dir = freshOutboxDir();
+    const dead = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: 900 });
+    record(dead);
+    const live = makeClient(makeSettings(), recorder(), { outboxDir: dir, outboxPid: LIVE });
+    record(live);
+
+    const rec = recorder();
+    await makeClient(makeSettings({ usage: false }), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(LIVE),
+    }).flushOutboxOnStartup();
+    expect(rec.batches).toHaveLength(0);
+    expect(readSessionState({ dir, pid: 900 })).toBeNull();
+    expect(readSessionState({ dir, pid: LIVE })?.tool_call_count).toBe(1);
+    expect(readdirSync(dir).filter((n) => n.startsWith('.session-recover'))).toEqual([]);
+  });
+
+  it('resumes a recovery whose process died after claiming the file', async () => {
+    const dir = freshOutboxDir();
+    const state: PersistedSessionState = {
+      install_id: 'a'.repeat(32),
+      ts_bucket: '2026-06-16',
+      editmamei_version: '1.7.0',
+      edition: 'community',
+      platform: 'win32',
+      ps_version: '27.7.0',
+      tool_call_count: 3,
+      distinct_tools: 1,
+      any_failures: false,
+    };
+    writeFileSync(
+      join(dir, `.session-recover.${LIVE}.telemetry-session.900.json`),
+      JSON.stringify(state)
+    );
+    const rec = recorder();
+    await makeClient(makeSettings(), rec, {
+      outboxDir: dir,
+      outboxPid: NEW,
+      isPidAlive: alive(),
+    }).flushOutboxOnStartup();
+    expect(summariesIn(rec.batches).map((s) => s.tool_call_count)).toEqual([3]);
+    expect(readdirSync(dir).filter((n) => n.startsWith('.session-recover'))).toEqual([]);
+  });
+
+  it('runs the startup drain once per client', async () => {
+    const dir = freshOutboxDir();
+    appendOutboxSync([usageLine('ps_a')], { dir });
+    const rec = recorder();
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    appendOutboxSync([usageLine('ps_b')], { dir });
+    await c.flushOutboxOnStartup();
+    expect(toolsIn(rec.batches.flat())).toEqual(['ps_a']);
+    expect(toolsIn(readOutbox({ dir }))).toEqual(['ps_b']);
   });
 });

@@ -8,6 +8,9 @@ import {
   clearLicense,
   licensePath,
   nextHighWaterMark,
+  readCheckState,
+  updateCheckState,
+  checkStatePath,
   type LicenseRecord,
 } from '@editmamei/license/store.ts';
 
@@ -101,5 +104,75 @@ describe('nextHighWaterMark', () => {
       last_validated_at: new Date(NOW + 30 * DAY_MS).toISOString(),
     };
     expect(nextHighWaterMark(legacy, NOW)).toBe(new Date(NOW).toISOString());
+  });
+});
+
+/**
+ * The check-state sidecar. Everything here is scheduling, never entitlement — so
+ * the tests that matter most are the degradation ones: a missing, unreadable or
+ * hand-mangled file must read as "no marker" (check now), which is the behaviour
+ * that existed before the file did. A sidecar that could fail closed would be a
+ * way to lock out a paying user, which is exactly what it must never be.
+ */
+describe('license check-state sidecar', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'em-check-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reads as empty before anything is written', () => {
+    expect(readCheckState({ dir })).toEqual({});
+  });
+
+  it('merges fields across separate updates rather than replacing the file', () => {
+    updateCheckState({ validate_retry_after: 1000 }, { dir });
+    updateCheckState({ module_retry_after: 2000 }, { dir });
+    expect(readCheckState({ dir })).toEqual({
+      validate_retry_after: 1000,
+      module_retry_after: 2000,
+    });
+  });
+
+  it('a null value removes just that marker and leaves the others', () => {
+    updateCheckState({ validate_retry_after: 1000, module_retry_after: 2000 }, { dir });
+    updateCheckState({ validate_retry_after: null }, { dir });
+    expect(readCheckState({ dir })).toEqual({ module_retry_after: 2000 });
+  });
+
+  it('lives in its own file — writing markers never touches the license record', () => {
+    writeLicense(rec, { dir });
+    updateCheckState({ validate_retry_after: 1000 }, { dir });
+    expect(readLicense({ dir })).toEqual(rec);
+    expect(checkStatePath({ dir })).not.toBe(licensePath({ dir }));
+  });
+
+  it('unparseable JSON degrades to no markers instead of throwing', () => {
+    writeFileSync(checkStatePath({ dir }), '{ not json');
+    expect(() => readCheckState({ dir })).not.toThrow();
+    expect(readCheckState({ dir })).toEqual({});
+  });
+
+  it('drops non-numeric markers field by field', () => {
+    writeFileSync(
+      checkStatePath({ dir }),
+      JSON.stringify({ validate_retry_after: 'soon', module_retry_after: 2000 })
+    );
+    expect(readCheckState({ dir })).toEqual({ module_retry_after: 2000 });
+  });
+
+  it('clearLicense drops the sidecar too, so a marker never outlives its record', () => {
+    writeLicense(rec, { dir });
+    updateCheckState({ validate_retry_after: 1000 }, { dir });
+    clearLicense({ dir });
+    expect(existsSync(checkStatePath({ dir }))).toBe(false);
+    expect(readCheckState({ dir })).toEqual({});
+  });
+
+  it('an unwritable home is swallowed — a marker that cannot be saved is not an error', () => {
+    const gone = join(dir, 'missing', '\0bad');
+    expect(() => updateCheckState({ validate_retry_after: 1 }, { dir: gone })).not.toThrow();
   });
 });

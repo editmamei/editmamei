@@ -78,30 +78,6 @@ const updateTextContentSchema: JsonSchemaObject = {
   required: ['text'],
 };
 
-const SET_TEXT_PROPERTIES = ['font', 'color', 'alignment', 'content'] as const;
-
-// Consolidated input schema for ps_set_text (Phase 1, 2026-06-20).
-// Merges the four per-property schemas; no field-name collisions across them.
-// The handler re-validates against the exact per-property schema.
-const SET_TEXT_INPUT_SCHEMA: JsonSchemaObject = {
-  type: 'object',
-  properties: {
-    property: {
-      type: 'string',
-      enum: [...SET_TEXT_PROPERTIES],
-      description:
-        'Which text attribute to set on the active text layer: ' +
-        'font(font_name, optional font_size); color(red, green, blue); ' +
-        'alignment(alignment); content(text).',
-    },
-    ...setTextFontSchema.properties,
-    ...setTextColorSchema.properties,
-    ...setTextAlignmentSchema.properties,
-    ...updateTextContentSchema.properties,
-  },
-  required: ['property'],
-};
-
 const TEXT_OPS = ['create', 'set_content', 'set_font', 'set_color', 'set_alignment'] as const;
 
 // The schema each op re-validates against once the discriminator is stripped.
@@ -116,9 +92,8 @@ export const TEXT_OP_SCHEMAS: Record<(typeof TEXT_OPS)[number], JsonSchemaObject
   set_alignment: setTextAlignmentSchema,
 };
 
-// Consolidated input schema for ps_text (2026-08-13). Flattens BOTH the
-// former create/set tool boundary AND ps_set_text's old `property`
-// sub-discriminator into one enum — a two-level op+property discriminator is
+// Consolidated input schema for ps_text. Creating a text layer and styling one
+// share a single flat op enum — a two-level op+property discriminator is
 // exactly the "a reader can't tell which params apply" smell this design
 // avoids. `text`/`font_size` are shared verbatim across the ops that use them
 // (same meaning, one unified description below); the handler re-validates
@@ -198,44 +173,14 @@ export function createTextTools(
       },
       handler: async (args) => textDispatch(connection, snippetClient, args),
     },
-    {
-      tool: {
-        name: 'ps_set_text',
-        description:
-          'DEPRECATED — use ps_text(op=set_font / set_color / set_alignment / set_content) instead (kept for one release for backward compatibility, identical behaviour). Set an attribute of the currently active text layer — font (family or PostScript name, optionally size), color (RGB), alignment, or text content — selected via `property`. Idempotent. Throws if the active layer is not a text layer. Font names accept either the PostScript name ("ArialMT") or family name ("Arial", resolved to its Regular/first variant); throws clearly if no installed font matches.',
-        inputSchema: SET_TEXT_INPUT_SCHEMA,
-        outputSchema: {
-          type: 'object',
-          properties: {
-            requested: { type: 'string' },
-            font: { type: 'string' },
-            size: { type: 'number' },
-            matched_by: {
-              type: 'string',
-              enum: ['postScriptName', 'family+regular', 'family', 'name'],
-            },
-            color: { type: 'string' },
-            alignment: { type: 'string' },
-            text: { type: 'string' },
-          },
-        },
-        annotations: {
-          title: 'Set Text',
-          idempotentHint: true,
-        },
-      },
-      handler: async (args) => setText(connection, snippetClient, args),
-    },
   ];
 }
 
-// ps_text → create / set_content / set_font / set_color / set_alignment.
-// Routes to the exact same handler functions the deprecated
-// ps_create_text_layer / ps_set_text tools call (createTextLayer imported
-// from layer-tools.ts; updateTextContent / setTextFont / setTextColor /
-// setTextAlignment below) — same function, same schema validation, same
-// snippet — so the old and new routes are behaviorally identical by
-// construction, not just by matching test coverage.
+// ps_text → create / set_content / set_font / set_color / set_alignment. Each
+// op strips the discriminator and hands the rest to the matching handler
+// (createTextLayer imported from layer-tools.ts; updateTextContent /
+// setTextFont / setTextColor / setTextAlignment below), which re-validates
+// against its own per-op schema.
 async function textDispatch(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
@@ -256,37 +201,6 @@ async function textDispatch(
       return setTextAlignment(connection, snippetClient, rest);
     default:
       return unknownDiscriminator('text op', op, TEXT_OPS);
-  }
-}
-
-// Dispatch the consolidated tool to the per-property handler. `property` is
-// stripped so the delegate validates only its own params.
-async function setText(
-  connection: PhotoshopConnection,
-  snippetClient: SnippetClient,
-  rawArgs: Record<string, unknown>
-): Promise<ToolResult> {
-  const property = rawArgs.property;
-  const { property: _omit, ...rest } = rawArgs;
-  switch (property) {
-    case 'font':
-      return setTextFont(connection, snippetClient, rest);
-    case 'color':
-      return setTextColor(connection, snippetClient, rest);
-    case 'alignment':
-      return setTextAlignment(connection, snippetClient, rest);
-    case 'content':
-      return updateTextContent(connection, snippetClient, rest);
-    default:
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: `Error: unknown text property "${String(property)}". Allowed: ${SET_TEXT_PROPERTIES.join(', ')}.`,
-          },
-        ],
-        isError: true,
-      };
   }
 }
 

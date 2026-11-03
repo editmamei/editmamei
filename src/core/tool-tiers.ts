@@ -65,15 +65,32 @@ export const TOOL_TIERS: Record<string, Tier> = {
   ps_play_action: 'pro',
   ps_execute_script: 'pro',
 
-  // batch-tools — new, unverified against a real run; stays 'dev' (excluded
-  // from every shipped edition) until it is live-tested and promoted.
-  ps_batch: 'dev',
+  // batch-tools — runs a recipe over many files as ONE Photoshop batch rather
+  // than a round trip per file, so the per-call overhead is paid once for the
+  // whole set. Factory lives in batch-tools-pro.ts, registered by the Pro
+  // module, stripped from CE.
+  ps_batch: 'pro',
+
+  // sequence-tools — runs an ordered list of already-registered tool calls in
+  // one round trip via the kernel's invokeTool broker, against the current
+  // document. Verified against Photoshop 27.10 before promotion: multi-step
+  // runs, all three on_error modes, and the validation refusals (rollback over
+  // a history-unsafe step, self-nesting), with rollback confirmed by reading
+  // the document back rather than trusting its own report.
+  //
+  // It carries no dispatch deadline of its own (operation-timeouts.ts). Each
+  // step it dispatches keeps its own timeout; the sequence as a whole is
+  // limited between steps instead.
+  ps_sequence: 'community',
 
   // adjustment-tools — bakes consolidated into ps_apply_adjustment
   ps_add_adjustment_layer: 'community',
   ps_apply_adjustment: 'community',
 
   // document-tools
+  // Both ops verified against Photoshop 27.10 before promotion, including
+  // activate-by-id and the same-name refusal.
+  ps_document: 'community',
   ps_create_document: 'community',
   ps_close_document: 'community',
   ps_open_document: 'community',
@@ -81,21 +98,13 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // export_jpeg + export_png consolidated into ps_export
   ps_export: 'community',
 
-  // filter-tools — consolidated into one op-discriminated tool: apply (type-
-  // discriminated) plus the Smart Filter management ops merged in from the
-  // former standalone Smart-Filter tool (2026-08-09). The pre-merge name stays
-  // registered as a deprecated alias for one release.
+  // filter-tools — one op-discriminated tool: apply (type-discriminated) plus
+  // the Smart Filter management ops.
   ps_filter: 'community',
-  ps_apply_filter: 'community',
 
-  // group-tools — consolidated into one op-discriminated tool (2026-08-13).
-  // The five old names stay registered as deprecated aliases for one release.
+  // group-tools — one op-discriminated tool covering group lifecycle and
+  // membership.
   ps_group: 'community',
-  ps_create_group: 'community',
-  ps_move_layer_to_group: 'community',
-  ps_set_group_blend_mode: 'community',
-  ps_ungroup: 'community',
-  ps_delete_group: 'community',
   ps_clipping_mask: 'community',
 
   // history-tools (get_history → ps_inspect)
@@ -126,8 +135,6 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // layer-tools
   ps_create_layer: 'community',
   ps_delete_layer: 'community',
-  // deprecated alias for ps_text(op=create) — see the text-tools section below
-  ps_create_text_layer: 'community',
   ps_fill_layer: 'community',
   ps_add_fill_layer: 'community',
   // get_layer_tree → ps_inspect
@@ -142,6 +149,17 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // corrections → community. Warp is creative manipulation → pro (factory lives
   // in warp-tools-pro.ts, registered by the Pro module, stripped from CE).
   ps_warp_layer: 'pro',
+  // The four grounded warp variants below are no longer registered by the
+  // current module, but their rows must stay for one more release. The module
+  // is downloaded and a newly fetched one only takes effect on the NEXT boot,
+  // so a host on this version can meet a previously-installed module that
+  // still registers all four. `tierOf`/`groupOf` throw on an unknown name and
+  // `assertToolsClassified()` runs them at startup, so a missing row is a
+  // fatal boot failure, not a missing tool. Delete these rows, their
+  // `tool-groups.ts` counterparts, and the matching allowance in
+  // `tests/integration/tool-tiers.test.ts` together, once no supported module
+  // registers them.
+  //
   // Grounded custom-mesh warp — pins one edge (welded by construction) while
   // deforming the rest (rise / ~90° bend / taper).
   ps_warp_layer_mesh: 'pro',
@@ -159,6 +177,11 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // Camera Raw Filter as a re-editable Smart Filter. Pro-gated go-core emitter
   // (//go:build pro).
   ps_apply_camera_raw: 'pro',
+  // Raw-FILE develop, via a Camera Raw XMP sidecar. Distinct from the Filter
+  // above, which operates on already-rasterised pixels and so cannot reach
+  // geometry, crop or lens correction at all. Implemented in the Pro module;
+  // this table is CE-owned, which is why the entry lives here.
+  ps_develop_raw: 'pro',
   ps_transform_canvas: 'community',
   ps_guides: 'community',
 
@@ -235,16 +258,14 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // Named-object selection via local MobileSAM: COCO object → CE detector box →
   // SAM organic mask → selection.
   ps_select_object: 'pro',
-  // Native-AI additions (2026-08-15). Both are Adobe's own inference, so both
-  // are CE-destined on the usual line — but they ship at 'dev' until the user
-  // promotes. ps_select_focus_area is standalone only because a parameter
-  // cannot be tiered; it folds into ps_select as mode=focus_area at promotion.
+  // Native-AI additions, both Adobe's own inference and CE-destined on the usual
+  // line. Focus Area lives on ps_select as mode=focus_area, not as its own
+  // tool — it rides ps_select's tier below.
   //
   // The point-prompt selector (AM deepSelect) is deliberately ABSENT: its only
   // input is a coordinate and we have no precision aiming to give it in any
   // tier, so it stays unbuilt until the coordinate-ID work lands.
-  ps_select_focus_area: 'dev',
-  ps_replace_sky: 'dev',
+  ps_replace_sky: 'community',
   ps_modify_selection: 'community',
   // get_selection_info → ps_inspect
   ps_get_selection_preview: 'community',
@@ -281,12 +302,61 @@ export const TOOL_TIERS: Record<string, Tier> = {
   ps_template_recall: 'pro',
   ps_template_delete: 'pro',
 
-  // text-tools — consolidated into one op-discriminated tool (2026-08-13),
-  // flattening ps_set_text's old property sub-discriminator into the same
-  // enum as create. ps_set_text (and ps_create_text_layer, layer-tools
-  // section above) stay registered as deprecated aliases for one release.
+  // text-tools — one op-discriminated tool covering both creating a text layer
+  // and styling one, in a single flat op enum.
   ps_text: 'community',
-  ps_set_text: 'community',
+
+  // gimp_* — the second-editor beta surface, registered only when a GIMP
+  // install is detected (or the editor pin forces it) at boot — see
+  // src/backends/detect-editors.ts / src/modules/gimp/index.ts.
+  gimp_ping: 'community',
+  gimp_overview: 'community',
+  gimp_open_document: 'community',
+  gimp_close_document: 'community',
+  gimp_save_xcf: 'community',
+  gimp_export: 'community',
+  gimp_inspect: 'community',
+  gimp_add_adjustment: 'community',
+  gimp_filter: 'community',
+  // Allow-listed GEGL effect filters (vignette, black_white, motion_blur, lens_blur, add_noise,
+  // drop_shadow) — a sibling of gimp_add_adjustment, not a new op on gimp_filter, so the
+  // dev-default-then-promote gate actually applies (tool-tiers.ts classifies per TOOL, not per
+  // op; grafting a new op onto the already-'community' gimp_filter would bypass it).
+  gimp_add_effect: 'community',
+  gimp_crop_document: 'community',
+  gimp_resize_image: 'community',
+  gimp_transform_canvas: 'community',
+  gimp_get_preview: 'community',
+  gimp_get_histogram: 'community',
+  gimp_compare: 'community',
+  // Disk-backed checkpoints (create/restore/list/delete), the headless
+  // substitute for undo.
+  gimp_checkpoint: 'community',
+  // Layer management (create/create_group/delete/duplicate/select/set/move/reorder/merge_down/
+  // flatten) and baking a layer's live filters into its own pixels.
+  gimp_layer: 'community',
+  gimp_bake: 'community',
+  // Layer-level affine transform (fit/scale/move/rotate/flip/skew/free) — a sibling of
+  // gimp_layer, not an op on it: tool-tiers.ts classifies per TOOL, so a distinct tool name is
+  // what gives this its own dev-default-then-promote gate, the same as any other tool here.
+  gimp_transform_layer: 'community',
+  // First-class multi-layer documents: build one from scratch, composite another file into it,
+  // extend its canvas, and change its color mode.
+  gimp_create_document: 'community',
+  gimp_place_image: 'community',
+  gimp_canvas: 'community',
+  // Live text layers (create/set_content/set_font/set_color/set_alignment), the GIMP twin of ps_text.
+  gimp_text: 'community',
+  gimp_convert_image_mode: 'community',
+  // Selections and masks: build a saved selection, refine it, and attach it as a layer mask.
+  gimp_select: 'community',
+  gimp_modify_selection: 'community',
+  gimp_layer_mask: 'community',
+  gimp_get_selection_preview: 'community',
+  // New tools start at 'dev'; promotion is the owner's call.
+  gimp_match_layer: 'dev',
+  gimp_retouch: 'dev',
+  gimp_fill: 'dev',
 };
 
 /**
@@ -305,7 +375,11 @@ export function tierOf(toolName: string): Tier {
   return tier;
 }
 
-/** All tool names belonging to a given tier. Used by build scripts. */
+/**
+ * All tool names belonging to a given tier. Used by build scripts, and at runtime
+ * by the boot path — this table is the ONLY source for the Pro names the host puts
+ * in front of a user, so a tier change here changes what they see.
+ */
 export function toolsInTier(tier: Tier): string[] {
   return Object.entries(TOOL_TIERS)
     .filter(([, t]) => t === tier)

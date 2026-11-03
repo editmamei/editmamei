@@ -78,17 +78,18 @@ describe('WindowsScriptRunner — COM shim', () => {
 });
 
 describe('WindowsScriptRunner — launch', () => {
-  it('clears the startup timer when the spawn errors', () => {
+  it('guards the readiness poll against resolving after the spawn errors', () => {
     // Source-string assertion: spawning Photoshop in a unit test is not
-    // practical, and without the clear the promise settles twice and the event
-    // loop stays awake for the remainder of the grace period. Pins intent, not
-    // bytes — quote style is left unpinned since transformers vary.
+    // practical. Without the guard, a spawn error that rejects the promise
+    // could still be followed by the readiness poll resolving it a second
+    // time. The poll itself is exercised in launch-readiness.test.ts. Pins
+    // intent, not bytes — quote style is left unpinned since transformers vary.
     const launchSrc = (
       new WindowsScriptRunner() as unknown as {
         launch: (...args: unknown[]) => unknown;
       }
     ).launch.toString();
-    expect(launchSrc).toContain('clearTimeout');
     expect(launchSrc).toMatch(/['"]error['"]/);
+    expect(launchSrc).toContain('aborted');
   });
 });

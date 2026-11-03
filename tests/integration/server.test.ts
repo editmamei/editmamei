@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -8,6 +10,10 @@ import {
   BACKGROUND_VERSION_PROBE_TIMEOUT_MS,
 } from '@editmamei/core/server.ts';
 import { getPendingRawDevelop, __clearRawDevelopState } from '@editmamei/core/raw-develop-state.ts';
+import { NO_ERROR_TEXT_CLASS } from '@editmamei/utils/session-log.ts';
+import * as templateStorage from '@editmamei/utils/template-storage.ts';
+import { resolveEditorRegistration } from '@editmamei/backends/detect-editors.ts';
+import type { GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
@@ -17,6 +23,15 @@ import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
 // constructions (several per test) never write real NDJSON into the user's
 // ~/.editmamei/sessions/.
 useSessionLogSandbox();
+
+// Wrap listTemplates (not the rest of template-storage.ts) so one test below can force
+// it to reject — every other call still runs for real against whatever templates dir the
+// test host has (listTemplates itself swallows its own disk errors and resolves [], so a
+// rejection can only be observed by forcing it here).
+vi.mock('@editmamei/utils/template-storage.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@editmamei/utils/template-storage.ts')>();
+  return { ...actual, listTemplates: vi.fn(actual.listTemplates) };
+});
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -64,6 +79,143 @@ describe('EditmameiServer construction', () => {
     // (ps_apply_camera_raw is Pro; ps_select_subject is community now, present at boot.)
     expect(names).toContain('ps_apply_camera_raw');
     expect(names).toContain('ps_template_apply');
+  });
+
+  // ===========================================================================
+  // The gimp_* registration matrix — GIMP detected / not detected / pinned,
+  // each asserting the EXACT set of tool names present or absent rather than
+  // just a count (a count can't distinguish "the right 16 tools" from "16
+  // arbitrary ones"). Constructing with no `editors` option at all is
+  // covered by the two tests just above — this block only exercises the
+  // option explicitly, through the SAME `resolveEditorRegistration` pipeline
+  // `index.ts` uses, so a drift between the two would be caught here.
+  //
+  // Photoshop tools register in every scenario below except the 'gimp' pin —
+  // there is no "Photoshop was/wasn't detected" input any more (see
+  // `resolveEditorRegistration`'s own doc comment for why: a detection false
+  // negative must never remove the Photoshop surface).
+  // ===========================================================================
+  describe('editor registration matrix', () => {
+    const SAMPLE_GIMP_INSTALL: GimpInstall = {
+      source: 'conventional',
+      path: 'C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe',
+      launch: { command: 'C:/Program Files/GIMP 3/bin/gimp-console-3.2.exe', args: [] },
+    };
+    const GIMP_TOOL_NAMES = [
+      'gimp_ping',
+      'gimp_overview',
+      'gimp_open_document',
+      'gimp_close_document',
+      'gimp_save_xcf',
+      'gimp_export',
+      'gimp_inspect',
+      'gimp_add_adjustment',
+      'gimp_filter',
+      'gimp_crop_document',
+      'gimp_resize_image',
+      'gimp_transform_canvas',
+      'gimp_get_preview',
+      'gimp_get_histogram',
+      'gimp_compare',
+    ];
+    // A handful of ps_* names spread across several factories/ambient
+    // registrations — a representative sample stands in for "the whole ps_*
+    // surface", since asserting against all 80+ names would be brittle to
+    // unrelated CE changes.
+    const PS_SAMPLE_NAMES = ['ps_select', 'ps_add_adjustment_layer', 'ps_export', 'ps_filter'];
+
+    function namesOf(server: EditmameiServer): string[] {
+      return (
+        server as unknown as { toolRegistry: { list(): Array<{ name: string }> } }
+      ).toolRegistry
+        .list()
+        .map((t) => t.name);
+    }
+
+    it('GIMP detected, unpinned -> ps_* and gimp_* all present, including both ping twins', () => {
+      const editors = resolveEditorRegistration(
+        { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
+        'auto'
+      );
+      const names = namesOf(new EditmameiServer({ editors }));
+      expect(names).toContain('ps_ping');
+      expect(names).toContain('gimp_ping');
+      for (const n of [...PS_SAMPLE_NAMES, ...GIMP_TOOL_NAMES]) expect(names).toContain(n);
+    });
+
+    it("GIMP not detected, unpinned -> every gimp_* name absent, ps_* present (today's behaviour)", () => {
+      const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'auto');
+      const names = namesOf(new EditmameiServer({ editors }));
+      expect(names).toContain('ps_ping');
+      for (const n of PS_SAMPLE_NAMES) expect(names).toContain(n);
+      for (const n of GIMP_TOOL_NAMES) expect(names).not.toContain(n);
+    });
+
+    it('GIMP detection timed out, unpinned -> treated the same as not detected (ps_* only)', () => {
+      const editors = resolveEditorRegistration({ gimp: null, timedOut: true }, 'auto');
+      const names = namesOf(new EditmameiServer({ editors }));
+      expect(names).toContain('ps_ping');
+      for (const n of GIMP_TOOL_NAMES) expect(names).not.toContain(n);
+    });
+
+    it("pin 'gimp' registers gimp_* only, and Photoshop tools (ps_ping, the CE surface, and — implicitly — the Pro module) do NOT register, even when GIMP was also detected", () => {
+      const editors = resolveEditorRegistration(
+        { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
+        'gimp'
+      );
+      const server = new EditmameiServer({ editors }) as unknown as {
+        toolRegistry: { list(): Array<{ name: string }> };
+        loadModules(): Promise<void>;
+      };
+      const names = server.toolRegistry.list().map((t) => t.name);
+      for (const n of GIMP_TOOL_NAMES) expect(names).toContain(n);
+      expect(names).not.toContain('ps_ping');
+      for (const n of PS_SAMPLE_NAMES) expect(names).not.toContain(n);
+      expect(names).toContain('ps_list_capabilities');
+      expect(names).toContain('ps_report_problem');
+    });
+
+    it("pin 'gimp' with NO install found still registers gimp_* (every call fails cleanly with gimp_not_installed instead of the surface silently vanishing)", () => {
+      const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'gimp');
+      expect(editors.gimpInstall).toBeNull();
+      const names = namesOf(new EditmameiServer({ editors }));
+      for (const n of GIMP_TOOL_NAMES) expect(names).toContain(n);
+    });
+
+    it("pin 'photoshop' registers ps_* only even when GIMP was also detected", () => {
+      const editors = resolveEditorRegistration(
+        { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
+        'photoshop'
+      );
+      const names = namesOf(new EditmameiServer({ editors }));
+      expect(names).toContain('ps_ping');
+      for (const n of GIMP_TOOL_NAMES) expect(names).not.toContain(n);
+    });
+
+    proIt("pin 'gimp' skips loading the Pro module — loadModules() is a no-op", async () => {
+      const editors = resolveEditorRegistration(
+        { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
+        'gimp'
+      );
+      const server = new EditmameiServer({ editors }) as unknown as {
+        toolRegistry: { list(): Array<{ name: string }> };
+        loadModules(): Promise<void>;
+      };
+      await server.loadModules();
+      const names = server.toolRegistry.list().map((t) => t.name);
+      expect(names).not.toContain('ps_apply_camera_raw'); // a Pro-only tool never appears
+    });
+
+    it('every gimp_* tool is grouped and tiered (boot assertion passes — construction itself is the proof)', () => {
+      const editors = resolveEditorRegistration(
+        { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
+        'auto'
+      );
+      // assertToolsClassified() runs inside the constructor; a missing
+      // tool-tiers.ts / tool-groups.ts entry for any gimp_* tool would throw
+      // here rather than needing its own dedicated assertion.
+      expect(() => new EditmameiServer({ editors })).not.toThrow();
+    });
   });
 
   // ===========================================================================
@@ -165,30 +317,72 @@ describe('ps_ping surfaces update_available', () => {
   type PingServer = {
     session: { connection: unknown };
     updateInfo: unknown;
+    updateCheck: unknown;
     snippetClient: unknown;
     pingPhotoshop(): Promise<{
       content: Array<{ text: string }>;
-      structuredContent: { connected: boolean; update_available: unknown };
+      structuredContent: { connected: boolean; update_available: unknown; notify_user: boolean };
     }>;
   };
 
-  it('reports a newer version in both the text and structuredContent', async () => {
+  const newerInfo = {
+    current: '0.18.0',
+    latest: '0.19.0',
+    channel: 'npm',
+    how_to_update: 'Run: npm install -g editmamei@latest (then restart your MCP client).',
+    fixed_tools: [] as string[],
+  };
+
+  it('first ping: relay-shaped notice + notify_user; later pings: the passive note', async () => {
     const server = new EditmameiServer() as unknown as PingServer;
-    server.session.connection = makeConnection({ info: null }); // pingState round trip fails fast (early return)
+    // info:null → currentlyRunning defaults false → the absent-PS fast-fail
+    // path, which must carry the notice like every other ping shape.
+    server.session.connection = makeConnection({ info: null });
     server.snippetClient = makeSnippetClient();
-    server.updateInfo = {
-      current: '0.18.0',
-      latest: '0.19.0',
-      channel: 'npm',
-      how_to_update: 'Run: npm install -g editmamei@latest (then restart your MCP client).',
-    };
-    const res = await server.pingPhotoshop();
-    expect(res.structuredContent.update_available).toMatchObject({
+    server.updateInfo = { ...newerInfo };
+
+    const first = await server.pingPhotoshop();
+    expect(first.structuredContent.update_available).toMatchObject({
       latest: '0.19.0',
       channel: 'npm',
     });
-    expect(res.content[0].text).toContain('Update available: v0.18.0 → v0.19.0');
-    expect(res.content[0].text).toContain('npm install -g editmamei@latest');
+    expect(first.structuredContent.notify_user).toBe(true);
+    // The imperative lives in the result TEXT — the channel the model actually
+    // attends at result time — not (only) in an output-schema description.
+    expect(first.content[0].text).toContain('tell the user');
+    expect(first.content[0].text).toContain('v0.19.0');
+    expect(first.content[0].text).toContain('npm install -g editmamei@latest');
+
+    const second = await server.pingPhotoshop();
+    expect(second.structuredContent.notify_user).toBe(false);
+    expect(second.content[0].text).toContain('Update available: v0.18.0 → v0.19.0');
+    expect(second.content[0].text).not.toContain('tell the user');
+  });
+
+  it('mentions email release notes on the first notice only, and marks it not urgent', async () => {
+    const server = new EditmameiServer() as unknown as PingServer;
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = { ...newerInfo };
+
+    // The whole sentence, not its pieces: this pins the wording, the
+    // de-escalation ("Not urgent"), and that the URL follows immediately
+    // rather than the three happening to appear somewhere in the text.
+    const first = await server.pingPhotoshop();
+    expect(first.content[0].text).toContain(
+      'Not urgent: they can also read and subscribe to release notes at' +
+        ' https://editmamei.com/blog?src=update_notice'
+    );
+    // Ends on the URL. A trailing period here gets swallowed into the href by
+    // linkifiers in chat clients and terminals, breaking the link.
+    expect(first.content[0].text.endsWith('https://editmamei.com/blog?src=update_notice')).toBe(
+      true
+    );
+
+    // Absent from the passive later pings. Asserted on the source marker
+    // rather than the bare domain, which other copy may legitimately use.
+    const second = await server.pingPhotoshop();
+    expect(second.content[0].text).not.toContain('src=update_notice');
   });
 
   it('omits the update note and reports null when nothing newer was found', async () => {
@@ -198,7 +392,86 @@ describe('ps_ping surfaces update_available', () => {
     server.updateInfo = null;
     const res = await server.pingPhotoshop();
     expect(res.structuredContent.update_available).toBeNull();
+    expect(res.structuredContent.notify_user).toBe(false);
     expect(res.content[0].text).not.toContain('Update available');
+  });
+
+  it('the first ping waits for an in-flight boot check instead of racing it', async () => {
+    const server = new EditmameiServer() as unknown as PingServer;
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    // Boot shape: the fire-and-forget check is still in flight when the
+    // skill-mandated first ping arrives. Pre-fix, the ping read updateInfo
+    // (still null) and the one ping most sessions make lost the notice.
+    server.updateCheck = new Promise<void>((resolveCheck) => {
+      setTimeout(() => {
+        server.updateInfo = { ...newerInfo };
+        resolveCheck();
+      }, 30);
+    });
+    const res = await server.pingPhotoshop();
+    expect(res.structuredContent.notify_user).toBe(true);
+    expect(res.content[0].text).toContain('v0.19.0');
+  });
+
+  it("names the previous session's failures that the update fixes", async () => {
+    // useSessionLogSandbox() stubbed this to a per-test temp dir; the server
+    // constructed below resolves its SessionLog directory from the same env
+    // var, so a file written here IS the "previous session" its notice reads.
+    const sandboxDir = process.env.EDITMAMEI_SESSION_LOG_DIR!;
+    await writeFile(
+      join(sandboxDir, 'prev-session.ndjson'),
+      [
+        JSON.stringify({ tool: 'ps_delete_layer', success: false }),
+        JSON.stringify({ tool: 'ps_delete_layer', success: false }),
+        JSON.stringify({ tool: 'ps_select_layer', success: false }),
+        JSON.stringify({ tool: 'ps_export', success: true }),
+      ].join('\n') + '\n',
+      'utf8'
+    );
+    const server = new EditmameiServer() as unknown as PingServer;
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = { ...newerInfo, fixed_tools: ['ps_delete_layer', 'ps_select_layer'] };
+
+    const res = await server.pingPhotoshop();
+    expect(res.structuredContent.notify_user).toBe(true);
+    // "fixes known failures in" — deliberately NOT "your failures are fixed":
+    // the log records counts, not causes, so the notice must not claim every
+    // recorded failure was the bug this release closes. The singular form is
+    // pinned exactly ("1 time last" is not a substring of "1 times last").
+    expect(res.content[0].text).toContain('v0.19.0 fixes known failures in');
+    expect(res.content[0].text).toContain('ps_delete_layer (failed 2 times last session)');
+    expect(res.content[0].text).toContain('ps_select_layer (failed 1 time last session)');
+  });
+
+  it('falls back to the plain imperative notice when there is no previous session', async () => {
+    // fixed_tools non-empty but the sandboxed sessions dir has no prior
+    // session — the best-effort read must degrade to the plain notice, still
+    // relayed, never a broken ping.
+    const server = new EditmameiServer() as unknown as PingServer;
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = { ...newerInfo, fixed_tools: ['ps_delete_layer'] };
+
+    const res = await server.pingPhotoshop();
+    expect(res.structuredContent.notify_user).toBe(true);
+    expect(res.content[0].text).toContain('tell the user');
+    expect(res.content[0].text).not.toContain('fixes known failures');
+  });
+
+  it('the success (connected) path carries the notice and notify_user too', async () => {
+    const server = new EditmameiServer() as unknown as PingServer;
+    server.session.connection = makeConnection({
+      result: { version: '25.9', action_sets_count: 0, open_documents: [] },
+    });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = { ...newerInfo };
+
+    const res = await server.pingPhotoshop();
+    expect(res.structuredContent.connected).toBe(true);
+    expect(res.structuredContent.notify_user).toBe(true);
+    expect(res.content[0].text).toContain('tell the user');
   });
 });
 
@@ -265,8 +538,100 @@ describe('ps_ping — pingState is the sole liveness probe', () => {
 
     expect(fakeConn.pingCalls).toBe(0);
     expect(fakeConn.executions).toHaveLength(1); // one round trip attempted, no fallback ping
-    expect(res.structuredContent).toEqual({ connected: false, update_available: null });
+    expect(res.structuredContent).toEqual({
+      connected: false,
+      update_available: null,
+      notify_user: false,
+    });
     expect(res.content[0].text).toBe('Photoshop did not respond');
+  });
+});
+
+// ===========================================================================
+// Absent-Photoshop fast-fail. Without the process-existence guard, a ping
+// against a machine where Photoshop simply isn't running walked into the
+// pingState round trip and sat out the full script budget (~30s) — and
+// executeScript's ensureRunning() could even try to LAUNCH Photoshop as a
+// side effect of a liveness QUESTION. A present-but-cold-starting Photoshop
+// legitimately needs >10s (observed in the field), so the fix is NOT a
+// shorter timeout: absence is detected directly and answered immediately,
+// and presence keeps the full budget.
+// ===========================================================================
+describe('ps_ping — fast-fail when no Photoshop process exists', () => {
+  type PingServer = {
+    session: { connection: unknown };
+    updateInfo: unknown;
+    snippetClient: unknown;
+    pingPhotoshop(): Promise<{
+      content: Array<{ text: string }>;
+      structuredContent: { connected: boolean; update_available: unknown; notify_user: boolean };
+    }>;
+  };
+
+  it('answers immediately: no script round trip, no launch attempt, no fallback ping', async () => {
+    const server = new EditmameiServer() as unknown as PingServer;
+    const fakeConn = makeConnection({ currentlyRunning: false }); // installed, not running
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = null;
+
+    const res = await server.pingPhotoshop();
+
+    expect(res.structuredContent).toEqual({
+      connected: false,
+      update_available: null,
+      notify_user: false,
+    });
+    // Hedged on purpose: a process-name miss on an exotic install must not
+    // read as a definitive "Photoshop is closed".
+    expect(res.content[0].text).toContain('does not appear to be running');
+    expect(fakeConn.executions).toHaveLength(0);
+    expect(fakeConn.ensureRunningCalls).toBe(0);
+    expect(fakeConn.pingCalls).toBe(0);
+  });
+
+  // No install detected is a different problem from a closed Photoshop, and
+  // "did not respond" sends the user to open an application they may not have.
+  it('says no install was found, and how to point at one, when detection finds nothing', async () => {
+    vi.stubEnv('PHOTOSHOP_PATH', '');
+    const server = new EditmameiServer() as unknown as PingServer;
+    const fakeConn = makeConnection({ info: null });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = null;
+
+    const res = await server.pingPhotoshop().finally(() => vi.unstubAllEnvs());
+    expect(res.content[0].text).toContain('set PHOTOSHOP_PATH to its full path');
+
+    expect(res.structuredContent).toEqual({
+      connected: false,
+      update_available: null,
+      notify_user: false,
+    });
+    expect(res.content[0].text).toContain('could not find a Photoshop install');
+    expect(res.content[0].text).toContain('PHOTOSHOP_PATH');
+    expect(res.content[0].text).toContain(
+      'docs/installation.md#optional-pin-a-specific-photoshop-install'
+    );
+    expect(fakeConn.executions).toHaveLength(0);
+    expect(fakeConn.pingCalls).toBe(0);
+  });
+
+  it('says to check PHOTOSHOP_PATH, not to set it, when it is already set', async () => {
+    vi.stubEnv('PHOTOSHOP_PATH', 'D:/Apps/Photoshop/Photoshop.exe');
+    try {
+      const server = new EditmameiServer() as unknown as PingServer;
+      server.session.connection = makeConnection({ info: null });
+      server.snippetClient = makeSnippetClient();
+      server.updateInfo = null;
+
+      const res = await server.pingPhotoshop();
+
+      expect(res.content[0].text).toContain('PHOTOSHOP_PATH is set, but does not point');
+      expect(res.content[0].text).not.toContain('set PHOTOSHOP_PATH to its full path');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -324,7 +689,10 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
 
   it('build() throws AND the ping() probe also fails: connected:false (Q3)', async () => {
     const server = new EditmameiServer() as unknown as PingServerFull;
-    const fakeConn = makeConnection({ info: null }); // ping() resolves false (info === null)
+    // A detected, running install keeps the not-found and not-running answers
+    // out of the way — this test pins the build-failure fallback, which only
+    // runs when a Photoshop process exists but the connection can't reach it.
+    const fakeConn = makeConnection({ pingReaches: false });
     server.session.connection = fakeConn;
     server.snippetClient = {
       build: async () => {
@@ -335,7 +703,11 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
 
     const res = await server.pingPhotoshop();
 
-    expect(res.structuredContent).toEqual({ connected: false, update_available: null });
+    expect(res.structuredContent).toEqual({
+      connected: false,
+      update_available: null,
+      notify_user: false,
+    });
     expect(res.content[0].text).toBe('Photoshop did not respond');
   });
 
@@ -403,6 +775,12 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
       },
       async ping() {
         return info !== null;
+      },
+      // The absent-PS fast-fail guard runs between getVersion() and the
+      // pingState execute; a running Photoshop keeps this double on the
+      // ordering path this test pins.
+      async isCurrentlyRunning() {
+        return true;
       },
     };
     server.session.connection = fakeConn;
@@ -910,8 +1288,11 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
         success: boolean;
         duration_ms: number;
         error_class: string | null;
+        result_bytes?: number;
+        retry?: boolean;
       }): void;
       recordDiagnostic(diag: { tool: string; error_class: string; error_message: string }): void;
+      setInstallAssets(assets: { templates_saved: number; action_sets: number }): void;
     };
     handleToolCall(
       name: string,
@@ -920,13 +1301,19 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
   };
 
   // F12 — a full double, not a partial one: pingPhotoshop()'s own connected
-  // path calls telemetry.onPsVersionResolved(), and onCall can call
-  // recordDiagnostic. A partial double throws a TypeError that handleToolCall's
-  // try/catch swallows into an unrelated isError result — confirmed by hand:
-  // the first cut of this double (recordCall + recordDiagnostic only) broke
-  // the "genuinely connects" test below with exactly that failure mode.
+  // path calls telemetry.onPsVersionResolved() AND telemetry.setInstallAssets(), and
+  // onCall can call recordDiagnostic. A partial double throws a TypeError that
+  // handleToolCall's try/catch swallows into an unrelated isError result — confirmed by
+  // hand: the first cut of this double (recordCall + recordDiagnostic only) broke the
+  // "genuinely connects" test below with exactly that failure mode, and setInstallAssets
+  // reproduced it again once ps_ping started calling it too.
   function spyTelemetry() {
-    return { recordCall: vi.fn(), recordDiagnostic: vi.fn(), onPsVersionResolved: vi.fn() };
+    return {
+      recordCall: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
   }
 
   it('records success:false when the ping never reaches Photoshop, without changing the tool result', async () => {
@@ -954,17 +1341,131 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       success: false,
       duration_ms: expect.any(Number),
       error_class: 'ps_not_running',
+      result_bytes: expect.any(Number),
+      retry: false,
     });
-    // The downgrade is a failure, so it feeds the opt-in diagnostic too. This
-    // was previously gated on the registry's raw success flag — still true
-    // here — so nothing was ever emitted for it. Asserted whole for the same
-    // reason as above: error_message is the field this path newly synthesizes,
-    // and a partial match would not see it.
+    // The downgrade is a failure, so it feeds the opt-in diagnostic too, carrying
+    // the round trip's real error rather than a placeholder. Asserted whole for the
+    // same reason as above: a partial match would not see error_message.
     expect(telemetry.recordDiagnostic).toHaveBeenCalledTimes(1);
     expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
       tool: 'ps_ping',
       error_class: 'ps_not_running',
-      error_message: 'ps_ping did not reach Photoshop',
+      error_message: 'boom',
+    });
+  });
+
+  it('records ps_not_detected with the detector error when no install is found', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    const fakeConn = makeConnection({ info: null });
+    fakeConn.getVersion = async () => {
+      throw new Error('No Photoshop install could be found on this machine');
+    };
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
+      tool: 'ps_ping',
+      success: false,
+      error_class: 'ps_not_detected',
+    });
+    expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
+      tool: 'ps_ping',
+      error_class: 'ps_not_detected',
+      error_message: 'No Photoshop install could be found on this machine',
+    });
+  });
+
+  it('records ps_not_running with its own message when the install is detected but closed', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    server.session.connection = makeConnection({ currentlyRunning: false });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
+      tool: 'ps_ping',
+      error_class: 'ps_not_running',
+      error_message: 'Photoshop is installed but no Photoshop process is running',
+    });
+  });
+
+  it('classifies a round-trip failure by its real error when it has a known class', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    server.session.connection = makeConnection({
+      throwOnExecute: new Error('Script execution timeout after 30000ms'),
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ error_class: 'timeout' });
+    expect(telemetry.recordDiagnostic.mock.calls[0][0]).toMatchObject({
+      error_class: 'timeout',
+      error_message: expect.stringContaining('Script execution timeout after 30000ms'),
+    });
+  });
+
+  // The failure reason is per-ping state: a second unreachable ping reports its
+  // own reason, not the first one's.
+  it('reports each failed ping with its own reason', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    const fakeConn = makeConnection({ currentlyRunning: false, throwOnExecute: new Error('boom') });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+    fakeConn.setCurrentlyRunning(true);
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordDiagnostic.mock.calls[0][0].error_message).toBe(
+      'Photoshop is installed but no Photoshop process is running'
+    );
+    expect(telemetry.recordDiagnostic.mock.calls[1][0].error_message).toBe('boom');
+  });
+
+  // classifyError is first-match over every tool's errors. A COM description
+  // that happens to say "invalid" must not turn an unreachable Photoshop into
+  // bad input to a tool that takes none.
+  it('keeps ps_not_running for a round-trip error whose class does not describe a round trip', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    server.session.connection = makeConnection({
+      throwOnExecute: new Error('could not attach to Photoshop over COM - Invalid class string'),
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ error_class: 'ps_not_running' });
+  });
+
+  // Photoshop answered but the pingState script threw: a snippet problem, which
+  // ps_not_running would hide.
+  it('keeps ps_general_error when Photoshop answered the round trip with an error', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    server.session.connection = makeConnection({
+      throwOnExecute: new Error('General Photoshop error occurred.'),
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
+      error_class: 'ps_general_error',
     });
   });
 
@@ -992,6 +1493,8 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       success: true,
       duration_ms: expect.any(Number),
       error_class: null,
+      result_bytes: expect.any(Number),
+      retry: false,
     });
     // A success feeds no diagnostic.
     expect(telemetry.recordDiagnostic).not.toHaveBeenCalled();
@@ -1119,7 +1622,7 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
   // gates nothing — delete it and every other test still passes, while every
   // tool's classless failure gets relabelled a Photoshop-connectivity problem
   // under the wrong tool name.
-  it('classifies a classless non-ping failure as other, never as ps_not_running', async () => {
+  it('classifies a classless non-ping failure as no_error_text, never as ps_not_running', async () => {
     const server = new EditmameiServer() as unknown as {
       toolRegistry: {
         register(
@@ -1151,11 +1654,13 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       tool: 'ps_export',
       success: false,
       duration_ms: expect.any(Number),
-      error_class: 'other',
+      error_class: NO_ERROR_TEXT_CLASS,
+      result_bytes: expect.any(Number),
+      retry: false,
     });
     expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
       tool: 'ps_export',
-      error_class: 'other',
+      error_class: NO_ERROR_TEXT_CLASS,
       error_message: 'tool reported failure with no message',
     });
   });
@@ -1175,6 +1680,419 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
     expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
       tool: 'ps_ping',
       error_class: 'ps_not_running',
+    });
+  });
+});
+
+describe('client_connected: wired from Server.oninitialized', () => {
+  type OninitializedServer = {
+    server: {
+      oninitialized?: () => void;
+      getClientVersion(): { name: string; version: string } | undefined;
+      getClientCapabilities(): Record<string, unknown> | undefined;
+    };
+    telemetry: {
+      recordClientConnected(info: {
+        clientName: string | undefined;
+        clientVersion: string | undefined;
+        capSampling: boolean;
+        capElicitation: boolean;
+        capRoots: boolean;
+      }): void;
+    };
+  };
+
+  it('maps the client name/major and capability presence into recordClientConnected', () => {
+    const server = new EditmameiServer() as unknown as OninitializedServer;
+    server.server.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
+    server.server.getClientCapabilities = () => ({ sampling: {}, roots: { listChanged: true } });
+    const recordClientConnected = vi.fn();
+    server.telemetry.recordClientConnected = recordClientConnected;
+
+    // The callback is wired in the constructor (see server.ts's comment on WHY — the SDK's
+    // Server wires its own `notifications/initialized` handler there too, not at connect()
+    // time), so it already exists before this test ever touches the transport.
+    expect(server.server.oninitialized).toBeTypeOf('function');
+    server.server.oninitialized!();
+
+    expect(recordClientConnected).toHaveBeenCalledTimes(1);
+    expect(recordClientConnected).toHaveBeenCalledWith({
+      clientName: 'claude-code',
+      clientVersion: '2.1.170',
+      capSampling: true,
+      capElicitation: false,
+      capRoots: true,
+    });
+  });
+
+  it('passes undefined name/version through when the client never reports them', () => {
+    const server = new EditmameiServer() as unknown as OninitializedServer;
+    server.server.getClientVersion = () => undefined;
+    server.server.getClientCapabilities = () => undefined;
+    const recordClientConnected = vi.fn();
+    server.telemetry.recordClientConnected = recordClientConnected;
+
+    server.server.oninitialized!();
+
+    expect(recordClientConnected).toHaveBeenCalledWith({
+      clientName: undefined,
+      clientVersion: undefined,
+      capSampling: false,
+      capElicitation: false,
+      capRoots: false,
+    });
+  });
+
+  // Once-latch: nothing in the MCP spec stops a non-conforming client sending a second
+  // `notifications/initialized`, and recordClientConnected no longer force-flushes, so a
+  // repeat would silently queue a duplicate event rather than visibly re-send.
+  it('sends client_connected at most once even if oninitialized fires twice', () => {
+    const server = new EditmameiServer() as unknown as OninitializedServer;
+    server.server.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
+    server.server.getClientCapabilities = () => ({ sampling: {} });
+    const recordClientConnected = vi.fn();
+    server.telemetry.recordClientConnected = recordClientConnected;
+
+    server.server.oninitialized!();
+    server.server.oninitialized!();
+    server.server.oninitialized!();
+
+    expect(recordClientConnected).toHaveBeenCalledTimes(1);
+  });
+
+  // An explicit `null` capability is a client saying "I don't have this," the same as
+  // omitting it — not a declaration. `!== undefined` would have wrongly counted it as one.
+  it('treats an explicit null capability as NOT declared (!= null, not !== undefined)', () => {
+    const server = new EditmameiServer() as unknown as OninitializedServer;
+    server.server.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
+    server.server.getClientCapabilities = () =>
+      ({ sampling: null, elicitation: {}, roots: undefined }) as Record<string, unknown>;
+    const recordClientConnected = vi.fn();
+    server.telemetry.recordClientConnected = recordClientConnected;
+
+    server.server.oninitialized!();
+
+    expect(recordClientConnected).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capSampling: false, // explicit null — not declared
+        capElicitation: true, // a real object — declared
+        capRoots: false, // undefined — not declared
+      })
+    );
+  });
+});
+
+describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mode)', () => {
+  it('caches locale/doc_depth/doc_mode from a successful ping and attaches them to a later diagnostic', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+    server.session.connection = makeConnection({
+      result: {
+        version: '27.8.0',
+        action_sets_count: 0,
+        open_documents: [],
+        locale: 'en_US',
+        doc_depth: 16,
+        doc_mode: 'cmyk',
+      },
+    });
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    // The ping caches the dimensions; it emits no diagnostic itself (it succeeds).
+    await server.handleToolCall('ps_ping', {});
+    expect(recordDiagnostic).not.toHaveBeenCalled();
+
+    // A later, unrelated failing tool call picks up the cached dimensions.
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(1);
+    expect(recordDiagnostic.mock.calls[0][0]).toMatchObject({
+      ps_locale: 'en_US',
+      doc_depth: 16,
+      doc_mode: 'cmyk',
+    });
+  });
+
+  it('omits doc_depth/doc_mode/ps_locale from a diagnostic when a ping never reported them', async () => {
+    const server = new EditmameiServer() as unknown as {
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+    const recordDiagnostic = vi.fn();
+    server.telemetry = { recordCall: vi.fn(), recordDiagnostic };
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+
+    await server.handleToolCall('ps_export', {});
+
+    const diag = recordDiagnostic.mock.calls[0][0];
+    expect('ps_locale' in diag).toBe(false);
+    expect('doc_depth' in diag).toBe(false);
+    expect('doc_mode' in diag).toBe(false);
+  });
+
+  it('a live ping reporting no open document clears a previously cached doc_depth/doc_mode', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+
+    // First ping: a 16-bit CMYK document is open. Second ping: the live round trip runs
+    // again but the document has since been closed — no doc fields in the state at all.
+    let pingCount = 0;
+    server.session.connection = makeConnection({
+      resultFor: () => {
+        pingCount++;
+        return pingCount === 1
+          ? {
+              version: '27.8.0',
+              action_sets_count: 0,
+              open_documents: ['a.psd'],
+              doc_depth: 16,
+              doc_mode: 'cmyk',
+            }
+          : { version: '27.8.0', action_sets_count: 0, open_documents: [] };
+      },
+    });
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    await server.handleToolCall('ps_ping', {}); // caches doc_depth: 16, doc_mode: 'cmyk'
+    await server.handleToolCall('ps_ping', {}); // live round trip, no document open — clears both
+
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(1);
+    const diag = recordDiagnostic.mock.calls[0][0];
+    expect('doc_depth' in diag).toBe(false);
+    expect('doc_mode' in diag).toBe(false);
+  });
+
+  it('a ping reporting Photoshop is not running clears a previously cached doc_depth/doc_mode', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+
+    // First ping: a 16-bit CMYK document is open. Then Photoshop quits before the second
+    // ping — isCurrentlyRunning() flips false, so pingPhotoshop takes its "does not appear
+    // to be running" early return, well before the round trip that would otherwise report
+    // the document gone.
+    const fakeConn = makeConnection({
+      result: {
+        version: '27.8.0',
+        action_sets_count: 0,
+        open_documents: ['a.psd'],
+        doc_depth: 16,
+        doc_mode: 'cmyk',
+      },
+    });
+    server.session.connection = fakeConn;
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    await server.handleToolCall('ps_ping', {}); // caches doc_depth: 16, doc_mode: 'cmyk'
+    fakeConn.setCurrentlyRunning(false);
+    // "not running" early return — clears both. This ping's OWN registry success is
+    // downgraded by telemetry (lastPingReachedPs false), so it emits a diagnostic of its
+    // own here too, ahead of the failing call below.
+    await server.handleToolCall('ps_ping', {});
+
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(2);
+    for (const [diag] of recordDiagnostic.mock.calls) {
+      expect('doc_depth' in diag).toBe(false);
+      expect('doc_mode' in diag).toBe(false);
+    }
+  });
+
+  it('keeps the last known document dimensions across a degraded ping (preserved behaviour)', async () => {
+    const server = new EditmameiServer() as unknown as {
+      session: { connection: unknown };
+      snippetClient: unknown;
+      telemetry: {
+        recordCall: (call: unknown) => void;
+        recordDiagnostic: (diag: Record<string, unknown>) => void;
+        onPsVersionResolved: () => void;
+        setInstallAssets: (a: unknown) => void;
+      };
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+
+    server.session.connection = makeConnection({
+      result: {
+        version: '27.8.0',
+        action_sets_count: 0,
+        open_documents: ['a.psd'],
+        doc_depth: 16,
+        doc_mode: 'cmyk',
+      },
+    });
+    server.snippetClient = makeSnippetClient();
+    const recordDiagnostic = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic,
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+
+    await server.handleToolCall('ps_ping', {}); // caches doc_depth: 16, doc_mode: 'cmyk'
+
+    // Second ping: the go-core binary is broken this time — build() fails before the round
+    // trip ever runs, so this is a DEGRADED ping, not a live "no document" answer.
+    server.snippetClient = {
+      build: async () => {
+        throw new Error('go-core binary missing');
+      },
+    };
+    await server.handleToolCall('ps_ping', {});
+
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test override — fails so the cached dimensions surface',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => {
+        throw new Error('boom');
+      },
+    });
+    await server.handleToolCall('ps_export', {});
+
+    expect(recordDiagnostic).toHaveBeenCalledTimes(1);
+    expect(recordDiagnostic.mock.calls[0][0]).toMatchObject({
+      doc_depth: 16,
+      doc_mode: 'cmyk',
     });
   });
 });
@@ -1236,6 +2154,182 @@ describe('EditmameiServer.start() boot ordering', () => {
       `expected exactly one awaited call ahead of connect(), found: ${JSON.stringify(awaitsBeforeConnect)}`
     ).toBe(1);
     expect(beforeConnect).toContain('await this.loadModules()');
+  });
+
+  // Pinned the same way as the two tests above (source-level, not a live
+  // start() invocation) — these three post-connect background jobs are all
+  // Photoshop/Pro-only. Without the guard, `ensureEntitledModuleFresh` reads
+  // the real on-disk license store and, on a machine that happens to carry a
+  // Pro entitlement, does real network refresh work for a module that a
+  // 'gimp'-pinned boot (registerPhotoshop: false) never loaded and that
+  // contributes no tools to it at all.
+  it('the Photoshop warmup and the Pro module self-heal/refresh jobs are all gated on registerPhotoshop', () => {
+    const serverSrc = readFileSync(join(REPO_ROOT, 'src', 'core', 'server.ts'), 'utf8');
+    const startMatch = serverSrc.match(/async start\(\)\s*\{[\s\S]*?\n  \}/);
+    expect(startMatch, 'start() body not found in server.ts').toBeTruthy();
+    const startBody = startMatch![0];
+
+    const guardMatch = startBody.match(
+      /if \(this\.editorOpts\.registerPhotoshop\) \{([\s\S]*?)\n    \}/
+    );
+    expect(guardMatch, 'registerPhotoshop guard block not found in start()').toBeTruthy();
+    const guardedBody = guardMatch![1];
+
+    for (const call of [
+      'this.session.initialize(',
+      'this.reprovisionIfModuleSkipped(',
+      'this.ensureEntitledModuleFresh(',
+    ]) {
+      expect(guardedBody, `${call} not found inside the registerPhotoshop guard`).toContain(call);
+    }
+  });
+});
+
+// ===========================================================================
+// GIMP session shutdown wiring — stop() and the transport's onclose must
+// both shut down a registered GimpBackend. `stop()` is directly testable
+// (no real stdio transport needed); `onclose`'s assignment only happens
+// inside start(), which — per the boot-ordering block above — this suite
+// deliberately never invokes (booting the real stdio transport in a unit
+// test is undesirable), so that half is pinned at the source level instead,
+// the same technique the boot-ordering pin above uses.
+// ===========================================================================
+describe('GIMP session shutdown wiring', () => {
+  it('stop() shuts down a registered GimpBackend — a later gimp_* call rejects with session closed', async () => {
+    const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'gimp');
+    const server = new EditmameiServer({ editors }) as unknown as {
+      gimpBackend: { call(op: string, args: Record<string, unknown>): Promise<unknown> };
+      stop(): Promise<void>;
+    };
+    await server.stop();
+    await expect(server.gimpBackend.call('ping', {})).rejects.toMatchObject({
+      code: 'gimp_session_restarted',
+    });
+  });
+
+  it('hands the configured gimp_path to the GimpBackend, so a re-detect after a boot timeout finds that install', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'em-server-gimp-path-'));
+    const configured = join(dir, 'custom-gimp-console.exe');
+    writeFileSync(configured, '');
+    try {
+      const editors = {
+        ...resolveEditorRegistration({ gimp: null, timedOut: true }, 'gimp'),
+        gimpPathOverride: configured,
+      };
+      const server = new EditmameiServer({ editors }) as unknown as {
+        gimpBackend: { prepare(): Promise<void>; install: { path: string } | null };
+        stop(): Promise<void>;
+      };
+      await server.gimpBackend.prepare();
+      expect(server.gimpBackend.install?.path).toBe(configured);
+      await server.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stop() is a no-op when no editors option registered GIMP at all (the pre-GIMP construction path)', async () => {
+    const server = new EditmameiServer() as unknown as { stop(): Promise<void> };
+    await expect(server.stop()).resolves.toBeUndefined();
+  });
+
+  it("onclose shuts down a registered GimpBackend too (source-level pin — see this block's own doc comment for why)", () => {
+    const serverSrc = readFileSync(join(REPO_ROOT, 'src', 'core', 'server.ts'), 'utf8');
+    const oncloseMatch = serverSrc.match(/this\.server\.onclose = \(\) => \{[\s\S]*?\n    \};/);
+    expect(oncloseMatch, 'onclose assignment not found in server.ts').toBeTruthy();
+    expect(oncloseMatch![0]).toMatch(/this\.gimpBackend/);
+    expect(oncloseMatch![0]).toMatch(/\.shutdown\(\)/);
+  });
+});
+
+// ===========================================================================
+// The onCall hook's own setGimpVersion gate (`entry.success && entry.tool
+// .startsWith('gimp_') && this.gimpBackend?.gimpVersion`). Covered elsewhere:
+// SessionLog.setGimpVersion itself + the meta-line shape
+// (tests/unit/session-log.test.ts), and GimpBackend's own gimpVersion
+// resolution (tests/backends/gimp/backend.test.ts). This targets only the
+// server-level wiring between the two — mirrors the psVersion hook tests
+// above (`stamps sessionLog.setPsVersion alongside psVersion…`), swapping in
+// a fake gimpBackend so the test doesn't need a real GIMP session to reach
+// gimpVersion.
+// ===========================================================================
+type GimpVersionServer = {
+  gimpBackend: { gimpVersion?: string } | undefined;
+  sessionLog: { setGimpVersion(version: string): Promise<void> };
+  toolRegistry: {
+    register(
+      name: string,
+      def: {
+        tool: { name: string; description: string; inputSchema: object };
+        handler: () => Promise<{
+          content: unknown[];
+          structuredContent?: object;
+          isError?: boolean;
+        }>;
+      }
+    ): void;
+  };
+  handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+};
+
+describe('the onCall hook stamps sessionLog.setGimpVersion after a successful gimp_* call', () => {
+  it('calls setGimpVersion with the backend-reported version once a gimp_* call succeeds', async () => {
+    const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'gimp');
+    const server = new EditmameiServer({ editors }) as unknown as GimpVersionServer;
+    // Swaps in a fake backend that already reports a resolved version — this
+    // targets the onCall hook's own gating logic, not GimpBackend's real
+    // session-startup path (covered separately, see the block comment above).
+    server.gimpBackend = { gimpVersion: '3.2.6' };
+    const setGimpVersionSpy = vi.spyOn(server.sessionLog, 'setGimpVersion');
+    server.toolRegistry.register('gimp_test_fixture', {
+      tool: {
+        name: 'gimp_test_fixture',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => ({ content: [{ type: 'text', text: 'ok' }], structuredContent: {} }),
+    });
+
+    await server.handleToolCall('gimp_test_fixture', {});
+    await vi.waitFor(() => {
+      expect(setGimpVersionSpy).toHaveBeenCalledWith('3.2.6');
+    });
+  });
+
+  it('does not call setGimpVersion for a successful ps_*-named call, even with a gimpBackend version available', async () => {
+    const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'gimp');
+    const server = new EditmameiServer({ editors }) as unknown as GimpVersionServer;
+    server.gimpBackend = { gimpVersion: '3.2.6' };
+    const setGimpVersionSpy = vi.spyOn(server.sessionLog, 'setGimpVersion');
+    server.toolRegistry.register('ps_test_fixture', {
+      tool: {
+        name: 'ps_test_fixture',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => ({ content: [{ type: 'text', text: 'ok' }], structuredContent: {} }),
+    });
+
+    await server.handleToolCall('ps_test_fixture', {});
+    expect(setGimpVersionSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not call setGimpVersion for a FAILED gimp_* call, even with a gimpBackend version available', async () => {
+    const editors = resolveEditorRegistration({ gimp: null, timedOut: false }, 'gimp');
+    const server = new EditmameiServer({ editors }) as unknown as GimpVersionServer;
+    server.gimpBackend = { gimpVersion: '3.2.6' };
+    const setGimpVersionSpy = vi.spyOn(server.sessionLog, 'setGimpVersion');
+    server.toolRegistry.register('gimp_test_fixture_fails', {
+      tool: {
+        name: 'gimp_test_fixture_fails',
+        description: 'test fixture',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: async () => ({ content: [{ type: 'text', text: 'boom' }], isError: true }),
+    });
+
+    await server.handleToolCall('gimp_test_fixture_fails', {});
+    expect(setGimpVersionSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -1392,6 +2486,41 @@ describe('raw develop pending flag (dispatch-level)', () => {
     expect(getPendingRawDevelop()).toBeNull();
   });
 
+  it('a ps_develop_raw that opened the file clears the flag', async () => {
+    // A raw the model opened earlier is now developed, so the advisory would
+    // otherwise send it into a redundant Camera Raw pass on exactly the
+    // workflow ps_develop_raw provides.
+    const server = new EditmameiServer() as unknown as FlagServer;
+    server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: true, document_name: 'a.dng' })
+    );
+    server.toolRegistry.register('ps_develop_raw', stub('ps_develop_raw', { opened: true }));
+    await server.handleToolCall('ps_open_document', {});
+    expect(getPendingRawDevelop()).not.toBeNull();
+    await server.handleToolCall('ps_develop_raw', {});
+    expect(getPendingRawDevelop()).toBeNull();
+  });
+
+  it('a ps_develop_raw that only READ the sidecar leaves the flag alone', async () => {
+    // mode='read' inspects and develops nothing, so clearing on the tool name
+    // alone would suppress an advisory that is still correct.
+    const server = new EditmameiServer() as unknown as FlagServer;
+    server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
+    server.toolRegistry.register(
+      'ps_open_document',
+      stub('ps_open_document', { is_raw_source: true, document_name: 'a.dng' })
+    );
+    server.toolRegistry.register(
+      'ps_develop_raw',
+      stub('ps_develop_raw', { mode: 'read', opened: false })
+    );
+    await server.handleToolCall('ps_open_document', {});
+    await server.handleToolCall('ps_develop_raw', { mode: 'read' });
+    expect(getPendingRawDevelop()).not.toBeNull();
+  });
+
   it('an isError open result never sets the flag', async () => {
     const server = new EditmameiServer() as unknown as FlagServer;
     server.toolRegistry.register('ps_apply_camera_raw', stub('ps_apply_camera_raw', {}));
@@ -1401,5 +2530,436 @@ describe('raw develop pending flag (dispatch-level)', () => {
     );
     await server.handleToolCall('ps_open_document', {});
     expect(getPendingRawDevelop()).toBeNull();
+  });
+});
+
+// ===========================================================================
+// The retry signal is a SHA-256 hash of tool+args now, not the raw stringified
+// args (server.ts's hashRetryKey) — nothing about args is retained on the
+// instance between calls. Observable behavior must be unchanged: same tool +
+// deep-equal args as the IMMEDIATELY preceding call is a retry.
+// ===========================================================================
+describe('telemetry: retry signal (hashed key)', () => {
+  interface RetryServer {
+    toolRegistry: {
+      register(
+        name: string,
+        def: {
+          tool: { name: string; description: string; inputSchema: object };
+          handler: () => Promise<unknown>;
+        }
+      ): void;
+    };
+    telemetry: {
+      recordCall: ReturnType<typeof vi.fn>;
+      recordDiagnostic: ReturnType<typeof vi.fn>;
+    };
+    sessionLog: { append: ReturnType<typeof vi.fn> };
+    handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+  }
+
+  function spyTelemetry() {
+    return { recordCall: vi.fn(), recordDiagnostic: vi.fn() };
+  }
+
+  const stub = (name: string) => ({
+    tool: {
+      name,
+      description: 'test fixture',
+      inputSchema: { type: 'object' as const, properties: {} },
+    },
+    handler: async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }),
+  });
+
+  it('flags the second of two identical back-to-back calls as a retry', async () => {
+    const server = new EditmameiServer() as unknown as RetryServer;
+    server.toolRegistry.register('ps_export', stub('ps_export'));
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[1][0]).toMatchObject({ retry: true });
+  });
+
+  it('does not flag the second call as a retry when the args differ', async () => {
+    const server = new EditmameiServer() as unknown as RetryServer;
+    server.toolRegistry.register('ps_export', stub('ps_export'));
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+    await server.handleToolCall('ps_export', { format: 'png' });
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[1][0]).toMatchObject({ retry: false });
+  });
+
+  it('does not flag a repeat as a retry when a DIFFERENT tool intervenes (A, B, A)', async () => {
+    const server = new EditmameiServer() as unknown as RetryServer;
+    server.toolRegistry.register('ps_export', stub('ps_export'));
+    server.toolRegistry.register('ps_save_psd', stub('ps_save_psd'));
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+    await server.handleToolCall('ps_save_psd', { format: 'jpg' });
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[1][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[2][0]).toMatchObject({ retry: false });
+  });
+
+  it('unserializable args (circular structure) are never a retry, and leave the stored key untouched for the NEXT comparison', async () => {
+    const server = new EditmameiServer() as unknown as RetryServer;
+    server.toolRegistry.register('ps_export', stub('ps_export'));
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+    // SessionLog.append computes its OWN (separately unguarded) retry key by re-walking
+    // and re-stringifying the same args — stub it so this test isolates hashRetryKey's
+    // behavior in the onCall hook, rather than also exercising that unrelated path.
+    server.sessionLog.append = vi.fn().mockResolvedValue(undefined);
+
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+
+    const circular: Record<string, unknown> = { format: 'png' };
+    circular.self = circular;
+    await server.handleToolCall('ps_export', circular);
+
+    // Same tool + deep-equal args as the first call — only a retry if the stored hash
+    // survived the circular call untouched rather than being clobbered by a null.
+    await server.handleToolCall('ps_export', { format: 'jpg' });
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[1][0]).toMatchObject({ retry: false });
+    expect(telemetry.recordCall.mock.calls[2][0]).toMatchObject({ retry: true });
+  });
+});
+
+// ===========================================================================
+// computeResultBytes is computed ONCE per call in the onCall hook and
+// threaded to both SessionLog.append and telemetry.recordCall, rather than
+// each caller re-walking the same result. Pinned against the exact fixture
+// tests/unit/session-log.test.ts's own computeResultBytes suite uses, so the
+// two layers are cross-checked against each other for the same input.
+// ===========================================================================
+describe('telemetry: result_bytes is computed once and threaded to recordCall', () => {
+  it('matches the exact byte count for a known text-block result', async () => {
+    const server = new EditmameiServer() as unknown as {
+      toolRegistry: {
+        register(
+          name: string,
+          def: {
+            tool: { name: string; description: string; inputSchema: object };
+            handler: () => Promise<unknown>;
+          }
+        ): void;
+      };
+      telemetry: {
+        recordCall: ReturnType<typeof vi.fn>;
+        recordDiagnostic: ReturnType<typeof vi.fn>;
+      };
+      handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+    // Same fixture as tests/unit/session-log.test.ts's `computeResultBytes` suite
+    // ("matches JSON.stringify(result).length for a plain text content block").
+    const result = { content: [{ type: 'text' as const, text: 'hello' }] };
+    server.toolRegistry.register('ps_export', {
+      tool: {
+        name: 'ps_export',
+        description: 'test fixture',
+        inputSchema: { type: 'object' as const, properties: {} },
+      },
+      handler: async () => result,
+    });
+    const telemetry = { recordCall: vi.fn(), recordDiagnostic: vi.fn() };
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_export', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
+      result_bytes: JSON.stringify(result).length,
+    });
+  });
+});
+
+// ===========================================================================
+// setInstallAssets is called with only the fields THIS ping actually
+// observed (never a stale 0 for a degraded field) — see client.ts's
+// per-field merge and server.ts's ps_ping handler.
+// ===========================================================================
+describe('telemetry: setInstallAssets carries only the fields this ping observed', () => {
+  type AssetsServer = {
+    session: { connection: unknown };
+    snippetClient: unknown;
+    telemetry: {
+      recordCall: (call: unknown) => void;
+      recordDiagnostic: (diag: unknown) => void;
+      onPsVersionResolved: () => void;
+      setInstallAssets: ReturnType<typeof vi.fn>;
+    };
+    handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
+  };
+
+  function spyTelemetry() {
+    return {
+      recordCall: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      onPsVersionResolved: vi.fn(),
+      setInstallAssets: vi.fn(),
+    };
+  }
+
+  it('reports both fields when the pingState round trip fully succeeds', async () => {
+    const server = new EditmameiServer() as unknown as AssetsServer;
+    server.session.connection = makeConnection({
+      result: { version: '27.8.0', action_sets_count: 3, open_documents: [] },
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.setInstallAssets).toHaveBeenCalledTimes(1);
+    const call = telemetry.setInstallAssets.mock.calls[0][0] as Record<string, unknown>;
+    expect(call.action_sets).toBe(3);
+    expect(typeof call.templates_saved).toBe('number');
+  });
+
+  it('omits action_sets when the pingState snippet never ran (build failure, PS still alive)', async () => {
+    const server = new EditmameiServer() as unknown as AssetsServer;
+    server.session.connection = makeConnection(); // default info → connection.ping() resolves true
+    server.snippetClient = {
+      build: async () => {
+        throw new Error('go-core binary missing');
+      },
+    };
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.setInstallAssets).toHaveBeenCalledTimes(1);
+    const call = telemetry.setInstallAssets.mock.calls[0][0] as Record<string, unknown>;
+    expect('action_sets' in call).toBe(false);
+    // listTemplates() still ran (not gated on pingState) — templates_saved is observed.
+    expect(typeof call.templates_saved).toBe('number');
+  });
+
+  it('omits templates_saved when listTemplates() throws (pingState round trip still succeeded)', async () => {
+    const server = new EditmameiServer() as unknown as AssetsServer;
+    server.session.connection = makeConnection({
+      result: { version: '27.8.0', action_sets_count: 3, open_documents: [] },
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    vi.mocked(templateStorage.listTemplates).mockRejectedValueOnce(new Error('disk read failed'));
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.setInstallAssets).toHaveBeenCalledTimes(1);
+    const call = telemetry.setInstallAssets.mock.calls[0][0] as Record<string, unknown>;
+    // A confirmed 0 would misreport a healthy install as having no saved templates —
+    // the field must be absent, not a stale/misleading zero.
+    expect('templates_saved' in call).toBe(false);
+    // action_sets is unaffected — its own round trip succeeded independently.
+    expect(call.action_sets).toBe(3);
+  });
+});
+
+// ===========================================================================
+// The ps_ping license advisory. ps_ping already triggers the license refresh
+// and already throws the result away, so a license holder whose Pro is dark got
+// no signal on the one channel the user actually reads. It rides the ping TEXT
+// for the same reason the update notice does: an MCP server's stderr never
+// reaches anyone, and a tool result does.
+//
+// Its source is injected here. The real one reads ~/.editmamei and is inert
+// under the test runner — without that, every ping assertion in this file would
+// pass or fail according to the developer machine's own license state.
+// ===========================================================================
+describe('ps_ping license advisory', () => {
+  type AdvisoryPingServer = {
+    session: { connection: unknown };
+    updateInfo: unknown;
+    snippetClient: unknown;
+    pingPhotoshop(): Promise<{
+      content: Array<{ text: string }>;
+      structuredContent: Record<string, unknown>;
+      isError?: boolean;
+    }>;
+  };
+
+  const ADVISORY = 'Pro is not unlocking. Fix: quit the client fully.';
+
+  function advisoryServer(source: () => string | null): AdvisoryPingServer {
+    const server = new EditmameiServer({
+      licenseAdvisory: source,
+    }) as unknown as AdvisoryPingServer;
+    // A detected install whose round trip fails → the ping answers "not
+    // connected", which must carry the advisory like every other ping shape.
+    server.session.connection = makeConnection({ throwOnExecute: new Error('boom') });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = null;
+    return server;
+  }
+
+  it('adds nothing at all when there is nothing to say', async () => {
+    // A Community user and a healthy Pro user both land here, and both must pay
+    // zero extra tokens for a problem they do not have.
+    const server = advisoryServer(() => null);
+    const res = await server.pingPhotoshop();
+    // An exact pin, not a `not.toContain`: the point is that NOTHING was
+    // appended, which only an equality check can prove.
+    expect(res.content[0].text).toBe('Photoshop did not respond');
+  });
+
+  it('carries the advisory when there is', async () => {
+    const server = advisoryServer(() => ADVISORY);
+    const res = await server.pingPhotoshop();
+    expect(res.content[0].text).toContain(ADVISORY);
+  });
+
+  it('says it once per session, not once per ping', async () => {
+    let calls = 0;
+    const server = advisoryServer(() => {
+      calls++;
+      return ADVISORY;
+    });
+
+    expect((await server.pingPhotoshop()).content[0].text).toContain(ADVISORY);
+    expect((await server.pingPhotoshop()).content[0].text).not.toContain(ADVISORY);
+    expect((await server.pingPhotoshop()).content[0].text).not.toContain(ADVISORY);
+    // Latched after it lands — the source is not consulted again either.
+    expect(calls).toBe(1);
+  });
+
+  it('keeps looking until there IS something to say, then latches', async () => {
+    // The module-update failure that feeds this arrives after the transport
+    // connects, so an early silent ping must not spend the one chance to speak.
+    let ready = false;
+    const server = advisoryServer(() => (ready ? ADVISORY : null));
+
+    expect((await server.pingPhotoshop()).content[0].text).not.toContain(ADVISORY);
+    ready = true;
+    expect((await server.pingPhotoshop()).content[0].text).toContain(ADVISORY);
+    expect((await server.pingPhotoshop()).content[0].text).not.toContain(ADVISORY);
+  });
+
+  it('is never shaped as a failure — the ping itself worked', async () => {
+    const server = advisoryServer(() => ADVISORY);
+    const res = await server.pingPhotoshop();
+    expect(res.isError).toBeUndefined();
+    expect(res.structuredContent.connected).toBe(false);
+  });
+
+  it('sits after the update notice rather than displacing it', async () => {
+    const server = advisoryServer(() => ADVISORY);
+    server.updateInfo = {
+      current: '0.18.0',
+      latest: '0.19.0',
+      channel: 'npm',
+      how_to_update: 'Run: npm install -g editmamei@latest (then restart your MCP client).',
+      fixed_tools: [] as string[],
+    };
+    const text = (await server.pingPhotoshop()).content[0].text;
+    expect(text).toContain('v0.19.0');
+    expect(text.indexOf(ADVISORY)).toBeGreaterThan(text.indexOf('v0.19.0'));
+  });
+});
+
+// privacy.send_previews_to_llm is enforced at the one place every tool result leaves the server,
+// so every image-returning tool (ps_get_preview, ps_get_selection_preview, ps_read_scene,
+// ps_detect, and module tools) honours it without its own check.
+type PreviewPrivacyServer = {
+  previewsAllowed: () => boolean;
+  toolRegistry: PsVersionServer['toolRegistry'];
+  handleToolCall(
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }>;
+};
+
+describe('privacy.send_previews_to_llm is enforced on every tool result', () => {
+  function serverWithImageTool(allowed: boolean) {
+    const server = new EditmameiServer() as unknown as PreviewPrivacyServer;
+    let checks = 0;
+    server.previewsAllowed = () => {
+      checks++;
+      return allowed;
+    };
+    server.toolRegistry.register('test_image_tool', {
+      tool: {
+        name: 'test_image_tool',
+        description: 'test fixture',
+        inputSchema: { type: 'object' },
+      },
+      handler: async () => ({
+        content: [
+          { type: 'image', data: 'SECRETPIXELS', mimeType: 'image/jpeg' },
+          { type: 'text', text: 'Preview rendered.' },
+        ],
+        structuredContent: { bytes: 12 },
+      }),
+    });
+    server.toolRegistry.register('test_text_tool', {
+      tool: {
+        name: 'test_text_tool',
+        description: 'test fixture',
+        inputSchema: { type: 'object' },
+      },
+      handler: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    // ps_sequence's shape: text on top, the last step's result (image included) nested in
+    // structuredContent.
+    server.toolRegistry.register('test_nested_image_tool', {
+      tool: {
+        name: 'test_nested_image_tool',
+        description: 'test fixture',
+        inputSchema: { type: 'object' },
+      },
+      handler: async () => ({
+        content: [{ type: 'text', text: 'Ran 1 of 1 steps.' }],
+        structuredContent: {
+          final: { content: [{ type: 'image', data: 'SECRETPIXELS', mimeType: 'image/jpeg' }] },
+        },
+      }),
+    });
+    return { server, checks: () => checks };
+  }
+
+  it('withholds image blocks when the setting is false, keeping the text', async () => {
+    const { server } = serverWithImageTool(false);
+    const result = await server.handleToolCall('test_image_tool', {});
+    expect(result.content.some((c) => c.type === 'image')).toBe(false);
+    expect(JSON.stringify(result)).not.toContain('SECRETPIXELS');
+    expect(result.content.some((c) => c.text === 'Preview rendered.')).toBe(true);
+    expect(result.content.at(-1)?.text).toMatch(/withheld because the user's privacy/);
+  });
+
+  it('withholds an image nested in structuredContent (a wrapped tool result)', async () => {
+    const { server } = serverWithImageTool(false);
+    const result = await server.handleToolCall('test_nested_image_tool', {});
+    expect(JSON.stringify(result)).not.toContain('SECRETPIXELS');
+    expect(result.content.at(-1)?.text).toMatch(/^An image was withheld/);
+  });
+
+  it('passes the image through when the setting is true', async () => {
+    const { server } = serverWithImageTool(true);
+    const result = await server.handleToolCall('test_image_tool', {});
+    expect(result.content[0]?.type).toBe('image');
+  });
+
+  it('does not read the setting for a result with no image', async () => {
+    const { server, checks } = serverWithImageTool(false);
+    const result = await server.handleToolCall('test_text_tool', {});
+    expect(result.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(checks()).toBe(0);
   });
 });

@@ -1,9 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
 import { createFilterTools } from '@editmamei/tools/filter-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { FakeDetectionClient, CANNED, EXPORT_RESULT } from '../fixtures/fake-detection-client.ts';
+import { setPathPlatformForTests } from '@editmamei/utils/local-path.ts';
+
+// Written with Windows paths: apply Windows path rules on every runner.
+beforeAll(() => setPathPlatformForTests('win32'));
+afterAll(() => setPathPlatformForTests(undefined));
 
 // 2026-06-20 — Phase 1 tool-surface consolidation. The thirteen
 // photoshop_apply_<filter> tools collapsed into ONE filter-apply tool with
@@ -27,10 +32,10 @@ describe('createFilterTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('exposes ps_filter plus the deprecated ps_apply_filter alias, both well-formed', () => {
+  it('exposes ps_filter and nothing else, well-formed', () => {
     const tools = createFilterTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
-    expect(tools.map((t) => t.tool.name)).toEqual(['ps_filter', 'ps_apply_filter']);
+    expect(tools.map((t) => t.tool.name)).toEqual(['ps_filter']);
   });
 
   it('the type field enumerates all eighteen filters', () => {
@@ -118,35 +123,6 @@ describe('createFilterTools', () => {
     expect(conn.executions.length).toBe(0);
   });
 
-  // ps_apply_filter is the pre-merge name, kept as a deprecated alias for one
-  // release. It routes to the identical handler, so old and new calls must
-  // build the identical snippet + params — this is what makes "existing calls
-  // are unaffected" true rather than aspirational.
-  it('the deprecated ps_apply_filter builds the identical snippet + params as ps_filter', async () => {
-    const cases: Array<Record<string, unknown>> = [
-      { type: 'gaussian_blur', radius: 8 },
-      { type: 'sharpen', amount: 120, radius: 1.4, threshold: 2 },
-      { op: 'apply', type: 'high_pass', radius: 24, as_smart_filter: true },
-      { op: 'set_visibility', index: 2, enabled: false },
-    ];
-
-    for (const args of cases) {
-      const oldClient = makeSnippetClient();
-      const newClient = makeSnippetClient();
-      const oldTools = createFilterTools(conn.asConnection(), oldClient);
-      const newTools = createFilterTools(conn.asConnection(), newClient);
-
-      await callTool(oldTools, 'ps_apply_filter', args);
-      await callTool(newTools, 'ps_filter', args);
-
-      const label = JSON.stringify(args);
-      const oldBuild = oldClient.lastBuild();
-      const newBuild = newClient.lastBuild();
-      expect(oldBuild.name, label).toBe(newBuild.name);
-      expect(oldBuild.params, label).toEqual(newBuild.params);
-    }
-  });
-
   // 2026-06-20 — apply_displace (capture). Map path travels in
   // the descriptor (putPath DspF), so it forwards as a param.
   it('type=displace forwards map path + scale + enum params', async () => {
@@ -165,6 +141,18 @@ describe('createFilterTools', () => {
     expect(build.params.horizontalScale).toBe(10);
     expect(build.params.displacementMap).toBe('stretch_to_fit');
     expect(build.params.undefinedAreas).toBe('repeat_edge');
+  });
+
+  it('type=displace refuses a map on a network share before building a script', async () => {
+    const tools = createFilterTools(conn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_filter', {
+      type: 'displace',
+      map_path: String.raw`\\attacker.example\share\disp.psd`,
+      horizontal_scale: 10,
+      vertical_scale: 10,
+    });
+    expect(res.isError).toBe(true);
+    expect(snippetClient.allBuilds()).toEqual([]);
   });
 
   it('type=gaussian_blur passes the radius param', async () => {

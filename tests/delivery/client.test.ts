@@ -87,6 +87,25 @@ describe('DeliveryClient', () => {
     expect(seen[0].url).not.toContain('LICENSE-KEY-123');
   });
 
+  it('sends this device activation id when it has one, and no header when it does not', async () => {
+    const seen: Record<string, string>[] = [];
+    const fetchImpl: DeliveryFetch = async (_url, init) => {
+      seen.push(init.headers);
+      return jsonRes(200, {
+        generated_at: 't',
+        modules: {},
+        license: { status: 'granted', expires_at: null },
+      });
+    };
+    const activated = new DeliveryClient({ config: cfg, fetchImpl, activationId: 'act-1' });
+    await activated.fetchManifest('LICENSE-KEY-123');
+    const plain = new DeliveryClient({ config: cfg, fetchImpl });
+    await plain.fetchManifest('LICENSE-KEY-123');
+
+    expect(seen[0]['x-editmamei-activation-id']).toBe('act-1');
+    expect(seen[1]).not.toHaveProperty('x-editmamei-activation-id');
+  });
+
   it('parses the manifest body', async () => {
     const manifest = {
       generated_at: '2026-06-16T00:00:00Z',
@@ -253,6 +272,21 @@ describe('DeliveryClient', () => {
       };
       const client = new DeliveryClient({ config: cfg, fetchImpl, sleep: noSleep });
       await expect(client.fetchManifest('K')).rejects.toMatchObject({ code: 'not_entitled' });
+      expect(n).toBe(1);
+    });
+
+    it('maps a 451 to unavailable_in_region with a plain message, and does NOT retry it', async () => {
+      let n = 0;
+      const fetchImpl: DeliveryFetch = async () => {
+        n++;
+        return jsonRes(451, 'blocked');
+      };
+      const client = new DeliveryClient({ config: cfg, fetchImpl, sleep: noSleep });
+      await expect(client.fetchKey('K', 'pro')).rejects.toMatchObject({
+        code: 'unavailable_in_region',
+        httpStatus: 451,
+        message: "Editmamei Pro downloads aren't available in your region.",
+      });
       expect(n).toBe(1);
     });
 

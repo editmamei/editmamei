@@ -1,8 +1,17 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createDocumentTools } from '@editmamei/tools/document-tools.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool, indexTools, textOf } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
+import { resetOutputPathsForTests, setPathPlatformForTests } from '@editmamei/utils/local-path.ts';
+import { getToolTimeoutMs } from '@editmamei/utils/operation-timeouts.ts';
+
+// Written with Windows paths: apply Windows path rules on every runner.
+beforeAll(() => setPathPlatformForTests('win32'));
+afterAll(() => setPathPlatformForTests(undefined));
 
 describe('createDocumentTools', () => {
   let conn: FakePhotoshopConnection;
@@ -13,19 +22,143 @@ describe('createDocumentTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  it('returns 5 well-formed tools with expected names', () => {
+  it('returns 6 well-formed tools with expected names', () => {
     // 2026-06-20 Phase 1: export_jpeg + export_png consolidated into one
-    // ps_export(format) tool.
+    // ps_export(format) tool. 2026-08-25: ps_document added at tier 'dev'.
     const tools = createDocumentTools(conn.asConnection(), snippetClient);
     assertToolShape(tools);
     const names = tools.map((t) => t.tool.name);
     expect(names).toEqual([
       'ps_create_document',
+      'ps_document',
       'ps_close_document',
       'ps_open_document',
       'ps_save_psd',
       'ps_export',
     ]);
+  });
+
+  // ---------- ps_document ----------
+
+  it('document(op=list) reports every open document and which one is active', async () => {
+    const listConn = makeConnection({
+      resultFor: () => ({
+        count: 2,
+        documents: [
+          {
+            index: 0,
+            id: 11,
+            name: 'a.psd',
+            path: 'C:/a.psd',
+            saved: true,
+            active: false,
+            width_px: 100,
+            height_px: 50,
+          },
+          {
+            index: 1,
+            id: 12,
+            name: 'b.jpg',
+            path: null,
+            saved: false,
+            active: true,
+            width_px: 20,
+            height_px: 30,
+          },
+        ],
+        context: { hasDocument: true },
+      }),
+    });
+    const tools = createDocumentTools(listConn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_document', { op: 'list' });
+    expect(snippetClient.lastBuild().name).toBe('listDocuments');
+    const sc = res.structuredContent as { count: number; documents: Array<{ name: string }> };
+    expect(sc.count).toBe(2);
+    expect(sc.documents.map((d) => d.name)).toEqual(['a.psd', 'b.jpg']);
+    // The summary has to surface the two things a recovering caller needs.
+    expect(textOf(res)).toContain('ACTIVE');
+    expect(textOf(res)).toContain('unsaved changes');
+  });
+
+  it('document(op=list) answers plainly when NOTHING is open — the recovery case', async () => {
+    // The whole reason this op exists. Every other document snippet throws "No
+    // document is open"; reporting the same error here would leave the caller
+    // exactly as stuck as the failure that sent it here.
+    const emptyConn = makeConnection({
+      resultFor: () => ({ count: 0, documents: [], context: { hasDocument: false } }),
+    });
+    const tools = createDocumentTools(emptyConn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_document', { op: 'list' });
+    expect(res.isError).toBeUndefined();
+    expect((res.structuredContent as { count: number }).count).toBe(0);
+    expect(textOf(res)).toContain('No documents are open');
+  });
+
+  it('document(op=activate) forwards the selector to the snippet', async () => {
+    const actConn = makeConnection({
+      resultFor: () => ({ activated: true, id: 12, name: 'b.jpg', context: {} }),
+    });
+    const tools = createDocumentTools(actConn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_document', { op: 'activate', name: 'b.jpg' });
+    const build = snippetClient.lastBuild();
+    expect(build.name).toBe('activateDocument');
+    expect(build.params).toMatchObject({ name: 'b.jpg' });
+  });
+
+  it('document(op=activate) without a selector is a clean error, not a silent no-op', async () => {
+    const tools = createDocumentTools(conn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_document', { op: 'activate' });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('needs a name or an id');
+    // Nothing was dispatched to Photoshop.
+    expect(conn.executions).toHaveLength(0);
+  });
+
+  it('close_document REFUSES an empty name rather than closing the active document', async () => {
+    // The dangerous asymmetry: dropping an empty name downgrades "close the
+    // document I named" into "close whatever is active", on a destructive op.
+    // An agent that computed the name from a failed lookup would close the
+    // user's working document.
+    const tools = createDocumentTools(conn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_close_document', { save: false, name: '' });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('empty string');
+    expect(conn.executions).toHaveLength(0);
+  });
+
+  it('document(op=activate) refuses an empty name too — same rule, both ops', async () => {
+    const tools = createDocumentTools(conn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_document', { op: 'activate', name: '' });
+    expect(res.isError).toBe(true);
+    // Assert the SPECIFIC message: activate would already error on a missing
+    // selector, so `isError` alone passes with or without the empty-name check
+    // and would not notice it being removed.
+    expect(textOf(res)).toContain('empty string');
+    expect(conn.executions).toHaveLength(0);
+  });
+
+  it('an activate failure names the operation that failed, not "reading documents"', async () => {
+    const boomConn = makeConnection({
+      resultFor: () => {
+        throw new Error('No open document matches name "b.jpg". Open documents: a.psd');
+      },
+    });
+    const tools = createDocumentTools(boomConn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_document', { op: 'activate', name: 'b.jpg' });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('Error activating document');
+  });
+
+  it('close_document forwards a target when given one, and omits the keys when not', async () => {
+    const tools = createDocumentTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_close_document', { save: false, name: 'a.psd' });
+    expect(snippetClient.lastBuild().params).toMatchObject({ save: false, name: 'a.psd' });
+
+    await callTool(tools, 'ps_close_document', { save: false });
+    // The key must be ABSENT, not undefined: a present key flips the Go emitter
+    // from "close the active document" to "resolve a target".
+    expect(snippetClient.lastBuild().params).not.toHaveProperty('name');
+    expect(snippetClient.lastBuild().params).not.toHaveProperty('id');
   });
 
   it('create_document dispatches a script that creates a doc with the requested dimensions', async () => {
@@ -90,6 +223,17 @@ describe('createDocumentTools', () => {
     await callTool(tools, 'ps_open_document', { file_path: 'C:/test.jpg' });
     expect(conn.lastTimeout()).toBe(120000);
   });
+
+  it.each(['C:/Users/me/Downloads/x.jsx', 'C:/Users/me/Downloads/x.atn'])(
+    'open_document refuses a script or Action file (%s) without reaching Photoshop',
+    async (filePath) => {
+      const tools = createDocumentTools(conn.asConnection(), snippetClient);
+      const result = await callTool(tools, 'ps_open_document', { file_path: filePath });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('is a script, Action or preset file, not an image');
+      expect(() => conn.lastScript()).toThrow(/no script has been executed/);
+    }
+  );
 
   // Phase 3b — post-timeout success re-probe. A timeout on the initial open
   // no longer means Photoshop failed: the cscript child was killed, but PS
@@ -282,6 +426,63 @@ describe('createDocumentTools', () => {
     expect(idx.get('ps_open_document')!.tool.inputSchema.required).toEqual(['file_path']);
   });
 
+  // Open-time bit depth for raw sources. It has to be set AT OPEN because
+  // ps_convert_image_mode flattens, so there is no second chance once an edit
+  // stack exists. Camera Raw's workflow options are the only scripted route,
+  // and the snippet falls back to a plain open where they are unavailable —
+  // so the handler's job is to report what was ACTUALLY opened rather than
+  // let the caller assume the request landed.
+  describe('ps_open_document bit_depth (raw open-time depth)', () => {
+    const openedAt = (bits: number, isRaw = true) =>
+      makeConnection({
+        resultFor: () => ({
+          success: true,
+          document_name: 'a.CR2',
+          bits_per_channel: bits,
+          is_raw_source: isRaw,
+        }),
+      });
+
+    it('forwards the requested depth to the snippet as rawBits', async () => {
+      const sc = makeSnippetClient();
+      const tools = createDocumentTools(openedAt(16).asConnection(), sc);
+      await callTool(tools, 'ps_open_document', { file_path: 'E:/a.CR2', bit_depth: 16 });
+      expect(sc.allBuilds()[0].params.rawBits).toBe(16);
+    });
+
+    it('sends rawBits 0 when the caller does not ask, leaving depth to Photoshop', async () => {
+      const sc = makeSnippetClient();
+      const tools = createDocumentTools(conn.asConnection(), sc);
+      await callTool(tools, 'ps_open_document', { file_path: 'E:/a.CR2' });
+      expect(sc.allBuilds()[0].params.rawBits).toBe(0);
+    });
+
+    it('stays silent when the document really opened at the requested depth', async () => {
+      const tools = createDocumentTools(openedAt(16).asConnection(), makeSnippetClient());
+      const r = await callTool(tools, 'ps_open_document', { file_path: 'E:/a.CR2', bit_depth: 16 });
+      expect(r.structuredContent).not.toHaveProperty('bit_depth_warning');
+    });
+
+    it('warns when Photoshop opened a raw at a different depth than requested', async () => {
+      const tools = createDocumentTools(openedAt(8).asConnection(), makeSnippetClient());
+      const r = await callTool(tools, 'ps_open_document', { file_path: 'E:/a.CR2', bit_depth: 16 });
+      expect(r.structuredContent!.bit_depth_warning).toContain('Requested 16-bit');
+      expect(r.structuredContent!.bit_depth_warning).toContain('opened 8-bit');
+    });
+
+    it('says bit_depth is raw-only when asked for it on a non-raw file', async () => {
+      const tools = createDocumentTools(openedAt(8, false).asConnection(), makeSnippetClient());
+      const r = await callTool(tools, 'ps_open_document', { file_path: 'E:/a.jpg', bit_depth: 16 });
+      expect(r.structuredContent!.bit_depth_warning).toContain('RAW sources only');
+    });
+
+    it('rejects a depth Photoshop has no mode for', async () => {
+      const tools = createDocumentTools(conn.asConnection(), makeSnippetClient());
+      const r = await callTool(tools, 'ps_open_document', { file_path: 'E:/a.CR2', bit_depth: 12 });
+      expect(r.isError).toBe(true);
+    });
+  });
+
   it('export defaults to nothing without a format (format is required)', async () => {
     const tools = createDocumentTools(conn.asConnection(), snippetClient);
     const r = await callTool(tools, 'ps_export', { output_path: 'C:/out/test.jpg' });
@@ -437,5 +638,253 @@ describe('ps_save_psd scene-channel purge (2026-08-01)', () => {
     // Best-effort: a failed cleanup must never block the save the user asked for.
     expect(res.isError).not.toBe(true);
     expect(conn.allScripts().some((x) => x.includes('savePsdAsCopy'))).toBe(true);
+  });
+});
+
+describe('ps_save_psd timeout budget and post-timeout check', () => {
+  // A timeout kills the wrapper, not Photoshop: the save usually completes anyway.
+  const TIMEOUT_MSG =
+    'Script execution timeout after 120000ms (cscript wrapper.vbs). The child process was ' +
+    'killed, but Photoshop runs as a separate process and may have kept executing.';
+  const isSave = (script: string) => script.includes('"__snippet":"savePsdAsCopy"');
+  const isProbe = (script: string) => script.includes('return { ready: true };');
+
+  let dir: string;
+  let out: string;
+  beforeEach(() => {
+    // Real files in a real temp folder, so the runner's own path rules apply.
+    setPathPlatformForTests(undefined);
+    dir = mkdtempSync(join(tmpdir(), 'em-psd-'));
+    out = join(dir, 'edit.psd');
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    resetOutputPathsForTests();
+    setPathPlatformForTests('win32');
+  });
+
+  /** Save times out after "Photoshop" ran `writes`; the probe answers with `probe`. */
+  function timingOut(writes: () => void, probe: () => unknown = () => ({ ready: true })) {
+    return makeConnection({
+      resultFor: (script: string) => {
+        if (isSave(script)) {
+          writes();
+          throw new Error(TIMEOUT_MSG);
+        }
+        if (isProbe(script)) return probe();
+        return { removed: 0 };
+      },
+    });
+  }
+
+  it('gives the save its own table budget', async () => {
+    const conn = makeConnection({ result: { success: true } });
+    await callTool(createDocumentTools(conn.asConnection(), makeSnippetClient()), 'ps_save_psd', {
+      output_path: out,
+    });
+    expect(conn.executions.find((e) => isSave(e.script))?.timeout).toBe(
+      getToolTimeoutMs('ps_save_psd')
+    );
+  });
+
+  it('reports success when the file was written despite the timeout, and lets a retry save over it', async () => {
+    const conn = timingOut(() => writeFileSync(out, 'layered psd bytes'));
+    const tools = createDocumentTools(conn.asConnection(), makeSnippetClient());
+
+    const res = await callTool(tools, 'ps_save_psd', { output_path: out });
+
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('post-timeout check confirmed');
+    const sc = res.structuredContent as Record<string, unknown>;
+    expect(sc).toMatchObject({ success: true, saved_to: out, reprobed: true, bytes: 17 });
+    expect(conn.executions.find((e) => isProbe(e.script))?.timeout).toBe(30000);
+
+    // Recorded as this session's output: the same path saves again without overwrite.
+    const again = await callTool(tools, 'ps_save_psd', { output_path: out });
+    expect(textOf(again)).not.toContain('was not written in this session');
+  });
+
+  it('keeps the timeout error when no file was written', async () => {
+    const conn = timingOut(() => {});
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out }
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('Script execution timeout');
+    expect(textOf(res)).toContain('may still be writing the file');
+    expect(conn.allScripts().some(isProbe)).toBe(true);
+  });
+
+  it('keeps the timeout error when the file is empty', async () => {
+    const conn = timingOut(() => writeFileSync(out, ''));
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out }
+    );
+    expect(res.isError).toBe(true);
+  });
+
+  it('still reports the scene-channel purge on a confirmed save', async () => {
+    const conn = makeConnection({
+      resultFor: (script: string) => {
+        if (isSave(script)) {
+          writeFileSync(out, 'layered psd bytes');
+          throw new Error(TIMEOUT_MSG);
+        }
+        if (isProbe(script)) return { ready: true };
+        return { removed: 3 };
+      },
+    });
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out }
+    );
+    expect(res.structuredContent).toMatchObject({ reprobed: true, scene_channels_purged: 3 });
+  });
+
+  it('keeps the timeout error when the file at the path predates the save', async () => {
+    writeFileSync(out, 'an older copy');
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(out, old, old);
+    const conn = timingOut(() => {});
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out, overwrite: true }
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('Script execution timeout');
+  });
+
+  it('keeps the timeout error when the probe times out too (the save is still running)', async () => {
+    const conn = timingOut(
+      () => writeFileSync(out, 'partial'),
+      () => {
+        throw new Error('Script execution timeout after 30000ms (cscript wrapper.vbs).');
+      }
+    );
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out }
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('120000ms');
+  });
+
+  it('does not probe on a non-timeout failure', async () => {
+    const conn = makeConnection({
+      resultFor: (script: string) => {
+        if (isSave(script)) throw new Error('Could not save because the disk is full.');
+        return { removed: 0 };
+      },
+    });
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_save_psd',
+      { output_path: out }
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('disk is full');
+    expect(conn.allScripts().some(isProbe)).toBe(false);
+  });
+});
+
+describe('file paths: local drives only, and no replacing a file this session did not write', () => {
+  const UNC = String.raw`\\attacker.example\share\x.jpg`;
+  const WEBDAV = String.raw`\\attacker.example@SSL\drop\out.jpg`;
+
+  it.each([
+    ['ps_open_document', { file_path: UNC }],
+    ['ps_save_psd', { output_path: String.raw`\\attacker.example\share\out.psd` }],
+    ['ps_export', { format: 'jpeg', output_path: WEBDAV }],
+    ['ps_export', { format: 'png', output_path: String.raw`\\attacker.example\share\out.png` }],
+  ])('%s refuses a network path before any script is built', async (tool, args) => {
+    const conn = makeConnection({ result: { ok: true } });
+    const client = makeSnippetClient();
+    const res = await callTool(createDocumentTools(conn.asConnection(), client), tool, args);
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('own drives');
+    expect(client.allBuilds()).toEqual([]);
+    expect(conn.allScripts()).toEqual([]);
+  });
+
+  afterEach(() => resetOutputPathsForTests());
+
+  it.each([
+    // ExtendScript decodes %5F to "_", so this would write C:/DCIM/IMG_0001.jpg.
+    ['a percent-escape', 'C:/DCIM/IMG%5F0001.jpg', 'percent-escape'],
+    // An NTFS alternate data stream on an original.
+    ['a ":" past the drive', 'C:/DCIM/IMG_0001.jpg:x.jpg', '":" after the drive letter'],
+    ['a Windows device name', 'C:/out/CON.jpg', 'names a Windows device'],
+  ])('ps_export refuses %s before any script is built', async (_what, outputPath, message) => {
+    const conn = makeConnection({ result: { ok: true } });
+    const res = await callTool(
+      createDocumentTools(conn.asConnection(), makeSnippetClient()),
+      'ps_export',
+      {
+        format: 'jpeg',
+        output_path: outputPath,
+      }
+    );
+    expect(textOf(res)).toContain(message);
+    expect(conn.allScripts()).toEqual([]);
+  });
+
+  it('ps_export and ps_save_psd refuse an output path without the format extension', async () => {
+    const conn = makeConnection({ result: { ok: true } });
+    const tools = createDocumentTools(conn.asConnection(), makeSnippetClient());
+    expect(
+      textOf(await callTool(tools, 'ps_export', { format: 'jpeg', output_path: 'C:/out/run.bat' }))
+    ).toContain('must end in .jpg,');
+    // .jpg only: the checked path must be the one Photoshop writes.
+    expect(
+      textOf(
+        await callTool(tools, 'ps_export', { format: 'jpeg', output_path: 'C:/DCIM/IMG_0001.jpeg' })
+      )
+    ).toContain('must end in .jpg,');
+    expect(textOf(await callTool(tools, 'ps_save_psd', { output_path: 'C:/out/a.jpg' }))).toContain(
+      'must end in .psd'
+    );
+    expect(conn.allScripts()).toEqual([]);
+  });
+
+  it("refuses to replace an existing file, allows overwrite: true, and allows re-saving this session's own output", async () => {
+    // A real file in a real temp folder, so this test uses the runner's own path rules.
+    setPathPlatformForTests(undefined);
+    const dir = mkdtempSync(join(tmpdir(), 'em-out-'));
+    try {
+      const original = join(dir, 'IMG_001.jpg');
+      writeFileSync(original, 'original');
+      const conn = makeConnection({ result: { success: true } });
+      const tools = createDocumentTools(conn.asConnection(), makeSnippetClient());
+
+      const refused = await callTool(tools, 'ps_export', { format: 'jpeg', output_path: original });
+      expect(textOf(refused)).toContain('was not written in this session');
+      expect(conn.allScripts()).toEqual([]);
+      const forced = await callTool(tools, 'ps_export', {
+        format: 'jpeg',
+        output_path: original,
+        overwrite: true,
+      });
+      expect(forced.isError).not.toBe(true);
+
+      // A file this session wrote (the fake doesn't write; stand one in) can be saved again.
+      const own = join(dir, 'final.png');
+      expect(
+        (await callTool(tools, 'ps_export', { format: 'png', output_path: own })).isError
+      ).not.toBe(true);
+      writeFileSync(own, 'written');
+      expect(
+        (await callTool(tools, 'ps_export', { format: 'png', output_path: own })).isError
+      ).not.toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      setPathPlatformForTests('win32');
+    }
   });
 });

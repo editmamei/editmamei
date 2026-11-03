@@ -22,6 +22,7 @@ import {
   type EditmameiModule,
   type ModuleManifest,
 } from './host-api.js';
+import type { GimpBackend } from '../backends/gimp/backend.js';
 
 /**
  * Resolves a module's OWN go-core snippet client — the binary that emits the
@@ -33,6 +34,15 @@ import {
  */
 export type ModuleSnippetResolver = (manifest: ModuleManifest) => SnippetClient | null;
 
+/**
+ * What `loadDownloaded` actually did. The kernel refuses a module built for a
+ * newer ABI WITHOUT throwing — it never crashes the host over one — so "resolved
+ * a module" and "registered its tools" are not the same outcome, and a caller
+ * that can't tell them apart reports a total Pro outage as a success. Returned
+ * rather than thrown so the silent-skip semantics stay exactly as they were.
+ */
+export type DownloadedLoadOutcome = 'loaded' | 'abi-too-new';
+
 export interface KernelDeps {
   registry: ToolRegistry;
   connection: PhotoshopConnection;
@@ -42,6 +52,8 @@ export interface KernelDeps {
   resolveModuleSnippet?: ModuleSnippetResolver;
   /** The host's local-vision runtime (ONNX), handed to modules as `HostApi.detection`. */
   detection: HostDetection;
+  /** Handed to modules as `HostApi.gimp` — absent when this boot isn't registering the GIMP surface. */
+  gimp?: GimpBackend;
   sessionId: string;
   logger: Logger;
 }
@@ -52,6 +64,7 @@ export class Kernel {
   private readonly snippet: SnippetClient;
   private readonly resolveModuleSnippet?: ModuleSnippetResolver;
   private readonly detection: HostDetection;
+  private readonly gimp?: GimpBackend;
   private readonly sessionId: string;
   private readonly logger: Logger;
 
@@ -72,6 +85,7 @@ export class Kernel {
     this.snippet = deps.snippet;
     this.resolveModuleSnippet = deps.resolveModuleSnippet;
     this.detection = deps.detection;
+    this.gimp = deps.gimp;
     this.sessionId = deps.sessionId;
     this.logger = deps.logger;
   }
@@ -99,10 +113,12 @@ export class Kernel {
       abi: KERNEL_ABI,
       registerTools: (defs) => this.registry.registerAll(defs),
       invokeTool: (name, args) => this.invokeTool(name, args),
+      hasTool: (name) => this.registry.get(name) !== undefined,
       connection: this.connection,
       executeScript: (innerBody, timeoutMs) => runScript(this.connection, innerBody, timeoutMs),
       snippet: this.snippetFor(manifest),
       detection: this.detection,
+      gimp: this.gimp,
       session: { id: this.sessionId },
       logger: new Logger(`module:${manifest.id}`),
     };
@@ -165,8 +181,13 @@ export class Kernel {
    * (dev), or an absolute `import()` of the decrypted install dir (the eventual
    * provisioned path). The bundle's `default` export IS the module. `register`
    * may be async (decrypt/setup), so this awaits it.
+   *
+   * Returns which of the two non-throwing outcomes happened. The ABI skip
+   * registers nothing, and only the CALLER can decide what that means for the
+   * host — see `ModuleLifecycle.loadModules`, which turns it into a skip reason
+   * so a skipped module is never reported as loaded.
    */
-  async loadDownloaded(importer: () => Promise<unknown>): Promise<void> {
+  async loadDownloaded(importer: () => Promise<unknown>): Promise<DownloadedLoadOutcome> {
     const imported = (await importer()) as {
       default?: EditmameiModule;
       proModule?: EditmameiModule;
@@ -177,11 +198,12 @@ export class Kernel {
         'downloaded module export is not an EditmameiModule (expected a default export with a manifest + register())'
       );
     }
-    if (this.abiTooNew(mod.manifest)) return;
+    if (this.abiTooNew(mod.manifest)) return 'abi-too-new';
     const before = this.registry.count();
     await mod.register(this.hostApiFor(mod.manifest));
     this.logger.info(
       `Loaded downloaded module '${mod.manifest.id}' (${mod.manifest.name}) — ${this.registry.count() - before} tools.`
     );
+    return 'loaded';
   }
 }

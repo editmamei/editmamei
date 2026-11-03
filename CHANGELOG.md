@@ -10,7 +10,557 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.9.5] — 2026-11-03
+
 ### Fixed
+
+- **AI object masks line up on images of any size.** Images are scaled to the size the model expects
+  before encoding, so masks no longer drift on images whose long side isn't 1024 px.
+- **Tools refuse a call that leaves out a required argument, and name it.** The check now runs before
+  any tool starts.
+  - `ps_inspect`, `ps_guides` and `ps_transform_canvas` also name their missing argument correctly.
+- **Tool descriptions say what the tools do.** Your AI no longer gets wrong directions from them.
+  - `exp_gamma` on `ps_add_adjustment_layer` had its direction reversed: above 1 brightens midtones,
+    below 1 darkens them.
+  - `bw_tint_hue` accepts its own default of 220.
+  - `ps_detect` and `ps_read_scene` now say that `annotate:true` returns a JPEG to your AI client.
+- **Warnings reach AI apps that read only a tool's structured result.** Warnings and next steps from
+  the GIMP preview, histogram, compare and transform tools now appear there, along with the notice
+  when an image is withheld.
+- **GIMP opens a file already at the requested precision, and vignettes stay in place in region
+  renders.**
+
+### Security
+
+- **Script, Action and preset files are refused where an image is expected.** This covers opening and
+  placing images, and map and sky files.
+- **Windows system tools start from System32.** `cscript`, `tasklist`, `reg`, `taskkill` and `where`
+  no longer resolve through the search path.
+- **The privacy doc says that diagnostic error text can name a layer or repeat a value.**
+
+## [1.9.3] — 2026-10-25
+
+### Fixed
+
+- **Text in GIMP can change size without naming a font.** Asking for a new size alone keeps the
+  layer's current font instead of being refused.
+  - `gimp_text` with `op: "set_font"` accepts `font_size` on its own. With neither a font nor a
+    size, it says so.
+
+### Security
+
+- **Every install gets exactly the dependencies the release was tested with.** The npm package now
+  carries its own dependency tree, so installing it fetches nothing else from the registry.
+  - Applies to `npx editmamei`, global installs, and the Claude plugin. The download is larger,
+    about 35 MB.
+  - Release builds check every dependency's registry signature before packaging it.
+
+## [1.9.2] — 2026-10-24
+
+### Changed
+
+- **Listed in the MCP Registry as `io.github.editmamei/editmamei-photoshop-mcp`.** The
+  registry's search matches server names only, so the new name makes Editmamei show up when
+  people search for Photoshop. The npm package name and existing setups are unchanged.
+
+### Security
+
+- **Dependencies updated for published advisories.** Picks up fixed releases of zod, body-parser,
+  hono, fast-uri and ip-address, which address denial-of-service and URL-parsing issues.
+
+## [1.9.1] — 2026-10-21
+
+### Fixed
+
+- **Sky replacement finds Photoshop's own skies by name.** `ps_replace_sky` no longer needs a file
+  path: name a built-in sky, ask for the list, or leave it out to get Blue Sky 001.
+  - `sky` takes a sky's name, such as "Blue Sky 002" or "Sunset Sky 003". Skies you saved in
+    Photoshop work too. `sky: "list"` returns the installed skies without changing the image.
+  - `sky_file` is now optional and still takes any image on disk.
+- **A missing font comes back with names you can use.** When `ps_text` can't find a font, it
+  suggests installed fonts that match parts of the name you asked for, at most three styles per
+  family.
+
+## [1.9.0] — 2026-10-18
+
+### Added
+
+- **GIMP exports layered PSD files.** `gimp_export` writes a `.psd` that keeps layers, masks,
+  opacity, blend modes and groups, for finishing in Photoshop.
+  - Live filters are baked into each layer, a group with its own filter is merged into one layer,
+    and text is written as pixels.
+  - Photoshop blends partly transparent layers and blend modes in gamma space, so those can look
+    slightly different there; the export result lists them.
+- **Refine a saved GIMP selection.** `gimp_modify_selection` moves into the Community set: expand,
+  contract, feather, border, invert, harden or smooth a selection saved with `gimp_select`.
+- **Outlines, glows and edge-preserving blur in GIMP.** `gimp_add_effect` adds `outline`,
+  `outer_glow` and `surface_blur`, and the layer tools add the `grain_extract` and `grain_merge`
+  blend modes.
+  - Outline width and glow spread go up to 50 px, which keeps a large photo's export time
+    reasonable.
+- **GIMP text can wrap inside a box and size itself to fit.** `gimp_text` takes a `box` that wraps
+  the text, a `set_box` op for an existing layer, and `fit`, which picks the largest size that
+  fits the box. Text without a box behaves as before.
+
+### Changed
+
+- **Editmamei says when it cannot find Photoshop at all.** When no Photoshop install is detected,
+  `ps_ping` says so and explains how to point Editmamei at one with `PHOTOSHOP_PATH`, instead of
+  asking you to open Photoshop.
+- **GIMP files saved with the new effects need 1.9.0 to keep their settings.** An earlier version
+  opening such a file reads those filters back from GIMP instead of from Editmamei's saved record.
+  Files without the new effects are unaffected.
+
+### Fixed
+
+- **A slow Photoshop save is no longer reported as a failure when it finished.** A `ps_save_psd`
+  that runs past its time limit is checked on disk, and saving has a time budget of its own.
+- **GIMP vibrance matches Photoshop's strength.** The same `vibrance` value now gives a similar
+  result in both editors.
+- **GIMP results list what they found.** Listed filters, region statistics, checkpoints and layers
+  now appear in the result text, not only in the structured result.
+- **An out-of-range image or layer id is answered as not found.** A GIMP id too large for GIMP to
+  hold no longer fails with an internal overflow error.
+- **A module download refused for your region is reported once.** It is no longer retried.
+
+## [1.8.0] — 2026-10-06
+
+### Added
+
+- **GIMP gains selections, layer masks, text and layer transforms.** Five more `gimp_*` tools move
+  from development into the Community set.
+  - `gimp_select` builds a selection from a shape, a color range, a magic-wand region, a layer's
+    opaque pixels or a gradient, and saves it under a name.
+  - `gimp_layer_mask` adds, removes, applies or inverts a layer mask from a saved selection, and
+    `gimp_get_selection_preview` shows what is selected.
+  - `gimp_text` creates and restyles live text layers.
+  - `gimp_transform_layer` fits, scales, moves, rotates, flips, skews or free-transforms one layer.
+- **You can turn off tools that run script code.** Set `automation.allow_execute_script` to
+  `false` with `editmamei config set` or in settings.json, and those tools refuse. Only you can
+  change it; no tool can.
+- **Hosts can lower GIMP's image size limit.** The `EM_GIMP_MAX_MEGAPIXELS` environment variable
+  lowers the largest document the GIMP engine will create or grow to. It can never raise it.
+
+### Changed
+
+- **Layer masks and moving layers have new homes in GIMP.** `gimp_create_mask` is replaced by
+  `gimp_select` plus `gimp_layer_mask`, and `gimp_layer` no longer has a move operation: use
+  `gimp_transform_layer` with `op: "move"`.
+- **Photoshop file paths must be on a local drive, and saves no longer overwrite unasked.** File
+  paths follow the same rule as the GIMP tools, and saving over a file you didn't create in this
+  session needs `overwrite: true`.
+  - `ps_open_document`, `ps_place_image`, `ps_replace_sky` and the filter file paths refuse
+    network shares, device paths and drive-less Windows paths. A leading `~/` means your home
+    folder.
+  - `ps_save_psd` and `ps_export` require the format's extension (`.psd`, `.jpg`, `.png`); JPEG
+    export no longer accepts `.jpeg`.
+
+### Fixed
+
+- **Phone photos open upright in GIMP.** JPEGs that store their rotation in EXIF, as most phone
+  portraits do, are now rotated on open and place, and the rotation tag is cleared so nothing
+  rotates them twice.
+- **GIMP's open-document list shows only your documents.** Internal preview copies no longer
+  appear in it or count toward the open-document limit.
+- **Shrinking a GIMP selection no longer eats into the canvas edge.** A selection touching the edge
+  of the image keeps its hold on that edge when it is contracted.
+- **Usage data no longer carries folder names that contain spaces.** The path cleaner now reduces
+  paths like `C:\Projects\Acme Corp\x.psd` to the file name, as it already did for paths without
+  spaces.
+
+### Security
+
+- **Dependency updates close five advisories**, including an IP-spoofing issue in `proxy-addr`
+  (critical) and a denial-of-service issue in `source-map-js`.
+  - The MCP SDK moves to 1.32.1 for an advisory about its OAuth client sending credentials to an
+    authorization server the MCP server chooses (GHSA-6qxp-vccf-f47h).
+
+## [1.7.1] — 2026-10-02
+
+### Added
+
+- **Editmamei is available as a Claude plugin.** A plugin bundle for Claude's plugin directory
+  carries the Editmamei skill and a launcher pinned to this release.
+  - Plugin installs get their own update notice, which tells you to update the plugin rather than
+    rerun npx.
+- **Setup notes for more AI clients.** `docs/clients.md` covers configuration for MCP clients
+  beyond Claude Desktop, Claude Code and Cursor, with each one's known limits.
+
+### Fixed
+
+- **Running Editmamei in several AI clients at once no longer double-counts usage data.** Each
+  server process now keeps its own session state and only recovers sessions from processes that
+  have exited.
+  - Startup drains and outbox compaction claim the outbox by rename, so concurrent processes
+    neither send the same events twice nor drop each other's.
+- **The skill upload instructions point at the right claude.ai screen.** `editmamei install` and
+  `editmamei --help` now say Settings > Skills, then Add > Upload skill.
+
+### Changed
+
+- **Corrected docs.** Tool counts (83 for Photoshop, 24 for GIMP), the Pro feature list (raw
+  develop, batch, object-aimed edits), the free trial terms, and the privacy page's description
+  of license checks and Pro module updates now match the product.
+
+## [1.7.0] — 2026-09-29
+
+### Added
+
+- **GIMP can now work with layers, build composites and go back to a saved state.** Eight new
+  `gimp_*` tools take the GIMP beta from single-photo grading to multi-layer editing.
+  - `gimp_layer` creates, deletes, duplicates, groups, reorders, moves, renames and restyles layers
+    (opacity, blend mode, visibility), merges one down or flattens the image; `gimp_bake` merges a
+    layer's live filters into its pixels.
+  - `gimp_create_document` starts a blank canvas, `gimp_place_image` places another photo into the
+    document as a new layer, `gimp_canvas` extends the canvas for borders and frames, and
+    `gimp_convert_image_mode` switches between colour and grayscale.
+  - `gimp_add_effect` adds live vignette, black and white, motion blur, lens blur, noise and drop
+    shadow effects, re-editable like the adjustments. The vignette is subtle by default; a smaller
+    `radius` makes it stronger.
+  - `gimp_checkpoint` saves the image's state to disk and restores it later, the undo the beta was
+    missing.
+
+### Fixed
+
+- **GIMP adjustments now land on the layer you point to.** Naming a layer by its id was ignored,
+  so the adjustment went onto whichever layer happened to be selected.
+  - `gimp_add_adjustment` now honours `layer_id`.
+  - A setting that belongs to a different adjustment type (for example `saturation` on the
+    `saturation` type, whose setting is `scale`) is now refused with the type's own settings,
+    instead of adding a filter that does nothing.
+- **Turning off image previews now covers Photoshop too.** The `privacy.send_previews_to_llm`
+  setting only applied to GIMP, so Photoshop previews still reached the model.
+  - It now applies to every tool, including an image inside a `ps_sequence` result.
+
+## [1.6.0] — 2026-09-26
+
+### Added
+
+- **GIMP support, in beta.** Editmamei can now edit photos in GIMP 3.2, which runs in the
+  background with nothing installed into it. You follow the work through previews in chat, and the
+  saved `.xcf` keeps every adjustment as a live filter you can change in GIMP afterwards.
+  - Sixteen `gimp_*` tools cover opening and closing images, thirteen non-destructive adjustments
+    (curves, levels, exposure, brightness and contrast, hue and saturation, colour balance, colour
+    temperature, shadows and highlights, saturation, vibrance, sharpen, noise reduction and
+    Gaussian blur), masks for those adjustments, crop, resize, rotate and flip, `.xcf` saving,
+    export to JPEG, PNG, WebP and TIFF with metadata removed, and previews, histograms and
+    before/after comparisons.
+  - The tools appear when GIMP is found in its standard install location, or when you point
+    Editmamei at it with the `gimp_path` setting or `EDITMAMEI_GIMP_PATH`. On Linux, the Flathub
+    Flatpak is found too. The Photoshop tools are unchanged.
+  - Set `editor` to `gimp` (or `EDITMAMEI_EDITOR=gimp`) to use GIMP even when Photoshop is
+    installed.
+  - Not in the beta yet: healing and cloning, subject or sky selection, text, new layers, and
+    undo. Crop, resize, rotate and flip can't be undone in the session, so save the `.xcf` first.
+  - Pro features are Photoshop-only. See the [GIMP guide](docs/gimp.md).
+
+## [1.5.1] — 2026-09-22
+
+### Added
+
+- **A troubleshooting guide.** Step-by-step fixes for Pro not unlocking, Photoshop not responding,
+  checking whether an update actually applied, and running two installs on one machine.
+  - The install guide now separates the three ways Editmamei updates: an `npx` config (nothing to
+    do), a global npm install (update it yourself), and the Claude Desktop extension (replace the
+    bundle).
+
+### Changed
+
+- **Usage telemetry now records what it had to discard.** Session summaries include counts of
+  events dropped before they could be sent, so missing usage data can be told apart from less
+  usage. The new fields are listed on the privacy page.
+  - A startup that resends queued telemetry no longer sends again what it already delivered.
+
+### Fixed
+
+- **Pro no longer locks when your AI client restarts it often.** A client that restarted
+  Editmamei many times in a short spell could stop the license from checking in, so Pro locked
+  even though the license was fine.
+  - A license check that hits a busy moment is retried, and a failed one now waits before trying
+    again instead of retrying on every start.
+  - The Pro module update check runs at most once a day rather than on every start.
+
+- **You are told why Pro isn't working, and what to do about it.** When Pro is locked or its
+  checks aren't getting through, your assistant now gets the reason and the fix once per session,
+  instead of the Pro tools quietly disappearing.
+  - `ps_ping` carries the note, worded for the actual cause: a client restarting too fast, an
+    ended or expired subscription, a failed module update, or a system clock that was once set
+    ahead.
+  - Pro tools stay listed while a license isn't unlocking. Calling one explains what is wrong,
+    rather than your assistant reporting that the tool doesn't exist.
+
+## [1.5.0] — 2026-09-18
+
+### Added
+
+- **Develop a raw file before it opens (Pro).** Camera Raw's own settings file is written beside
+  the raw and the file is then opened, which reaches the panels a filter never can: Upright
+  levelling and perspective, crop with straighten, and lens profile correction.
+  - `ps_develop_raw`, with `read`, `adjust` (merge into the existing develop) and `apply`
+    (replace) modes. The previous settings file is backed up first; masks and Looks made in
+    Camera Raw are carried through untouched.
+  - Applies your own saved Camera Raw presets by name.
+  - Out-of-range values are refused with the limit named, because Camera Raw discards them
+    silently rather than clamping.
+  - HEIC is refused: Photoshop opens HEIC by a route that never reads the settings file, so the
+    develop would be written and ignored.
+  - A raw that is already open is refused unless you ask to reopen it. Opening rasterises the
+    pixels, so a develop written afterwards cannot reach that document.
+
+- **Open a raw file at 16 bit.** `ps_open_document` takes `bit_depth` (8 or 16) for raw sources.
+  It has to be decided at open, because converting afterwards flattens the document. When the
+  request could not be honoured the result says so in `bit_depth_warning`.
+
+### Changed
+
+- **Telemetry now describes the session, and the privacy page says exactly what is sent.**
+  - New per-session counters: duration, retries, edits, kept work, whether the session ended
+    after a failure, dropped events, and the outcome of a Pro module update. A
+    `client_connected` event records which MCP client connected and what it negotiated.
+  - Result size in bytes is recorded on usage rows. The result itself never is.
+  - Photoshop's locale and the document's bit depth and colour mode are included in opt-in
+    diagnostics.
+  - `npx` runs, global installs, and project-local installs are now distinguished, since each
+    updates differently, and the update notice says the right thing for each. An install whose
+    entry path cannot be read reports `unknown` rather than guessing.
+  - The privacy page gains a legal section: who the controller is, the lawful basis for each
+    tier, retention, and how to exercise access, erasure and objection. The install ID is
+    described as pseudonymous rather than anonymous: it is random and derived from nothing about
+    you, but it is stable. The country, time zone, and serving datacenter the network edge
+    derives from the connection are now listed among what is recorded with it. A test pins the
+    first-run disclosure text to the page so the two cannot drift.
+
+## [1.4.0] — 2026-09-07
+
+### Added
+
+- **Run a whole series of edits in one request.** Several tool calls you already know you want can
+  now be sent together and run in order against the current document, instead of one round trip
+  each.
+  - `ps_sequence` moves out of development into the shipped surface.
+  - Best for dependent steps you do not need to look at in between — select, adjust, then merge.
+    If the next step depends on inspecting this one, keep calling the tools individually.
+  - On a failure it can stop, carry on, or undo the whole series back to where it started. The undo
+    is checked against the document afterwards rather than assumed, and it reports plainly when it
+    could not restore — for instance when Photoshop's history buffer has already discarded the
+    state it was aiming for.
+  - When you ask for undo-on-failure, steps that fall outside what an undo can reach are refused
+    before anything runs: writing a file, creating, opening or closing documents, switching the
+    active document, and moving the history cursor directly.
+  - A series runs at most 25 steps, cannot contain another series, and stops starting new steps
+    after five minutes. Each step keeps its own time limit exactly as it would on its own.
+
+- **Select the in-focus part of an image.** Photoshop's Focus Area selects by depth-of-field
+  sharpness, which is the fastest way to separate a subject from a blurred background.
+  - Available as `ps_select` with `mode: "focus_area"`. It was never a shipped tool before, so
+    nothing you were using has moved.
+
+### Changed
+
+- **Results no longer carry a preview image unless you ask for one.** The annotated picture was
+  most of what a result weighed, and it was being returned whether or not anyone looked at it.
+  - `ps_detect` and `ps_read_scene` now take `annotate: true` when you want the marked-up image.
+    The measurements they return are unchanged.
+  - Inside a series of calls, an inline preview is kept only for the last step.
+
+- **The AI selection tools now say what they actually selected.** Instead of reporting only that a
+  selection was made, they return its measured extent, so the next decision is based on the
+  document rather than an assumption.
+  - `ps_select_subject`, `ps_select_sky`, and `ps_select` with `mode: "focus_area"`.
+
+- **Each tool now has its own time limit, replacing the flat thirty seconds.** The limits come from
+  how long each tool really takes, so a legitimately slow operation is no longer cut off — but most
+  tools are now held to less than thirty seconds, not more.
+  - Six tools were raised, the largest being scene reading and channel work, which could previously
+    fail on a big document even when Photoshop had finished.
+  - Around half were lowered, so a fast tool now reports a genuine hang sooner. If an operation
+    that used to succeed starts timing out on your machine, raise every limit at once by setting
+    `EDITMAMEI_SCRIPT_TIMEOUT_MS` — see the install guide.
+  - Where a tool asks for a specific amount of time for a particular step, that request is honoured
+    exactly, above or below its own limit.
+
+- **A horizon that cannot be established is now reported as absent, not estimated.** Scene reads
+  used to return a guessed horizon line; they now say when the image does not support one.
+  - The horizon in a scene read carries whether it was detected, and a reason when it was not, so
+    code that reads its position should check that first.
+  - `ps_select_by_reference` targets that lean on the horizon — `above_horizon` among them — now
+    report honest absence instead of scoring against a guess.
+
+- **macOS 13 or later is now required.** The Mac binaries are built with a newer toolchain that
+  will not load on macOS 12.
+  - Photoshop 2026 itself requires macOS 13, so no supported Photoshop install is affected.
+  - Windows requirements are unchanged.
+
+### Fixed
+
+- **Brightness readings from the histogram were wrong on saturated images.** Clipping,
+  percentile, median and spread readings were computed from a mixture of the colour channels rather
+  than from actual pixel brightness, and were furthest off exactly where colour is strongest.
+  - Affects `ps_get_histogram` with `channel: "luminosity"` or `"composite"`. Those readings
+    are now taken from the per-pixel brightness Photoshop itself reports.
+  - The average was correct before and stays correct, but on an RGB document it moves slightly:
+    the weighting is 0.30/0.59/0.11, so it will not match an average computed as Rec. 709. Lab and
+    Grayscale documents read their own lightness channel and are unaffected.
+
+- **Bug reports now identify what kind of failure occurred.** Every failure recorded in your local
+  session log is classified — no document open, layer not found, Photoshop busy, timed out —
+  instead of some being left unlabelled.
+  - This is what a diagnostic bundle carries, so a report distinguishes a genuine defect from a
+    call that simply asked for something that was not there. The error text a tool returns to your
+    assistant is unchanged.
+
+- **A session's summary is filed under the day the work happened.** Work spanning midnight, or a
+  session that ended unexpectedly, is no longer attributed to the wrong day.
+
+## [1.3.0] — 2026-08-29
+
+### Added
+
+- **Replace a sky without leaving the conversation.** Photoshop's own sky replacement is now part
+  of Community, driven from a preset sky or an image file of your own.
+  - `ps_replace_sky` moves out of development into the shipped surface.
+  - It relies on Photoshop's AI processing, like the existing subject and sky selections. If it
+    reports that parameters are not valid, switch the processing option in
+    Preferences → Image Processing and restart Photoshop.
+  - Photoshop's sky model can stop being available part-way through a long session; restarting
+    Photoshop brings it back.
+
+- **See which documents are open, and choose the one you mean.** You can now list every open
+  document and switch the active one by name or id, without touching any pixels.
+  - `ps_document` moves out of development into the shipped surface.
+  - It answers even when no document is open, which makes it the way back after a call fails
+    because nothing was open.
+  - When two open documents share a name, switching by that name is refused rather than guessed
+    at — target those by id instead.
+
+### Fixed
+
+- **A Pro module built for a newer version of the app no longer replaces the one that works.** The
+  module's compatibility marker is now checked before anything is downloaded or installed.
+  - Previously such a module was installed anyway, loaded none of its tools, and still reported
+    success — while the module that had been working was already deleted to make room for it.
+  - An entry whose marker is missing, or is not a number at all, could also leave the app
+    downloading the whole module again at every start without ever being able to use it. Both are
+    now refused before anything on disk changes.
+
+- **Repairing no longer reports a failure when the only thing needed is an app update.** If the
+  published module requires a newer Editmamei than the one installed, that is now stated plainly
+  and the command succeeds.
+  - It previously printed an error and exited with a failure code for a state where nothing was
+    broken and the installed module was untouched, which made routine support checks look like
+    faults.
+  - While the installed module still works, that situation is no longer logged as a warning on
+    every start either.
+
+### Changed
+
+- **Tool descriptions no longer point at tools your edition does not include.** Some descriptions
+  in Community referred to capabilities that are not part of it, which could send the assistant
+  looking for tools that were never there.
+
+## [1.2.1] — 2026-08-25
+
+### Fixed
+
+- **A Pro module newer than the app no longer costs you Pro entirely.** A module built after your
+  installed version could register a tool the app did not recognise, and the app responded by
+  rolling back the whole module at every start.
+  - Unrecognised tools are now skipped one at a time with a warning and the rest of the module
+    loads. The all-or-nothing rollback remains for a module at or below the app's version, where
+    re-downloading it genuinely does fix the problem.
+  - Re-downloading could never cure the newer-module case, because the installed module already
+    matched what the server offered — so the app stayed in Community every start until it was
+    updated by hand.
+  - This protects future versions from the same class of problem. If you are already affected,
+    installing this release is what clears it.
+
+- **Reading the scene no longer runs out of time on a large document.** `ps_read_scene` worked out
+  every selectable region before it answered, which on a big layered file consumed most of the
+  thirty seconds Photoshop allows a script and often failed outright.
+  - Measured on a 4898×3265 layered document: about thirty seconds before, around five after. A
+    Photoshop session that has already done a lot of channel work can be slower than that.
+  - On that document three of the seven regions it derived up front resolved to nothing, so a
+    large part of the wait bought nothing at all.
+
+### Changed
+
+- **The scene read now offers regions and works each one out when you ask for it.** It reports what
+  it can select rather than selecting everything in advance; the first request for a region pays
+  for that region, and repeats are immediate.
+  - Because nothing has been measured yet, an offered region carries no confidence score and is
+    marked `candidate`. It is a candidate, not a promise — `ps_select_by_reference` still scores it
+    and can still report honest absence.
+  - **`save_regions` now defaults to `false`; it was `true`.** Pass `save_regions: true` to
+    `ps_read_scene` for the previous behaviour, where every region is derived and scored in one
+    call. If you have a saved prompt or a wrapper that relied on `region_menu` arriving already
+    scored, this is the setting to add.
+  - A region worked out this way is remembered for the rest of the session, so asking for it again
+    is instant. Pass `refresh: true` if you have changed the image in a way that changes what the
+    region means. A narrowed request — one passing `label`, `instance` or `composition_context` —
+    is never cached, because the stored region cannot record which subject or which priors it was
+    derived for; those re-derive every time.
+  - A scene read now also clears the derived `scene:*` channels when the document has changed, so a
+    stale mask is not handed back after a scene read. The `scene:` channel-name prefix is reserved
+    for exactly this reason: a channel of your own named `scene:something` will be deleted along
+    with them.
+
+### Added
+
+- **A document can be closed by name or id, not only whichever one is in front.** `ps_close_document`
+  takes an optional `name` or `id`, so closing one file out of several no longer means bringing it
+  to the front first.
+  - If two open documents share a name, the call fails and says so rather than guessing. Photoshop
+    permits duplicate names, and picking one silently would send later edits to the wrong file.
+
+- **Release notes can be read and subscribed to, linked from the command line and the update
+  notice.** `editmamei --help` lists them beside Docs and Issues, and the notice shown when an
+  update is available points at them too.
+
+## [1.2.0] — 2026-08-23
+
+### Added
+
+- **`ps_batch` runs an edit over a folder of images as one Photoshop batch (Pro).** A recipe is
+  turned into a Photoshop Action and handed to Photoshop once, so a set of images costs one
+  round trip rather than one per file.
+  - Ops are `run`, `preview`, and `export_action`. `preview` reports what would be processed
+    without touching anything.
+  - Files a percent-based crop would ruin are skipped rather than silently mangled, and the run
+    reports which ones and why.
+  - Large sets are processed in chunks.
+
+### Changed
+
+- **`ps_ping` stops waiting on a Photoshop that isn't there.** The liveness question could
+  previously wait out the full script budget — about thirty seconds — and even start Photoshop as
+  a side effect. When a detected install has no running process, the ping now skips the script
+  round trip and says so, with no launch attempt; only the first ping of a session still spends up
+  to a few seconds on the startup version check it reports. A Photoshop that is running but still
+  starting up keeps the full budget, since a cold start legitimately takes longer than any short
+  cutoff would allow.
+
+### Removed
+
+- **The eight tool names superseded by `ps_filter`, `ps_group`, and `ps_text` in 1.1.0 are gone.**
+  Call the op-discriminated tool instead:
+  - `ps_apply_filter` → `ps_filter`
+  - `ps_create_group` → `ps_group(op=create)`
+  - `ps_move_layer_to_group` → `ps_group(op=add_layer)`
+  - `ps_set_group_blend_mode` → `ps_group(op=set_blend_mode)`
+  - `ps_ungroup` → `ps_group(op=ungroup)`
+  - `ps_delete_group` → `ps_group(op=delete)`
+  - `ps_create_text_layer` → `ps_text(op=create)`
+  - `ps_set_text` → `ps_text(op=set_font / set_color / set_alignment / set_content)`
+
+### Fixed
+
+- **The update notice now reaches the session that should see it.** The startup version check
+  raced the first `ps_ping` of a session and usually lost, so the one ping most sessions make
+  never carried the notice. The first ping now waits for the check (bounded at four seconds),
+  asks for the notice to be relayed (`notify_user` in the result), and — when the previous
+  session's failures are among the fixes the newer version ships — names them, so the reason to
+  update is the one you already felt. The check is still a single request to the public npm
+  registry, and reading the previous session's log never leaves this machine.
 
 - **Layer names containing non-ASCII characters now survive the round trip on Windows.** A layer
   Photoshop named itself in a non-English UI — `Farbfüllung 1`, `Kopie` — came back with the
@@ -19,12 +569,11 @@ earlier versions are preserved in the archived wiki repository's
 
 - **`ps_delete_layer` no longer deletes a group.** When the given name matched a group rather than
   a layer, the group and everything inside it was removed and the call reported success. It now
-  declines and says the name is a group; use `ps_delete_group` to delete one deliberately.
+  declines and says the name is a group; use `ps_group(op=delete)` to delete one deliberately.
 
-- **`ps_group(op=add_layer)` and `ps_move_layer_to_group` now prefer a layer over a same-named
-  group** when resolving `layer_name`, instead of letting the layer order decide which one moves.
-  A group is still moved when nothing else matches the name, so nesting one group inside another
-  works as before.
+- **`ps_group(op=add_layer)` now prefers a layer over a same-named group** when resolving
+  `layer_name`, instead of letting the layer order decide which one moves. A group is still moved
+  when nothing else matches the name, so nesting one group inside another works as before.
 
 - **A layer-not-found error now spells the missing name the way you would send it back.**
   Non-ASCII characters in the "Have:" list were shown as escape sequences, which could not be used

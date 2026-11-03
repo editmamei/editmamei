@@ -14,6 +14,23 @@ import {
 } from '@editmamei/delivery/store.ts';
 import type { DeliveryFetch } from '@editmamei/delivery/client.ts';
 import { fakeDelivery, fakeDeliveryConfig as cfg, jsonRes } from '../fixtures/fake-delivery.ts';
+import { VERSION } from '@editmamei/version.ts';
+import { compareVersions } from '@editmamei/delivery/provision.ts';
+import { ModuleLifecycle } from '@editmamei/kernel/module-lifecycle.ts';
+import { ToolRegistry, type ToolDefinition } from '@editmamei/core/tool-registry.ts';
+import { Logger } from '@editmamei/utils/logger.ts';
+import { tierOf, toolsInTier } from '@editmamei/core/tool-tiers.ts';
+import {
+  MODULE_FRESH_AFTER_MS,
+  MODULE_RETRY_AFTER_FAILURE_MS,
+} from '@editmamei/kernel/module-lifecycle.ts';
+import { updateCheckState } from '@editmamei/license/store.ts';
+import { makeConnection } from '../fixtures/fake-connection.ts';
+import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
+import { groupOf } from '@editmamei/core/tool-groups.ts';
+import type { Kernel } from '@editmamei/kernel/kernel.ts';
+import { KERNEL_ABI } from '@editmamei/kernel/host-api.ts';
+import { TelemetryClient } from '@editmamei/telemetry/client.ts';
 
 /**
  * Self-healing Pro module load + hardening (v0.22.1). A downloaded module built
@@ -21,7 +38,9 @@ import { fakeDelivery, fakeDeliveryConfig as cfg, jsonRes } from '../fixtures/fa
  * the server — the whole process (CE included) used to die when
  * `assertToolsClassified` threw. These tests pin the skip-reason model, the two
  * degrade-to-Community nets (ABI gate + snapshot/restore rollback), the corrupt
- * detection, and the honest, reason-driven background self-heal.
+ * detection, and the honest, reason-driven background self-heal — plus the
+ * forward-compat per-tool degrade (a module NEWER than the host loses only its
+ * unrecognized tools, not the whole module).
  *
  * Scaffolding mirrors ce-loads-pro-module.test.ts: a COMMUNITY-edition host, a
  * temp ~/.editmamei with a granted license + a genuinely-signed encrypted module
@@ -48,15 +67,42 @@ vi.mock('@editmamei/delivery/signing.ts', async (importOriginal) => {
 
 import { EditmameiServer, classifyModuleOutcome } from '@editmamei/core/server.ts';
 
-const MOD_VERSION = '9.9.9';
+/**
+ * Fixture module version for every test EXCEPT the forward-compat cases below.
+ * Kept <= the host's `VERSION` (src/version.ts) so these fixtures exercise the
+ * pre-existing whole-module rollback path (a backward or equal-version
+ * incompatibility) rather than the newer forward per-tool degrade.
+ */
+const MOD_VERSION = '0.9.9';
+/** Fixture module version strictly newer than the host — the forward-compat cases. */
+const FORWARD_MOD_VERSION = '99.0.0';
+
+/**
+ * One patch above the live host VERSION — the adjacent-release boundary the
+ * forward-compat degrade is actually meant for (a module one release ahead,
+ * not an arbitrary far-future version like FORWARD_MOD_VERSION). Derived
+ * programmatically so a future VERSION bump never leaves a stale hardcoded
+ * literal behind.
+ */
+function bumpPatch(version: string): string {
+  const [core] = version.split('-', 1);
+  const [major, minor, patch] = core.split('.').map(Number);
+  return `${major}.${minor}.${patch + 1}`;
+}
 
 // One signer for every ON-DISK fixture module → fx.pub stays constant so the boot
 // re-verification (mocked MODULE_SIGNING_PUBLIC_KEYS) accepts them. The re-provision
 // path verifies against the fake delivery's own key (passed to loadVerifiedModule).
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 
-/** A downloaded module registering the given tool name(s). */
-function handlersRegistering(names: string[]): string {
+/**
+ * A downloaded module registering the given tool name(s). `abi` is the module's
+ * OWN manifest abi — the one the KERNEL gates on. It is independent of the
+ * installed pointer's abi that `buildHome` writes (which comes from the unsigned
+ * delivery manifest); they normally agree, and the divergence test below is the
+ * reason this is a parameter at all.
+ */
+function handlersRegistering(names: string[], abi = 1): string {
   const tools = names
     .map(
       (n) =>
@@ -66,7 +112,7 @@ function handlersRegistering(names: string[]): string {
     .join(',');
   return [
     'export default {',
-    "  manifest: { id: 'pro', name: 'Pro (fixture)', abi: 1 },",
+    `  manifest: { id: 'pro', name: 'Pro (fixture)', abi: ${abi} },`,
     '  register(host) {',
     `    host.registerTools([${tools}]);`,
     '  },',
@@ -80,14 +126,31 @@ const dirOf = (home: string): string => join(home, '.editmamei');
 
 /**
  * Build a fresh temp ~/.editmamei home with a granted license + a signed,
- * encrypted module at `abi` whose handlers register `names`. Returns the home;
- * sets fx.home so the next `new EditmameiServer()` resolves against it.
+ * encrypted module at `abi`/`version` whose handlers register `names`. Returns
+ * the home; sets fx.home so the next `new EditmameiServer()` resolves against it.
+ * `version` defaults to MOD_VERSION (<= host VERSION); the forward-compat tests
+ * pass FORWARD_MOD_VERSION (or the host's own VERSION, for the equal-version
+ * fail-safe case) explicitly.
+ *
+ * `abi` is the POINTER's abi (installed.json, sourced from the delivery manifest).
+ * `bundleAbi` is what the module's own manifest declares to the kernel; it
+ * defaults to 1 and only the divergence test sets it apart from `abi`.
  */
-function buildHome({ names, abi }: { names: string[]; abi: number }): string {
+function buildHome({
+  names,
+  abi,
+  bundleAbi = 1,
+  version = MOD_VERSION,
+}: {
+  names: string[];
+  abi: number;
+  bundleAbi?: number;
+  version?: string;
+}): string {
   const home = mkdtempSync(join(tmpdir(), 'em-selfheal-'));
   homes.push(home);
   const dir = dirOf(home);
-  const modDir = join(dir, 'modules', 'pro', MOD_VERSION);
+  const modDir = join(dir, 'modules', 'pro', version);
   mkdirSync(modDir, { recursive: true });
 
   writeFileSync(
@@ -106,28 +169,23 @@ function buildHome({ names, abi }: { names: string[]; abi: number }): string {
 
   const contentKey = randomBytes(32).toString('base64');
   const files: BundleFile[] = [
-    { name: 'pro-handlers.mjs', data: Buffer.from(handlersRegistering(names)) },
+    { name: 'pro-handlers.mjs', data: Buffer.from(handlersRegistering(names, bundleAbi)) },
     {
       name: 'manifest.json',
-      data: Buffer.from(JSON.stringify({ sku: 'pro', version: MOD_VERSION, abi })),
+      data: Buffer.from(JSON.stringify({ sku: 'pro', version, abi })),
     },
   ];
   const blob = packBundle(files, contentKey);
   const sha256 = sha256Hex(blob);
-  const sig = edSign(null, moduleSigMessage('pro', MOD_VERSION, sha256), privateKey).toString(
-    'base64'
-  );
+  const sig = edSign(null, moduleSigMessage('pro', version, sha256), privateKey).toString('base64');
 
   writeFileSync(join(modDir, 'artifact.enc'), Buffer.from(blob), { mode: 0o600 });
-  writeFileSync(
-    join(modDir, 'manifest.json'),
-    JSON.stringify({ sku: 'pro', version: MOD_VERSION, abi })
-  );
+  writeFileSync(join(modDir, 'manifest.json'), JSON.stringify({ sku: 'pro', version, abi }));
   writeFileSync(
     join(dir, 'modules', 'pro', 'installed.json'),
     JSON.stringify({
       sku: 'pro',
-      version: MOD_VERSION,
+      version,
       abi,
       sha256,
       alg: 'AES-256-GCM',
@@ -153,6 +211,8 @@ type SelfHealDelivery = {
   fetchImpl?: DeliveryFetch;
   signingKeys?: readonly string[];
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  freshAfterMs?: number;
 };
 type ServerProbe = {
   toolRegistry: { list(): Array<{ name: string }>; get(name: string): unknown; count(): number };
@@ -160,6 +220,7 @@ type ServerProbe = {
   moduleSkipReason: 'corrupt' | 'incompatible' | null;
   reprovisionIfModuleSkipped(delivery: SelfHealDelivery): Promise<void>;
   ensureEntitledModuleFresh(delivery: SelfHealDelivery): Promise<void>;
+  computeModuleStatus(): { outcome: string } | null;
 };
 
 const names = (s: ServerProbe): string[] => s.toolRegistry.list().map((t) => t.name);
@@ -188,6 +249,41 @@ describe('EditmameiServer.loadModules — degrade-to-CE nets', () => {
     expect(server.moduleSkipReason).toBe('incompatible');
   });
 
+  it('skips a module whose abi is ABOVE KERNEL_ABI, and never reports it as loaded', async () => {
+    // The mirror of the case above, and the one that used to pass silently: the
+    // kernel refuses a too-new module WITHOUT throwing, so an ungated boot kept a
+    // resolved module + a null skip reason and told telemetry 'loaded' while zero
+    // Pro tools existed. A VALID pro name proves the skip is pre-import.
+    buildHome({ names: ['ps_list_actions'], abi: KERNEL_ABI + 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await expect(server.loadModules()).resolves.toBeUndefined();
+
+    expect(names(server)).not.toContain('ps_list_actions');
+    expect(names(server)).toContain('ps_ping');
+    expect(server.moduleSkipReason).toBe('incompatible');
+    // The reason the gate exists — the outcome must not read as success.
+    expect(server.computeModuleStatus()?.outcome).toBe('skipped_incompatible');
+  });
+
+  it('skips a module whose BUNDLE needs a newer ABI even when the pointer says otherwise', async () => {
+    // The two abis have independent sources: the pointer's comes from the delivery
+    // manifest (NOT covered by the artifact signature), the module's own comes from
+    // inside the signed bundle. When a ceremony slip — or a manifest understating
+    // abi to slip past the pointer gate — makes them disagree, the pointer gate
+    // passes and the kernel then refuses the module SILENTLY, registering nothing.
+    // Without the kernel reporting that refusal back, this boots as a success.
+    buildHome({ names: ['ps_list_actions'], abi: 1, bundleAbi: KERNEL_ABI + 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await expect(server.loadModules()).resolves.toBeUndefined();
+
+    expect(names(server)).not.toContain('ps_list_actions'); // zero Pro tools…
+    expect(names(server)).toContain('ps_ping'); // …CE surface intact
+    expect(server.moduleSkipReason).toBe('incompatible');
+    expect(server.computeModuleStatus()?.outcome).toBe('skipped_incompatible');
+  });
+
   it('leaves the reason null + registers the tool for a compatible module (control)', async () => {
     buildHome({ names: ['ps_list_actions'], abi: 1 });
     const server = new EditmameiServer() as unknown as ServerProbe;
@@ -214,6 +310,229 @@ describe('EditmameiServer.loadModules — degrade-to-CE nets', () => {
     // Identity-equal to the pre-load CE definition — the module's overwrite was undone.
     expect(server.toolRegistry.get('ps_ping')).toBe(cePing);
     expect(server.moduleSkipReason).toBe('incompatible');
+  });
+});
+
+describe('fixture sanity — a future host VERSION bump must not silently break these fixtures', () => {
+  it('MOD_VERSION stays older than host VERSION; FORWARD_MOD_VERSION stays newer', () => {
+    // These fixtures are what route the tests below onto the backward-rollback
+    // path vs. the forward-degrade path. If a host VERSION bump ever pushed
+    // MOD_VERSION above it (or FORWARD_MOD_VERSION below it), every test relying
+    // on that routing would silently start exercising the WRONG code path
+    // instead of failing loudly — this guard turns that into a clear assertion
+    // failure with a message pointing straight at the cause.
+    expect(compareVersions(MOD_VERSION, VERSION)).toBeLessThan(0);
+    expect(compareVersions(FORWARD_MOD_VERSION, VERSION)).toBeGreaterThan(0);
+  });
+});
+
+describe('EditmameiServer.loadModules — forward-compat per-tool degrade', () => {
+  // The mirror-image case: a downloaded module NEWER than this host (the delivery
+  // manifest auto-updated ahead of a host restart onto the matching release) ships
+  // a tool this host's tool-tiers.ts/tool-groups.ts don't know yet. Only that ONE
+  // tool should be dropped — the rest of the module, and the rest of Pro, must
+  // keep working.
+
+  it('keeps a classifiable tool and drops only the unknown one from a FORWARD module', async () => {
+    buildHome({
+      names: ['ps_list_actions', 'ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: FORWARD_MOD_VERSION,
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await expect(server.loadModules()).resolves.toBeUndefined();
+
+    expect(names(server)).not.toContain('ps_future_tool_never_heard_of');
+    expect(names(server)).toContain('ps_list_actions'); // the rest of the module loaded
+    expect(names(server)).toContain('ps_ping'); // CE surface intact
+    expect(server.moduleSkipReason).toBeNull(); // the module IS loaded — no re-provision
+  });
+
+  it('drops every tool and contributes nothing when a FORWARD module registers only unknown tools', async () => {
+    buildHome({
+      names: ['ps_future_tool_never_heard_of', 'ps_another_future_tool'],
+      abi: 1,
+      version: FORWARD_MOD_VERSION,
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await expect(server.loadModules()).resolves.toBeUndefined();
+
+    expect(names(server)).not.toContain('ps_future_tool_never_heard_of');
+    expect(names(server)).not.toContain('ps_another_future_tool');
+    expect(names(server)).toContain('ps_ping'); // CE surface intact
+    expect(server.moduleSkipReason).toBeNull();
+  });
+
+  it('falls through to the full rollback for an EQUAL-version module with an unknown tool', async () => {
+    // The fail-safe: same-version build inconsistency is NOT a case a re-provision
+    // can fix (the manifest already matches), so it stays on the old whole-module
+    // rollback rather than silently limping along on a partial module.
+    buildHome({
+      names: ['ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: VERSION, // equal to the host — not strictly newer, so no degrade
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await expect(server.loadModules()).resolves.toBeUndefined();
+
+    expect(names(server)).not.toContain('ps_future_tool_never_heard_of');
+    expect(names(server)).toContain('ps_ping');
+    expect(server.moduleSkipReason).toBe('incompatible');
+  });
+
+  it('a degraded FORWARD module keeps its OWN ps_ping override — no identity restore', async () => {
+    // 'ps_ping' is already classified pre-load, so it's excluded from the
+    // added-name probe (an overwritten CE name never reaches the degrade — see
+    // the loadModules doc comment). On a DEGRADED (not rolled-back) load that
+    // means the module's overwrite of ps_ping SURVIVES, unlike the backward-
+    // rollback test above ("rollback RESTORES an overwritten CE tool by
+    // identity"), where restore() reverts it to the identity-equal CE definition.
+    buildHome({
+      names: ['ps_ping', 'ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: FORWARD_MOD_VERSION,
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    const cePing = server.toolRegistry.get('ps_ping');
+    expect(cePing).toBeDefined();
+
+    await server.loadModules();
+
+    expect(names(server)).not.toContain('ps_future_tool_never_heard_of');
+    expect(names(server)).toContain('ps_ping');
+    expect(server.toolRegistry.get('ps_ping')).not.toBe(cePing); // the module's definition, not restored
+    expect(names(server)).toContain('ps_overview'); // another CE tool, unrelated, intact
+    expect(server.moduleSkipReason).toBeNull();
+  });
+
+  it('logs the per-tool warn naming exactly the dropped tool', async () => {
+    buildHome({
+      names: ['ps_list_actions', 'ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: FORWARD_MOD_VERSION,
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    // Same stderr-capture pattern as the self-heal guidance test below.
+    const lines: string[] = [];
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: unknown): boolean => {
+        lines.push(String(chunk));
+        return true;
+      });
+    try {
+      await server.loadModules();
+    } finally {
+      stderr.mockRestore();
+    }
+    const logged = lines.join('');
+
+    expect(logged).toMatch(
+      /Module tool 'ps_future_tool_never_heard_of' is not recognized by this host — skipping it; the rest of the module is loaded\. Update Editmamei to use it\./
+    );
+  });
+
+  it('after a degraded load, module_status reports "loaded" and the self-heal never runs', async () => {
+    buildHome({
+      names: ['ps_list_actions', 'ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: FORWARD_MOD_VERSION,
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBeNull();
+
+    expect(server.computeModuleStatus()?.outcome).toBe('loaded');
+
+    // reprovisionIfModuleSkipped early-returns on moduleSkipReason === null — the
+    // module IS loaded, so the self-heal has nothing to cure. Prove it by wiring a
+    // delivery fetch that WOULD serve a newer version if it were ever called.
+    const fake = fakeDelivery('9.9.10');
+    let called = false;
+    await server.reprovisionIfModuleSkipped({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        called = true;
+        return fake.fetchImpl(url, init);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+    expect(called).toBe(false);
+  });
+
+  it('fires the degrade for a module exactly one patch ahead of the host (the adjacent-release boundary)', async () => {
+    // The realistic case this net exists for: a module one release ahead, not an
+    // arbitrary far-future version like FORWARD_MOD_VERSION. Derived from the live
+    // VERSION so this never hardcodes a version literal that a future bump stales.
+    buildHome({
+      names: ['ps_list_actions', 'ps_future_tool_never_heard_of'],
+      abi: 1,
+      version: bumpPatch(VERSION),
+    });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+
+    await server.loadModules();
+
+    expect(names(server)).not.toContain('ps_future_tool_never_heard_of');
+    expect(names(server)).toContain('ps_list_actions');
+    expect(server.moduleSkipReason).toBeNull();
+  });
+});
+
+describe('ModuleLifecycle.loadModules — a version:null module never enters the forward degrade', () => {
+  // version:null is the dev in-tree module's shape (see ProModuleLocation) — this
+  // public checkout has no `src/modules/pro/` to load for real, so this exercises
+  // ModuleLifecycle directly rather than through EditmameiServer/resolveProModule.
+  // The fake `kernel` stands in for the real Kernel/HostApi wiring; `_proModule` is
+  // set directly (a documented, deliberate bypass of the private field) to reach
+  // the one ProModuleLocation shape resolveProModule can't produce in this repo.
+
+  function dummyTool(name: string): ToolDefinition {
+    return {
+      tool: { name, description: 'fixture', inputSchema: { type: 'object', properties: {} } },
+      handler: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    };
+  }
+
+  it('rolls back an unclassifiable tool from a version:null module', async () => {
+    const registry = new ToolRegistry();
+    registry.register('ps_ping', dummyTool('ps_ping'));
+    const classifyTool = (name: string): void => {
+      tierOf(name);
+      groupOf(name);
+    };
+    const assertToolsClassified = (): void => {
+      for (const t of registry.list()) classifyTool(t.name);
+    };
+    const lifecycle = new ModuleLifecycle({
+      toolRegistry: registry,
+      logger: new Logger('test-module-lifecycle'),
+      assertToolsClassified,
+      classifyTool,
+    });
+    lifecycle.kernel = {
+      loadDownloaded: async () => {
+        registry.register('photoshop_unclassifiable', dummyTool('photoshop_unclassifiable'));
+        return 'loaded';
+      },
+    } as unknown as Kernel;
+    (lifecycle as unknown as { _proModule: unknown })._proModule = {
+      importer: () => Promise.resolve({}),
+      binDir: '',
+      abi: null,
+      version: null,
+    };
+
+    await lifecycle.loadModules();
+
+    expect(registry.get('photoshop_unclassifiable')).toBeUndefined();
+    expect(registry.get('ps_ping')).toBeDefined();
+    expect(lifecycle.moduleSkipReason).toBe('incompatible');
   });
 });
 
@@ -281,7 +600,7 @@ describe('EditmameiServer — background self-heal policy', () => {
     await server.loadModules();
     expect(server.moduleSkipReason).toBe('incompatible');
 
-    const fake = fakeDelivery('9.9.10'); // newer than the wedged 9.9.9
+    const fake = fakeDelivery('9.9.10'); // newer than the wedged 0.9.9
     await server.reprovisionIfModuleSkipped({
       config: cfg,
       fetchImpl: fake.fetchImpl,
@@ -289,6 +608,86 @@ describe('EditmameiServer — background self-heal policy', () => {
       sleep: async () => {},
     });
     expect(readInstalledModule(PRO_SKU, { dir: dirOf(fx.home) })?.version).toBe('9.9.10');
+  });
+
+  it('costs one manifest GET and no artifact fetch for an abi-too-new skip (no churn per boot)', async () => {
+    // The high-side gate re-provisions without force like any other 'incompatible'
+    // skip. That must stay a cheap no-op every boot rather than re-downloading the
+    // artifact forever: provisionModules refuses the too-new manifest entry before
+    // any fetch, so nothing is installed and nothing is pruned.
+    buildHome({ names: ['ps_list_actions'], abi: KERNEL_ABI + 1 });
+    const dir = dirOf(fx.home);
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBe('incompatible');
+
+    // A manifest that also declares the too-new abi (the real shape: the entry's
+    // abi is what got installed in the first place).
+    const fake = fakeDelivery('9.9.10');
+    const urls: string[] = [];
+    await server.reprovisionIfModuleSkipped({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        urls.push(url);
+        const res = await fake.fetchImpl(url, init);
+        if (!url.endsWith('/v1/modules/manifest')) return res;
+        const m = JSON.parse(await res.text()) as {
+          modules: { pro: { abi: number } };
+        };
+        m.modules.pro.abi = KERNEL_ABI + 1;
+        return jsonRes(200, m);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+
+    expect(urls).toEqual([`${cfg.baseUrl}/v1/modules/manifest`]); // no artifact, no key
+    // The installed module is exactly as it was — nothing installed, nothing pruned.
+    expect(readInstalledModule(PRO_SKU, { dir })?.version).toBe(MOD_VERSION);
+    expect(readInstalledModule(PRO_SKU, { dir })?.abi).toBe(KERNEL_ABI + 1);
+  });
+
+  it('tells an abi-too-new user to update Editmamei, not to run repair', async () => {
+    // The delivery gate turns this into a provisioning ERROR, so without routing
+    // it would surface as the raw "could not re-provision" line — true but useless,
+    // since nothing is broken and no lever the user has will change the outcome.
+    // The honest guidance is the same one an 'incompatible' skip gets.
+    buildHome({ names: ['ps_list_actions'], abi: KERNEL_ABI + 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBe('incompatible');
+
+    const fake = fakeDelivery('9.9.10');
+    const lines: string[] = [];
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: unknown): boolean => {
+        lines.push(String(chunk));
+        return true;
+      });
+    try {
+      await server.reprovisionIfModuleSkipped({
+        config: cfg,
+        fetchImpl: async (url, init) => {
+          const res = await fake.fetchImpl(url, init);
+          if (!url.endsWith('/v1/modules/manifest')) return res;
+          const m = JSON.parse(await res.text()) as { modules: { pro: { abi: number } } };
+          m.modules.pro.abi = KERNEL_ABI + 1;
+          return jsonRes(200, m);
+        },
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      });
+    } finally {
+      stderr.mockRestore();
+    }
+    const logged = lines.join('');
+
+    expect(logged).toMatch(/does not yet support this host/i);
+    expect(logged).toMatch(/Update Editmamei/i);
+    // Never the raw provisioning error, and never `repair` — it hits the same wall.
+    expect(logged).not.toMatch(/Could not re-provision/i);
+    expect(logged).not.toMatch(/repair/i);
   });
 
   it('installs nothing + does NOT recommend repair when only the SAME (incompatible) version is served', async () => {
@@ -339,7 +738,7 @@ describe('EditmameiServer.ensureEntitledModuleFresh — healthy-path auto-update
     await server.loadModules();
     expect(server.moduleSkipReason).toBeNull();
 
-    const fake = fakeDelivery('9.9.10'); // newer than the installed 9.9.9
+    const fake = fakeDelivery('9.9.10'); // newer than the installed 0.9.9
     await server.ensureEntitledModuleFresh({
       config: cfg,
       fetchImpl: fake.fetchImpl,
@@ -348,6 +747,49 @@ describe('EditmameiServer.ensureEntitledModuleFresh — healthy-path auto-update
     });
     // Upgraded on disk; the new version loads on the NEXT restart (no hot-swap).
     expect(readInstalledModule(PRO_SKU, { dir: dirOf(fx.home) })?.version).toBe('9.9.10');
+  });
+
+  it('does not warn every boot when a newer published module needs a newer host', async () => {
+    // The steady state of every older host after a publisher ABI bump: the module
+    // on disk loaded FINE this boot, and the only "problem" is that something
+    // newer exists. Logging a failure-shaped warning on the healthy path, every
+    // boot, forever, teaches the reader to ignore the channel.
+    buildHome({ names: ['ps_list_actions'], abi: 1 }); // compatible → loads, reason null
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBeNull();
+
+    const fake = fakeDelivery('9.9.10');
+    const lines: string[] = [];
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: unknown): boolean => {
+        lines.push(String(chunk));
+        return true;
+      });
+    try {
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async (url, init) => {
+          const res = await fake.fetchImpl(url, init);
+          if (!url.endsWith('/v1/modules/manifest')) return res;
+          const m = JSON.parse(await res.text()) as { modules: { pro: { abi: number } } };
+          m.modules.pro.abi = KERNEL_ABI + 1;
+          return jsonRes(200, m);
+        },
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      });
+    } finally {
+      stderr.mockRestore();
+    }
+    const logged = lines.join('');
+
+    expect(logged).not.toMatch(/\[WARN\]/);
+    expect(logged).not.toMatch(/could not provision/i);
+    expect(logged).toMatch(/needs a newer Editmamei/i);
+    // The working module is untouched — the refusal never reached an install.
+    expect(readInstalledModule(PRO_SKU, { dir: dirOf(fx.home) })?.version).toBe(MOD_VERSION);
   });
 
   it('is a cheap no-op when already latest — fetches the manifest but NOT the artifact', async () => {
@@ -463,6 +905,163 @@ describe('EditmameiServer.ensureEntitledModuleFresh — healthy-path auto-update
   });
 });
 
+// ===========================================================================
+// `module_update` outcome reporting for the two background tasks.
+// `onModuleUpdate` is invoked OUTSIDE each task's try/catch now (guarded in
+// its own try/catch), and 'failed' is reported not only on a thrown
+// exception but also when provisioning ran and returned errors with nothing
+// installed. Spies on TelemetryClient.prototype.setModuleUpdate — the
+// callback server.ts wires as `onModuleUpdate` — rather than threading a
+// bespoke deps object through the full crypto/delivery harness above.
+// ===========================================================================
+describe('module_update telemetry wiring', () => {
+  it('reprovisionIfModuleSkipped: success installs a module → "updated"', async () => {
+    buildHome({ names: ['photoshop_list_actions'], abi: 1 }); // wedge → incompatible
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBe('incompatible');
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    try {
+      const fake = fakeDelivery('9.9.10'); // newer than the wedged 0.9.9
+      await server.reprovisionIfModuleSkipped({
+        config: cfg,
+        fetchImpl: fake.fetchImpl,
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      });
+      expect(setModuleUpdate).toHaveBeenCalledWith('updated');
+    } finally {
+      setModuleUpdate.mockRestore();
+    }
+  });
+
+  it('reprovisionIfModuleSkipped: a thrown fetch → "failed"', async () => {
+    buildHome({ names: ['photoshop_list_actions'], abi: 1 }); // wedge → incompatible
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBe('incompatible');
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await server.reprovisionIfModuleSkipped({
+        config: cfg,
+        fetchImpl: async () => {
+          throw new Error('network down');
+        },
+        signingKeys: [],
+        sleep: async () => {},
+      });
+      expect(setModuleUpdate).toHaveBeenCalledWith('failed');
+    } finally {
+      stderr.mockRestore();
+      setModuleUpdate.mockRestore();
+    }
+  });
+
+  it('reprovisionIfModuleSkipped: errors with nothing installed (abi-too-new) → "failed"', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: KERNEL_ABI + 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBe('incompatible');
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const fake = fakeDelivery('9.9.10');
+      await server.reprovisionIfModuleSkipped({
+        config: cfg,
+        fetchImpl: async (url, init) => {
+          const res = await fake.fetchImpl(url, init);
+          if (!url.endsWith('/v1/modules/manifest')) return res;
+          const m = JSON.parse(await res.text()) as { modules: { pro: { abi: number } } };
+          m.modules.pro.abi = KERNEL_ABI + 1;
+          return jsonRes(200, m);
+        },
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      });
+      // No exception was thrown — provisionModules ran, refused the too-new manifest entry,
+      // and installed nothing. A failed update used to be invisible here because this
+      // outcome never called onModuleUpdate at all.
+      expect(setModuleUpdate).toHaveBeenCalledWith('failed');
+    } finally {
+      stderr.mockRestore();
+      setModuleUpdate.mockRestore();
+    }
+  });
+
+  it('ensureEntitledModuleFresh: success installs a module → "updated"', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 }); // compatible → loads, reason null
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBeNull();
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    try {
+      const fake = fakeDelivery('9.9.10');
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: fake.fetchImpl,
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      });
+      expect(setModuleUpdate).toHaveBeenCalledWith('updated');
+    } finally {
+      setModuleUpdate.mockRestore();
+    }
+  });
+
+  it('ensureEntitledModuleFresh: a thrown fetch → "failed"', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    expect(server.moduleSkipReason).toBeNull();
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => {
+          throw new Error('network down');
+        },
+        signingKeys: [],
+        sleep: async () => {},
+      });
+      expect(setModuleUpdate).toHaveBeenCalledWith('failed');
+    } finally {
+      stderr.mockRestore();
+      setModuleUpdate.mockRestore();
+    }
+  });
+
+  it('ensureEntitledModuleFresh: errors with nothing installed (delivery 500s) → "failed"', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const setModuleUpdate = vi.spyOn(TelemetryClient.prototype, 'setModuleUpdate');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      // Same scenario as "stays on the installed module without crashing when provisioning
+      // errors" above (provisionModules collects an error and installs nothing) — this time
+      // asserting the module_update side-effect that fix adds, not just the non-crash.
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => jsonRes(500, { error: 'server' }),
+        signingKeys: [],
+        sleep: async () => {},
+      });
+      expect(setModuleUpdate).toHaveBeenCalledWith('failed');
+    } finally {
+      stderr.mockRestore();
+      setModuleUpdate.mockRestore();
+    }
+  });
+});
+
 describe('classifyModuleOutcome — module_status taxonomy (telemetry §11)', () => {
   it('loaded: a resolved module with no skip flag', () => {
     expect(classifyModuleOutcome({ proModuleLoaded: true, skipReason: null, entitled: true })).toBe(
@@ -491,5 +1090,433 @@ describe('classifyModuleOutcome — module_status taxonomy (telemetry §11)', ()
     expect(
       classifyModuleOutcome({ proModuleLoaded: false, skipReason: null, entitled: false })
     ).toBe('lapsed');
+  });
+});
+
+/**
+ * A home with a license record but NO module — the shape a license holder is in
+ * when Pro is not unlocking. `ageMs` back-dates the last check-in: past the grace
+ * window it is no longer entitled, which is the case the stubs exist for. Pass
+ * `license: false` for a pure Community install, which must look untouched.
+ */
+function buildLicenseOnlyHome({
+  ageMs = 0,
+  license = true,
+}: { ageMs?: number; license?: boolean } = {}): string {
+  const home = mkdtempSync(join(tmpdir(), 'em-lapsed-'));
+  homes.push(home);
+  const dir = dirOf(home);
+  mkdirSync(dir, { recursive: true });
+  if (license) {
+    writeFileSync(
+      join(dir, 'license.json'),
+      JSON.stringify({
+        key: 'TEST-KEY',
+        organization_id: 'org_test',
+        status: 'granted',
+        expires_at: null,
+        activation_id: 'act_test',
+        device_hash: 'dev_test',
+        display_key: '****-TEST',
+        last_validated_at: new Date(Date.now() - ageMs).toISOString(),
+      })
+    );
+  }
+  fx.home = home;
+  return home;
+}
+
+/** Comfortably past the 7-day grace window, so the record is no longer entitled. */
+const LAPSED_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Explain-only stubs for a license that is not unlocking Pro.
+ *
+ * Without them the Pro tools are simply absent and the model answers that it has
+ * no such tool — the one answer that tells a license holder nothing about why,
+ * and nothing about what to do. The stubs keep the names in the catalogue and
+ * answer with the reason and the fix.
+ *
+ * Two boundaries are load-bearing and tested here as such. A pure Community
+ * install must never see a Pro name, and the names must come from the tier table
+ * filtered to `pro` — never `dev` or `none`, which must not appear as `ps_*` on
+ * any user-facing surface.
+ */
+describe('EditmameiServer.loadModules — explain-only Pro stubs for a lapsed license', () => {
+  it('registers the Pro names when a license record exists but Pro is not unlocking', async () => {
+    buildLicenseOnlyHome({ ageMs: LAPSED_AGE_MS });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const registered = names(server);
+    for (const name of toolsInTier('pro')) expect(registered).toContain(name);
+    expect(registered).toContain('ps_ping'); // the CE surface is untouched
+  });
+
+  it('reads the injected store rather than this machine, with no home mock in play', async () => {
+    // Every other case here isolates by mocking `node:os` homedir, which is global
+    // and easy to omit: `settingsDir()` honours only an explicit option, never an
+    // env var, so a suite run on a machine that has ever activated Pro would read
+    // that developer's own license and register Pro stubs into unrelated tests.
+    // `licenseStore` is the explicit way out, and this pins that it is honoured:
+    // the lapsed record lives ONLY in the injected directory.
+    const home = mkdtempSync(join(tmpdir(), 'em-injected-'));
+    homes.push(home);
+    const dir = dirOf(home);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'license.json'),
+      JSON.stringify({
+        key: 'TEST-KEY',
+        organization_id: 'org_test',
+        status: 'granted',
+        expires_at: null,
+        activation_id: 'act_test',
+        device_hash: 'dev_test',
+        display_key: '****-TEST',
+        last_validated_at: new Date(Date.now() - LAPSED_AGE_MS).toISOString(),
+      })
+    );
+
+    // `fx.home` is module-level and never reset, so without this it would still
+    // point at whatever lapsed home the previous test built, and this test would
+    // pass even if the injection were ignored. An empty home here means the
+    // default path finds NO license: only the injected store can produce stubs.
+    const emptyHome = mkdtempSync(join(tmpdir(), 'em-empty-'));
+    homes.push(emptyHome);
+    fx.home = emptyHome;
+
+    const server = new EditmameiServer({ licenseStore: { dir } }) as unknown as ServerProbe;
+    await server.loadModules();
+
+    const registered = names(server);
+    for (const name of toolsInTier('pro')) expect(registered).toContain(name);
+
+    // The stub's own answer must come from the same store. Read from the empty
+    // default home instead, it would find no record and fall back to the
+    // "active again, restart" line.
+    const def = server.toolRegistry.get(toolsInTier('pro')[0]) as {
+      handler: () => Promise<{ content: Array<{ text: string }> }>;
+    };
+    const res = await def.handler();
+    expect(res.content[0].text).toContain('Pro is not unlocking');
+  });
+
+  it('never registers a dev- or none-tier name (the cross-surface tier invariant)', async () => {
+    buildLicenseOnlyHome({ ageMs: LAPSED_AGE_MS });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const registered = names(server);
+    for (const name of [...toolsInTier('dev'), ...toolsInTier('none')]) {
+      expect(registered).not.toContain(name);
+    }
+  });
+
+  it('leaves a pure Community install exactly as it was — no license, no Pro names', async () => {
+    buildLicenseOnlyHome({ license: false });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const registered = names(server);
+    for (const name of toolsInTier('pro')) expect(registered).not.toContain(name);
+  });
+
+  it('leaves an entitled install alone — a stub must never shadow a real handler', async () => {
+    // Entitled, module not yet provisioned: today this is a Community-looking boot
+    // that the background provision cures, and it must stay that way.
+    buildLicenseOnlyHome({ ageMs: 0 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const registered = names(server);
+    for (const name of toolsInTier('pro')) expect(registered).not.toContain(name);
+  });
+
+  it('a stub answers with the reason and the fix, and reports that it did nothing', async () => {
+    buildLicenseOnlyHome({ ageMs: LAPSED_AGE_MS });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const def = server.toolRegistry.get(toolsInTier('pro')[0]) as {
+      handler: () => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+    };
+    const res = await def.handler();
+    const text = res.content[0].text;
+
+    expect(text).toContain('Pro is not unlocking');
+    expect(text).toContain('quit the client fully');
+    expect(text).toContain('support@editmamei.com');
+    // isError, unlike the ping advisory: this call did NOT do what it was asked,
+    // and a clean result would read to the model as though the edit had happened.
+    expect(res.isError).toBe(true);
+  });
+});
+
+/**
+ * The freshness poll's own interval.
+ *
+ * It used to run on every boot, so a host that restarts often paid a full
+ * provision round trip each time to re-learn what it learned minutes ago. The
+ * marker is scheduling only — it can never stop an installed module from loading.
+ */
+describe('EditmameiServer.ensureEntitledModuleFresh — once a day, not once a boot', () => {
+  it('polls the first time and no-ops on a restart inside the interval', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const fake = fakeDelivery('9.9.10');
+    let firstCalls = 0;
+    await server.ensureEntitledModuleFresh({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        firstCalls++;
+        return fake.fetchImpl(url, init);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+    expect(firstCalls).toBeGreaterThan(0);
+
+    // A second boot moments later: same machine, same home, no network at all.
+    const second = new EditmameiServer() as unknown as ServerProbe;
+    await second.loadModules();
+    let secondCalls = 0;
+    await second.ensureEntitledModuleFresh({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        secondCalls++;
+        return fake.fetchImpl(url, init);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+    expect(secondCalls).toBe(0);
+  });
+
+  it('polls again once the interval has passed', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const fake = fakeDelivery('9.9.10');
+    await server.ensureEntitledModuleFresh({
+      config: cfg,
+      fetchImpl: fake.fetchImpl,
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+
+    let calls = 0;
+    await server.ensureEntitledModuleFresh({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        calls++;
+        return fake.fetchImpl(url, init);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+      now: () => Date.now() + MODULE_FRESH_AFTER_MS + 1,
+    });
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  it('a marker from the future does not park the poll — it polls and restamps', async () => {
+    // A clock that jumped forward and back would otherwise leave a marker no
+    // present time can ever pass.
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    updateCheckState({ module_retry_after: Date.now() + 365 * 24 * 60 * 60 * 1000 });
+
+    const fake = fakeDelivery('9.9.10');
+    let calls = 0;
+    await server.ensureEntitledModuleFresh({
+      config: cfg,
+      fetchImpl: async (url, init) => {
+        calls++;
+        return fake.fetchImpl(url, init);
+      },
+      signingKeys: [fake.pubB64],
+      sleep: async () => {},
+    });
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  it('stamps the attempt, so a failing poll does not re-fire on the next boot either', async () => {
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => jsonRes(500, { error: 'server' }),
+        signingKeys: [],
+        sleep: async () => {},
+      });
+
+      let calls = 0;
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => {
+          calls++;
+          return jsonRes(500, { error: 'server' });
+        },
+        signingKeys: [],
+        sleep: async () => {},
+      });
+      expect(calls).toBe(0);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+});
+
+/**
+ * The parts of this change that only exist once the pieces are wired together:
+ * a failed background module update reaching the ping advisory, a stub answering
+ * correctly when entitlement returns mid-session, and the freshness marker's two
+ * different waits. Each of these would survive the deletion of a line in the
+ * production path if it were only tested a layer at a time.
+ */
+describe('Pro failure visibility — the wiring between the pieces', () => {
+  type PingProbe = ServerProbe & {
+    session: { connection: unknown };
+    snippetClient: unknown;
+    updateInfo: unknown;
+    pingPhotoshop(): Promise<{ content: Array<{ text: string }> }>;
+  };
+
+  it('a failed background module update reaches the next ping', async () => {
+    // The flag is set by the module lifecycle and read by the advisory source.
+    // Nothing else observes it, so without this the whole chain could be deleted
+    // and every other test would still pass.
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer({
+      licenseAdvisory: ({ moduleUpdateFailed }) => (moduleUpdateFailed ? 'MODULE-FAILED' : null),
+    }) as unknown as PingProbe;
+    server.session.connection = makeConnection({ info: null });
+    server.snippetClient = makeSnippetClient();
+    server.updateInfo = null;
+    await server.loadModules();
+
+    // Before the failure there is nothing to say.
+    expect((await server.pingPhotoshop()).content[0].text).not.toContain('MODULE-FAILED');
+
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => jsonRes(500, { error: 'server' }),
+        signingKeys: [],
+        sleep: async () => {},
+        now: () => Date.now() + MODULE_FRESH_AFTER_MS + 1,
+      });
+    } finally {
+      stderr.mockRestore();
+    }
+
+    expect((await server.pingPhotoshop()).content[0].text).toContain('MODULE-FAILED');
+  });
+
+  it('a stub says "restart", not "Pro is unlocked", when entitlement returns mid-session', async () => {
+    // The stubs were registered at boot and cannot become real handlers without a
+    // restart. Answering with the ordinary advisory here would open "Pro is
+    // unlocked" on a call that just refused to run, and omit the only fix there is.
+    const home = buildLicenseOnlyHome({ ageMs: LAPSED_AGE_MS });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    // Entitlement comes back while the session is up (a background refresh).
+    writeFileSync(
+      join(dirOf(home), 'license.json'),
+      JSON.stringify({
+        key: 'TEST-KEY',
+        organization_id: 'org_test',
+        status: 'granted',
+        expires_at: null,
+        activation_id: 'act_test',
+        device_hash: 'dev_test',
+        display_key: '****-TEST',
+        last_validated_at: new Date().toISOString(),
+      })
+    );
+
+    const def = server.toolRegistry.get(toolsInTier('pro')[0]) as {
+      handler: () => Promise<{ content: Array<{ text: string }> }>;
+    };
+    const text = (await def.handler()).content[0].text;
+    expect(text).toContain('Restart your MCP client');
+    expect(text).not.toContain('Pro is unlocked');
+  });
+
+  it('a stub never shadows a real Pro handler', async () => {
+    // Structurally guaranteed by the branch the stubs live on, but it is the
+    // invariant that would hurt most if it broke: a stub over a working handler
+    // would take Pro away from a paying, entitled user.
+    buildHome({ names: ['ps_list_actions'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const def = server.toolRegistry.get('ps_list_actions') as {
+      tool: { description: string };
+      handler: () => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+    };
+    expect(def.tool.description).toBe('fixture'); // the module's own, not a stub's
+    const res = await def.handler();
+    expect(res.content[0].text).toBe('ok');
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('a failed poll with NO module installed retries soon, not tomorrow', async () => {
+    // With nothing installed this poll is not a freshness check, it is the
+    // install — and the only boot path that performs one. Parking it for a day
+    // over one bad network moment would be slower to recover than the per-boot
+    // polling the interval replaces.
+    buildLicenseOnlyHome({ ageMs: 0 }); // entitled, no module on disk
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => jsonRes(500, { error: 'server' }),
+        signingKeys: [],
+        sleep: async () => {},
+      });
+
+      // Still parked in the short window...
+      let early = 0;
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => {
+          early++;
+          return jsonRes(500, { error: 'server' });
+        },
+        signingKeys: [],
+        sleep: async () => {},
+      });
+      expect(early).toBe(0);
+
+      // ...but free again long before the full interval would have expired.
+      let later = 0;
+      await server.ensureEntitledModuleFresh({
+        config: cfg,
+        fetchImpl: async () => {
+          later++;
+          return jsonRes(500, { error: 'server' });
+        },
+        signingKeys: [],
+        sleep: async () => {},
+        now: () => Date.now() + MODULE_RETRY_AFTER_FAILURE_MS + 1_000,
+      });
+      expect(later).toBeGreaterThan(0);
+      expect(MODULE_RETRY_AFTER_FAILURE_MS).toBeLessThan(MODULE_FRESH_AFTER_MS);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });

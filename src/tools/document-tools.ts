@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
@@ -6,8 +7,11 @@ import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import {
   OPEN_DOCUMENT_TIMEOUT_MS,
   OPEN_DOCUMENT_REPROBE_TIMEOUT_MS,
+  SAVE_PSD_REPROBE_TIMEOUT_MS,
+  getToolTimeoutMs,
 } from '../utils/operation-timeouts.js';
 import { toolErrorResult, runSnippetTool } from '../utils/tool-helpers.js';
+import { checkOutputPath, recordOutputPath, requireLocalImagePath } from '../utils/local-path.js';
 import { purgeSceneChannels } from '../perception/region-precompute.js';
 import { Logger } from '../utils/logger.js';
 
@@ -45,6 +49,28 @@ const createDocumentSchema: JsonSchemaObject = {
   required: ['width', 'height'],
 };
 
+/**
+ * The name/id selector shared by ps_close_document and ps_document. Kept in one
+ * place so the two can't drift on what "target a document" means.
+ *
+ * Both consumers are community-tier, so this text may name either of them; it
+ * is spliced into ps_document itself, which is why the id guidance points at
+ * the op rather than the tool.
+ */
+const documentTargetProps = {
+  name: {
+    type: 'string',
+    description:
+      "Target an open document by its exact Photoshop name, INCLUDING the extension as shown in the tab (e.g. 'portrait.jpg', not 'portrait'). If two open documents share a name the call fails rather than guessing — target by id instead.",
+  },
+  id: {
+    type: 'integer',
+    minimum: 1,
+    description:
+      'Target an open document by its Photoshop document id. Unambiguous — prefer this when names collide.',
+  },
+} as const;
+
 const closeDocumentSchema: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -53,7 +79,24 @@ const closeDocumentSchema: JsonSchemaObject = {
       description: 'Whether to save changes before closing',
       default: false,
     },
+    ...documentTargetProps,
   },
+};
+
+const DOCUMENT_OPS = ['list', 'activate'] as const;
+
+const documentSchema: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    op: {
+      type: 'string',
+      enum: [...DOCUMENT_OPS],
+      description:
+        'list: every open document (index, id, name, path, saved, active, dimensions) — safe to call when NOTHING is open, which is the point. activate: make one of them the active document, by name or id.',
+    },
+    ...documentTargetProps,
+  },
+  required: ['op'],
 };
 
 const openDocumentSchema: JsonSchemaObject = {
@@ -61,13 +104,23 @@ const openDocumentSchema: JsonSchemaObject = {
   properties: {
     file_path: {
       type: 'string',
-      description: 'Absolute path to the file to open',
+      description:
+        "Absolute path to the file to open, on this computer's own drives (network shares are refused).",
     },
     suppress_dialogs: {
       type: 'boolean',
       description:
         'Suppress all PS dialogs during open (raw/HEIC use last-used ACR settings). Default true for pipeline use.',
       default: true,
+    },
+    bit_depth: {
+      type: 'number',
+      // 8 and 16 only: Camera Raw's workflow options offer no 32-bit raw open.
+      // Measured — asking for 32 opened at 8, so advertising it would promise
+      // a depth that never arrives.
+      enum: [8, 16],
+      description:
+        'Open-time bits per channel, RAW sources only. Set this here rather than converting later: ps_convert_image_mode FLATTENS the document, so depth cannot be changed once an edit stack exists. Prefer 16 for anything with heavy gradients (skies, skin, long tonal moves). Ignored for non-raw files, and the returned bits_per_channel always reports what was actually opened.',
     },
   },
   required: ['file_path'],
@@ -78,7 +131,16 @@ const savePsdSchema: JsonSchemaObject = {
   properties: {
     output_path: {
       type: 'string',
-      description: 'Absolute output path including filename, e.g. E:\\Photos\\Edit\\shell_01.psd',
+      description:
+        'Absolute output path including filename, ending in .psd, e.g. E:\\Photos\\Edit\\shell_01.psd',
+    },
+    overwrite: {
+      type: 'boolean',
+      description:
+        'Replace an existing file at output_path that this session did not write. Default false: such a ' +
+        'save is refused, so an original is never replaced by accident. Set true only when the user asked ' +
+        'to replace that file. A file this session already wrote can be saved over without it.',
+      default: false,
     },
     maximize_compatibility: {
       type: 'boolean',
@@ -100,12 +162,20 @@ const exportJpegSchema: JsonSchemaObject = {
   properties: {
     output_path: {
       type: 'string',
-      description: 'Absolute output path including filename.',
+      description: 'Absolute output path including filename, ending in .jpg.',
+    },
+    overwrite: {
+      type: 'boolean',
+      description:
+        'Replace an existing file at output_path that this session did not write. Default false: such a ' +
+        'save is refused, so an original is never replaced by accident. Set true only when the user asked ' +
+        'to replace that file. A file this session already wrote can be saved over without it.',
+      default: false,
     },
     quality: {
       type: 'integer',
       description:
-        "JPEG quality 0-100 (the Photoshop 'Save As' / JPEG-dialog scale humans and the UI use). 100 = maximum. Mapped internally to Photoshop's 0-12 JPEGSaveOptions scripting scale (e.g. 90→11, 100→12).",
+        "JPEG quality 0-100 (the Photoshop 'Export As' scale). 100 = maximum. Mapped internally to Photoshop's 0-12 JPEGSaveOptions scripting scale (e.g. 90→11, 100→12).",
       default: 90,
       minimum: 0,
       maximum: 100,
@@ -136,7 +206,15 @@ const exportPngSchema: JsonSchemaObject = {
   properties: {
     output_path: {
       type: 'string',
-      description: 'Absolute output path including filename.',
+      description: 'Absolute output path including filename, ending in .png.',
+    },
+    overwrite: {
+      type: 'boolean',
+      description:
+        'Replace an existing file at output_path that this session did not write. Default false: such a ' +
+        'save is refused, so an original is never replaced by accident. Set true only when the user asked ' +
+        'to replace that file. A file this session already wrote can be saved over without it.',
+      default: false,
     },
     transparent_background: {
       type: 'boolean',
@@ -211,9 +289,60 @@ export function createDocumentTools(
     },
     {
       tool: {
+        name: 'ps_document',
+        description:
+          "See and steer WHICH documents are open, without touching their content. op=list answers 'what is open, which one is active, and does it have unsaved changes' — and it is the one document tool that works when nothing is open at all, so it is the recovery read after a 'No document is open' failure. op=activate switches the active document by name or id, which is how you fix having edited the wrong one. Read-only with respect to pixels; use ps_open_document to load a file and ps_close_document to close one.",
+        inputSchema: documentSchema,
+        outputSchema: {
+          type: 'object',
+          properties: {
+            op: { type: 'string' },
+            count: { type: 'number' },
+            documents: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  index: { type: 'number' },
+                  id: { type: 'number' },
+                  name: { type: 'string' },
+                  path: {
+                    type: ['string', 'null'],
+                    description: 'Absolute path, or null for a document never saved to disk.',
+                  },
+                  saved: {
+                    type: ['boolean', 'null'],
+                    description:
+                      'False when the document has unsaved changes. Null when Photoshop would not report it.',
+                  },
+                  active: { type: 'boolean' },
+                  width_px: { type: ['number', 'null'] },
+                  height_px: { type: ['number', 'null'] },
+                },
+              },
+            },
+            activated: { type: 'boolean' },
+            id: { type: 'number' },
+            name: { type: 'string' },
+            context: { type: 'object' },
+          },
+          required: ['op'],
+        },
+        annotations: {
+          title: 'List / Activate Documents',
+          // No readOnlyHint: op=activate changes which document every
+          // subsequent tool call targets. Pixels are untouched, but a host that
+          // auto-approves read-only tools must not run this unprompted.
+          idempotentHint: true,
+        },
+      },
+      handler: async (args) => documentOp(connection, snippetClient, args),
+    },
+    {
+      tool: {
         name: 'ps_close_document',
         description:
-          'Close the active Photoshop document. Destructive if save=false and the document has unsaved changes. Returns the closed document name plus a fresh context block (which document, if any, is active afterwards).',
+          'Close a Photoshop document — the active one by default, or a specific one by name or id. Destructive if save=false and the document has unsaved changes. If two open documents share the requested name the call fails rather than guessing. Returns the closed document name plus a fresh context block (which document, if any, is active afterwards).',
         inputSchema: closeDocumentSchema,
         outputSchema: {
           type: 'object',
@@ -255,6 +384,11 @@ export function createDocumentTools(
             },
             already_open: { type: 'boolean' },
             file_path: { type: 'string' },
+            bit_depth_warning: {
+              type: 'string',
+              description:
+                'Present only when a requested bit_depth was not what the document actually opened at — because the file is not a raw source, or Photoshop declined the requested depth. Absent means bits_per_channel is what you asked for.',
+            },
             context: { type: 'object' },
           },
           required: ['success'],
@@ -280,6 +414,16 @@ export function createDocumentTools(
             saved_to: { type: 'string' },
             document_name: { type: 'string' },
             layers: { type: 'number' },
+            reprobed: {
+              type: 'boolean',
+              description:
+                'Present when the save outran its time budget and a follow-up check confirmed the file was written. document_name, layers and context are absent then.',
+            },
+            bytes: {
+              type: 'number',
+              description: 'Size of the written file. Present only with reprobed.',
+            },
+            scene_channels_purged: { type: 'number' },
             context: { type: 'object' },
           },
           required: ['success'],
@@ -297,7 +441,7 @@ export function createDocumentTools(
       tool: {
         name: 'ps_export',
         description:
-          'Export the active document to a flattened image file — JPEG or PNG, chosen via `format`. Operates on a duplicate, so the working document is unchanged. Optionally downscales so the long edge equals long_edge_px. JPEG: quality 0-100 (Save-As scale), optional sRGB convert + profile embed. PNG: transparent background (alpha preserved) or flattened onto white, compression 0-9.',
+          'Export the active document to a flattened image file — JPEG or PNG, chosen via `format`. Operates on a duplicate, so the working document is unchanged. Optionally downscales so the long edge equals long_edge_px. JPEG: quality 0-100 (Export As scale), optional sRGB convert + profile embed. PNG: transparent background (alpha preserved) or flattened onto white, compression 0-9.',
         inputSchema: exportInputSchema,
         outputSchema: {
           type: 'object',
@@ -397,6 +541,115 @@ async function createDocument(
   });
 }
 
+/** Forward only the selector keys the caller actually supplied. An explicit
+ *  `undefined` would still be a present key on the Go side, which flips
+ *  closeDocument from "close the active document" to "resolve a target". */
+function documentTargetArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (typeof args.name === 'string' && args.name !== '') out.name = args.name;
+  if (typeof args.id === 'number') out.id = args.id;
+  return out;
+}
+
+/**
+ * An empty-string name is a caller bug, not "no target" — and on a DESTRUCTIVE
+ * op the difference is the whole ballgame: silently dropping it downgrades
+ * "close the document I named" to "close whatever is active", which is how an
+ * agent that computed a name from a failed lookup closes the user's working
+ * document instead. Returns an error message, or null when the args are fine.
+ */
+function emptySelectorError(args: Record<string, unknown>): string | null {
+  if (typeof args.name === 'string' && args.name === '') {
+    return 'name was an empty string. Pass a real document name, or omit name entirely to act on the active document.';
+  }
+  return null;
+}
+
+interface DocumentListing {
+  index: number;
+  id: number;
+  name: string;
+  path: string | null;
+  saved: boolean | null;
+  active: boolean;
+  width_px: number | null;
+  height_px: number | null;
+}
+
+async function documentOp(
+  connection: PhotoshopConnection,
+  snippetClient: SnippetClient,
+  rawArgs: Record<string, unknown>
+): Promise<ToolResult> {
+  // Set per-op so a failure names the operation the caller actually asked for —
+  // "Error reading documents: No open document matches name …" points debugging
+  // at the wrong place.
+  let errorPrefix = 'Error reading documents';
+  try {
+    const args = validateArgs(documentSchema, rawArgs);
+    const op = args.op as (typeof DOCUMENT_OPS)[number];
+    const target = documentTargetArgs(args);
+
+    if (op === 'activate') {
+      errorPrefix = 'Error activating document';
+      const empty = emptySelectorError(args);
+      if (empty !== null) return toolErrorResult(errorPrefix, new Error(empty));
+      if (Object.keys(target).length === 0) {
+        return toolErrorResult(
+          errorPrefix,
+          new Error('op=activate needs a name or an id. Call op=list to see what is open.')
+        );
+      }
+      const script = await snippetClient.build('activateDocument', target);
+      const result = (await runScript(connection, script)) as {
+        id: number;
+        name: string;
+        context?: Record<string, unknown>;
+      };
+      return {
+        content: [{ type: 'text' as const, text: `Activated "${result.name}" (id ${result.id}).` }],
+        structuredContent: {
+          op,
+          activated: true,
+          id: result.id,
+          name: result.name,
+          context: result.context,
+        },
+      };
+    }
+
+    const script = await snippetClient.build('listDocuments', {});
+    const result = (await runScript(connection, script)) as {
+      count: number;
+      documents: DocumentListing[];
+      context?: Record<string, unknown>;
+    };
+    const docs = result.documents ?? [];
+    // The empty case is a real answer, not an error: "nothing is open" is what
+    // the caller came here to find out after a "No document is open" failure.
+    const summary = docs.length
+      ? `${docs.length} open document(s): ${docs
+          .map(
+            (d) =>
+              `${d.name} (id ${d.id}${d.active ? ', ACTIVE' : ''}${d.saved === false ? ', unsaved changes' : ''})`
+          )
+          .join('; ')}.`
+      : 'No documents are open in Photoshop. Open one with ps_open_document, or create one with ps_create_document.';
+
+    return {
+      content: [{ type: 'text' as const, text: summary }],
+      structuredContent: {
+        op,
+        count: docs.length,
+        documents: docs,
+        context: result.context,
+      },
+    };
+  } catch (error) {
+    return toolErrorResult(errorPrefix, error);
+  }
+}
+
 async function closeDocument(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
@@ -406,7 +659,13 @@ async function closeDocument(
     const args = validateArgs(closeDocumentSchema, rawArgs);
     const save = args.save as boolean;
 
-    const script = await snippetClient.build('closeDocument', { save });
+    const empty = emptySelectorError(args);
+    if (empty !== null) return toolErrorResult('Error closing document', new Error(empty));
+
+    const script = await snippetClient.build('closeDocument', {
+      save,
+      ...documentTargetArgs(args),
+    });
     const result = (await runScript(connection, script)) as {
       closed: boolean;
       closedName?: string;
@@ -503,11 +762,29 @@ async function openDocumentPipeline(
   let filePath: string | undefined;
   try {
     const args = validateArgs(openDocumentSchema, rawArgs);
-    filePath = args.file_path as string;
+    filePath = requireLocalImagePath('file_path', args.file_path);
     const suppressDialogs = args.suppress_dialogs as boolean;
+    const bitDepth = args.bit_depth as number | undefined;
 
-    const script = await snippetClient.build('openDocumentPipeline', { filePath, suppressDialogs });
+    const script = await snippetClient.build('openDocumentPipeline', {
+      filePath,
+      suppressDialogs,
+      rawBits: bitDepth ?? 0,
+    });
     const result = await runScript(connection, script, OPEN_DOCUMENT_TIMEOUT_MS);
+
+    // A requested depth is a request, not a promise: it only applies to raw
+    // sources, and the snippet falls back to a plain open if the host rejects
+    // the Camera Raw workflow options. Report the gap instead of letting the
+    // caller assume 16-bit it did not get.
+    const payload = result as Record<string, unknown>;
+    if (bitDepth !== undefined && typeof payload.bits_per_channel === 'number') {
+      if (payload.bits_per_channel !== bitDepth) {
+        payload.bit_depth_warning = payload.is_raw_source
+          ? `Requested ${bitDepth}-bit but Photoshop opened ${payload.bits_per_channel}-bit.`
+          : `bit_depth applies to RAW sources only; this file opened at ${payload.bits_per_channel}-bit.`;
+      }
+    }
 
     return {
       content: [
@@ -543,6 +820,57 @@ async function openDocumentPipeline(
   }
 }
 
+/**
+ * Post-timeout check for `ps_save_psd`, the save-side twin of
+ * `reprobeOpenDocument`. A timeout kills the wrapper, not Photoshop, which
+ * goes on writing the file. A constant readiness script waits for Photoshop
+ * to finish (it runs one script at a time); the file is then checked on disk,
+ * so no path is ever spliced into a script. It counts as saved only if it is
+ * non-empty and was modified after the save started, which rules out an older
+ * copy at the same path (an overwrite, or an earlier save this session).
+ *
+ * Returns a success result, or null when the probe times out or errors, or
+ * the file is missing, empty or stale; the caller then reports the original
+ * timeout error.
+ */
+async function reprobeSavedPsd(
+  connection: PhotoshopConnection,
+  outputPath: string,
+  startedAt: number
+): Promise<ToolResult | null> {
+  try {
+    await runScript(connection, 'return { ready: true };', SAVE_PSD_REPROBE_TIMEOUT_MS);
+  } catch {
+    return null;
+  }
+  let size: number;
+  let modifiedMs: number;
+  try {
+    const stats = statSync(outputPath);
+    if (!stats.isFile()) return null;
+    size = stats.size;
+    modifiedMs = stats.mtimeMs;
+  } catch {
+    return null;
+  }
+  // 2s of slack: FAT and exFAT drives store modification times to the nearest 2 seconds.
+  if (size === 0 || modifiedMs < startedAt - 2_000) return null;
+
+  const payload = { success: true, saved_to: outputPath, bytes: size, reprobed: true };
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text:
+          `PSD saved (the save ran past the ${getToolTimeoutMs('ps_save_psd')}ms budget and was reported as a ` +
+          `timeout, but a post-timeout check confirmed the file was written):\n` +
+          JSON.stringify(payload, null, 2),
+      },
+    ],
+    structuredContent: payload,
+  };
+}
+
 async function savePsdPipeline(
   connection: PhotoshopConnection,
   snippetClient: SnippetClient,
@@ -563,12 +891,14 @@ async function savePsdPipeline(
   // keep_scene_channels:"true" validate cleanly and then purge anyway — silently
   // destroying the very channels the caller asked to keep, and reporting
   // scene_channels_purged as though it were intended.
-  //
-  // runSnippetTool re-validates below; validateArgs is pure, so paying for it
-  // twice costs nothing and keeps the "reject before you mutate" order explicit.
   let args: Record<string, unknown>;
+  let outputPath: string;
   try {
     args = validateArgs(savePsdSchema, rawArgs);
+    outputPath = checkOutputPath('output_path', args.output_path, {
+      extensions: ['.psd'],
+      overwrite: args.overwrite === true,
+    });
   } catch (error) {
     return toolErrorResult('Error saving PSD', error);
   }
@@ -589,23 +919,41 @@ async function savePsdPipeline(
     }
   }
 
-  const res = await runSnippetTool({
-    connection,
-    snippetClient,
-    rawArgs,
-    schema: savePsdSchema,
-    snippet: 'savePsdAsCopy',
-    errorPrefix: 'Error saving PSD',
-    params: (args) => ({
-      outputPath: args.output_path as string,
+  // Passed explicitly (still scaled by EDITMAMEI_SCRIPT_TIMEOUT_MS), so time the
+  // purge spent never comes out of the save's budget.
+  const startedAt = Date.now();
+  let res: ToolResult;
+  try {
+    const script = await snippetClient.build('savePsdAsCopy', {
+      outputPath,
       maximizeCompat: args.maximize_compatibility as boolean,
-    }),
-    successText: (result) => `PSD saved:\n${JSON.stringify(result, null, 2)}`,
-  });
+    });
+    const result = await runScript(connection, script, getToolTimeoutMs('ps_save_psd'));
+    res = {
+      content: [{ type: 'text' as const, text: `PSD saved:\n${JSON.stringify(result, null, 2)}` }],
+      structuredContent: result as Record<string, unknown>,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isScriptTimeoutError(message)) {
+      res =
+        (await reprobeSavedPsd(connection, outputPath, startedAt)) ??
+        toolErrorResult(
+          'Error saving PSD',
+          new Error(
+            `${message} Photoshop may still be writing the file: check whether ${outputPath} ` +
+              'was just modified before saving again.'
+          )
+        );
+    } else {
+      res = toolErrorResult('Error saving PSD', error);
+    }
+  }
+  if (!res.isError) recordOutputPath(outputPath);
 
   // Report the purge rather than doing it silently — the channels are gone from
   // the OPEN document too, so the next select_by_reference re-derives.
-  // runSnippetTool passes the snippet's raw return through as structuredContent,
+  // The snippet's raw return goes through as structuredContent,
   // which is a STRING whenever the script returned a non-JSON value; assigning a
   // property to a string primitive throws in strict mode, so only annotate a
   // real object.
@@ -622,7 +970,10 @@ async function exportJpegPipeline(
 ): Promise<ToolResult> {
   try {
     const args = validateArgs(exportJpegSchema, rawArgs);
-    const outputPath = args.output_path as string;
+    const outputPath = checkOutputPath('output_path', args.output_path, {
+      extensions: ['.jpg'],
+      overwrite: args.overwrite === true,
+    });
     // Public scale is 0-100 (the JPEG dialog humans + the LLM know); Photoshop's
     // JPEGSaveOptions scripting scale is 0-12. Normalize here so the Go core
     // snippet keeps its 0-12 contract unchanged. 90→11, 100→12, 50→6, 0→0.
@@ -641,6 +992,7 @@ async function exportJpegPipeline(
     // expose the 0-12 value actually sent to Photoshop as quality_ps_scale so
     // both scales are legible and the caller never sees a silent 90→11 swap.
     const structured = { ...result, quality: qualityPct, quality_ps_scale: quality };
+    recordOutputPath(outputPath);
 
     return {
       content: [
@@ -661,7 +1013,8 @@ async function exportPngPipeline(
   snippetClient: SnippetClient,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
-  return runSnippetTool({
+  let outputPath: string | undefined;
+  const res = await runSnippetTool({
     connection,
     snippetClient,
     rawArgs,
@@ -670,8 +1023,12 @@ async function exportPngPipeline(
     errorPrefix: 'Error exporting PNG',
     params: (args) => {
       const longEdgePx = args.long_edge_px as number | undefined;
+      outputPath = checkOutputPath('output_path', args.output_path, {
+        extensions: ['.png'],
+        overwrite: args.overwrite === true,
+      });
       const params: Record<string, unknown> = {
-        outputPath: args.output_path as string,
+        outputPath,
         transparentBg: args.transparent_background as boolean,
         compression: args.compression as number,
       };
@@ -680,4 +1037,6 @@ async function exportPngPipeline(
     },
     successText: (result) => `PNG exported:\n${JSON.stringify(result, null, 2)}`,
   });
+  if (!res.isError && outputPath !== undefined) recordOutputPath(outputPath);
+  return res;
 }

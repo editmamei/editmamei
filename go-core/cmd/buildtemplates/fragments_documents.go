@@ -69,14 +69,15 @@ func init() {
     return result;
   `,
 
-		// closeDocument. Slots: 1=getContextInfo, 2=save option (literal).
+		// closeDocument. Slots: 1=getContextInfo, 2=resolution block (sets `doc` —
+		// either the active document or a name/id match), 3=save option (literal).
 		vault.CloseDoc: `
     %s
 
     if (app.documents.length === 0) {
       throw new Error('No document is open in Photoshop');
     }
-    var doc = app.activeDocument;
+    %s
     var closedName = doc.name;
     doc.close(%s);
 
@@ -85,6 +86,67 @@ func init() {
     return {
       closed: true,
       closedName: closedName,
+      context: getContextInfo()
+    };
+  `,
+
+		// listDocuments. Slots: 1=getContextInfo.
+		//
+		// Deliberately does NOT throw when nothing is open. Every other document
+		// snippet opens with the "No document is open" guard, which is right for a
+		// snippet that needs a document — but this one exists precisely to be
+		// callable in that state. It is the read an agent makes to find out WHY a
+		// previous call failed, and throwing the same error again would make the
+		// recovery path as opaque as the failure.
+		//
+		// Per-field try/catch is load-bearing: `fullName` THROWS on a document that
+		// has never been saved (PS raises "The document has not yet been saved."
+		// rather than returning null), and one unsaved scratch document must not
+		// take the whole listing down.
+		vault.ListDocs: `
+    %s
+
+    var __mcpDocs = [];
+    var __mcpActiveId = null;
+    try { __mcpActiveId = app.activeDocument.id; } catch (eActive) {}
+
+    for (var __mcpI = 0; __mcpI < app.documents.length; __mcpI++) {
+      var __mcpD = app.documents[__mcpI];
+      var __mcpPath = null;
+      try { __mcpPath = __mcpD.fullName.fsName; } catch (ePath) {}
+      var __mcpSaved = null;
+      try { __mcpSaved = __mcpD.saved; } catch (eSaved) {}
+      var __mcpW = null;
+      var __mcpH = null;
+      try { __mcpW = __mcpD.width.as('px'); __mcpH = __mcpD.height.as('px'); } catch (eDim) {}
+      __mcpDocs.push({
+        index: __mcpI,
+        id: __mcpD.id,
+        name: String(__mcpD.name),
+        path: __mcpPath,
+        saved: __mcpSaved,
+        active: (__mcpActiveId !== null && __mcpD.id === __mcpActiveId),
+        width_px: __mcpW,
+        height_px: __mcpH
+      });
+    }
+
+    return { count: __mcpDocs.length, documents: __mcpDocs, context: getContextInfo() };
+  `,
+
+		// activateDocument. Slots: 1=getContextInfo, 2=resolution block (sets `doc`).
+		vault.ActivateDoc: `
+    %s
+
+    if (app.documents.length === 0) {
+      throw new Error('No documents are open in Photoshop');
+    }
+    %s
+    app.activeDocument = doc;
+    return {
+      activated: true,
+      id: doc.id,
+      name: String(doc.name),
       context: getContextInfo()
     };
   `,
@@ -132,7 +194,10 @@ func init() {
 
 		// openDocumentPipeline. Slots: 1=getContextInfo, 2=bitsPerChannelHelper,
 		// 3=isWindows(jsBool), 4=filePath(already-open compare), 5=filePath,
-		// 6=filePath, 7=filePath, 8=suppressDialogs(literal), 9=filePath. (The
+		// 6=filePath, 7=filePath, 8=rawBits(jsNum), 9=suppressDialogs(literal),
+		// 10=filePath. Keep this inventory current: it is the only readable map
+		// of the order, and a stale one is how the next insertion lands in the
+		// wrong position and emits %!s(MISSING) or swaps a path for a bool. (The
 		// bits_per_channel comment had backtick chars in the TS source;
 		// reproduced with plain punctuation — behaviorally inert.)
 		//
@@ -256,6 +321,12 @@ func init() {
       if (rawExts[i] === ext) { isRaw = true; break; }
     }
 
+    // Requested open-time bit depth (0 = caller did not ask). Only meaningful
+    // for raw sources: Camera Raw's workflow options are the sole scripted
+    // route to it, and the depth must be chosen AT OPEN because converting
+    // afterwards flattens the document.
+    var __mcpRawBits = %s;
+
     var prevDialogs = app.displayDialogs;
     if (%s) {
       app.displayDialogs = DialogModes.NO;
@@ -280,6 +351,33 @@ func init() {
         }
         doc = __mcpAlready;
         __mcpWasAlreadyOpen = true;
+      } else if (isRaw && __mcpRawBits > 0) {
+        // CameraRAWOpenOptions is the only scripted way to set a raw's open
+        // depth. Its DEVELOP properties are inert on current Camera Raw
+        // (measured: exposure moves nothing), so nothing here relies on them —
+        // only bitsPerChannel, which is honoured. A host that rejects the
+        // object falls back to a plain open rather than failing the call;
+        // the returned bits_per_channel always reports what was ACTUALLY
+        // opened, so a silent fallback stays visible to the caller.
+        // 8 or 16 only — Camera Raw's workflow options have no 32-bit raw
+        // open (measured: asking for 32 opened at 8).
+        var __mcpRawOpts = null;
+        try {
+          __mcpRawOpts = new CameraRAWOpenOptions();
+          __mcpRawOpts.bitsPerChannel = (__mcpRawBits === 16)
+            ? BitsPerChannelType.SIXTEEN
+            : BitsPerChannelType.EIGHT;
+        } catch (eRawOpts) {
+          __mcpRawOpts = null;
+        }
+        // The open itself is inside the try so a host that accepts the options
+        // object but rejects it at open falls back rather than failing the
+        // whole call — which is what the caller is told happens.
+        try {
+          doc = __mcpRawOpts ? app.open(imageFile, __mcpRawOpts) : app.open(imageFile);
+        } catch (eRawOpen) {
+          doc = app.open(imageFile);
+        }
       } else {
         doc = app.open(imageFile);
       }

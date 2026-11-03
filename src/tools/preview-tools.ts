@@ -223,7 +223,7 @@ const histogramSchema: JsonSchemaObject = {
       type: 'string',
       enum: ['composite', 'red', 'green', 'blue', 'luminosity', 'gray'],
       description:
-        'Which channel to read. "composite" (default) is the visible flattened image; if the active layer is an adjustment/fill/shape layer the tool transparently switches to a pixel layer to read it. "red"/"green"/"blue" require an RGB doc; "gray" a grayscale doc. "luminosity" dispatches per doc mode — Lab uses the Lightness channel (exact), Grayscale uses Gray (exact), RGB synthesizes a Rec.709 weighted approximation from R+G+B (mean is exact; stdev/median are approximations). The result\'s `channel` field annotates which path landed when a fallback was used.',
+        'Which channel to read. "composite" (default) is the visible flattened image; if the active layer is an adjustment/fill/shape layer the tool transparently switches to a pixel layer to read it. "red"/"green"/"blue" require an RGB doc; "gray" a grayscale doc. "luminosity" dispatches per doc mode — Lab uses the Lightness channel (exact), Grayscale uses Gray (exact), and RGB reads the per-pixel luminance Photoshop reports, weighted 0.30/0.59/0.11, so its shape and any clipping or percentile read taken from it are sound. Note that weighting is not Rec.709, so a luminosity mean will not match one computed as 0.2126/0.7152/0.0722. A channel value naming a marginal mixture means the document histogram was unavailable and the read fell back to combining the channel histograms: that mean is still sound, its shape is not. The result\'s `channel` field annotates which path landed when a fallback was used.',
       default: 'composite',
     },
   },
@@ -294,7 +294,7 @@ export function createPreviewTools(
       tool: {
         name: 'ps_get_layer_bounds_diff',
         description:
-          'Numeric verification: compute the per-edge pixel deltas between a layer\'s actual bounds and a target rectangle. Returns left/top/right/bottom deltas (actual − target), scale ratio (actual_size / target_size), centroid offset, and a one-word verdict ("aligned", "shifted right", "layer too small", etc.). Use this AFTER place_image / scale_layer / move_layer to confirm the operation produced the intended result — far more reliable than eyeballing a preview for fine alignment. Read-only. Layers nested in groups are found by name recursively.',
+          'Numeric verification: compute the per-edge pixel deltas between a layer\'s actual bounds and a target rectangle. Returns left/top/right/bottom deltas (actual − target), scale ratio (actual_size / target_size), centroid offset, and a one-word verdict ("aligned", "shifted right", "layer too small", etc.). Use this AFTER ps_place_image / ps_transform_layer to confirm the operation produced the intended result — far more reliable than eyeballing a preview for fine alignment. Read-only. Layers nested in groups are found by name recursively.',
         inputSchema: boundsDiffSchema,
         outputSchema: {
           type: 'object',

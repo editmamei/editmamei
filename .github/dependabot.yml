@@ -12,6 +12,12 @@
 #
 # Minor and patch updates still flow — those are the ones worth taking on a
 # schedule. Majors get picked up deliberately, when the migration is the work.
+#
+# Every ecosystem waits 7 days before proposing a new release. A compromised
+# publish is usually caught and pulled within that window, and the shipped
+# artifacts carry exactly what the lockfile pins, so whatever lands here is
+# what users get. Cooldown applies to version updates only; security updates
+# still open immediately.
 
 version: 2
 updates:
@@ -20,6 +26,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     # Batch routine bumps into one PR.
     groups:
       npm-minor-and-patch:
@@ -36,6 +44,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
     groups:
       gomod-minor-and-patch:
         update-types:
@@ -55,6 +65,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
     ignore:
       - dependency-name: '*'
         update-types:

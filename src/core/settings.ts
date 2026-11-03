@@ -8,8 +8,9 @@
  * constructor path) and by short-lived CLI subcommands. Atomic write via tmp+rename
  * mirrors the pattern in `src/cli/clients/json-config.ts`.
  *
- * Privacy note: `install_id` is an ANONYMOUS salted random id minted on first run — it
- * is NOT derived from any machine or user identifier (see docs/privacy.md).
+ * Privacy note: `install_id` is a salted random id minted on first run — it is NOT derived
+ * from any machine or user identifier, but it is stable, which makes it pseudonymous rather
+ * than anonymous (see docs/privacy.md).
  */
 
 import { homedir } from 'node:os';
@@ -17,6 +18,7 @@ import { join, dirname } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { Logger } from '../utils/logger.js';
+import { requireAbsoluteGimpPath } from '../utils/gimp-path.js';
 
 const logger = new Logger('Settings');
 
@@ -25,7 +27,7 @@ export interface TelemetrySettings {
   usage: boolean;
   /** Category B (diagnostic detail) — opt-in: defaults false. */
   diagnostics: boolean;
-  /** Anonymous salted random id, minted once on first run. Never derived from PII. */
+  /** Salted random id, minted once on first run. Never derived from PII, but stable — pseudonymous, not anonymous. */
   install_id: string;
 }
 
@@ -34,9 +36,18 @@ export interface PrivacySettings {
   send_previews_to_llm: boolean;
 }
 
+export interface AutomationSettings {
+  /** When false, tools that run arbitrary script code refuse. Only the user can change it (CLI or settings.json), never a tool. Defaults true. */
+  allow_execute_script: boolean;
+}
+
+/** Which editor(s) `detectEditors()` + boot registration should honor. `'auto'` (default) is the detection-driven matrix. */
+export type EditorPin = 'auto' | 'photoshop' | 'gimp';
+
 export interface Settings {
   telemetry: TelemetrySettings;
   privacy: PrivacySettings;
+  automation: AutomationSettings;
   /** Absolute path to the Photoshop binary; null = auto-detect (PHOTOSHOP_PATH still wins). */
   ps_path: string | null;
   /**
@@ -46,6 +57,14 @@ export interface Settings {
    * `src/update/check.ts`.
    */
   update_check: boolean;
+  /**
+   * Pin which editor(s) register at boot instead of trusting `detectEditors()`'s matrix.
+   * `EDITMAMEI_EDITOR` wins over this for the current process (same override precedent as
+   * `applyTelemetryEnvOverrides`); the file value stands on the npm/CLI path.
+   */
+  editor: EditorPin;
+  /** Absolute path to the `gimp-console` binary; null = auto-detect. `EDITMAMEI_GIMP_PATH` wins over this for the current process — the same override `detectGimp()` reads directly. */
+  gimp_path: string | null;
 }
 
 export interface LoadSettingsOptions {
@@ -70,17 +89,22 @@ export function settingsPath(opts: LoadSettingsOptions = {}): string {
   return join(settingsDir(opts), SETTINGS_FILENAME);
 }
 
-/** Mint an anonymous install id: 32 hex chars. Matches the server's id pattern. */
+/** Mint an install id: 32 hex chars, salted and random but stable — pseudonymous, not anonymous. Matches the server's id pattern. */
 export function mintInstallId(): string {
   return randomBytes(16).toString('hex');
 }
+
+const EDITOR_PINS: readonly EditorPin[] = ['auto', 'photoshop', 'gimp'];
 
 function defaults(installId: string): Settings {
   return {
     telemetry: { usage: true, diagnostics: false, install_id: installId },
     privacy: { send_previews_to_llm: true },
+    automation: { allow_execute_script: true },
     ps_path: null,
     update_check: true,
+    editor: 'auto',
+    gimp_path: null,
   };
 }
 
@@ -96,6 +120,7 @@ function coerce(raw: unknown, installId: string): Settings {
   const r = raw as Record<string, unknown>;
   const t = (r.telemetry ?? {}) as Record<string, unknown>;
   const p = (r.privacy ?? {}) as Record<string, unknown>;
+  const a = (r.automation ?? {}) as Record<string, unknown>;
   return {
     telemetry: {
       usage: typeof t.usage === 'boolean' ? t.usage : base.telemetry.usage,
@@ -112,9 +137,35 @@ function coerce(raw: unknown, installId: string): Settings {
           ? p.send_previews_to_llm
           : base.privacy.send_previews_to_llm,
     },
+    automation: {
+      allow_execute_script:
+        typeof a.allow_execute_script === 'boolean'
+          ? a.allow_execute_script
+          : base.automation.allow_execute_script,
+    },
     ps_path: typeof r.ps_path === 'string' ? r.ps_path : null,
     update_check: typeof r.update_check === 'boolean' ? r.update_check : base.update_check,
+    editor:
+      typeof r.editor === 'string' && (EDITOR_PINS as readonly string[]).includes(r.editor)
+        ? (r.editor as EditorPin)
+        : base.editor,
+    gimp_path: coerceGimpPath(r.gimp_path),
   };
+}
+
+/**
+ * A hand-edited `gimp_path` gets the same rule `editmamei config set gimp_path` enforces: a
+ * relative path would resolve against the server's own working directory at spawn, so anything
+ * that isn't a plain absolute path falls back to auto-detection (logged) instead.
+ */
+function coerceGimpPath(raw: unknown): string | null {
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  try {
+    return requireAbsoluteGimpPath('gimp_path', raw);
+  } catch (err) {
+    logger.warn(`ignoring settings.json gimp_path (falling back to auto-detect): ${errMsg(err)}`);
+    return null;
+  }
 }
 
 /**
@@ -209,6 +260,22 @@ export function applyUpdateCheckEnvOverride(
   const v = parseBoolEnv(env.EDITMAMEI_UPDATE_CHECK);
   if (v === undefined) return settings;
   return { ...settings, update_check: v };
+}
+
+/**
+ * Apply an `EDITMAMEI_EDITOR` env override of the `editor` pin at boot. Same
+ * precedence as `applyUpdateCheckEnvOverride`: `EDITMAMEI_EDITOR` wins for THIS
+ * process when it names a recognized pin; an unrecognized or absent value
+ * leaves the settings.json value standing. In-memory only — never written
+ * back, so settings.json stays the source of truth on the npm/CLI path.
+ */
+export function applyEditorEnvOverride(
+  settings: Settings,
+  env: Record<string, string | undefined> = process.env
+): Settings {
+  const raw = env.EDITMAMEI_EDITOR?.trim().toLowerCase();
+  if (!raw || !(EDITOR_PINS as readonly string[]).includes(raw)) return settings;
+  return { ...settings, editor: raw as EditorPin };
 }
 
 /** Atomic write (tmp + rename). Throws on failure — callers decide whether to swallow. */

@@ -1,0 +1,3752 @@
+# Pure, gi-free helpers for the GIMP bridge: PGM codec, histogram statistics,
+# the `editmamei-filters` parasite ledger's parse/serialize, the request/
+# response transport primitives (id/path derivation, atomic read/write, the
+# request listing, and the request-processing pipeline itself), version-
+# string parsing, and cross-platform process liveness.
+#
+# No `gi` import anywhere in this file — it runs standalone under
+# `python -m unittest test_lib.py`, with no GIMP and no numpy. ops.py
+# is exec'd by the bridge's batch line (not imported as a package), so it has
+# no package context of its own to import a sibling module relatively; it
+# adds its own directory to `sys.path` first and imports this module by name.
+# "gi-free" describes the GIMP/GObject dependency, not I/O — the transport
+# helpers below do real file I/O, same as any other stdlib code would.
+
+import collections
+import itertools
+import json
+import math
+import os
+import re
+import sys
+import time
+import traceback
+
+# The newest ledger version this bridge reads and writes. A document is written at the lowest
+# version that can hold its records: version 2 added the outline, outer_glow and surface_blur
+# types, whose params an earlier bridge cannot read. Written as 2, an earlier bridge treats the
+# ledger as newer than itself (it reads the filters back from GIMP and leaves the ledger alone)
+# instead of failing on them; a ledger without them stays version 1, which every bridge reads.
+LEDGER_VERSION = 2
+LEDGER_V2_TYPES = frozenset(('outline', 'outer_glow', 'surface_blur'))
+LEDGER_WRITER = 'editmamei'
+
+HIST_CHANNELS = ('luminance', 'red', 'green', 'blue')
+
+# Sizes gimp_get_preview / the internal preview proxy may render at. Bounding
+# this to a small fixed set keeps ops.py's PROXIES cache (one full duplicate
+# of the document per (image, max_px) pair) at a bounded 3 entries per open
+# image, instead of growing one entry per distinct value a caller ever asks
+# for.
+ALLOWED_PREVIEW_SIZES = (512, 1024, 2048)
+
+
+def validate_max_px(value):
+    """Validate a requested preview/proxy render size. Raises ValueError for
+    anything outside ALLOWED_PREVIEW_SIZES; returns `value` unchanged otherwise."""
+    if value not in ALLOWED_PREVIEW_SIZES:
+        raise ValueError('max_px must be one of %s' % (ALLOWED_PREVIEW_SIZES,))
+    return value
+
+
+# A region histogram is computed on the (cheap) preview proxy when the region maps to at
+# least this many proxy pixels on a side; otherwise it falls back to a full-resolution crop.
+# Below this, the proxy has too few samples for the requested rectangle to mean anything.
+MIN_PROXY_REGION_PX = 64
+
+
+# ---- adjustment `type` -> GEGL operation, and pure (gi-free) parameter validation ----------
+#
+# Every adjust `type` maps to exactly one GEGL/GIMP operation, and its numeric ranges are
+# validated here (pure Python, unit-tested without GIMP) before ops.py ever touches a
+# DrawableFilter config. Keys in the dicts these `build_*_params` functions return are the
+# GEGL property names verbatim (hyphenated), so ops.py's setters can set them directly.
+
+ADJUST_OPERATIONS = {
+    'curves': 'gimp:curves',
+    'levels': 'gimp:levels',
+    'exposure': 'gegl:exposure',
+    'brightness_contrast': 'gimp:brightness-contrast',
+    'hue_saturation': 'gimp:hue-saturation',
+    'color_balance': 'gimp:color-balance',
+    'color_temperature': 'gegl:color-temperature',
+    'shadows_highlights': 'gegl:shadows-highlights',
+    'saturation': 'gegl:saturation',
+    'vibrance': 'gegl:vibrance',
+    'sharpen': 'gegl:unsharp-mask',
+    'noise_reduction': 'gegl:noise-reduction',
+    'gaussian_blur': 'gegl:gaussian-blur',
+}
+
+# Length-typed GEGL properties that must be multiplied by the preview proxy's scale factor
+# when a filter is mirrored onto it (see ops.py's `_mirror_filters`) -- an explicit allow-list
+# per operation, not a heuristic (e.g. "any property named radius"), since a wrong guess here
+# would silently mis-scale a filter that isn't actually spatial. Each entry's scaled value is
+# also clamped to the operation's own pspec minimum (`ops.py` reads that back from the live
+# config) so a small enough source scale never leaves GObject silently keeping the pre-scale
+# value instead of the (invalid, too-small) one we asked for.
+SPATIAL_SCALE_PROPS = {
+    'gegl:shadows-highlights': ('radius',),
+    'gegl:unsharp-mask': ('std-dev',),
+    'gegl:gaussian-blur': ('std-dev-x', 'std-dev-y'),
+    'gegl:motion-blur-linear': ('length',),
+    'gegl:focus-blur': ('blur-radius',),
+    'gegl:dropshadow': ('x', 'y', 'radius', 'grow-radius'),
+    # surface_blur's blur-radius is a pixel neighborhood, scaled like any other radius.
+    'gegl:bilateral-filter': ('blur-radius',),
+    # gegl:vignette and gegl:mono-mixer are deliberately absent: vignette's radius/x/y are
+    # proportional (fractions of the LAYER's own size, not absolute pixel lengths), and
+    # mono-mixer is a per-pixel channel-weight filter with no spatial extent at all.
+}
+
+# Integer-valued properties that are scaled by the proxy factor too, but as a ROUNDED count
+# rather than a continuous length -- `noise-reduction`'s `iterations` is a neighbourhood size,
+# not a geometric radius, so scaling it is only an approximation of the full-res effect (unlike
+# the exact scale-equivariance a Gaussian-blur-based radius gets); never below 1 (0 iterations
+# is a no-op filter, which would silently discard the effect entirely on a small enough proxy).
+INT_SPATIAL_SCALE_PROPS = {
+    'gegl:noise-reduction': ('iterations',),
+}
+
+HUE_RANGES = ('all', 'red', 'yellow', 'green', 'cyan', 'blue', 'magenta')
+TRANSFER_MODES = ('shadows', 'midtones', 'highlights')
+
+# GIMP 3.2.6's file-tiff-export `compression` property is a plain string, not an introspectable
+# enum -- these are the values that measured as accepted (an invalid string is silently ignored
+# by GObject with a stderr warning and the export keeps its prior value, so a bad value here
+# would export successfully with the WRONG compression rather than failing loudly). TIFF tag 259
+# (Compression) values measured for each, on an 8-bit RGB export: none=1, lzw=5, packbits=32773,
+# jpeg=7, adobe_deflate=8.
+#
+# `ccittfax3`/`ccittfax4` (CCITT Group 3/4) are deliberately NOT in this list: they are
+# bilevel-only schemes, and applied to this engine's RGB content they measured as producing a
+# degenerate ~8-byte file with no readable IFD at all -- a silent success reporting a byte count,
+# not an error, for a genuinely broken output file. GIMP's own property still accepts the
+# strings; this engine refuses them anyway rather than exposing an option two of whose seven
+# values always produce a corrupt export.
+TIFF_COMPRESSIONS = ('none', 'lzw', 'packbits', 'jpeg', 'adobe_deflate')
+
+MASK_TYPES = ('rectangle', 'ellipse', 'gradient_linear', 'gradient_radial')
+
+# gimp_layer's blend-mode allow-list: user-facing name -> the `Gimp.LayerMode` enum member NAME
+# (a string; ops.py does `getattr(Gimp.LayerMode, LAYER_MODES[mode])` since this module stays
+# gi-free). Deliberately the NON-legacy modes only, and only the ones with a plain Photoshop-style
+# name -- GIMP 3.2.6 exposes ~30 more (LCH_*, *_LEGACY, DISSOLVE, BEHIND, ...) this tool doesn't
+# surface. Probed live (GIMP 3.2.6) and goldened via each member's own `.value_nick`:
+#   normal=normal multiply=multiply screen=screen overlay=overlay soft_light=softlight
+#   hard_light=hardlight darken=darken-only lighten=lighten-only difference=difference
+#   exclusion=exclusion addition=addition subtract=subtract divide=divide dodge=dodge burn=burn
+#   hue=hsv-hue saturation=hsv-saturation color=hsl-color luminosity=luminance
+#   grain_extract=grain-extract grain_merge=grain-merge
+# hue/saturation/color/luminosity map to the HSV/HSL (not LCH) variants -- those are the ones
+# GIMP's own UI labels plainly "Hue"/"Saturation"/"Color"/"Luminosity" without a "(LCH)" suffix.
+LAYER_MODES = {
+    'normal': 'NORMAL',
+    'multiply': 'MULTIPLY',
+    'screen': 'SCREEN',
+    'overlay': 'OVERLAY',
+    'soft_light': 'SOFTLIGHT',
+    'hard_light': 'HARDLIGHT',
+    'darken': 'DARKEN_ONLY',
+    'lighten': 'LIGHTEN_ONLY',
+    'difference': 'DIFFERENCE',
+    'exclusion': 'EXCLUSION',
+    'addition': 'ADDITION',
+    'subtract': 'SUBTRACT',
+    'divide': 'DIVIDE',
+    'dodge': 'DODGE',
+    'burn': 'BURN',
+    'hue': 'HSV_HUE',
+    'saturation': 'HSV_SATURATION',
+    'color': 'HSL_COLOR',
+    'luminosity': 'LUMINANCE',
+    'grain_extract': 'GRAIN_EXTRACT',
+    'grain_merge': 'GRAIN_MERGE',
+}
+
+
+def validate_layer_mode(value):
+    if value not in LAYER_MODES:
+        raise ValueError('mode must be one of %s' % sorted(LAYER_MODES))
+    return value
+
+
+# ---- gimp_fill ---------------------------------------------------------------------------------
+
+FILL_OPS = ('solid', 'linear_gradient', 'radial_gradient')
+FILL_MIN_STOPS = 2
+FILL_MAX_STOPS = 8
+# gimp_fill takes gimp_layer's blend-mode names plus 'lch_color': GIMP's LCh Color keeps the
+# layer underneath's lightness exactly and swaps only hue and chroma, which is what a recolor
+# wants. 'color' stays HSL Color (see LAYER_MODES), so existing callers are unchanged.
+FILL_MODES = dict(LAYER_MODES, lch_color='LCH_COLOR')
+_HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+
+def _is_number(v):
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:  # an int too large for a float (10**400)
+        return False
+
+
+def parse_hex_color(name, value):
+    """'#rrggbb' (strictly: a leading '#' and six hex digits) -> (r, g, b) ints 0..255."""
+    if not isinstance(value, str) or not _HEX_COLOR_RE.match(value):
+        raise ValueError('%s must be a color like #rrggbb' % name)
+    return int(value[1:3], 16), int(value[3:5], 16), int(value[5:7], 16)
+
+
+def _fill_point(name, value, default):
+    if value is None:
+        return default
+    if not isinstance(value, dict) or not _is_number(value.get('x')) or not _is_number(value.get('y')):
+        raise ValueError('%s must be {x, y} with finite numbers' % name)
+    try:
+        x, y = float(value['x']), float(value['y'])
+    except OverflowError:  # a Python int too large for a float (10**400)
+        raise ValueError('%s is out of range' % name)
+    if abs(x) > FILL_MAX_COORD_PX or abs(y) > FILL_MAX_COORD_PX:
+        raise ValueError('%s must be within +/-%d px' % (name, FILL_MAX_COORD_PX))
+    return x, y
+
+
+def validate_fill_stops(stops):
+    """2..8 stops [{offset 0..1, color #rrggbb, opacity? 0..100}], offsets non-decreasing (they
+    must arrive sorted: a mis-ordered list is a caller mistake, not something to silently fix).
+    Returns [(offset, (r, g, b), alpha 0..1)]."""
+    if not isinstance(stops, list) or not FILL_MIN_STOPS <= len(stops) <= FILL_MAX_STOPS:
+        raise ValueError('stops must be a list of %d..%d stops' % (FILL_MIN_STOPS, FILL_MAX_STOPS))
+    out = []
+    for i, s in enumerate(stops):
+        if not isinstance(s, dict):
+            raise ValueError('stops[%d] must be an object {offset, color, opacity?}' % i)
+        offset = s.get('offset')
+        if not _is_number(offset) or not 0 <= offset <= 1:
+            raise ValueError('stops[%d].offset must be a number within 0..1' % i)
+        opacity = s.get('opacity', 100)
+        if not _is_number(opacity) or not 0 <= opacity <= 100:
+            raise ValueError('stops[%d].opacity must be within 0..100' % i)
+        if out and offset < out[-1][0]:
+            raise ValueError('stops must be sorted by offset: stops[%d] comes before stops[%d]' % (i, i - 1))
+        out.append((float(offset), parse_hex_color('stops[%d].color' % i, s.get('color')), opacity / 100.0))
+    return out
+
+
+def gradient_ramp(stops):
+    """The stops widened to cover the whole 0..1 range (the first color holds back to 0, the last
+    holds on to 1), so the gradient is defined everywhere. Returns a new list."""
+    ramp = list(stops)
+    if ramp[0][0] > 0:
+        ramp.insert(0, (0.0,) + ramp[0][1:])
+    if ramp[-1][0] < 1:
+        ramp.append((1.0,) + ramp[-1][1:])
+    return ramp
+
+
+def _fill_name(value, op):
+    name = str(value or ('Fill' if op == 'solid' else 'Gradient')).strip() or 'Fill'
+    if len(name) > FILL_MAX_STRING_LEN:
+        raise ValueError('name must be at most %d characters' % FILL_MAX_STRING_LEN)
+    return name
+
+
+def validate_fill_args(args, width, height):
+    """Everything gimp_fill needs, validated before any GIMP call. Points are image pixels."""
+    op = validate_choice('op', args.get('op'), FILL_OPS)
+    opts = {
+        'op': op,
+        'name': _fill_name(args.get('name'), op),
+        'mode': validate_choice('mode', args.get('mode', 'normal'), FILL_MODES),
+        'mask': args.get('mask'),
+    }
+    opacity = args.get('opacity', 100)
+    if not _is_number(opacity) or not 0 <= opacity <= 100:
+        raise ValueError('opacity must be within 0..100')
+    opts['opacity'] = float(opacity)
+    if opts['mask'] is not None and (not isinstance(opts['mask'], str) or not opts['mask']):
+        raise ValueError('mask must be a channel name')
+    if opts['mask'] is not None and len(opts['mask']) > FILL_MAX_STRING_LEN:
+        raise ValueError('mask must be at most %d characters' % FILL_MAX_STRING_LEN)
+    if op == 'solid':
+        opts['color'] = parse_hex_color('color', args.get('color'))
+        for k in ('stops', 'start', 'end', 'center', 'radius'):
+            if args.get(k) is not None:
+                raise ValueError('%s does not apply to op solid' % k)
+        return opts
+    if args.get('color') is not None:
+        raise ValueError('color applies to op solid only; a gradient takes stops')
+    opts['stops'] = validate_fill_stops(args.get('stops'))
+    if op == 'linear_gradient':
+        for k in ('center', 'radius'):
+            if args.get(k) is not None:
+                raise ValueError('%s does not apply to op linear_gradient' % k)
+        opts['start'] = _fill_point('start', args.get('start'), (width / 2.0, 0.0))
+        opts['end'] = _fill_point('end', args.get('end'), (width / 2.0, float(height)))
+        if math.hypot(opts['end'][0] - opts['start'][0], opts['end'][1] - opts['start'][1]) < 1:
+            raise ValueError('start and end must be at least 1 pixel apart')
+    else:
+        for k in ('start', 'end'):
+            if args.get(k) is not None:
+                raise ValueError('%s does not apply to op radial_gradient' % k)
+        opts['center'] = _fill_point('center', args.get('center'), (width / 2.0, height / 2.0))
+        radius = args.get('radius')
+        if radius is None:
+            radius = math.hypot(width, height) / 2.0
+        if not _is_number(radius) or not 1 <= radius <= FILL_MAX_COORD_PX:
+            raise ValueError('radius must be within 1..%d pixels' % FILL_MAX_COORD_PX)
+        opts['radius'] = float(radius)
+    return opts
+
+
+# ---- masked measurement (gimp_get_histogram `mask`) ---------------------------------------------
+
+MASK_SELECTED_MIN = 128  # a mask pixel counts as selected at 50% or more (>= 128 of 255)
+_MASK_FLAG_TABLE = bytes(1 if v >= MASK_SELECTED_MIN else 0 for v in range(256))
+
+
+def mask_flags(mask_data):
+    """One byte per mask pixel: 1 where the pixel is selected (>= 50%), else 0."""
+    return bytes(mask_data).translate(_MASK_FLAG_TABLE)
+
+
+# A hard-edged mask scaled down keeps a ring of partial-coverage pixels around its edge; a thin
+# one is ALL ring (a 1 px line reads as a pale smear whose pixels blend with their neighbors).
+# Past this share of edge pixels among the touched ones the scaled copy is not trusted.
+MASK_EDGE_FRACTION_MAX = 0.25
+
+
+def mask_is_proxy_reliable(mask_data):
+    """Whether a downscaled copy's mask is solid enough to measure. Not when it touches nothing
+    (it may have vanished in the scale-down; the full-resolution pass tells that from a mask that
+    is truly empty) or when its partial-coverage pixels (not 0, not 255) are more than
+    MASK_EDGE_FRACTION_MAX of all the pixels it touches."""
+    data = bytes(mask_data)
+    touched = len(data) - data.count(0)
+    if touched == 0:
+        return False
+    edge = touched - data.count(255)
+    return edge <= MASK_EDGE_FRACTION_MAX * touched
+
+
+def select_masked(data, flags):
+    """The bytes of `data` (one value per pixel) at the positions `flags` marks 1."""
+    return bytes(itertools.compress(data, flags))
+
+
+# gimp_layer op=create's fill options -- verified live that `Gimp.FillType.TRANSPARENT` exists
+# and that a freshly created layer's content is otherwise undefined, so `create` always fills
+# explicitly rather than trusting whatever `Gimp.Layer.new` leaves behind.
+LAYER_FILLS = ('white', 'black', 'transparent')
+
+# gimp_create_document / gimp_convert_image_mode's base-type choices -- indexed is deliberately
+# absent (gimp_create_document has nothing to build a palette from, and gimp_convert_image_mode
+# refuses an indexed source outright; see ops.py's own comments on both).
+IMAGE_MODES = ('rgb', 'grayscale')
+
+# Formats `_export_stripped` (ops.py) will write; every export/preview/compare raster save goes
+# through it, and it refuses any other extension outright rather than falling back to a bare,
+# metadata-unaware save.
+EXPORT_FORMATS = {'.jpg': 'jpeg', '.jpeg': 'jpeg', '.png': 'png', '.webp': 'webp',
+                  '.tif': 'tiff', '.tiff': 'tiff'}
+
+# Formats `_export_layered` (ops.py) writes with the layer stack kept, instead of a flattened copy.
+LAYERED_EXPORT_FORMATS = {'.psd': 'psd'}
+
+BIT_DEPTHS = (8, 16)
+
+# A DoS floor for `resize`: bounds a single call's memory/time cost regardless of how large the
+# SOURCE document already is (crop/rotate/flip only ever shrink-or-preserve the existing canvas,
+# so they don't need this; resize is the one op that can grow it arbitrarily from a tiny source).
+MAX_RESIZE_SIDE_PX = 30_000
+# gimp_fill's geometry bounds: a gradient axis may sit well off-canvas but not at 1e308, where
+# GIMP's float arithmetic overflows. Also the longest layer name / mask channel name it takes.
+FILL_MAX_COORD_PX = 10 * MAX_RESIZE_SIDE_PX
+FILL_MAX_STRING_LEN = 255
+_DEFAULT_MAX_RESIZE_MEGAPIXELS = 250
+
+
+def megapixel_cap_from_env(raw, default=_DEFAULT_MAX_RESIZE_MEGAPIXELS):
+    """A host-supplied (`EM_GIMP_MAX_MEGAPIXELS`) ceiling that can only LOWER `default` -- a memory-
+    constrained host (e.g. a small container) tightens every pixel-growing op's cap this way. Anything
+    that is not a finite positive number below `default` (unset, empty, junk, NaN/inf, zero/negative,
+    or an attempt to RAISE it) is ignored and `default` is returned unchanged."""
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value) or value <= 0 or value >= default:
+        return default
+    return value
+
+
+MAX_RESIZE_MEGAPIXELS = megapixel_cap_from_env(os.environ.get('EM_GIMP_MAX_MEGAPIXELS'))
+
+MAX_FEATHER_PX = 1000
+
+# Hardening a mask read as "Y' u8": 50% and above becomes fully selected (255), the rest 0. The
+# same 128 cut `_channel_coverage` counts as selected. Applied with `bytes.translate`, a C pass.
+HARDEN_TABLE = bytes(255 if v >= 128 else 0 for v in range(256))
+# Rows per band when hardening, so a very large mask is never held twice in memory at once.
+HARDEN_BAND_ROWS = 512
+
+
+def harden_mask_bytes(data):
+    """`data` ("Y' u8" mask bytes) with every value hardened to 0 or 255 at the 50% cut."""
+    return bytes(data).translate(HARDEN_TABLE)
+
+# gimp_modify_selection's expand/contract/border radius cap -- much lower than MAX_FEATHER_PX.
+# `Gimp.Selection.grow`/`shrink`/`border` are morphological (structuring-element) operations whose
+# cost scales with the radius, unlike `feather` (a GEGL blur, flat ~0.5s regardless of radius on a
+# 24MP image, measured live). This is the cap for a document at or below MORPHOLOGY_BASELINE_MP;
+# a bigger document gets a SMALLER cap -- see `effective_morphology_px`.
+MAX_MORPHOLOGY_PX = 150
+
+# Measured live at px=150 (border, the most expensive of the three): ~30s at 24MP (6016x4000),
+# ~73.5s at 100MP (14000x7143), and a GIMP session OUTRIGHT TIMEOUT past 180s at ~217MP
+# (30000x7228, this bridge's own largest allowed document -- MAX_RESIZE_SIDE_PX/
+# MAX_RESIZE_MEGAPIXELS). Cost does not scale linearly with megapixels (100MP was only ~2.45x the
+# 24MP cost for a ~4.17x bigger image), but it very much does not fit inside
+# gimp_modify_selection's budget either, so the cap itself has to shrink as the document grows.
+MORPHOLOGY_BASELINE_MP = 24.0
+# A document-size floor so a huge document still gets a meaningfully large morphology radius
+# rather than being squeezed to single-digit pixels.
+MIN_MORPHOLOGY_PX = 10
+
+
+def effective_morphology_px(width, height):
+    """The actual expand/contract/border cap for a `width`x`height` document: `MAX_MORPHOLOGY_PX`
+    at or below `MORPHOLOGY_BASELINE_MP`, shrinking as 1/megapixels above it (simple and, per the
+    live measurements on `MAX_MORPHOLOGY_PX`'s own comment, SAFELY conservative -- the real cost
+    curve is sub-linear in megapixels, so this reduces the cap by more than the measured cost
+    alone would require). Verified live at the two points that matter: at ~100MP the scaled cap
+    (36px) cost ~11.8s; at ~217MP (this bridge's largest allowed document) the scaled cap (17px)
+    cost ~27.2s -- both comfortably inside gimp_modify_selection's 45s budget with its own margin,
+    even though a large document also carries a substantial FIXED per-call cost that shrinking
+    `px` alone cannot remove (measured ~13-17s of that 27.2s at ~217MP comes from px=5 alone,
+    i.e. just handling a document that size, before any morphology radius is even considered)."""
+    megapixels = (width * height) / 1_000_000.0
+    if megapixels <= MORPHOLOGY_BASELINE_MP:
+        return MAX_MORPHOLOGY_PX
+    scaled = MAX_MORPHOLOGY_PX * MORPHOLOGY_BASELINE_MP / megapixels
+    return max(MIN_MORPHOLOGY_PX, min(MAX_MORPHOLOGY_PX, round(scaled)))
+
+
+# gimp_transform_layer's scale/scale_x_percent/scale_y_percent bound -- generous enough for any
+# real use (100x in either direction) while still keeping a single call's resulting layer size
+# bounded alongside validate_resize_dims' own check on the actual pixel dimensions.
+TRANSFORM_LAYER_MIN_SCALE_PERCENT = 1
+TRANSFORM_LAYER_MAX_SCALE_PERCENT = 10_000
+
+# gimp_transform_layer's `interpolation` choices -- the GIMP resampling filters this bridge
+# exposes, by name. The gi-dependent mapping to the real `Gimp.InterpolationType` enum members
+# lives in ops.py (this module stays gi-free).
+TRANSFORM_LAYER_INTERPOLATIONS = ('none', 'linear', 'cubic', 'nohalo', 'lohalo')
+
+# gimp_transform_layer's `free` op: offset_x/offset_y bound -- a sanity ceiling on the final
+# absolute translation, well past MAX_RESIZE_SIDE_PX (30000) so any real placement fits, but
+# tight enough that a wildly out-of-range value is refused here rather than only by the derived
+# predicted-origin check (`_validated_move_offset`) it also feeds into.
+TRANSFORM_LAYER_MAX_OFFSET_PX = 100_000
+
+# gimp_transform_layer's own op -> the field names that op reads, the same role
+# `type_fields`/`FILTER_COMMON_KEYS` play for gimp_add_adjustment/gimp_add_effect above --
+# `reject_foreign_transform_fields` refuses any OTHER declared field a caller sent (e.g. a
+# PS-style flat `delta_x`, or `skew_h_degrees` on op=scale), so a typo validates instead of
+# silently being ignored by that op's own handler.
+TRANSFORM_LAYER_COMMON_KEYS = frozenset(('image', 'op', 'layer', 'layer_id', 'interpolation'))
+
+TRANSFORM_LAYER_OP_FIELDS = {
+    'fit': ('mode',),
+    'scale': ('scale_percent', 'scale_x_percent', 'scale_y_percent'),
+    'move': ('delta', 'absolute', 'center_on'),
+    'rotate': ('degrees',),
+    'flip': ('axis',),
+    'skew': ('skew_h_degrees', 'skew_v_degrees'),
+    'free': ('scale_x_percent', 'scale_y_percent', 'degrees', 'offset_x', 'offset_y'),
+}
+
+
+def reject_foreign_transform_fields(op, args):
+    """Refuse any field `op` does not read -- the gimp_transform_layer analogue of
+    `reject_foreign_fields` above, over `TRANSFORM_LAYER_OP_FIELDS` instead of the filter-type
+    tables. `op`'s own schema is flat (one property per name across every op), so without this a
+    field meant for a DIFFERENT op (`skew_h_degrees` on op=scale, or PS's flat `delta_x` instead
+    of this tool's nested `delta`) validates, is ignored by that op's own handler, and silently
+    does nothing. None values are ignored (an omitted field)."""
+    own = TRANSFORM_LAYER_OP_FIELDS.get(op, ())
+    foreign = sorted(
+        k for k, v in args.items()
+        if v is not None and k not in TRANSFORM_LAYER_COMMON_KEYS and k not in own
+    )
+    if foreign:
+        raise ValueError(
+            "op '%s' does not use field(s) %s; its fields are: %s"
+            % (op, ', '.join(foreign), ', '.join(own) or '(none)')
+        )
+
+
+def ceil_with_margin(value):
+    """`value` rounded UP to the next whole pixel, plus one more -- the conservative integer a
+    cap check validates against for a float `transformed_bounds` predicts, matching the extra
+    pixel GIMP's own ADJUST transform-resize can add by rounding each edge of a rotated/sheared
+    bounding box outward independently (floor the min edge, ceil the max edge), which can land
+    the ACTUAL resulting integer width/height one pixel past a plain `ceil` of the float width.
+    Never used for the transform's own corner coordinates (those stay exact floats) -- only for
+    deciding whether to refuse BEFORE any pixel moves."""
+    return int(math.ceil(value)) + 1
+
+
+def transform_layer_precision_bucket(precision_nick):
+    """`Gimp.Precision.value_nick` (e.g. 'u8-non-linear', 'u16-perceptual', 'float-linear')
+    bucketed into the '8'/'16'/'32' strings `validate_document_dims`'s own
+    `DOCUMENT_MEGAPIXEL_CAP` is keyed by -- gimp_transform_layer validates a layer's predicted
+    size against the SAME precision-aware cap gimp_create_document does, rather than always
+    assuming 8-bit. u16 and half bucket to '16' (2 bytes/channel); every other precision (u32,
+    float, double) buckets to '32' (4+ bytes/channel, the most conservative bucket) -- this
+    bridge has no DOCUMENT_MEGAPIXEL_CAP entry finer than that."""
+    nick = precision_nick.lower()
+    if nick.startswith('u8'):
+        return '8'
+    if nick.startswith('u16') or nick.startswith('half'):
+        return '16'
+    return '32'
+
+
+def require(args, name):
+    """Fetch a required field from an op's `args`, raising ValueError naming it -- the
+    classifier maps that to `invalid_argument`. A bare `args[name]` raises KeyError instead,
+    which classifies as the much less actionable `gimp_op_failed`."""
+    if name not in args or args[name] is None:
+        raise ValueError('%s is required' % name)
+    return args[name]
+
+
+GINT32_MAX = 2147483647
+
+
+def gimp_id(value):
+    """`value` as an image or item id GIMP's gint32 `get_by_id` can take, or None when it can't be
+    one (a bool, not a whole number, below 1, or past gint32). The caller then answers "no ... with
+    id N" instead of letting PyGObject raise a raw OverflowError on the lookup."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if isinstance(value, float) and value != number:
+        return None
+    return number if 1 <= number <= GINT32_MAX else None
+
+
+def require_bool(args, name):
+    """Like `require`, but also rejects anything that isn't a real JSON boolean -- `bool("false")`
+    is `True` in Python (any non-empty string is truthy), so a caller that sends the STRING
+    "false" for e.g. `visible` would otherwise silently set it True instead of raising."""
+    value = require(args, name)
+    if not isinstance(value, bool):
+        raise ValueError('%s must be a boolean, got %r' % (name, value))
+    return value
+
+
+def optional_bool(args, name, default=False):
+    """Like `require_bool`, but returns `default` when `name` is absent or explicitly null --
+    for an opt-in flag (e.g. `discard_hidden`, `all`) rather than one the caller must always
+    supply. Still rejects a non-boolean when the field IS present, the same `bool("false")`
+    trap `require_bool` guards against."""
+    if name not in args or args[name] is None:
+        return default
+    if not isinstance(args[name], bool):
+        raise ValueError('%s must be a boolean, got %r' % (name, args[name]))
+    return args[name]
+
+
+def validate_range(name, value, lo, hi):
+    """Validate a float field is within [lo, hi]. Raises ValueError naming
+    `name` (which the bridge's error classifier maps to `invalid_argument`)."""
+    value = float(value)
+    if not lo <= value <= hi:
+        raise ValueError('%s must be within %s..%s' % (name, lo, hi))
+    return value
+
+
+def validate_int_range(name, value, lo, hi):
+    value = int(value)
+    if not lo <= value <= hi:
+        raise ValueError('%s must be within %s..%s' % (name, lo, hi))
+    return value
+
+
+def validate_choice(name, value, choices):
+    if value not in choices:
+        raise ValueError('%s must be one of %s' % (name, sorted(choices)))
+    return value
+
+
+def validate_region(region, img_width, img_height):
+    """A `region` dict must be a rectangle with positive size, entirely within the image --
+    partly outside (a negative origin, or one edge past the image bounds) or fully outside both
+    raise ValueError naming the field, rather than silently clamping to whatever sliver of it
+    happens to overlap (a 1px-wide crop is a confusing result to debug, not a helpful default).
+    Returns (x, y, width, height) as ints."""
+    x = require(region, 'x')
+    y = require(region, 'y')
+    width = require(region, 'width')
+    height = require(region, 'height')
+    x, y, width, height = int(x), int(y), int(width), int(height)
+    if width <= 0 or height <= 0:
+        raise ValueError('region width and height must be positive')
+    if x < 0 or y < 0 or x + width > img_width or y + height > img_height:
+        raise ValueError(
+            'region [%d,%d,%d,%d] must lie entirely within the %dx%d image'
+            % (x, y, width, height, img_width, img_height)
+        )
+    return x, y, width, height
+
+
+def validate_resize_dims(width, height):
+    """A DoS floor on `resize`'s target dimensions: each side capped, and the product capped
+    separately (a very wide, very short target could pass a per-side check yet still allocate an
+    enormous buffer)."""
+    if width <= 0 or height <= 0:
+        raise ValueError('width and height must be positive')
+    if width > MAX_RESIZE_SIDE_PX or height > MAX_RESIZE_SIDE_PX:
+        raise ValueError('width and height must each be at most %d px' % MAX_RESIZE_SIDE_PX)
+    megapixels = (width * height) / 1_000_000.0
+    if megapixels > MAX_RESIZE_MEGAPIXELS:
+        raise ValueError('resize target must be at most %g MP' % MAX_RESIZE_MEGAPIXELS)
+    return width, height
+
+
+# gimp_create_document's own megapixel ceiling, precision-aware: MAX_RESIZE_MEGAPIXELS (250) is
+# sized for 8-bit-per-channel content; a 16-bit image is 2 bytes/channel (half the pixel budget
+# for the same memory footprint, 125 MP) and a 32-bit float image is 4 bytes/channel (a quarter,
+# 60 MP -- rounded down from the exact 62.5 to a plain number). `create_document` is the one op
+# that picks its own bit depth up front (`open`/`resize`/etc. all work on whatever precision an
+# already-open image happens to be), so it is the one place this DoS floor needs to vary by
+# precision rather than assuming 8-bit throughout.
+# A lowered EM_GIMP_MAX_MEGAPIXELS scales the 16/32-bit caps down with the 8-bit one, never above
+# their own defaults.
+DOCUMENT_MEGAPIXEL_CAP = {
+    '8': MAX_RESIZE_MEGAPIXELS,
+    '16': min(125, MAX_RESIZE_MEGAPIXELS / 2),
+    '32': min(60, MAX_RESIZE_MEGAPIXELS / 4),
+}
+
+
+def validate_document_dims(width, height, precision='8'):
+    """Like `validate_resize_dims`, but the megapixel ceiling depends on `precision` ('8', '16', or
+    '32') -- see `DOCUMENT_MEGAPIXEL_CAP`'s own comment for why create_document needs its own
+    variant instead of the plain 8-bit-assuming one."""
+    if width <= 0 or height <= 0:
+        raise ValueError('width and height must be positive')
+    if width > MAX_RESIZE_SIDE_PX or height > MAX_RESIZE_SIDE_PX:
+        raise ValueError('width and height must each be at most %d px' % MAX_RESIZE_SIDE_PX)
+    cap = DOCUMENT_MEGAPIXEL_CAP[precision]
+    megapixels = (width * height) / 1_000_000.0
+    if megapixels > cap:
+        raise ValueError(
+            '%s %s-bit document must be at most %g MP'
+            % ('an' if precision == '8' else 'a', precision, cap)
+        )
+    return width, height
+
+
+def validate_group_total_pixels(sizes, precision='8'):
+    """A GROUP transform allocates every non-group descendant's own result buffer, so the SUM of
+    their predicted pixel counts (`sizes`: (width, height) pairs) must fit the same
+    precision-aware megapixel ceiling `validate_document_dims` applies to a single layer."""
+    cap = DOCUMENT_MEGAPIXEL_CAP[precision]
+    megapixels = sum(w * h for w, h in sizes) / 1_000_000.0
+    if megapixels > cap:
+        raise ValueError(
+            "the group's layers would total %.1f MP after this transform; the %s-bit limit is %d MP"
+            % (megapixels, precision, cap)
+        )
+
+
+def validate_feather_px(value):
+    return validate_range('feather_px', value, 0.0, MAX_FEATHER_PX)
+
+
+# ---- match_layer: statistics transfer as per-channel curves ---------------------------------
+#
+# Everything here is pure (no gi). Means and standard deviations are in GIMP's own histogram
+# units (0-255 in the image's perceptual encoding, the same space a gimp:curves filter works in).
+
+MATCH_TAG = 'match_layer'
+MATCH_MODES = ('both', 'color', 'tone')
+MATCH_REFERENCES = ('surround', 'below')
+MATCH_DEFAULT_STRENGTH = 70.0
+MATCH_MIN_PIXELS = 500
+MATCH_GAIN_MIN = 0.5
+MATCH_GAIN_MAX = 2.0
+MATCH_MAX_EDGE_CONTRACT_PX = 20
+MATCH_MAX_EDGE_FEATHER_PX = 50
+MATCH_SURROUND_MIN_PX = 16
+MATCH_SURROUND_MAX_PX = 400
+# A std-dev below this (0-255 units) is treated as a flat region: its contrast ratio is
+# meaningless, so the gain stays 1 and only the mean moves.
+MATCH_FLAT_SD = 0.5
+# Spacing of the helper points that keep a clamped curve on its line (see match_curve_points).
+MATCH_CURVE_STEP = 16.0
+# Measuring runs on a copy of the layer's region scaled so its long side is at most this: means
+# and spreads survive the downscale, and growing the surround ring stays cheap at any size.
+MATCH_MEASURE_MAX_SIDE = 2048
+
+
+def default_surround_px(layer_width, layer_height):
+    """About 12% of the layer's longer side, clamped to 16..400 px."""
+    px = int(round(0.12 * max(layer_width, layer_height)))
+    return max(MATCH_SURROUND_MIN_PX, min(MATCH_SURROUND_MAX_PX, px))
+
+
+def validate_match_args(args, layer_width, layer_height):
+    """The validated, defaulted `match_layer` options as a dict:
+    match/strength/reference/surround_px/edge_contract_px/edge_feather_px. `strength` is returned
+    as a 0..1 fraction under `s` as well."""
+    match = validate_choice('match', args.get('match') or 'both', MATCH_MODES)
+    reference = validate_choice('reference', args.get('reference') or 'surround', MATCH_REFERENCES)
+    strength = args.get('strength')
+    strength = validate_range(
+        'strength', MATCH_DEFAULT_STRENGTH if strength is None else strength, 0.0, 100.0
+    )
+    surround = args.get('surround_px')
+    surround = (
+        default_surround_px(layer_width, layer_height)
+        if surround is None
+        else validate_int_range('surround_px', surround, 1, MATCH_SURROUND_MAX_PX)
+    )
+    contract = args.get('edge_contract_px')
+    contract = validate_int_range(
+        'edge_contract_px', 0 if contract is None else contract, 0, MATCH_MAX_EDGE_CONTRACT_PX
+    )
+    feather = args.get('edge_feather_px')
+    feather = validate_int_range(
+        'edge_feather_px', 0 if feather is None else feather, 0, MATCH_MAX_EDGE_FEATHER_PX
+    )
+    return {
+        'match': match, 'reference': reference, 'strength': strength, 's': strength / 100.0,
+        'surround_px': surround, 'edge_contract_px': contract, 'edge_feather_px': feather,
+    }
+
+
+def match_transfer(mu_src, sd_src, mu_ref, sd_ref, s):
+    """The Reinhard-style linear map moving the source's mean/std toward the reference's, scaled
+    by `s` (0..1): out = (in - mu_src) * gain + mu_src + shift, with
+    gain = clamp(1 + (sd_ref / sd_src - 1) * s, 0.5, 2.0) and shift = (mu_ref - mu_src) * s.
+    A flat source (or reference) keeps gain 1. Returns {gain, shift, mean_after, std_after};
+    the `_after` values ignore the 0-255 clamp of the curve."""
+    if sd_src < MATCH_FLAT_SD or sd_ref < MATCH_FLAT_SD:
+        ratio = 1.0
+    else:
+        ratio = sd_ref / sd_src
+    gain = max(MATCH_GAIN_MIN, min(MATCH_GAIN_MAX, 1.0 + (ratio - 1.0) * s))
+    shift = (mu_ref - mu_src) * s
+    return {
+        'gain': gain, 'shift': shift,
+        'mean_after': mu_src + shift, 'std_after': sd_src * gain,
+    }
+
+
+def match_curve_points(mu_src, gain, shift):
+    """The transfer map as gimp:curves [input, output] points (0-255, strictly ascending input).
+    The line y = gain * (x - mu_src) + mu_src + shift is clamped to 0..255. Unclamped it is just
+    its two endpoints (a two-point curve is exactly straight; gain 1 and shift 0 gives
+    [[0, 0], [255, 255]]). Where the line meets the clamp, a point is added there and helper
+    points every MATCH_CURVE_STEP along the sloped part: GIMP draws a smooth spline through the
+    points, and without the helpers it bows away from the line (measured: ~6 levels at the
+    middle of a clamped curve)."""
+    def y_at(x):
+        return gain * (x - mu_src) + mu_src + shift
+
+    def clamp(y):
+        return max(0.0, min(255.0, y))
+
+    y0, y1 = y_at(0.0), y_at(255.0)
+    xs = [0.0, 255.0]
+    if y0 < 0.0 or y1 > 255.0:
+        # y is strictly increasing (gain > 0): it crosses 0 once and 255 once.
+        low = 0.0 if y0 >= 0.0 else mu_src - (mu_src + shift) / gain
+        high = 255.0 if y1 <= 255.0 else mu_src + (255.0 - mu_src - shift) / gain
+        knots = [x for x in (low, high) if MATCH_CURVE_STEP / 4 < x < 255.0 - MATCH_CURVE_STEP / 4]
+        xs.extend(knots)
+        # Helpers fill the sloped part [low, high] only, kept clear of the knots.
+        x = MATCH_CURVE_STEP * (int(low // MATCH_CURVE_STEP) + 1)
+        while x < 255.0:
+            if low + MATCH_CURVE_STEP / 4 < x < high - MATCH_CURVE_STEP / 4 and x > MATCH_CURVE_STEP / 4:
+                xs.append(float(x))
+            x += MATCH_CURVE_STEP
+    xs = sorted(set(xs))
+    return [[round(x, 2), round(clamp(y_at(x)), 2)] for x in xs]
+
+
+def match_measure_scale(width, height):
+    """The factor (0 < f <= 1) a measuring copy of a `width` x `height` region is scaled by."""
+    longest = max(width, height)
+    return 1.0 if longest <= MATCH_MEASURE_MAX_SIDE else MATCH_MEASURE_MAX_SIDE / float(longest)
+
+
+def match_scaled_px(px, factor):
+    """A pixel distance on a copy scaled by `factor`, never below 1 for a non-zero distance."""
+    return 0 if px <= 0 else max(1, int(round(px * factor)))
+
+
+def match_full_res_count(count, factor):
+    """A pixel count measured on a copy scaled by `factor`, as the full-resolution count."""
+    return int(round(count / (factor * factor)))
+
+
+def histogram_scale(nick):
+    """What a Drawable.histogram mean/std must be multiplied by to read 0-255: GIMP reports them
+    in 0-255 for 8-bit precisions and in 0-1 for every higher one."""
+    return 1.0 if nick.startswith('u8') else 255.0
+
+
+def is_linear_precision(nick):
+    """Whether a GIMP precision nick ('u8-non-linear', 'float-linear', ...) stores linear light."""
+    return nick.endswith('-linear') and not nick.endswith('-non-linear')
+
+
+def match_roi(layer_x, layer_y, layer_width, layer_height, canvas_width, canvas_height, pad):
+    """The layer's box grown by `pad` and clipped to the canvas, as (x, y, width, height); None
+    when the layer's own box does not touch the canvas."""
+    if (layer_x >= canvas_width or layer_y >= canvas_height
+            or layer_x + layer_width <= 0 or layer_y + layer_height <= 0):
+        return None
+    x0 = max(0, layer_x - pad)
+    y0 = max(0, layer_y - pad)
+    x1 = min(canvas_width, layer_x + layer_width + pad)
+    y1 = min(canvas_height, layer_y + layer_height + pad)
+    return x0, y0, x1 - x0, y1 - y0
+
+
+_HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+# gimp_canvas's fill choices: the same white/black/transparent LAYER_FILLS a new layer gets, plus
+# a #rrggbb hex color the fixed enum can't express -- validated by regex here since it's an open
+# set, not a membership check like every other choice validator in this file.
+CANVAS_FILLS = LAYER_FILLS
+
+
+def validate_canvas_fill(value):
+    if value in CANVAS_FILLS or (isinstance(value, str) and _HEX_COLOR_RE.fullmatch(value)):
+        return value
+    raise ValueError(
+        "fill must be one of %s, or a '#rrggbb' hex color, got %r" % (sorted(CANVAS_FILLS), value)
+    )
+
+
+def validate_hex_color(name, value):
+    """A '#rrggbb' hex color -- the same `_HEX_COLOR_RE` gimp_canvas's own fill validates against,
+    reused here so a color field never silently reaches `Gegl.Color.new` with a string it cannot
+    parse (which would otherwise fall back to black)."""
+    if not isinstance(value, str) or not _HEX_COLOR_RE.fullmatch(value):
+        raise ValueError('%s must be a "#rrggbb" hex color, got %r' % (name, value))
+    return value
+
+
+def _round_half_up(value):
+    """Round half away from zero, unlike Python's builtin `round()` (round-half-to-even:
+    `round(0.5) == 0`, `round(2.5) == 2`) -- surprising for a user-facing pixel radius, where
+    "4.5 px" should become 5, not 4."""
+    return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
+
+
+def validate_positive_px(name, value, max_px=MAX_FEATHER_PX):
+    """A strictly positive pixel radius (expand/contract/border/feather). Rounds half-up to the
+    nearest whole pixel FIRST, then refuses anything that is not strictly positive or exceeds
+    max_px -- so a value that ROUNDS to 0 (e.g. 0.3) is refused, same as an outright 0 or
+    negative, rather than silently accepted as a no-op radius."""
+    rounded = int(_round_half_up(float(value)))
+    if not 0 < rounded <= max_px:
+        raise ValueError('%s must round to a value greater than 0 and at most %s' % (name, max_px))
+    return rounded
+
+
+# load_mask's own DoS floor on a SOURCE mask image's dimensions. Checked right after
+# `Gimp.file_load` decodes the file (GIMP's Python environment has no cheap way to read a PNG/
+# JPEG header's own width/height without decoding -- GdkPixbuf is not bound in this environment),
+# so it bounds the IN-MEMORY size before the heavier work that follows (alpha compositing, scale,
+# flatten), not the decode itself. Reuses the same cap `validate_resize_dims` applies to a resize
+# target, since both are "how big a single in-memory image may get" limits.
+def validate_loaded_mask_dims(width, height):
+    return validate_resize_dims(width, height)
+
+
+def compute_mask_paste_rect(ox, oy, tw, th, img_width, img_height):
+    """Where a `tw`x`th` mask (already scaled to its target -- the whole image, or one layer's own
+    bounds, at offset `(ox, oy)`) actually lands inside the `img_width`x`img_height` canvas: the
+    intersection of [ox, ox+tw) x [oy, oy+th) with [0, img_width) x [0, img_height). Pure and
+    gi-free so the off-canvas cases (a negative offset, or a layer hanging off the right/bottom
+    edge) are unit-tested without GIMP. Returns (x0, y0, x1, y1); x1 <= x0 or y1 <= y0 means the
+    mask lands ENTIRELY off-canvas (nothing to paste -- the channel stays all-black there)."""
+    x0 = max(0, ox)
+    y0 = max(0, oy)
+    x1 = min(img_width, ox + tw)
+    y1 = min(img_height, oy + th)
+    return x0, y0, x1, y1
+
+
+# gimp_canvas's anchor grid -> the fraction of the GROWTH (new size minus old size) that lands
+# BEFORE the existing content on each axis. 0.0 pins that edge (no padding there); 1.0 puts all
+# the padding there instead; 0.5 splits it evenly. Keyed by the full 3x3 grid a Photoshop-style
+# "Canvas Size" anchor picker offers.
+_CANVAS_ANCHOR_FRACTIONS = {
+    'top_left': (0.0, 0.0), 'top_center': (0.5, 0.0), 'top_right': (1.0, 0.0),
+    'middle_left': (0.0, 0.5), 'center': (0.5, 0.5), 'middle_right': (1.0, 0.5),
+    'bottom_left': (0.0, 1.0), 'bottom_center': (0.5, 1.0), 'bottom_right': (1.0, 1.0),
+}
+CANVAS_ANCHORS = tuple(_CANVAS_ANCHOR_FRACTIONS)
+
+
+def canvas_anchor_offset(anchor, old_width, old_height, new_width, new_height):
+    """(offset_x, offset_y) for `Image.resize(new_width, new_height, offset_x, offset_y)` that
+    places the EXISTING old_width x old_height content at `anchor` within the new, larger canvas.
+    Pure arithmetic (gi-free) -- ops.py's `op_canvas` supplies the live image's own before/after
+    dimensions and passes the result straight to the bridge primitive."""
+    if anchor not in _CANVAS_ANCHOR_FRACTIONS:
+        raise ValueError('anchor must be one of %s' % sorted(_CANVAS_ANCHOR_FRACTIONS))
+    # Floor, not round: the growth is always >= 0 (gimp_canvas is extend-only), so floor is just
+    # `int()` truncation here -- picked over `round()` because Python's round() is round-half-to-
+    # EVEN (banker's rounding), which would silently flip which side of an odd split gets the
+    # extra pixel depending on whether that half-pixel count happens to be even or odd. floor()
+    # always gives the same, simpler rule: the leading edge (top/left) gets the smaller share.
+    fx, fy = _CANVAS_ANCHOR_FRACTIONS[anchor]
+    return (
+        math.floor((new_width - old_width) * fx),
+        math.floor((new_height - old_height) * fy),
+    )
+
+
+# EXIF Orientation (1-8) -> the steps that turn the stored pixels upright, in order. Each step is
+# 'cw90' / 'cw180' / 'cw270' (clockwise rotation), 'flip_h' (mirror left-right) or 'flip_v'
+# (mirror top-bottom). 1 (normal) needs none.
+EXIF_ORIENTATION_STEPS = {
+    1: (),
+    2: ('flip_h',),
+    3: ('cw180',),
+    4: ('flip_v',),
+    5: ('cw90', 'flip_h'),
+    6: ('cw90',),
+    7: ('cw90', 'flip_v'),
+    8: ('cw270',),
+}
+
+
+def parse_exif_orientation(raw):
+    """The EXIF Orientation value (1-8) from a metadata tag's raw value, or None when it is
+    missing, non-numeric or out of range -- a broken tag is ignored, never an error."""
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value in EXIF_ORIENTATION_STEPS else None
+
+
+def exif_orientation_steps(orientation):
+    """The upright-making steps for an EXIF Orientation value; () for None, 1 or anything else."""
+    return EXIF_ORIENTATION_STEPS.get(orientation, ())
+
+
+EXIF_ORIENTATION_TAG = 'Exif.Image.Orientation'
+
+
+def read_exif_orientation(metadata):
+    """The orientation (1-8) a GimpMetadata-like object carries, or None when `metadata` is None,
+    has no usable tag, or reading it raises."""
+    if metadata is None:
+        return None
+    try:
+        return parse_exif_orientation(metadata.try_get_tag_string(EXIF_ORIENTATION_TAG))
+    except Exception:
+        return None
+
+
+# Every tag a viewer may read orientation from; the EXIF one is the one this bridge applies.
+ORIENTATION_TAGS = (EXIF_ORIENTATION_TAG, 'Xmp.tiff.Orientation', 'Exif.Thumbnail.Orientation')
+
+
+def clear_exif_orientation(metadata):
+    """Removes the orientation tags from `metadata` (absent reads as normal); True when the EXIF
+    one was cleared. Clearing is used rather than writing 1: GIMP's metadata object can silently
+    ignore a write of that tag while still reporting success."""
+    cleared = False
+    for tag in ORIENTATION_TAGS:
+        try:
+            ok = bool(metadata.try_clear_tag(tag))
+        except Exception:
+            ok = False
+        if tag == EXIF_ORIENTATION_TAG:
+            cleared = ok
+    return cleared
+
+
+def pct_to_unit(name, value, lo=-100.0, hi=100.0):
+    """User-facing -100..100 (or a narrower lo..hi) percent-like value -> the -1..1 unit
+    GEGL/GIMP properties in this family use."""
+    return validate_range(name, value, lo, hi) / 100.0
+
+
+def degrees_to_unit(name, value, lo=-180.0, hi=180.0):
+    """User-facing -180..180 degrees -> the -1..1 unit `gimp:hue-saturation`'s `hue` uses."""
+    return validate_range(name, value, lo, hi) / 180.0
+
+
+def resolve_field(args, user_key, defaults, gegl_key, convert):
+    """One GEGL-unit field for an `adjust` type: the caller's OWN value (converted from
+    user-facing units via `convert`) when `user_key` is present in `args`; otherwise whatever is
+    already in `defaults` under `gegl_key` -- the type's hardcoded creation defaults when a
+    filter is being CREATED, or the existing live filter's own ledger params when it's being
+    RE-EDITED by `filter_id`.
+
+    This is what makes a re-edit a MERGE rather than a reset: re-editing `{contrast: 50}` on a
+    brightness_contrast filter must not silently snap `brightness` back to 0 just because this
+    particular call didn't mention it."""
+    if user_key in args:
+        return convert(args[user_key])
+    return defaults[gegl_key]
+
+
+def build_exposure_params(args, defaults):
+    # GEGL's own `exposure` pspec is unbounded (+/- DBL_MAX); +/-10 stops is a bound a real
+    # photograph never needs and keeps the field meaningful as a user-facing range.
+    return {
+        'exposure': resolve_field(
+            args, 'exposure', defaults, 'exposure',
+            lambda v: validate_range('exposure', v, -10.0, 10.0),
+        ),
+        'black-level': resolve_field(
+            args, 'black_level', defaults, 'black-level',
+            lambda v: validate_range('black_level', v, -0.1, 0.1),
+        ),
+    }
+
+
+def build_brightness_contrast_params(args, defaults):
+    return {
+        'brightness': resolve_field(
+            args, 'brightness', defaults, 'brightness', lambda v: pct_to_unit('brightness', v)
+        ),
+        'contrast': resolve_field(
+            args, 'contrast', defaults, 'contrast', lambda v: pct_to_unit('contrast', v)
+        ),
+    }
+
+
+def build_hue_saturation_params(args, defaults):
+    return {
+        'range': resolve_field(
+            args, 'range', defaults, 'range', lambda v: validate_choice('range', v, HUE_RANGES)
+        ),
+        'hue': resolve_field(args, 'hue', defaults, 'hue', lambda v: degrees_to_unit('hue', v)),
+        'saturation': resolve_field(
+            args, 'saturation', defaults, 'saturation', lambda v: pct_to_unit('saturation', v)
+        ),
+        'lightness': resolve_field(
+            args, 'lightness', defaults, 'lightness', lambda v: pct_to_unit('lightness', v)
+        ),
+    }
+
+
+def build_color_balance_params(args, defaults):
+    # One filter targets one range (shadows/midtones/highlights), the same one-filter-per-facet
+    # idiom as curves' one-filter-per-channel -- a full three-range grade is three filters.
+    return {
+        'range': resolve_field(
+            args, 'range', defaults, 'range', lambda v: validate_choice('range', v, TRANSFER_MODES)
+        ),
+        'cyan-red': resolve_field(
+            args, 'cyan_red', defaults, 'cyan-red', lambda v: pct_to_unit('cyan_red', v)
+        ),
+        'magenta-green': resolve_field(
+            args, 'magenta_green', defaults, 'magenta-green', lambda v: pct_to_unit('magenta_green', v)
+        ),
+        'yellow-blue': resolve_field(
+            args, 'yellow_blue', defaults, 'yellow-blue', lambda v: pct_to_unit('yellow_blue', v)
+        ),
+        'preserve-luminosity': resolve_field(
+            args, 'preserve_luminosity', defaults, 'preserve-luminosity', bool
+        ),
+    }
+
+
+def build_color_temperature_params(args, defaults):
+    # `from_kelvin` (what the photo currently looks shot at) -> `original-temperature`;
+    # `to_kelvin` (the corrected target) -> `intended-temperature`.
+    return {
+        'original-temperature': resolve_field(
+            args, 'from_kelvin', defaults, 'original-temperature',
+            lambda v: validate_range('from_kelvin', v, 1000.0, 12000.0),
+        ),
+        'intended-temperature': resolve_field(
+            args, 'to_kelvin', defaults, 'intended-temperature',
+            lambda v: validate_range('to_kelvin', v, 1000.0, 12000.0),
+        ),
+    }
+
+
+def build_shadows_highlights_params(args, defaults):
+    return {
+        'shadows': resolve_field(
+            args, 'shadows', defaults, 'shadows', lambda v: validate_range('shadows', v, -100.0, 100.0)
+        ),
+        'highlights': resolve_field(
+            args, 'highlights', defaults, 'highlights',
+            lambda v: validate_range('highlights', v, -100.0, 100.0),
+        ),
+        'whitepoint': resolve_field(
+            args, 'whitepoint', defaults, 'whitepoint',
+            lambda v: validate_range('whitepoint', v, -10.0, 10.0),
+        ),
+        'radius': resolve_field(
+            args, 'radius', defaults, 'radius', lambda v: validate_range('radius', v, 0.1, 1500.0)
+        ),
+        'compress': resolve_field(
+            args, 'compress', defaults, 'compress', lambda v: validate_range('compress', v, 0.0, 100.0)
+        ),
+        'shadows-ccorrect': resolve_field(
+            args, 'shadows_ccorrect', defaults, 'shadows-ccorrect',
+            lambda v: validate_range('shadows_ccorrect', v, 0.0, 100.0),
+        ),
+        'highlights-ccorrect': resolve_field(
+            args, 'highlights_ccorrect', defaults, 'highlights-ccorrect',
+            lambda v: validate_range('highlights_ccorrect', v, 0.0, 100.0),
+        ),
+    }
+
+
+def build_saturation_params(args, defaults):
+    return {
+        'scale': resolve_field(
+            args, 'scale', defaults, 'scale', lambda v: validate_range('scale', v, 0.0, 10.0)
+        )
+    }
+
+
+# gegl:vibrance's own -100..100 is far stronger than the Photoshop scale callers expect:
+# on a marina photo its +15 sent 38% of pixels to red 0, where Photoshop's +15 added about 0.014
+# mean saturation and clipped nothing. Dividing by this factor lines the two up (Photoshop +15 and
+# +50 match gegl about 0.5 and 2.0 on that photo), so the field keeps a Photoshop-like -100..100.
+VIBRANCE_GEGL_DIVISOR = 25.0
+
+
+def build_vibrance_params(args, defaults):
+    return {
+        'vibrance': resolve_field(
+            args, 'vibrance', defaults, 'vibrance',
+            lambda v: validate_range('vibrance', v, -100.0, 100.0) / VIBRANCE_GEGL_DIVISOR,
+        ),
+        'saturation': resolve_field(
+            args, 'saturation', defaults, 'saturation', lambda v: validate_range('saturation', v, 0.0, 10.0)
+        ),
+    }
+
+
+def build_sharpen_params(args, defaults):
+    return {
+        'std-dev': resolve_field(
+            args, 'radius', defaults, 'std-dev', lambda v: validate_range('radius', v, 0.0, 1500.0)
+        ),
+        'scale': resolve_field(
+            args, 'amount', defaults, 'scale', lambda v: validate_range('amount', v, 0.0, 300.0)
+        ),
+        'threshold': resolve_field(
+            args, 'threshold', defaults, 'threshold', lambda v: validate_range('threshold', v, 0.0, 1.0)
+        ),
+    }
+
+
+def build_noise_reduction_params(args, defaults):
+    return {
+        'iterations': resolve_field(
+            args, 'strength', defaults, 'iterations',
+            lambda v: validate_int_range('strength', v, 1, 32),
+        )
+    }
+
+
+def build_gaussian_blur_params(args, defaults):
+    # One user-facing `radius` drives both axes: a symmetric blur, the only kind the tool exposes.
+    # std-dev-x and std-dev-y always hold the same value, so the merge base can read either.
+    std_dev = resolve_field(
+        args, 'radius', defaults, 'std-dev-x', lambda v: validate_range('radius', v, 0.0, 1500.0)
+    )
+    return {'std-dev-x': std_dev, 'std-dev-y': std_dev}
+
+
+def validate_levels(params):
+    """Cross-field checks for a resolved levels record (user units, 0-255 levels). The setter
+    range-checks each level on its own; these are the relationships it can't see: gamma within
+    the tool's 0.1..10 bound (GEGL's own pspec is wider, so an out-of-range value would otherwise
+    render), and an input range that isn't empty or inverted."""
+    validate_range('gamma', params['gamma'], 0.1, 10.0)
+    if not params['in_low'] < params['in_high']:
+        raise ValueError(
+            'in_low (%s) must be less than in_high (%s)' % (params['in_low'], params['in_high'])
+        )
+    return params
+
+
+ADJUST_PARAM_BUILDERS = {
+    'exposure': build_exposure_params,
+    'brightness_contrast': build_brightness_contrast_params,
+    'hue_saturation': build_hue_saturation_params,
+    'color_balance': build_color_balance_params,
+    'color_temperature': build_color_temperature_params,
+    'shadows_highlights': build_shadows_highlights_params,
+    'saturation': build_saturation_params,
+    'vibrance': build_vibrance_params,
+    'sharpen': build_sharpen_params,
+    'noise_reduction': build_noise_reduction_params,
+    'gaussian_blur': build_gaussian_blur_params,
+}
+
+# Creation-time defaults, already in GEGL-property units -- the `defaults` a builder receives
+# when there is no existing filter to re-edit (a fresh `resolve_field` call for every field
+# then falls through to these, since the caller gave none of them).
+ADJUST_CREATE_DEFAULTS = {
+    'exposure': {'exposure': 0.0, 'black-level': 0.0},
+    'brightness_contrast': {'brightness': 0.0, 'contrast': 0.0},
+    'hue_saturation': {'range': 'all', 'hue': 0.0, 'saturation': 0.0, 'lightness': 0.0},
+    'color_balance': {
+        'range': 'midtones', 'cyan-red': 0.0, 'magenta-green': 0.0, 'yellow-blue': 0.0,
+        'preserve-luminosity': True,
+    },
+    'color_temperature': {'original-temperature': 6500.0, 'intended-temperature': 6500.0},
+    'shadows_highlights': {
+        'shadows': 0.0, 'highlights': 0.0, 'whitepoint': 0.0, 'radius': 100.0, 'compress': 50.0,
+        'shadows-ccorrect': 100.0, 'highlights-ccorrect': 50.0,
+    },
+    'saturation': {'scale': 1.0},
+    'vibrance': {'vibrance': 0.0, 'saturation': 1.0},
+    'sharpen': {'std-dev': 3.0, 'scale': 0.5, 'threshold': 0.0},
+    'noise_reduction': {'iterations': 4},
+    'gaussian_blur': {'std-dev-x': 1.5, 'std-dev-y': 1.5},
+}
+
+
+# ---- gimp_add_effect: allow-listed GEGL effect filters --------------------------------------
+#
+# The parallel tables to ADJUST_OPERATIONS/ADJUST_PARAM_BUILDERS/ADJUST_CREATE_DEFAULTS above,
+# for `gimp_add_effect`'s `type` field rather than `gimp_add_adjustment`'s `type` field -- a
+# DIFFERENT bridge op (`effect`, dispatched to `op_effect` in ops.py -- gimp_add_effect is its
+# own tool, tier 'dev', a sibling of gimp_add_adjustment rather than an op on gimp_filter), so
+# these stay separate dicts rather than merged into the ADJUST_* ones; only the GEGL-property
+# SETTERS functions in ops.py are shared across both (an operation name is an operation name
+# regardless of which tool created the filter).
+#
+# Deliberately excludes gegl:gaussian-blur (already ADJUST_OPERATIONS' `gaussian_blur`, see
+# gimp-adjustment-tools.ts) and gegl:c2g: c2g excluded, ~35s full-res export at 24 MP (measured
+# live), over the ~30s budget -- does not ship here.
+EFFECT_OPERATIONS = {
+    'vignette': 'gegl:vignette',
+    'black_white': 'gegl:mono-mixer',
+    'motion_blur': 'gegl:motion-blur-linear',
+    # gegl:focus-blur, NOT gegl:lens-blur -- see build_lens_blur_params' own comment: lens-blur
+    # exists in this GIMP's GEGL, but GIMP itself refuses to attach it as a non-destructive
+    # DrawableFilter (an 'aux'-pad operation), so it is unusable in this bridge's architecture.
+    'lens_blur': 'gegl:focus-blur',
+    'add_noise': 'gegl:noise-rgb',
+    'drop_shadow': 'gegl:dropshadow',
+    # outline and outer_glow are also gegl:dropshadow (zero offset, grown by grow-radius): one
+    # operation, three types -- the ledger's `type` tells them apart, see OPERATION_TYPES below.
+    'outline': 'gegl:dropshadow',
+    'outer_glow': 'gegl:dropshadow',
+    'surface_blur': 'gegl:bilateral-filter',
+}
+
+# The inverse of ADJUST_OPERATIONS and EFFECT_OPERATIONS together, for a ledger record written
+# without a `type` field -- one shared map, since `op_list_filters` looks a record's operation up
+# here regardless of which tool (gimp_add_adjustment or gimp_add_effect) created it. Where several
+# types share one operation (gegl:dropshadow), the first listed wins: a record with no `type` is
+# from before outline/outer_glow existed, so it can only be a drop_shadow. THAT DEPENDS ON
+# INSERTION ORDER: `setdefault` keeps whichever type reached the map first, so 'drop_shadow' must
+# stay listed above 'outline' and 'outer_glow' in EFFECT_OPERATIONS (test_lib.py pins it).
+OPERATION_TYPES = {operation: type_ for type_, operation in ADJUST_OPERATIONS.items()}
+for _type, _operation in EFFECT_OPERATIONS.items():
+    OPERATION_TYPES.setdefault(_operation, _type)
+del _type, _operation
+
+
+def record_type(rec):
+    """The tool `type` of a ledger filter record: its stored `type`, or -- for a record written
+    before `type` was stored -- the type its operation implies (`OPERATION_TYPES`). None for an
+    operation neither tool owns. The one place both the filter listing and the effect re-edit
+    type guard resolve a record's type, so a typeless legacy gegl:dropshadow reads as drop_shadow
+    in both."""
+    if not isinstance(rec, dict):
+        return None
+    return rec.get('type') or OPERATION_TYPES.get(rec.get('operation'))
+
+# Every validate_range/validate_int_range call below uses `val`, not `v`, as its lambda's
+# parameter name -- deliberately, so it is NOT matched by gimp-adjustment-tools.test.ts's own
+# `parseLibPyBounds` regex (which requires the literal substring ", v,"). That regex scans this
+# WHOLE file, not just ADJUST_PARAM_BUILDERS, so an accidental match here would silently fold a
+# filter-effect bound into an unrelated adjust field's drift check (e.g. sharpen's `amount`) --
+# `val` keeps the two files' schema-bounds-drift tests fully decoupled.
+
+
+def build_vignette_params(args, defaults):
+    # Proportional/scale-invariant, relative to the LAYER's own extent (the drawable this filter
+    # attaches to, not the document canvas -- every GEGL op here runs per-drawable): x/y are a
+    # fraction of width/height. `radius`'s own reference measured live as NOT a single clean
+    # formula (e.g. a plain half-diagonal or half-width) across every aspect ratio tried -- rather
+    # than assert a specific geometric claim this bridge can't fully verify, the description
+    # instead states the one thing confirmed true and load-bearing for SPATIAL_SCALE_PROPS: it is
+    # relative, not absolute pixels, so the same value looks visually equivalent at any
+    # resolution. Unlike the spatial effects below, nothing here needs a SPATIAL_SCALE_PROPS entry
+    # -- the same value renders correctly on the preview proxy as at full resolution.
+    return {
+        'radius': resolve_field(
+            args, 'radius', defaults, 'radius', lambda val: validate_range('radius', val, 0.0, 3.0)
+        ),
+        'softness': resolve_field(
+            args, 'softness', defaults, 'softness',
+            lambda val: validate_range('softness', val, 0.0, 1.0),
+        ),
+        'gamma': resolve_field(
+            args, 'gamma', defaults, 'gamma', lambda val: validate_range('gamma', val, 0.1, 10.0)
+        ),
+        'x': resolve_field(
+            args, 'center_x', defaults, 'x', lambda val: validate_range('center_x', val, 0.0, 1.0)
+        ),
+        'y': resolve_field(
+            args, 'center_y', defaults, 'y', lambda val: validate_range('center_y', val, 0.0, 1.0)
+        ),
+    }
+
+
+def build_black_white_params(args, defaults):
+    # `preserve_luminosity`: when True, GEGL rescales the weighted sum so the output matches the
+    # ORIGINAL pixel's brightness even when the three weights don't sum to 1 -- verified live, a
+    # flat 128-gray input stays 128 with weights (0.1, 0.1, 0.1) and preserve=True, but comes back
+    # darker (measured 0x48) with the same weights and preserve=False. Weights summing to exactly
+    # 0 (e.g. 0,0,0) do NOT divide by zero or produce NaN either way -- verified live, GEGL returns
+    # plain black -- so no extra guard is needed here for that case.
+    return {
+        'red': resolve_field(
+            args, 'red_weight', defaults, 'red',
+            lambda val: validate_range('red_weight', val, -5.0, 5.0),
+        ),
+        'green': resolve_field(
+            args, 'green_weight', defaults, 'green',
+            lambda val: validate_range('green_weight', val, -5.0, 5.0),
+        ),
+        'blue': resolve_field(
+            args, 'blue_weight', defaults, 'blue',
+            lambda val: validate_range('blue_weight', val, -5.0, 5.0),
+        ),
+        # require_bool, not a bare `bool()` cast (bool("false") is True in Python -- any
+        # non-empty string is truthy) -- resolve_field's own convert callback only ever sees the
+        # raw VALUE, not (args, name), so the merge-not-reset fallback is inlined here instead of
+        # going through resolve_field for this one field.
+        'preserve-luminosity': (
+            require_bool(args, 'preserve_luminosity')
+            if 'preserve_luminosity' in args
+            else defaults['preserve-luminosity']
+        ),
+    }
+
+
+def build_motion_blur_params(args, defaults):
+    return {
+        'length': resolve_field(
+            args, 'length', defaults, 'length', lambda val: validate_range('length', val, 0.0, 1000.0)
+        ),
+        'angle': resolve_field(
+            args, 'angle', defaults, 'angle', lambda val: validate_range('angle', val, -180.0, 180.0)
+        ),
+    }
+
+
+def build_lens_blur_params(args, defaults):
+    # gegl:lens-blur (GIMP 3.2's GEGL does ship it) turned out unusable here -- verified live,
+    # `gimp-drawable-append-filter` refuses it outright ("effects with an 'aux' pad cannot be
+    # applied non-destructively"), so every call would silently attach nothing (no exception, no
+    # ledger record, filter count staying 0). gegl:focus-blur DOES attach; its blur amount
+    # property is named `blur-radius`, not `radius` (the external field name here stays `radius`
+    # regardless -- see EFFECT_CREATE_DEFAULTS). Two more properties are forced in ops.py's
+    # `_set_lens_blur`, not part of this dict and not user-configurable:
+    #  - `radius` (an unrelated, same-named property sizing an in-focus zone that never blurs) is
+    #    forced to 0, so the effect is a uniform blur, not a tilt-shift one.
+    #  - `blur-type` is forced to 'lens' (its own default is 'gaussian', which would make this a
+    #    second, redundant gaussian_blur and leave `highlight_factor` inert -- verified live:
+    #    'lens' mode produces a real bokeh highlight boost, a bright spot's halo reaching ~3x
+    #    farther out at highlight_factor 1 vs 0, and 'lens' mode DOES attach as a non-destructive
+    #    filter despite being the more elaborate mode -- the 'aux'-pad restriction that sank
+    #    gegl:lens-blur does not apply inside this meta-operation).
+    # `blur-radius`'s cap is lowered from the union's 1500 to 150: 'lens' mode measured live as
+    # much more expensive than a separable blur (~35s for a full-res 24 MP export at radius 300,
+    # ~17s at 150), so the cap keeps the worst case comfortably under the ~30s budget every
+    # effect here is held to.
+    return {
+        'blur-radius': resolve_field(
+            args, 'radius', defaults, 'blur-radius',
+            lambda val: validate_range('radius', val, 0.0, 150.0),
+        ),
+        'highlight-factor': resolve_field(
+            args, 'highlight_factor', defaults, 'highlight-factor',
+            lambda val: validate_range('highlight_factor', val, 0.0, 1.0),
+        ),
+    }
+
+
+def build_add_noise_params(args, defaults):
+    # One user-facing `noise_amount` drives red/green/blue uniformly, the same "one field, several
+    # identical GEGL properties" idiom `build_gaussian_blur_params` uses for std-dev-x/std-dev-y.
+    amount = resolve_field(
+        args, 'noise_amount', defaults, 'red',
+        lambda val: validate_range('noise_amount', val, 0.0, 1.0),
+    )
+    return {
+        'red': amount,
+        'green': amount,
+        'blue': amount,
+        'alpha': resolve_field(
+            args, 'alpha', defaults, 'alpha', lambda val: validate_range('alpha', val, 0.0, 1.0)
+        ),
+        'seed': resolve_field(
+            args, 'seed', defaults, 'seed',
+            lambda val: validate_int_range('seed', val, 0, 4294967295),
+        ),
+    }
+
+
+def build_drop_shadow_params(args, defaults):
+    # Only meaningful on a layer with an alpha channel -- a shadow is cast from what's transparent
+    # around the opaque content; on a fully opaque layer there is nothing for it to show through.
+    return {
+        'x': resolve_field(
+            args, 'offset_x', defaults, 'x', lambda val: validate_range('offset_x', val, -500.0, 500.0)
+        ),
+        'y': resolve_field(
+            args, 'offset_y', defaults, 'y', lambda val: validate_range('offset_y', val, -500.0, 500.0)
+        ),
+        'radius': resolve_field(
+            args, 'radius', defaults, 'radius', lambda val: validate_range('radius', val, 0.0, 1500.0)
+        ),
+        'opacity': resolve_field(
+            args, 'opacity', defaults, 'opacity', lambda val: validate_range('opacity', val, 0.0, 1.0)
+        ),
+    }
+
+
+def build_outline_params(args, defaults):
+    # A solid ring around the layer's alpha: gegl:dropshadow with no offset and no blur, grown by
+    # `width` px (grow-radius, a circle) at full opacity. Only `grow-radius` and `color` are
+    # recorded; `_set_drop_shadow` fills the rest in (offset 0, blur 0, opacity 1). The shadow is
+    # drawn under the layer's own pixels, so the interior is untouched.
+    #
+    # GEGL allows grow-radius up to 100, but its cost grows linearly with the radius times the
+    # pixel count. Measured live (GIMP 3.2.6, a 6000x4000 = 24 MP layer, full export incl. a ~1 s
+    # baseline export with no filter): width 6 -> 4 s, 50 -> 18.5 s, 100 -> 39.5 s; outer_glow at
+    # radius 250 with spread 50 -> 17.7 s, spread 100 -> 30.6 s. Width and spread stop at 50, the
+    # same ~20 s worst case on 24 MP as SURFACE_BLUR_MAX_RADIUS.
+    return {
+        'grow-radius': resolve_field(
+            args, 'width', defaults, 'grow-radius', lambda val: validate_range('width', val, 1.0, 50.0)
+        ),
+        'color': resolve_field(
+            args, 'color', defaults, 'color', lambda val: validate_hex_color('color', val)
+        ),
+    }
+
+
+def build_outer_glow_params(args, defaults):
+    # The same gegl:dropshadow, centered (no offset, filled in by `_set_drop_shadow`): `spread`
+    # grows the glow's solid core, `radius` blurs it.
+    return {
+        'radius': resolve_field(
+            args, 'radius', defaults, 'radius', lambda val: validate_range('radius', val, 1.0, 250.0)
+        ),
+        'grow-radius': resolve_field(
+            args, 'spread', defaults, 'grow-radius',
+            lambda val: validate_range('spread', val, 0.0, 50.0),
+        ),
+        'opacity': resolve_field(
+            args, 'opacity', defaults, 'opacity', lambda val: validate_range('opacity', val, 0.0, 1.0)
+        ),
+        'color': resolve_field(
+            args, 'color', defaults, 'color', lambda val: validate_hex_color('color', val)
+        ),
+    }
+
+
+# gegl:bilateral-filter's `edge-preservation` runs 0..100 (default 8), where HIGHER keeps more of
+# the original, edges and noise alike -- probed live on a noisy patch beside a hard edge: 0 smooths
+# hard enough to blur the edge itself, 8 flattens the noise (stddev 17 -> 2) with the edge intact,
+# 100 barely smooths. The tool exposes it as 0..1 (this factor times the tool value).
+# gegl:mean-curvature-blur and gegl:snn-mean were not needed: GIMP attaches bilateral-filter fine.
+BILATERAL_EDGE_SCALE = 100.0
+
+
+# gegl:bilateral-filter's cost grows with the SQUARE of the radius times the pixel count. Measured
+# live (GIMP 3.2.6, this dev box, a noisy 6016x4000 = 24 MP layer; full export incl. a ~2 s
+# baseline export with no filter): radius 5 -> 12 s, 6 -> 17 s, 7 -> 23 s, 8 -> 28 s, 10 -> 41 s;
+# radius 25 and 50 were not finished inside a 400 s timeout (extrapolating the r^2 trend: ~4 and
+# ~16 minutes). The tool's ~20 s worst case on 24 MP therefore stops at radius 6, and the remote
+# box is slower still. A smaller image has headroom (cost scales with pixels) but the cap is a flat
+# per-filter number: it does not look at the layer. TS schema, EFFECT_TRANSFORM_BOUNDS and this
+# builder share it.
+SURFACE_BLUR_MAX_RADIUS = 6.0
+
+
+def build_surface_blur_params(args, defaults):
+    return {
+        'blur-radius': resolve_field(
+            args, 'radius', defaults, 'blur-radius',
+            lambda val: validate_range('radius', val, 1.0, SURFACE_BLUR_MAX_RADIUS),
+        ),
+        'edge-preservation': resolve_field(
+            args, 'edge_preservation', defaults, 'edge-preservation',
+            lambda val: validate_range('edge_preservation', val, 0.0, 1.0),
+        ),
+    }
+
+
+EFFECT_PARAM_BUILDERS = {
+    'vignette': build_vignette_params,
+    'black_white': build_black_white_params,
+    'motion_blur': build_motion_blur_params,
+    'lens_blur': build_lens_blur_params,
+    'add_noise': build_add_noise_params,
+    'drop_shadow': build_drop_shadow_params,
+    'outline': build_outline_params,
+    'outer_glow': build_outer_glow_params,
+    'surface_blur': build_surface_blur_params,
+}
+
+# Creation-time defaults, already in GEGL-property units -- probed live via `describe_operation`
+# against GIMP 3.2.6's real GEGL pspecs, except vignette's radius and softness: GEGL's own 1.2/0.8
+# renders the corners black, so these are chosen for a subtle vignette (corners about a quarter
+# darker, measured on real photos).
+EFFECT_CREATE_DEFAULTS = {
+    'vignette': {'radius': 2.0, 'softness': 1.0, 'gamma': 2.0, 'x': 0.5, 'y': 0.5},
+    'black_white': {'red': 0.333, 'green': 0.333, 'blue': 0.333, 'preserve-luminosity': False},
+    'motion_blur': {'length': 10.0, 'angle': 0.0},
+    'lens_blur': {'blur-radius': 25.0, 'highlight-factor': 0.0},
+    'add_noise': {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 0},
+    'drop_shadow': {'x': 20.0, 'y': 20.0, 'radius': 10.0, 'opacity': 0.5},
+    'outline': {'grow-radius': 4.0, 'color': '#000000'},
+    'outer_glow': {'radius': 20.0, 'grow-radius': 4.0, 'opacity': 0.75, 'color': '#ffffff'},
+    'surface_blur': {'blur-radius': 4.0, 'edge-preservation': 0.08},
+}
+
+
+def _scaled(factor):
+    # Rounded so a GEGL value that went through a /100 or /180 on the way in reads back as the
+    # number the caller typed (0.2 * 100 is 20.000000000000004 in binary floating point). A value
+    # given with at most 6 decimals round-trips exactly; one with more comes back rounded to 6,
+    # a difference of about 1e-8 in GEGL units, far below one 8-bit level.
+    return lambda v: round(v * factor, 6)
+
+
+def _same(v):
+    return v
+
+
+# GEGL-unit ledger params -> the tool's own field names and units, per adjust type: the inverse
+# of each build_*_params above, as (user_key, gegl_key, convert). `gimp_filter op=list` reports
+# these, so a model can pass a listed value straight back on a re-edit. curves/levels already
+# store user units.
+USER_FIELDS = {
+    'exposure': (
+        ('exposure', 'exposure', _same),
+        ('black_level', 'black-level', _same),
+    ),
+    'brightness_contrast': (
+        ('brightness', 'brightness', _scaled(100)),
+        ('contrast', 'contrast', _scaled(100)),
+    ),
+    'hue_saturation': (
+        ('range', 'range', _same),
+        ('hue', 'hue', _scaled(180)),
+        ('saturation', 'saturation', _scaled(100)),
+        ('lightness', 'lightness', _scaled(100)),
+    ),
+    'color_balance': (
+        ('range', 'range', _same),
+        ('cyan_red', 'cyan-red', _scaled(100)),
+        ('magenta_green', 'magenta-green', _scaled(100)),
+        ('yellow_blue', 'yellow-blue', _scaled(100)),
+        ('preserve_luminosity', 'preserve-luminosity', _same),
+    ),
+    'color_temperature': (
+        ('from_kelvin', 'original-temperature', _same),
+        ('to_kelvin', 'intended-temperature', _same),
+    ),
+    'shadows_highlights': (
+        ('shadows', 'shadows', _same),
+        ('highlights', 'highlights', _same),
+        ('whitepoint', 'whitepoint', _same),
+        ('radius', 'radius', _same),
+        ('compress', 'compress', _same),
+        ('shadows_ccorrect', 'shadows-ccorrect', _same),
+        ('highlights_ccorrect', 'highlights-ccorrect', _same),
+    ),
+    'saturation': (('scale', 'scale', _same),),
+    'vibrance': (
+        ('vibrance', 'vibrance', _scaled(VIBRANCE_GEGL_DIVISOR)),
+        ('saturation', 'saturation', _same),
+    ),
+    'sharpen': (
+        ('radius', 'std-dev', _same),
+        ('amount', 'scale', _same),
+        ('threshold', 'threshold', _same),
+    ),
+    'noise_reduction': (('strength', 'iterations', _same),),
+    'gaussian_blur': (('radius', 'std-dev-x', _same),),
+    # ---- gimp_add_effect's effects (EFFECT_OPERATIONS, not ADJUST_OPERATIONS) ------------------
+    'vignette': (
+        ('radius', 'radius', _same),
+        ('softness', 'softness', _same),
+        ('gamma', 'gamma', _same),
+        ('center_x', 'x', _same),
+        ('center_y', 'y', _same),
+    ),
+    'black_white': (
+        ('red_weight', 'red', _same),
+        ('green_weight', 'green', _same),
+        ('blue_weight', 'blue', _same),
+        ('preserve_luminosity', 'preserve-luminosity', _same),
+    ),
+    'motion_blur': (
+        ('length', 'length', _same),
+        ('angle', 'angle', _same),
+    ),
+    'lens_blur': (
+        ('radius', 'blur-radius', _same),
+        ('highlight_factor', 'highlight-factor', _same),
+    ),
+    'add_noise': (
+        ('noise_amount', 'red', _same),
+        ('alpha', 'alpha', _same),
+        ('seed', 'seed', _same),
+    ),
+    'drop_shadow': (
+        ('offset_x', 'x', _same),
+        ('offset_y', 'y', _same),
+        ('radius', 'radius', _same),
+        ('opacity', 'opacity', _same),
+    ),
+    'outline': (
+        ('width', 'grow-radius', _same),
+        ('color', 'color', _same),
+    ),
+    'outer_glow': (
+        ('spread', 'grow-radius', _same),
+        ('radius', 'radius', _same),
+        ('opacity', 'opacity', _same),
+        ('color', 'color', _same),
+    ),
+    'surface_blur': (
+        ('radius', 'blur-radius', _same),
+        ('edge_preservation', 'edge-preservation', _same),
+    ),
+}
+
+CURVES_USER_FIELDS = ('channel', 'points')
+LEVELS_USER_FIELDS = ('channel', 'in_low', 'in_high', 'gamma', 'out_low', 'out_high')
+
+# Keys every adjust/effect call may carry whatever its type: addressing, identity, and the mask.
+FILTER_COMMON_KEYS = frozenset(('image', 'type', 'layer', 'layer_id', 'filter_id', 'mask', 'name'))
+
+
+def type_fields(type_):
+    """The tool-facing field names `type_`'s builder reads (same tables `user_params` reports)."""
+    if type_ == 'curves':
+        return CURVES_USER_FIELDS
+    if type_ == 'levels':
+        return LEVELS_USER_FIELDS
+    return tuple(user for user, _gegl, _convert in USER_FIELDS.get(type_, ()))
+
+
+def reject_foreign_fields(type_, args):
+    """Refuse any field `type_` does not read. The tool schemas are flat (one property per name
+    across every type), so without this a field meant for another type -- `saturation` on type
+    `saturation`, whose knob is `scale` -- validates, is ignored by the builder, and creates a
+    filter that does nothing. None values are ignored (an omitted field)."""
+    own = type_fields(type_)
+    foreign = sorted(
+        k for k, v in args.items()
+        if v is not None and k not in FILTER_COMMON_KEYS and k not in own
+    )
+    if foreign:
+        raise ValueError(
+            "type '%s' does not use field(s) %s; its fields are: %s"
+            % (type_, ', '.join(foreign), ', '.join(own) or '(none)')
+        )
+
+
+def user_params(type_, params):
+    """A ledger record's `params` in the tool's own field names and units -- what `list` reports
+    for a filter this bridge created. `type_` may be None for a record written before `type` was
+    stored; the caller passes the type derived from the operation instead. The filter's `mask` is
+    reported separately, so it is not repeated here. Unknown types fall back to the raw params
+    (minus `mask`) rather than guessing."""
+    if type_ == 'curves':
+        return {k: params[k] for k in CURVES_USER_FIELDS if k in params}
+    if type_ == 'levels':
+        return {k: params[k] for k in LEVELS_USER_FIELDS if k in params}
+    fields = USER_FIELDS.get(type_)
+    if fields is None:
+        return {k: v for k, v in params.items() if k != 'mask'}
+    return {user: convert(params[gegl]) for user, gegl, convert in fields if gegl in params}
+
+
+def json_safe(value):
+    """A readback property value made JSON-serialisable: plain JSON scalars pass through, lists
+    and dicts are walked, a GeglColor becomes its [r, g, b, a] (see below), and anything else (a
+    path object, bytes) becomes its str(). One foreign filter with such a property must not fail
+    `list` for the whole image."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)  # JSON has no NaN/Infinity; Node's JSON.parse rejects them
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    # lib.py is gi-free (no `import gi`/`Gegl`), so a GeglColor can only be recognized by duck
+    # type, not `isinstance` -- the same reproducibility problem `op_describe_operation`'s own
+    # GeglColor handling exists to fix (a bare str() embeds a live object pointer address that
+    # differs every run, e.g. a foreign vignette/dropshadow filter's `color` property read back
+    # through `op_list_filters`), solved the same way: `get_rgba()` is the stable, meaningful
+    # summary. Any other object that merely happens to expose a zero-arg `get_rgba()` would be
+    # vanishingly unlikely and still degrades safely to a 4-number list.
+    get_rgba = getattr(value, 'get_rgba', None)
+    if callable(get_rgba):
+        try:
+            return [json_safe(c) for c in get_rgba()]
+        except Exception:
+            pass
+    return str(value)
+
+# The only operations `describe_operation` will probe -- an allow-list, not "any GEGL/GIMP
+# operation name the caller cares to ask about": the probe instantiates a real DrawableFilter,
+# and an unbounded operation name is an unnecessary surface (arbitrary-op instantiation, error
+# text from GIMP's own PDB) for a probe whose only real job is confirming the schema of the
+# operations this engine actually uses.
+ALLOWED_DESCRIBE_OPERATIONS = frozenset(ADJUST_OPERATIONS.values()) | frozenset(EFFECT_OPERATIONS.values())
+
+# ---- geometry-op masked-filter detection (pure logic; ops.py supplies the live GIMP state) -----
+
+
+def stale_ledger_names(filters, live_names):
+    """Names present in the ledger's `filters` dict that no longer match any LIVE filter name.
+    These must be pruned before a geometry op's masked-filter check runs, or a filter someone
+    deleted outside `filter op=delete` (the GUI, a foreign tool, a document edited elsewhere)
+    would go on blocking rotate/flip/resize forever for a filter that isn't even there."""
+    return set(filters) - set(live_names)
+
+
+def classify_geometry_filters(filters, live_filters):
+    """Decide, for every LIVE filter currently on the image, whether it's masked, unmasked, or
+    impossible to verify -- the basis for `rotate`/`flip`/`resize`'s refusal check, which iterates
+    LIVE filters rather than trusting the ledger alone (a live filter the ledger doesn't know
+    about might still be masked; the ledger alone can't say either way).
+
+    `filters` is the ledger's own {name: {"operation":..., "params": {...}}} map (already pruned
+    of stale entries -- see `stale_ledger_names`). `live_filters` is an iterable of
+    (name, operation) pairs for every filter actually attached to a layer right now.
+
+    A live filter counts as OURS only when the ledger has a record under the SAME name AND that
+    record's operation matches the live filter's own operation (the same double-check
+    `_existing_filter` uses elsewhere, so a name collision with a different operation is never
+    mistaken for a match) -- for an ours filter, `masked` is decided by that record's own `mask`
+    param. Anything else (no record at all, or a name/operation the ledger doesn't recognise) is
+    reported `unverifiable`: it might be masked, and there is no way to tell, so the caller must
+    treat it as if it were.
+
+    A name seen on MORE THAN ONE live filter is unverifiable too, regardless of what the ledger
+    says: the ledger's {name: record} shape can only ever describe ONE of them, so a lookup by
+    name can silently answer for the wrong filter -- a masked one hiding behind an unmasked one's
+    ledger record (or the reverse) would otherwise slip through unnoticed. This bridge's own
+    create path never produces a duplicate (`_unique_name` checks every layer first), but nothing
+    stops a foreign filter (the GUI, a hand-edited document) from colliding with one this bridge
+    DID create.
+
+    Returns (masked_names, unverifiable_names), both lists, in the order `live_filters` was
+    given (a duplicate name appears in `unverifiable` once per occurrence, not de-duplicated, so
+    the caller's own count of what it iterated still lines up)."""
+    live_filters = list(live_filters)
+    name_counts = {}
+    for name, _operation in live_filters:
+        name_counts[name] = name_counts.get(name, 0) + 1
+    masked = []
+    unverifiable = []
+    for name, operation in live_filters:
+        if name_counts[name] > 1:
+            unverifiable.append(name)
+            continue
+        rec = filters.get(name)
+        if rec and rec.get('operation') == operation:
+            if rec.get('params', {}).get('mask'):
+                masked.append(name)
+        else:
+            unverifiable.append(name)
+    return masked, unverifiable
+
+
+def unique_name(taken, base):
+    """`base`, or `base` suffixed " 2", " 3", ... until it is not in `taken` (an iterable of
+    already-used names). GIMP allows duplicate names for both filters and layers, so nothing on
+    the GIMP side stops a caller who doesn't check first -- this is what backs the "unique names
+    enforced" contract for both the filter ledger (ops.py's `_unique_name`) and `gimp_layer`'s own
+    layer naming (`_unique_layer_name`)."""
+    taken = set(taken)
+    name, n = base, 2
+    while name in taken:
+        name, n = '%s %d' % (base, n), n + 1
+    return name
+
+
+# ---- geometry transforms for direction/position-dependent EFFECT params ---------------------
+#
+# Scoped to gimp_add_effect's new effects only: vignette (center_x/center_y), motion_blur
+# (angle), and drop_shadow (offset_x/offset_y, radius) have params whose MEANING is tied to a
+# direction or a position, which flip/rotate/resize can silently misalign relative to the
+# content unless the param itself is transformed the same way the pixels were. black_white and
+# add_noise are pure per-pixel operations (no direction or position at all) -- neither needs a
+# flip/rotate entry, and both are simply absent from those two tables below. lens_blur is a
+# symmetric radial blur (no direction either) but DOES scale under resize (see
+# resize_effect_params). Existing gimp_add_adjustment types (gaussian_blur, sharpen,
+# shadows_highlights) are NOT covered here -- a deliberate scope cut, not an oversight.
+#
+# ONLY exact cases are supported: flip (horizontal/vertical) for all three; rotate by an exact
+# right angle (0/90/180/270, mod 360) for all three; any uniform or anisotropic resize. Rotating
+# by anything else while one of these effects is present is REFUSED outright by ops.py's
+# `op_rotate` (see `is_right_angle_degrees`) rather than silently approximated -- vignette's own
+# param is a fraction of its LAYER's own extent (see build_vignette_params), and a layer's own
+# bounding box only has a well-defined "old vs new size" relationship at a right angle (swap at
+# 90/270, unchanged at 0/180); at an arbitrary angle a rotated rectangle's bounding box depends on
+# more than just the old width/height, so there is no single honest formula for the layer's own
+# new extent. Refusing is simpler and more honest than a formula that would be exact for two of
+# the three effects and wrong for the third.
+#
+# ops.py calls these BEFORE mutating the image at all (`_snapshot_effect_transform`): every
+# affected filter's new params are computed from a SNAPSHOT of the ledger and validated against
+# this bridge's own field ranges (`validate_effect_transform`) first, and the WHOLE geometry op is
+# refused up front if anything would land out of range -- only once every filter's new params are
+# known-valid does the geometry mutation itself run, followed by pushing the precomputed values
+# into the live GEGL config and the ledger. This also happens only once `_refuse_if_masked_
+# filters` has already confirmed every live filter is unmasked and ledgered.
+
+
+def _wrap_angle_deg(angle):
+    """Wrap to the (-180, 180] range validate_range enforces for every `angle` field here."""
+    wrapped = ((angle + 180.0) % 360.0) - 180.0
+    if wrapped <= -180.0:
+        wrapped += 360.0
+    return wrapped
+
+
+def is_right_angle_degrees(degrees, tolerance=1e-6):
+    """True when `degrees` is 0/90/180/270 (mod 360, either sign) within `tolerance` -- the only
+    rotations op_rotate allows while a position/direction-dependent effect (vignette, motion_blur,
+    drop_shadow) is present. See this section's own comment for why any other angle is refused
+    rather than approximated."""
+    normalized = degrees % 90.0
+    return normalized < tolerance or normalized > 90.0 - tolerance
+
+
+def _dims_after_right_angle_rotation(width, height, degrees):
+    """The new (width, height) of a rectangle rotated by an exact right angle about its own
+    center: 90/270 (mod 360) swap the two; 0/180 leave them as they were. Only ever called with a
+    `degrees` `is_right_angle_degrees` has already confirmed."""
+    normalized = degrees % 180.0
+    if abs(normalized - 90.0) < 1e-6:
+        return height, width
+    return width, height
+
+
+def _right_angle_k(degrees):
+    """`degrees` as a whole number of 90-degree clockwise steps, 0-3. `is_right_angle_degrees`
+    only confirms `degrees` is within floating-point TOLERANCE of an exact multiple of 90 (e.g.
+    89.9999999 or 90.0000003 both pass) -- rounding to the nearest integer multiple here snaps it
+    to the exact canonical step before any trig happens, so that tolerance-level noise can never
+    reach `_right_angle_cos_sin`."""
+    return round(degrees / 90.0) % 4
+
+
+def _right_angle_cos_sin(degrees):
+    """Exact cos/sin for a right-angle rotation, looked up from {0, 1, -1} rather than computed
+    via `math.cos`/`math.sin(math.radians(...))` -- the latter returns a tiny nonzero (e.g.
+    6.123233995736766e-17) for cos(90 degrees) instead of an exact 0.0. Left uncorrected, that
+    noise propagates into a value that should land EXACTLY on its pre-rotation number (a vignette
+    center at a canvas edge, 0.0 or 1.0; a drop shadow offset at the schema's own bound, +/-500),
+    and `gimp_filter op=list` would report something like 4.999999999999999e-17 or
+    500.00000000000006 instead of a clean value -- and, worse, could push a value that started
+    exactly AT a validated bound just outside it."""
+    k = _right_angle_k(degrees)
+    cos_by_k = (1.0, 0.0, -1.0, 0.0)
+    sin_by_k = (0.0, 1.0, 0.0, -1.0)
+    return cos_by_k[k], sin_by_k[k]
+
+
+# How many decimal places a transformed float is rounded to before it is validated or written to
+# the ledger -- defence in depth alongside the exact right-angle trig above: resize's sqrt/hypot
+# math has genuine (much smaller) irrational rounding noise of its own that no lookup table can
+# remove, and this keeps every transform's output equally clean rather than exact-only for
+# rotation and merely "close" for resize.
+_TRANSFORM_ROUND_NDIGITS = 9
+
+
+def _round_transform_value(value):
+    """A single transformed float, rounded to `_TRANSFORM_ROUND_NDIGITS` places. Applied ONLY to
+    the specific field(s) a flip_effect_params/rotate_effect_params/resize_effect_params branch
+    below actually computes -- never blanket-applied to a whole params dict. A value this module
+    never touches (every gimp_add_adjustment type's own fields, since none of them are in this
+    table; black_white/add_noise's fields; the other two effects' fields when only one of the
+    three is present) must come back bit-for-bit IDENTICAL to its input: `_snapshot_effect_
+    transform`'s own `new_params == params` check is what decides whether a filter needs
+    re-applying at all, and rounding a value that was never actually touched would manufacture a
+    spurious "this filter changed" for it -- re-setting, re-ledgering, and (if the live update ever
+    failed) wrongly reporting it in `effect_update_failures`, on every single flip/rotate/resize
+    regardless of what it actually did. hue_saturation's own `hue` (stored as degrees/180, a
+    non-terminating binary fraction for most degree values) is exactly the kind of value a
+    blanket, whole-dict round would perturb in its 9th-10th decimal place -- already enough for
+    `==` to call it "changed" even though nothing about it should have moved at all."""
+    return round(value, _TRANSFORM_ROUND_NDIGITS)
+
+
+def rotate_point_fraction(x_frac, y_frac, degrees, old_width, old_height, new_width, new_height):
+    """Rotate a point expressed as a FRACTION of a layer's own width/height (vignette's center_x/
+    center_y) by `degrees` -- always an exact right angle, see `is_right_angle_degrees` -- using
+    the exact same clockwise-positive convention `ops.py`'s `op_rotate` applies to layer/channel
+    pixels via `Item.transform_rotate`, re-expressing the result as a fraction of the
+    possibly-different NEW extent (old/new either match or swap at a right angle).
+
+    Rotating a rectangle around its own center always leaves the new bounding box centered at
+    that SAME physical point, so the old and new centers coincide regardless of whether the
+    dimensions swapped -- the old center (in old-extent coordinates) and the new center (in
+    new-extent coordinates) name the identical point in space, which is what lets this convert
+    between the two coordinate frames with no separate translation term. Uses the EXACT cos/sin
+    lookup (`_right_angle_cos_sin`), not raw trig, so a point already at an extent's edge (0.0 or
+    1.0) lands exactly back on an edge rather than a hair off it."""
+    old_cx, old_cy = old_width / 2.0, old_height / 2.0
+    new_cx, new_cy = new_width / 2.0, new_height / 2.0
+    dx = x_frac * old_width - old_cx
+    dy = y_frac * old_height - old_cy
+    cos_t, sin_t = _right_angle_cos_sin(degrees)
+    rx = dx * cos_t - dy * sin_t
+    ry = dx * sin_t + dy * cos_t
+    return (new_cx + rx) / new_width, (new_cy + ry) / new_height
+
+
+def flip_effect_params(operation, params, orientation):
+    """New params for a ledgered effect filter's `operation` after a flip along `orientation`
+    ('horizontal' or 'vertical'), so the effect stays locked to the content instead of the raw
+    pixel grid. Verified live: vignette's `x`/`y` are plain image-pixel-convention fractions (0 =
+    left/top edge, increasing right/down); motion-blur-linear's `angle` is 0 = along +x
+    (horizontal), 90 = along +y (vertical, i.e. downward), increasing CLOCKWISE -- the same sense
+    `op_rotate` uses; dropshadow's `x`/`y` are plain pixel offsets (positive = right/down).
+    Operations with no direction-dependent param -- black_white, add_noise, lens_blur, and every
+    OTHER operation this table has no branch for at all (every gimp_add_adjustment type included)
+    -- come back as the EXACT SAME object, untouched: `_snapshot_effect_transform` compares the
+    result to the input by `==` to decide whether a filter needs re-applying at all, so this must
+    never manufacture a spurious difference (a stray rounding of a value it was never asked to
+    change) for a filter it has nothing to say about."""
+    if operation == 'gegl:vignette':
+        params = dict(params)
+        if orientation == 'horizontal':
+            params['x'] = _round_transform_value(1.0 - params['x'])
+        else:
+            params['y'] = _round_transform_value(1.0 - params['y'])
+        return params
+    if operation == 'gegl:motion-blur-linear':
+        params = dict(params)
+        if orientation == 'horizontal':
+            params['angle'] = _round_transform_value(_wrap_angle_deg(180.0 - params['angle']))
+        else:
+            params['angle'] = _round_transform_value(_wrap_angle_deg(-params['angle']))
+        return params
+    if operation == 'gegl:dropshadow' and 'x' in params:  # outline / outer_glow have no offset
+        params = dict(params)
+        if orientation == 'horizontal':
+            params['x'] = _round_transform_value(-params['x'])
+        else:
+            params['y'] = _round_transform_value(-params['y'])
+        return params
+    return params
+
+
+def rotate_effect_params(operation, params, degrees, layer_width, layer_height):
+    """New params for a ledgered effect filter's `operation` after a rotate by an exact right
+    angle (0/90/180/270 mod 360 -- op_rotate refuses any other angle while a filter this table
+    covers is present, see `is_right_angle_degrees`). `layer_width`/`layer_height` are the OWNING
+    LAYER's own PRE-rotation dimensions (not the canvas/image's): vignette's center_x/center_y are
+    a fraction of the LAYER's own extent (build_vignette_params), and a layer's own bounding box
+    swaps width/height under a 90/270 rotation independently of whether the canvas itself grows
+    (`expand`) to match. motion_blur and drop_shadow need no dimensions at all -- their params are
+    layer-agnostic at a right angle (see flip_effect_params's own doc comment for the angle/offset
+    conventions reused here, including why every OTHER operation -- every gimp_add_adjustment type
+    included -- comes back as the exact same object, untouched). `degrees` is snapped to its exact
+    canonical step (`_right_angle_k`) before use everywhere below, including the plain addition
+    for motion_blur's angle -- not just where trig is involved -- so a tolerance-fuzzy `degrees`
+    (e.g. 90.0000003) can never leak into a stored value."""
+    if operation == 'gegl:vignette':
+        params = dict(params)
+        new_width, new_height = _dims_after_right_angle_rotation(layer_width, layer_height, degrees)
+        x, y = rotate_point_fraction(
+            params['x'], params['y'], degrees, layer_width, layer_height, new_width, new_height
+        )
+        params['x'], params['y'] = _round_transform_value(x), _round_transform_value(y)
+        return params
+    if operation == 'gegl:motion-blur-linear':
+        params = dict(params)
+        canonical_degrees = _right_angle_k(degrees) * 90.0
+        params['angle'] = _round_transform_value(_wrap_angle_deg(params['angle'] + canonical_degrees))
+        return params
+    if operation == 'gegl:dropshadow' and 'x' in params:
+        params = dict(params)
+        cos_t, sin_t = _right_angle_cos_sin(degrees)
+        dx, dy = params['x'], params['y']
+        params['x'] = _round_transform_value(dx * cos_t - dy * sin_t)
+        params['y'] = _round_transform_value(dx * sin_t + dy * cos_t)
+        return params
+    return params
+
+
+def resize_effect_params(operation, params, scale_x, scale_y):
+    """New params for a ledgered effect filter's `operation` after a resize that scales width by
+    `scale_x` and height by `scale_y` (independently -- gimp_resize_image's width+height form can
+    stretch aspect).
+
+    motion_blur is a directional vector (length, angle), so an ANISOTROPIC resize (scale_x !=
+    scale_y) changes both: treating the blur direction as a unit vector (cos(angle), sin(angle))
+    in the same clockwise-positive, y-down convention flip_effect_params documents, its two
+    components scale independently by (scale_x, scale_y); the resulting vector's own length and
+    angle are the new length and angle -- length' = length * hypot(scale_x * cos(angle), scale_y *
+    sin(angle)), angle' = atan2(scale_y * sin(angle), scale_x * cos(angle)). Exact for any
+    scale_x/scale_y, and reduces to plain isotropic scaling (length * scale_x, angle unchanged)
+    when scale_x == scale_y, since hypot(s*cos,s*sin) == s and atan2(s*sin,s*cos) == atan2(sin,cos)
+    for any positive s.
+
+    lens_blur's `blur-radius` and drop_shadow's `radius` are ISOTROPIC (one scalar radius, no
+    direction), scaled by the geometric mean of scale_x/scale_y -- exact when the resize is
+    uniform, and the least-wrong single number when it isn't (a circular blur/shadow has no single
+    exact radius under an anisotropic stretch). drop_shadow's offset_x/offset_y scale along their
+    own axis exactly. vignette's radius/x/y are already proportional (a fraction of the layer's
+    own, now-resized extent) and need no change at all -- absent from this table on purpose.
+    black_white and add_noise have no absolute-pixel param either, and every OTHER operation this
+    table has no branch for at all (every gimp_add_adjustment type included) comes back as the
+    exact same object, untouched -- see flip_effect_params's own doc comment for why that matters."""
+    if operation == 'gegl:motion-blur-linear':
+        params = dict(params)
+        theta = math.radians(params['angle'])
+        vx = scale_x * math.cos(theta)
+        vy = scale_y * math.sin(theta)
+        params['length'] = _round_transform_value(params['length'] * math.hypot(vx, vy))
+        params['angle'] = _round_transform_value(_wrap_angle_deg(math.degrees(math.atan2(vy, vx))))
+        return params
+    if operation == 'gegl:focus-blur':
+        params = dict(params)
+        isotropic_scale = math.sqrt(scale_x * scale_y)
+        params['blur-radius'] = _round_transform_value(params['blur-radius'] * isotropic_scale)
+        return params
+    if operation == 'gegl:dropshadow':
+        params = dict(params)
+        isotropic_scale = math.sqrt(scale_x * scale_y)
+        # outline has only grow-radius, outer_glow lacks the offset: scale what is recorded.
+        for prop, factor in (
+            ('x', scale_x), ('y', scale_y), ('radius', isotropic_scale),
+            ('grow-radius', isotropic_scale),
+        ):
+            if prop in params:
+                params[prop] = _round_transform_value(params[prop] * factor)
+        return params
+    if operation == 'gegl:bilateral-filter':
+        params = dict(params)
+        isotropic_scale = math.sqrt(scale_x * scale_y)
+        params['blur-radius'] = _round_transform_value(params['blur-radius'] * isotropic_scale)
+        return params
+    return params
+
+
+# Bounds for the GEGL properties a geometry transform can touch, keyed by operation -- the SAME
+# ranges build_vignette_params/build_motion_blur_params/build_lens_blur_params/
+# build_drop_shadow_params validate on create/re-edit, so a value THIS bridge computes from a
+# flip/rotate/resize can never silently land somewhere those entry points would have refused (a
+# plain GObject property setter would otherwise just clamp it there without telling anyone).
+EFFECT_TRANSFORM_BOUNDS = {
+    'gegl:vignette': {'x': (0.0, 1.0), 'y': (0.0, 1.0)},
+    'gegl:motion-blur-linear': {'length': (0.0, 1000.0), 'angle': (-180.0, 180.0)},
+    'gegl:focus-blur': {'blur-radius': (0.0, 150.0)},
+    'gegl:dropshadow': {
+        'x': (-500.0, 500.0), 'y': (-500.0, 500.0), 'radius': (0.0, 1500.0),
+        # outline's width and outer_glow's spread share a cap (see build_outline_params).
+        'grow-radius': (0.0, 50.0),
+    },
+    'gegl:bilateral-filter': {'blur-radius': (0.0, SURFACE_BLUR_MAX_RADIUS)},
+}
+
+# The user-facing (gimp_add_effect) field name for each EFFECT_TRANSFORM_BOUNDS entry -- so a
+# refusal message can say "center_x", "offset_x", or "radius" (what the model actually typed and
+# what gimp_filter op=list reports back), not the internal GEGL property name ("x") a caller has
+# never seen. TestEffectTransformBoundsMatchBuilders (test_lib.py) pins that every entry here maps
+# to a real field the matching build_*_params function actually validates.
+EFFECT_TRANSFORM_FIELD_NAMES = {
+    ('gegl:vignette', 'x'): 'center_x',
+    ('gegl:vignette', 'y'): 'center_y',
+    ('gegl:motion-blur-linear', 'length'): 'length',
+    ('gegl:motion-blur-linear', 'angle'): 'angle',
+    ('gegl:focus-blur', 'blur-radius'): 'radius',
+    ('gegl:dropshadow', 'x'): 'offset_x',
+    ('gegl:dropshadow', 'y'): 'offset_y',
+    ('gegl:dropshadow', 'radius'): 'radius',
+    ('gegl:dropshadow', 'grow-radius'): 'width/spread',
+    ('gegl:bilateral-filter', 'blur-radius'): 'radius',
+}
+
+
+# Per-type floors a re-edit enforces above EFFECT_TRANSFORM_BOUNDS' own lower bound (those are
+# per operation, and gegl:dropshadow serves three types): shrinking resize would otherwise store a
+# value a re-edit of the same filter refuses. A resize that bottoms out is clamped to the floor
+# (the 1 px minimum the effect itself allows) instead of refused: the filter is still valid, only
+# no thinner than the tool can express.
+EFFECT_TRANSFORM_FLOORS = {
+    ('outline', 'grow-radius'): 1.0,
+    ('outer_glow', 'radius'): 1.0,
+    ('surface_blur', 'blur-radius'): 1.0,
+}
+
+
+# Per-type ceilings a re-edit enforces below EFFECT_TRANSFORM_BOUNDS' own upper bound: outer_glow
+# shares gegl:dropshadow (radius up to 1500) but its own builder caps radius at 250, so a growing
+# resize would otherwise store a radius a re-edit of the same glow refuses. Unlike a floor, a
+# value past a ceiling is refused, the same as any other out-of-range transform.
+EFFECT_TRANSFORM_CEILINGS = {
+    ('outer_glow', 'radius'): 250.0,
+}
+
+
+def clamp_effect_transform(type_, new_params):
+    """`new_params` with every EFFECT_TRANSFORM_FLOORS entry for `type_` applied (the same dict
+    when nothing needed clamping, so callers' `==` change check stays honest)."""
+    clamped = None
+    for (floor_type, prop), floor in EFFECT_TRANSFORM_FLOORS.items():
+        if floor_type == type_ and prop in new_params and new_params[prop] < floor:
+            clamped = clamped if clamped is not None else dict(new_params)
+            clamped[prop] = floor
+    return new_params if clamped is None else clamped
+
+
+def validate_effect_transform(op_name, operation, filter_name, new_params, type_=None):
+    """Refuse `op_name` (the geometry op about to run) outright if any of `new_params` -- already
+    computed for `operation` by flip_effect_params/rotate_effect_params/resize_effect_params --
+    would leave the range its own create/re-edit path enforces. Called BEFORE the geometry
+    mutation runs (ops.py's `_snapshot_effect_transform`), so a filter that would end up out of
+    range never gets a chance to silently clamp via GObject's own property setter instead of a
+    clear, actionable refusal -- and the geometry op never partially applies. Names the filter
+    (`filter_name`, the same way `_refuse_if_masked_filters` does) and the field in gimp_add_
+    effect's OWN terms (`EFFECT_TRANSFORM_FIELD_NAMES`), not the raw GEGL property name. `type_`
+    (the record's effect type) adds that type's EFFECT_TRANSFORM_CEILINGS."""
+    for prop, (lo, hi) in EFFECT_TRANSFORM_BOUNDS.get(operation, {}).items():
+        if prop not in new_params:
+            continue
+        hi = min(hi, EFFECT_TRANSFORM_CEILINGS.get((type_, prop), hi))
+        value = new_params[prop]
+        if not lo <= value <= hi:
+            field = EFFECT_TRANSFORM_FIELD_NAMES.get((operation, prop), prop)
+            # "the %s field of filter %r" rather than "%r's %s" -- the latter puts repr()'s own
+            # closing quote directly against a literal possessive "'s", printing as a confusing
+            # doubled apostrophe ("'Motion Blur''s"). %.6g (not %.4g): enough significant figures
+            # that a value just barely out of range (1000.1 against a 1000.0 bound) still shows
+            # the ".1" that IS the reason for the refusal, instead of rounding it away to "1000".
+            raise ValueError(
+                '%s would leave the %s field of filter %r at %.6g, outside its %s..%s range. '
+                'Delete it (gimp_filter op=delete) and re-add it after this geometry change.'
+                % (op_name, field, filter_name, value, lo, hi)
+            )
+
+
+
+# ---- gimp_transform_layer: pure geometry math (fit/fill scale, matrix composition, bounds) ----
+#
+# A layer-level affine transform (scale/rotate/skew/free), distinct from the whole-CANVAS
+# geometry ops above and from the direction/position-dependent EFFECT param remapping above.
+# `Item.transform_matrix` (ops.py) applies the given 3x3 matrix directly in ABSOLUTE
+# document-pixel coordinates -- verified live (GIMP 3.2.6): a matrix built by
+# `compose_layer_matrix` below, applied to a layer at a known offset, moved it to exactly the
+# bounding box this module's own `transformed_bounds` predicts for the same matrix and corners
+# (within floating-point rounding). So every matrix built here already carries whatever
+# translation is needed to anchor the transform at the layer's own center; there is no separate
+# "local" coordinate frame to convert into or out of first.
+
+
+def fit_scale_fraction(layer_width, layer_height, canvas_width, canvas_height, mode):
+    """The uniform scale fraction (1.0 = 100%) that makes a `layer_width` x `layer_height`
+    rectangle fit inside (mode='fit', letterbox -- the SMALLER of the two axis ratios) or fill
+    (mode='fill', cover -- the LARGER) a `canvas_width` x `canvas_height` canvas, preserving
+    aspect. `op_transform_layer`'s `fit` scales by this fraction and centers the result; fitting
+    an already-fitted layer computes a fraction of 1.0, a no-op scale -- what makes that op
+    idempotent."""
+    if mode not in ('fit', 'fill'):
+        raise ValueError("mode must be one of 'fit', 'fill'")
+    width_ratio = canvas_width / float(layer_width)
+    height_ratio = canvas_height / float(layer_height)
+    return min(width_ratio, height_ratio) if mode == 'fit' else max(width_ratio, height_ratio)
+
+
+def _mat_mul(a, b):
+    """3x3 matrix product, both `a` and `b` flat row-major 9-lists (the same layout
+    `Item.transform_matrix`'s own 9 positional args use), applied to a column vector [x,y,1] as
+    p' = a*(b*p) -- `b` is the transform applied FIRST."""
+    return [
+        a[0] * b[0] + a[1] * b[3] + a[2] * b[6],
+        a[0] * b[1] + a[1] * b[4] + a[2] * b[7],
+        a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+        a[3] * b[0] + a[4] * b[3] + a[5] * b[6],
+        a[3] * b[1] + a[4] * b[4] + a[5] * b[7],
+        a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+        a[6] * b[0] + a[7] * b[3] + a[8] * b[6],
+        a[6] * b[1] + a[7] * b[4] + a[8] * b[7],
+        a[6] * b[2] + a[7] * b[5] + a[8] * b[8],
+    ]
+
+
+def _mat_translate(tx, ty):
+    return [1.0, 0.0, tx, 0.0, 1.0, ty, 0.0, 0.0, 1.0]
+
+
+def _mat_scale(sx, sy):
+    return [sx, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_rotate(degrees):
+    theta = math.radians(degrees)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    return [cos_t, -sin_t, 0.0, sin_t, cos_t, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_shear_h(skew_h_degrees):
+    """A pure horizontal shear: x' = x - tan(skew_h_degrees)*y, y' = y -- determinant exactly 1
+    for any angle. Positive `skew_h_degrees` slants the top edge right (a point above center,
+    smaller y, moves toward +x) -- the convention `gimp_transform_layer`'s own schema documents,
+    and the one `ps_transform_layer`'s op=skew uses."""
+    return [1.0, -math.tan(math.radians(skew_h_degrees)), 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_shear_v(skew_v_degrees):
+    """A pure vertical shear: x' = x, y' = -tan(skew_v_degrees)*x + y -- determinant exactly 1
+    for any angle. Positive `skew_v_degrees` slants the left edge down (a point left of center,
+    smaller x, moves toward +y)."""
+    return [1.0, 0.0, 0.0, -math.tan(math.radians(skew_v_degrees)), 1.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mat_determinant(m):
+    """The determinant of `m`'s linear (non-translation) 2x2 part -- the translation column
+    (indices 2, 5) never affects it. Zero means the transform collapses the rectangle to a line
+    or a point; negative means it mirrors (flips handedness) rather than purely scaling/
+    rotating/shearing it."""
+    return m[0] * m[4] - m[1] * m[3]
+
+
+# A composed matrix below this |determinant| is treated the same as an exact 0: numerically
+# indistinguishable from a transform that collapses the layer to a line, so refused outright
+# rather than handed to `Item.transform_matrix` to silently produce a degenerate result.
+TRANSFORM_LAYER_MIN_DETERMINANT = 1e-6
+
+
+def compose_layer_matrix(cx, cy, scale_x_percent, scale_y_percent, degrees,
+                          skew_h_degrees, skew_v_degrees, offset_x, offset_y):
+    """The 9 row-major coefficients for `Item.transform_matrix`: a scale (percent, 100 =
+    unchanged), then a skew (skew_h_degrees/skew_v_degrees, composed as two independent real
+    shears -- Sh_v . Sh_h, each with its OWN determinant of exactly 1, so the composed skew's
+    determinant is always exactly 1 too, for any angle), then a rotation (degrees, clockwise),
+    all anchored at the layer's own center (`cx`, `cy`, document pixels), followed by an absolute
+    translation (`offset_x`, `offset_y`). Never the single combined-shear matrix
+    [[1,-tan(h)],[-tan(v),1]] -- that matrix's OWN determinant is `1 - tan(h)*tan(v)`, which
+    reaches exactly 0 at h=v=45 (collapsing the rectangle to a line) and goes NEGATIVE past that
+    (silently mirroring it instead of shearing it). `op_transform_layer`'s `free` op calls this
+    directly (scale + degrees + offset, no skew); `skew` calls it with scale 100/100, degrees 0,
+    offset 0/0; `rotate`'s own bounds check (not its actual transform, which goes through
+    `Item.transform_rotate` instead -- see ops.py) reuses it with scale 100/100, skew 0/0, offset
+    0/0 purely to predict the post-rotation bounding box via `transformed_bounds`.
+
+    Raises if the FINAL composed matrix's determinant is below `TRANSFORM_LAYER_MIN_DETERMINANT`
+    or negative -- scale alone is already bounded away from both by its own 1..10000% range, but
+    this is the belt-and-braces check against the composed result as a whole, not just its own
+    skew component."""
+    m = _mat_translate(-cx, -cy)
+    m = _mat_mul(_mat_scale(scale_x_percent / 100.0, scale_y_percent / 100.0), m)
+    m = _mat_mul(_mat_shear_v(skew_v_degrees), _mat_mul(_mat_shear_h(skew_h_degrees), m))
+    m = _mat_mul(_mat_rotate(degrees), m)
+    m = _mat_mul(_mat_translate(cx, cy), m)
+    m = _mat_mul(_mat_translate(offset_x, offset_y), m)
+    det = _mat_determinant(m)
+    if not math.isfinite(det) or det < 0 or abs(det) < TRANSFORM_LAYER_MIN_DETERMINANT:
+        raise ValueError(
+            'this combination of scale/skew/rotate collapses or mirrors the layer (determinant '
+            '%.6g) instead of transforming it -- reduce the scale or skew and try again' % det
+        )
+    return m
+
+
+def transformed_bounds(matrix, x, y, width, height):
+    """The axis-aligned bounding box of a `width` x `height` rectangle at document-pixel origin
+    (`x`, `y`), after mapping each of its four corners through `matrix` (9 row-major
+    coefficients, `Item.transform_matrix`'s own layout) -- what the transformed layer's new
+    offsets/width/height will measure to. Used to validate a rotate/skew/free transform against
+    the same size cap `validate_resize_dims` enforces, BEFORE any pixel actually moves. Returns
+    (new_x, new_y, new_width, new_height)."""
+    corners = ((x, y), (x + width, y), (x, y + height), (x + width, y + height))
+    xs = [matrix[0] * cx + matrix[1] * cy + matrix[2] for cx, cy in corners]
+    ys = [matrix[3] * cx + matrix[4] * cy + matrix[5] for cx, cy in corners]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    return min_x, min_y, max_x - min_x, max_y - min_y
+
+
+def validate_transformed_layer_size(width, height):
+    """Refuses a scale/fit whose rounded target is under 1px in either dimension. Without this
+    GIMP is handed a zero-size rectangle, returns nothing, and the caller reports a misleading
+    "lock-position or lock-content" failure for a layer that was never locked."""
+    if width < 1 or height < 1:
+        raise ValueError(
+            'the transform would shrink the layer to %dx%d px after rounding; use a larger scale'
+            % (width, height)
+        )
+
+
+def region_to_proxy_px(region, scale):
+    """Map a document-pixel `region` dict into proxy-pixel integer bounds at the proxy's
+    `scale` factor (0 < scale <= 1). Returns (x, y, width, height); width/height are at least
+    1px so a tiny region never rounds down to an empty crop. Assumes `region` was already
+    validated (`validate_region`) against the FULL-RES image -- this only rescales it."""
+    x = round(float(region['x']) * scale)
+    y = round(float(region['y']) * scale)
+    w = max(1, round(float(region['width']) * scale))
+    h = max(1, round(float(region['height']) * scale))
+    return x, y, w, h
+
+
+def visible_image_ids(all_ids, hidden_ids):
+    """The ids in `all_ids` that are real documents: every id in `hidden_ids` (the bridge's own
+    preview-proxy images, which are live GIMP images but not the user's) is dropped, order kept."""
+    hidden = set(hidden_ids)
+    return [i for i in all_ids if i not in hidden]
+
+
+def read_pgm(raw):
+    """Decode minimal binary PGM (P5, maxval 255) bytes. Returns (width, height, data).
+
+    Bounds-checked against `raw` running out before the four header fields
+    (magic, width, height, maxval) are found — an empty file or one truncated
+    mid-header used to spin forever: `b''.isspace()` is `False`, so the
+    "scan until whitespace" loop read `raw[pos:pos+1]` past the end forever,
+    each iteration seeing the same empty slice and treating it as "another
+    non-whitespace byte" rather than "out of input"."""
+    n = len(raw)
+    fields, pos = [], 0
+    while len(fields) < 4:
+        while pos < n and raw[pos:pos + 1].isspace():
+            pos += 1
+        if pos >= n:
+            raise ValueError('truncated PGM header')
+        start = pos
+        while pos < n and not raw[pos:pos + 1].isspace():
+            pos += 1
+        fields.append(raw[start:pos])
+    if fields[0] != b'P5' or int(fields[3]) != 255:
+        raise ValueError('mask must be a binary 8-bit PGM (P5, maxval 255)')
+    w, h = int(fields[1]), int(fields[2])
+    data = raw[pos + 1:pos + 1 + w * h]
+    if len(data) != w * h:
+        raise ValueError('truncated PGM')
+    return w, h, data
+
+
+def write_pgm(w, h, data):
+    """Encode (width, height, data) as binary PGM (P5, maxval 255) bytes."""
+    return b'P5\n%d %d\n255\n' % (w, h) + bytes(data)
+
+
+def channel_stats(data):
+    """mean/median/percentiles/256-bin histogram for one channel's raw byte data."""
+    counts = collections.Counter(data)
+    bins = [counts.get(v, 0) for v in range(256)]
+    n = len(data)
+
+    def pct(p):
+        target, acc = p * n, 0
+        for v, c in enumerate(bins):
+            acc += c
+            if acc >= target:
+                return v
+        return 255
+
+    return {
+        'mean': round(sum(v * c for v, c in enumerate(bins)) / n, 3),
+        'median': pct(0.5),
+        'p1': pct(0.01),
+        'p5': pct(0.05),
+        'p95': pct(0.95),
+        'p99': pct(0.99),
+        'bins': bins,
+    }
+
+
+# ---- editmamei-filters ledger (persistent image parasite) -------------------
+
+_warned_messages = set()
+
+
+def _warn_once(message):
+    """Log `message` to stderr, but never more than once per distinct
+    message for the life of this process — a corrupt or foreign parasite is
+    read on every op that touches live filters, and re-logging identically
+    on each one would just be noise."""
+    if message in _warned_messages:
+        return
+    _warned_messages.add(message)
+    sys.stderr.write('%s\n' % message)
+
+
+def _decode_ledger_bytes(raw):
+    """Normalize `raw` (str, bytes/bytearray, or falsy) to a str, or None if
+    it can't be decoded as UTF-8. Bytes arrive here directly from a GIMP
+    parasite's raw data — `.decode('utf-8')` on a corrupt/foreign parasite
+    used to happen at the CALLER (ops.py), outside any try/except, which
+    would take the whole op down instead of degrading to "ledger absent"."""
+    if not raw:
+        return ''
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            return raw.decode('utf-8')
+        except UnicodeDecodeError:
+            return None
+    return raw
+
+
+def _valid_filter_record(record):
+    """A ledger filter record must be a dict with a str `operation` and a
+    dict `params` — anything else (a stray string, a list, a dict missing
+    one of those fields) is dropped as if the entry were never there, rather
+    than crashing whatever later reads `record['operation']`."""
+    return (
+        isinstance(record, dict)
+        and isinstance(record.get('operation'), str)
+        and isinstance(record.get('params'), dict)
+    )
+
+
+def _validate_filters(filters):
+    valid = {}
+    dropped = False
+    for name, record in filters.items():
+        if _valid_filter_record(record):
+            valid[name] = record
+        else:
+            dropped = True
+    if dropped:
+        _warn_once('editmamei-filters parasite has a malformed filter record; skipping it')
+    return valid
+
+
+def parse_ledger(raw):
+    """Parse the parasite's raw data (str, or bytes/bytearray straight from
+    `parasite.get_data()`) into (filters_by_name, unknown_top_level,
+    raw_filters_by_name).
+
+    - No data (parasite absent): ({}, {}, {}).
+    - Bytes that aren't valid UTF-8, unparsable JSON, or JSON that isn't an
+      object: the whole ledger is treated as absent (logged once, not every
+      call) rather than raising — a corrupt parasite must degrade to "no
+      bridge-applied filters known" (every filter then falls back to
+      readback), never take the op down. `ledger_is_undecodable` is how a
+      caller distinguishes this case from a genuinely empty ledger before
+      deciding whether a rewrite is safe to persist.
+    - Versioned vs. legacy is decided by SHAPE, not by the presence of a "v"
+      key alone: a dict with an int "v" AND a dict "filters" is versioned;
+      anything else (including a legacy document that happens to contain a
+      literal key named "v") is the pre-versioning format, where the
+      parasite bytes ARE the filters map directly (no wrapper). Treated as
+      v1-compatible so files written before the ledger was versioned keep
+      working.
+    - Versioned + "v" in 1..LEDGER_VERSION: "filters" is the map; any OTHER
+      top-level key is returned as `unknown_top_level` so a future writer's
+      extra fields round-trip untouched through serialize_ledger.
+    - Versioned + "v" outside that range (in practice: greater, from a future
+      writer): every filter is treated as absent — the caller falls back to
+      readback for all of them, per the documented contract that we never
+      guess at a schema we don't recognize. `unknown_top_level` still
+      carries the non-filters keys through, but the caller must NOT persist
+      a rewrite in this case (see ops.py's `_ledger_put`) — we don't
+      understand the current document well enough to safely overwrite it.
+    - Every returned filter record is individually shape-checked (dict, str
+      `operation`, dict `params`) before landing in `filters_by_name`; a
+      malformed one is dropped as if it were never in the ledger for READ
+      purposes (logged once), but it still appears, untouched, in
+      `raw_filters_by_name` — a rewrite that starts from the raw map instead
+      of the validated one preserves malformed or foreign records verbatim
+      rather than silently dropping them the next time this bridge writes
+      the ledger.
+    """
+    text = _decode_ledger_bytes(raw)
+    if text is None:
+        _warn_once('editmamei-filters parasite is not valid UTF-8; treating as absent')
+        return {}, {}, {}
+    if not text:
+        return {}, {}, {}
+    try:
+        doc = json.loads(text)
+    except (ValueError, TypeError):
+        _warn_once('editmamei-filters parasite is not valid JSON; treating as absent')
+        return {}, {}, {}
+    if not isinstance(doc, dict):
+        _warn_once('editmamei-filters parasite is not a JSON object; treating as absent')
+        return {}, {}, {}
+    versioned = isinstance(doc.get('v'), int) and isinstance(doc.get('filters'), dict)
+    if not versioned:
+        raw_filters = dict(doc)
+        return _validate_filters(raw_filters), {}, raw_filters
+    unknown = {k: v for k, v in doc.items() if k not in ('v', 'writer', 'filters')}
+    raw_filters = dict(doc['filters'])
+    if not 1 <= doc['v'] <= LEDGER_VERSION:
+        return {}, unknown, raw_filters
+    return _validate_filters(raw_filters), unknown, raw_filters
+
+
+def ledger_is_undecodable(raw):
+    """True when the parasite's raw bytes can't be read as a ledger AT ALL —
+    not valid UTF-8, not valid JSON, or valid JSON that isn't even an object
+    — as opposed to a well-formed document this bridge just doesn't
+    recognize every filter in (that's `ledger_is_newer_version`). Callers use
+    this to refuse a rewrite entirely rather than overwrite bytes they never
+    actually parsed: `parse_ledger`'s "treat as absent" degrade is safe to
+    READ from (an op just gets no bridge-applied history), but overwriting
+    those same bytes with a fresh `filters: {}` document would permanently
+    lose whatever they actually were. Absent (`raw` falsy) is NOT
+    undecodable — there is nothing there to lose."""
+    text = _decode_ledger_bytes(raw)
+    if text is None:
+        return True
+    if not text:
+        return False
+    try:
+        doc = json.loads(text)
+    except (ValueError, TypeError):
+        return True
+    return not isinstance(doc, dict)
+
+
+def ledger_is_newer_version(raw):
+    """True when the parasite is a versioned document (int "v" + dict
+    "filters") whose version is newer than this bridge understands. Callers
+    use this to refuse to rewrite a document they can't safely round-trip —
+    the filter still applies to the live image either way; only the
+    persisted record is skipped. `raw` may be str or bytes/bytearray."""
+    text = _decode_ledger_bytes(raw)
+    if not text:
+        return False
+    try:
+        doc = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(doc, dict):
+        return False
+    if not (isinstance(doc.get('v'), int) and isinstance(doc.get('filters'), dict)):
+        return False
+    return doc['v'] > LEDGER_VERSION
+
+
+def ledger_write_version(filters_by_name):
+    """The lowest ledger version that holds every record in `filters_by_name` (see LEDGER_VERSION)."""
+    if any(record_type(rec) in LEDGER_V2_TYPES for rec in filters_by_name.values()):
+        return 2
+    return 1
+
+
+def serialize_ledger(filters_by_name, unknown_top_level=None):
+    """Serialize filters_by_name as a ledger at `ledger_write_version`, preserving any
+    unknown_top_level keys carried over from parse_ledger byte-for-byte
+    (as JSON values -- not literal bytes, but nothing under them is rewritten)."""
+    doc = dict(unknown_top_level or {})
+    doc['v'] = ledger_write_version(filters_by_name)
+    doc['writer'] = LEDGER_WRITER
+    doc['filters'] = filters_by_name
+    return json.dumps(doc)
+
+
+def merged_ledger_for_write(raw, filters, unknown, removed=None):
+    """Compute the bytes to persist as the editmamei-filters parasite, or
+    None if the write should be SKIPPED entirely -- the caller's filter still
+    applied to the live image either way; only the persisted record is
+    skipped in that case (the caller logs it, this function just decides).
+
+    `raw` is the CURRENT parasite bytes, read fresh right before writing.
+    `filters`/`unknown` are the caller's own updated view (e.g. `filters`
+    with one new or edited record merged in) of what was read from this same
+    `raw` a moment earlier, via `parse_ledger`. `removed`, if given, is an
+    iterable of filter NAMES to drop even though `raw` (re-read fresh, and so
+    possibly written by someone else since `filters` was derived) still has
+    them -- a plain `dict.update` only ever ADDS or OVERWRITES keys present
+    in `filters`; it can never express "this name is gone now," which is
+    exactly what deleting a filter needs (the deleted name is simply absent
+    from `filters`, and used to come back to life because `raw_filters`
+    still had a copy of it and nothing ever told the merge to drop it).
+
+    Returns None (skip the write) when:
+    - `raw` is a newer version than this bridge understands
+      (`ledger_is_newer_version`) -- writing would silently downgrade a
+      future writer's document to this bridge's own schema.
+    - `raw` isn't decodable as a ledger at all (`ledger_is_undecodable`) --
+      writing would permanently destroy bytes that were never actually
+      parsed in the first place.
+
+    Otherwise, re-parses `raw` for its own `raw_filters_by_name` (which
+    preserves a malformed or foreign record verbatim -- see `parse_ledger`),
+    drops every name in `removed` from that, and returns the serialized
+    ledger as UTF-8 bytes: those raw filters merged with `filters` (`filters`
+    wins on a shared key, since it's the caller's own newer view), keeping
+    `unknown` as the top-level passthrough fields. This is the ONE place
+    that decides whether and how a rewrite happens -- callers (`ops.py`'s
+    `_ledger_put`) just hand it bytes in and get bytes-or-None back, with no
+    merge or skip logic of their own to keep in sync with this module's."""
+    if ledger_is_newer_version(raw) or ledger_is_undecodable(raw):
+        return None
+    _valid, _existing_unknown, raw_filters = parse_ledger(raw)
+    merged = dict(raw_filters)
+    for name in (removed or ()):
+        merged.pop(name, None)
+    merged.update(filters)
+    return serialize_ledger(merged, unknown).encode('utf-8')
+
+
+# ---- request/response transport ---------------------------------------------
+
+_REQUEST_NAME_RE = re.compile(r'^req-(\d+)\.json$')
+
+
+def id_from_filename(path):
+    """Recover the numeric id from a `req-<id>.json` path, or None if the
+    basename doesn't match that naming convention."""
+    match = _REQUEST_NAME_RE.match(os.path.basename(path))
+    return int(match.group(1)) if match else None
+
+
+def response_path(rpc_dir, req_id):
+    """Where the response for request `req_id` is written -- ALWAYS derived
+    from the id and the rpc directory, never from anything inside the
+    request body. The request used to carry its own `resp` path; a bridge
+    that trusted it would let a malformed/malicious request steer a write
+    anywhere else on disk, so the field is no longer read at all."""
+    return os.path.join(rpc_dir, 'resp-%d.json' % req_id)
+
+
+def list_requests(rpc_dir):
+    """`req-<id>.json` names in id order, silently skipping anything that
+    doesn't match the naming convention rather than letting a stray file
+    crash the sort (a bare int() on a non-numeric name would take the whole
+    serve loop down with it)."""
+    numbered = []
+    for name in os.listdir(rpc_dir):
+        if not (name.startswith('req-') and name.endswith('.json')):
+            continue
+        try:
+            req_id = int(name[4:-5])
+        except ValueError:
+            continue
+        numbered.append((req_id, name))
+    numbered.sort()
+    return [name for _req_id, name in numbered]
+
+
+def read_request(req_path, attempts=8, delay_s=0.02, max_delay_s=0.25, on_retry=None):
+    """Read + parse a request file. Retries ONLY on OSError (e.g. a
+    PermissionError from anti-virus or a file indexer holding a brief lock on
+    a just-renamed file on Windows) -- a JSONDecodeError means the content
+    itself is bad and is raised immediately; retrying that would just mask a
+    genuinely malformed file rather than a transient lock.
+
+    The wait doubles from `delay_s` up to `max_delay_s`, about 1s in all at the defaults, since a Windows
+    file lock can outlast 100ms.
+
+    `on_retry(exc, attempt)`, if given, is called right before each sleep --
+    the bridge logs the exception type through it; tests can assert on it
+    without capturing stderr."""
+    last_err = None
+    for attempt in range(attempts):
+        try:
+            with open(req_path, encoding='utf-8') as fh:
+                return json.load(fh)
+        except json.JSONDecodeError:
+            raise
+        except OSError as e:
+            last_err = e
+            if attempt == attempts - 1:
+                break
+            if on_retry:
+                on_retry(e, attempt)
+            time.sleep(min(delay_s * (2 ** attempt), max_delay_s))
+    raise last_err
+
+
+def write_response(path, resp):
+    """Atomic tmp+rename write. Falls back to a minimal, definitely-JSON-
+    serializable error response if `resp` itself can't be encoded rather than
+    leaving the caller's request hanging forever with no response file at
+    all. Catches ANY exception from `json.dump`, not just TypeError -- a
+    circular reference raises ValueError, a value outside JSON's numeric
+    range raises OverflowError, and a raw GObject reference leaking out of an
+    op's result could plausibly hit any of the three depending on where it
+    ends up in the structure.
+
+    If even the fallback write fails (e.g. the response directory itself
+    disappeared underneath us), this logs and returns rather than raising --
+    letting the caller's request go unanswered is the same outcome either
+    way, and raising here would take `serve()`'s loop down with it."""
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(resp, fh)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            fallback = {
+                'id': resp.get('id'),
+                'ok': False,
+                'code': 'gimp_op_failed',
+                'error': 'response not serialisable: %s' % type(resp.get('result')).__name__,
+            }
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump(fallback, fh)
+            os.replace(tmp, path)
+        except Exception as e:
+            sys.stderr.write('write_response: fallback write also failed for %s: %s\n' % (path, e))
+
+
+def _is_within(path, directory):
+    """True if `path` resolves to somewhere inside `directory` (both
+    resolved through symlinks). Used to gate a delete driven by an
+    externally-derived path -- a `req_path` is always constructed by this
+    module from `rpc_dir` in practice, but `process_request` also accepts it
+    as a bare argument, so this is the check that keeps a future caller (or a
+    symlink planted in the rpc directory) from ever turning that delete into
+    one outside it.
+
+    `os.path.commonpath` raises ValueError when the two paths don't even
+    share a root (e.g. `C:\\...` vs `D:\\...` on Windows) rather than just
+    returning a path that fails the equality check below -- treated the same
+    as any other "can't confirm this is inside" case: not within."""
+    try:
+        path_real = os.path.realpath(path)
+        dir_real = os.path.realpath(directory)
+        return os.path.commonpath([path_real, dir_real]) == dir_real
+    except (OSError, ValueError):
+        return False
+
+
+def safe_remove(path):
+    """Delete a file, ignoring "it's already gone" -- every caller here races
+    against nothing but itself, so ENOENT on remove is never a real error."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+class OpError(Exception):
+    """Raised by an op (or by `process_request` itself, for a request-shape
+    problem) that knows its own error code, bypassing the type-based
+    classification in `classify()` below -- e.g. a raw image file is a
+    ValueError in spirit but must map to gimp_unsupported_file, not
+    invalid_argument."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def classify(exc):
+    """The error `code` a response reports for `exc`. gi-free -- ops.py's
+    GIMP-specific exceptions (raw-file handling, etc.) raise `OpError`
+    directly rather than needing a case here."""
+    if isinstance(exc, OpError):
+        return exc.code
+    if isinstance(exc, FileNotFoundError):
+        return 'file_not_found'
+    if isinstance(exc, ValueError):
+        return 'invalid_argument'
+    return 'gimp_op_failed'
+
+
+def _log_read_retry(exc, attempt):
+    sys.stderr.write(
+        'transient %s reading a request (attempt %d): %s\n' % (type(exc).__name__, attempt + 1, exc)
+    )
+
+
+def process_request(req_path, rpc_dir, dispatch):
+    """Answer one request file. Never raises, and deletes `req_path` on every
+    path once it resolves inside `rpc_dir` (see `_is_within`) -- a bug here
+    must not take down `serve()`'s loop or spin it forever re-reading a file
+    it can never finish with.
+
+    `dispatch(op, args)` is a plain callable returning the op's result or
+    raising on failure; it has no `gi` dependency requirement of its own,
+    which is what makes this function unit-testable with a fake dispatch
+    (see test_lib.py). ops.py passes a dispatch that looks up `op` in its
+    real OPS table.
+
+    The response id is ALWAYS the one embedded in the FILENAME
+    (`req-<id>.json`), never trusted from the request body: a body `id` that
+    isn't an int, or that disagrees with the filename, is rejected with
+    `invalid_argument` rather than used -- handing a non-int id to
+    `response_path` used to raise OUTSIDE this function's own error
+    handling, which meant the request file was never deleted and `serve()`
+    re-read (and re-failed on) it forever."""
+    t0 = time.perf_counter()
+    filename_id = id_from_filename(req_path)
+    try:
+        if filename_id is None:
+            # Not our naming convention at all -- nothing safe to answer.
+            return
+
+        try:
+            req = read_request(req_path, on_retry=_log_read_retry)
+        except json.JSONDecodeError as e:
+            write_response(response_path(rpc_dir, filename_id), {
+                'id': filename_id, 'ok': False, 'code': 'invalid_argument',
+                'error': 'malformed request file: %s: %s' % (type(e).__name__, e),
+            })
+            return
+        except OSError as e:
+            # read_request already retried this internally (RESP_READ_RETRY_
+            # ATTEMPTS-equivalent on its side); reaching here means those
+            # retries were exhausted, not that the content is bad -- an
+            # operational failure, not a client error.
+            write_response(response_path(rpc_dir, filename_id), {
+                'id': filename_id, 'ok': False, 'code': 'gimp_op_failed',
+                'error': 'could not read request file: %s: %s' % (type(e).__name__, e),
+            })
+            return
+
+        if not isinstance(req, dict):
+            write_response(response_path(rpc_dir, filename_id), {
+                'id': filename_id, 'ok': False, 'code': 'invalid_argument',
+                'error': 'request body must be a JSON object',
+            })
+            return
+
+        body_id = req.get('id')
+        if body_id is not None and (
+            not isinstance(body_id, int)
+            or isinstance(body_id, bool)  # bool is an int subclass in Python
+            or body_id != filename_id
+        ):
+            write_response(response_path(rpc_dir, filename_id), {
+                'id': filename_id, 'ok': False, 'code': 'invalid_argument',
+                'error': 'request id %r does not match its filename id %d' % (body_id, filename_id),
+            })
+            return
+
+        op = req.get('op')
+        args = req.get('args', {})
+        try:
+            if op is None:
+                raise OpError('invalid_argument', 'request is missing "op"')
+            result = dispatch(op, args if isinstance(args, dict) else {})
+            resp = {'id': filename_id, 'ok': True, 'result': result}
+        except Exception as e:
+            resp = {
+                'id': filename_id, 'ok': False, 'code': classify(e),
+                'error': '%s: %s' % (type(e).__name__, e), 'trace': traceback.format_exc(),
+            }
+        resp['op_ms'] = round((time.perf_counter() - t0) * 1000, 1)
+        write_response(response_path(rpc_dir, filename_id), resp)
+    finally:
+        if _is_within(req_path, rpc_dir):
+            safe_remove(req_path)
+        else:
+            sys.stderr.write(
+                'process_request: refusing to remove %s -- it does not resolve inside %s\n'
+                % (req_path, rpc_dir)
+            )
+
+
+def parse_gimp_version(version_string):
+    """Parse a dotted version string into (major, minor, micro) ints, taking
+    only the leading digits of each part so a pre-release suffix like
+    "3.2.0-RC1" still parses as (3, 2, 0). `Gimp.version()` returns a STRING
+    ("3.2.6"), not a tuple of ints -- measured live on 3.2.6; naively
+    unpacking it as `major, minor, micro = Gimp.version()` unpacks the
+    STRING's characters instead ('3', '.', '2')."""
+    parts = str(version_string).split('.')
+
+    def leading_int(s):
+        m = re.match(r'\d+', s)
+        return int(m.group(0)) if m else 0
+
+    major = leading_int(parts[0]) if len(parts) > 0 else 0
+    minor = leading_int(parts[1]) if len(parts) > 1 else 0
+    micro = leading_int(parts[2]) if len(parts) > 2 else 0
+    return major, minor, micro
+
+
+# ---- cross-platform process liveness (parent-death check) -------------------
+
+def is_process_alive(pid):
+    """Cross-platform liveness probe for a pid this process did not spawn
+    (the driver's own pid, checked so `serve()` can exit once its parent is
+    gone rather than becoming an orphan headless GIMP forever).
+
+    POSIX: `os.kill(pid, 0)` sends no signal, only checks whether the pid
+    exists and is signalable; ESRCH means gone.
+
+    Windows: NEVER `os.kill` here -- signal 0 on Windows is CTRL_C_EVENT,
+    which sends a real console-control event to a process GROUP instead of
+    probing existence, and could interrupt an unrelated process sharing this
+    console. Use `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject` instead:
+    a handle that fails to open means the pid is gone; a handle that opens
+    but whose wait returns immediately signaled means the process already
+    exited (its handle became signaled at exit, even though the pid slot
+    hasn't been fully reclaimed)."""
+    if os.name == 'nt':
+        return _is_process_alive_windows(pid)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # e.g. EPERM: it exists but we can't signal it -- still alive.
+        return True
+
+
+def _is_process_alive_windows(pid):
+    import ctypes
+
+    PROCESS_SYNCHRONIZE = 0x00100000
+    WAIT_TIMEOUT = 0x00000102
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(PROCESS_SYNCHRONIZE, False, pid)
+    if not handle:
+        return False
+    try:
+        result = kernel32.WaitForSingleObject(handle, 0)
+        return result == WAIT_TIMEOUT  # not yet signaled -> still running
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+# Metadata stripping. `include-exif` / `include-xmp` MUST exist on every format the bridge writes:
+# stripping explicitly instead of trusting a format's default is pointless if the option can stop
+# existing (an export-procedure rename, say) with nothing noticing, so a missing one fails loudly.
+# The rest are set only when present (file-webp-export has no `include-comment`; GIMP 3.2's
+# file-tiff-export has no `save-geotiff`).
+METADATA_REQUIRED_OPTIONS = ('include-exif', 'include-xmp')
+METADATA_OPTIONAL_OPTIONS = ('include-iptc', 'include-thumbnail', 'include-comment')
+
+
+def metadata_strip_settings(fmt, prop_names):
+    """The export-config options to set False for format `fmt`, given the config's property names.
+    Raises OpError('gimp_op_failed') when a required option is missing."""
+    names = set(prop_names)
+    for required in METADATA_REQUIRED_OPTIONS:
+        if required not in names:
+            raise OpError(
+                'gimp_op_failed',
+                '%s export config has no %r option to strip metadata with' % (fmt, required),
+            )
+    settings = list(METADATA_REQUIRED_OPTIONS)
+    settings += [o for o in METADATA_OPTIONAL_OPTIONS if o in names]
+    if fmt == 'tiff' and 'save-geotiff' in names:
+        settings.append('save-geotiff')
+    return settings
+
+
+def profile_is_editors_own(texts):
+    """Whether a color profile is the editor's built-in one, from its description, manufacturer,
+    model and copyright strings (None for an image that has no profile of its own, i.e. the
+    built-in one). Exports leave such a profile out: the file is then plain untagged sRGB, which
+    every viewer assumes anyway, and the profile's name ("GIMP built-in sRGB") would otherwise ride
+    along in every file. A camera's or phone's own profile is kept, unless the editor itself
+    rewrote it (a precision or mode conversion marks the variant it makes with its own name);
+    such a file is exported untagged too."""
+    if texts is None:
+        return True
+    return any('gimp' in (t or '').lower() for t in texts)
+
+
+PSD_ICC_RESOURCE = 1039
+
+
+def psd_resources_without(section, resource_id):
+    """A PSD image-resource section (the bytes after its 4-byte length) with every block of
+    `resource_id` removed. Each block: '8BIM', a 2-byte id, a Pascal name padded to even length,
+    a 4-byte size, then the data padded to even length. Raises ValueError on a malformed section."""
+    out = bytearray()
+    at = 0
+    while at < len(section):
+        start = at
+        if section[at:at + 4] != b'8BIM' or at + 7 > len(section):
+            raise ValueError('malformed PSD image resource at %d' % at)
+        rid = int.from_bytes(section[at + 4:at + 6], 'big')
+        at += 6
+        at += 1 + section[at]
+        at += at % 2
+        if at + 4 > len(section):
+            raise ValueError('malformed PSD image resource at %d' % start)
+        size = int.from_bytes(section[at:at + 4], 'big')
+        at += 4 + size + size % 2
+        if at > len(section):
+            raise ValueError('malformed PSD image resource at %d' % start)
+        if rid != resource_id:
+            out += section[start:at]
+    return bytes(out)
+
+
+def layered_bake_plan(nodes):
+    """Which layers a layered (.psd) export must flatten its live filters into first.
+
+    `nodes` is `(layer_id, parent_id, is_group, has_filters)` per layer in `_all_layers` order
+    (a group before its children; `parent_id` None at top level). Returns `(merge_groups,
+    bake_layers)`: a group carrying a live filter is merged whole into one raster layer, since the
+    PSD exporter drops a group's own filter (verified live, GIMP 3.2.6) and merging is the only
+    way to keep its look; everything inside it is absorbed by that merge. Any other layer with
+    filters is baked in place, keeping its own mask, mode and opacity."""
+    absorbed = set()
+    merge_groups, bake_layers = [], []
+    for layer_id, parent_id, is_group, has_filters in nodes:
+        if parent_id is not None and parent_id in absorbed:
+            absorbed.add(layer_id)
+        elif is_group and has_filters:
+            merge_groups.append(layer_id)
+            absorbed.add(layer_id)
+        elif has_filters:
+            bake_layers.append(layer_id)
+    return merge_groups, bake_layers
+
+
+# ---- text layers (gimp_text) -----------------------------------------------------------------
+
+TEXT_MAX_CHARS = 2000
+TEXT_MIN_FONT_PT = 1
+TEXT_MAX_FONT_PT = 1296
+TEXT_DEFAULT_FONT_PT = 24
+TEXT_FONT_LIST_CAP = 200
+FONT_SUGGESTION_LIMIT = 8
+DEFAULT_TEXT_FONT = 'Sans-serif'
+DEFAULT_RESOLUTION_PPI = 72.0
+
+# gimp_text's `alignment` enum is ps_text's. GIMP's own justification has only left / right /
+# center / fill, so the three "last line" variants Photoshop adds are refused rather than
+# approximated.
+TEXT_ALIGNMENTS = {'LEFT': 'left', 'CENTER': 'center', 'RIGHT': 'right', 'FULLYJUSTIFIED': 'fill'}
+TEXT_UNSUPPORTED_ALIGNMENTS = ('LEFTJUSTIFIED', 'CENTERJUSTIFIED', 'RIGHTJUSTIFIED')
+_JUSTIFICATION_TO_ALIGNMENT = {nick: name for name, nick in TEXT_ALIGNMENTS.items()}
+
+# Words that describe a face of a family rather than the family itself, used to tell "Arial" +
+# "Narrow Bold" (a face of the family) from an unrelated font whose name merely starts the same.
+_FONT_STYLE_WORDS = frozenset((
+    'regular', 'book', 'roman', 'normal', 'medium', 'bold', 'italic', 'oblique', 'light', 'thin',
+    'extralight', 'ultralight', 'semilight', 'semibold', 'demibold', 'extrabold', 'ultrabold',
+    'black', 'heavy', 'condensed', 'semicondensed', 'extracondensed', 'narrow', 'cond', 'expanded',
+    'semiexpanded', 'extra', 'ultra', 'semi', 'demi', 'variable',
+))
+_FONT_REGULAR_ORDER = ('regular', 'book', 'roman', 'normal', 'medium')
+
+
+def validate_text_content(value):
+    if not isinstance(value, str):
+        raise ValueError('text must be a string')
+    if value == '':
+        raise ValueError('text must not be empty')
+    if len(value) > TEXT_MAX_CHARS:
+        raise ValueError('text must be at most %d characters (got %d)' % (TEXT_MAX_CHARS, len(value)))
+    return value
+
+
+def validate_font_size_pt(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError('font_size must be a number')
+    return validate_range('font_size', value, TEXT_MIN_FONT_PT, TEXT_MAX_FONT_PT)
+
+
+def validate_text_rgb(args):
+    """(r, g, b) ints 0..255 from `red`/`green`/`blue`, or None when none of the three is given.
+    Giving only some of them is refused rather than guessing the rest."""
+    given = [k for k in ('red', 'green', 'blue') if args.get(k) is not None]
+    if not given:
+        return None
+    if len(given) != 3:
+        raise ValueError('red, green and blue must all be given together (missing: %s)'
+                         % ', '.join(k for k in ('red', 'green', 'blue') if k not in given))
+    out = []
+    for key in ('red', 'green', 'blue'):
+        value = args[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
+            raise ValueError('%s must be an integer 0..255' % key)
+        out.append(validate_int_range(key, value, 0, 255))
+    return tuple(out)
+
+
+def srgb_u8_to_linear(value):
+    """An 8-bit sRGB channel as the linear-light float GEGL's set_rgba expects."""
+    c = value / 255.0
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def linear_to_srgb_u8(value):
+    """A linear-light float channel (GEGL's get_rgba) as an 8-bit sRGB integer."""
+    v = min(1.0, max(0.0, value))
+    c = v * 12.92 if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055
+    return int(round(c * 255))
+
+
+def justification_nick(alignment):
+    """GIMP's justification nick ('left' | 'right' | 'center' | 'fill') for a ps_text-style
+    `alignment`; refuses the variants GIMP has no equivalent for, naming what is supported."""
+    if alignment in TEXT_UNSUPPORTED_ALIGNMENTS:
+        raise ValueError(
+            'alignment %s is not supported by GIMP text layers; use one of %s'
+            % (alignment, ', '.join(TEXT_ALIGNMENTS))
+        )
+    if alignment not in TEXT_ALIGNMENTS:
+        raise ValueError('alignment must be one of %s'
+                         % ', '.join(list(TEXT_ALIGNMENTS) + list(TEXT_UNSUPPORTED_ALIGNMENTS)))
+    return TEXT_ALIGNMENTS[alignment]
+
+
+def alignment_name(nick):
+    """The ps_text-style alignment name for a GIMP justification nick (None when unknown)."""
+    return _JUSTIFICATION_TO_ALIGNMENT.get(nick)
+
+
+def _resolution_ppi(ppi):
+    return float(ppi) if ppi and ppi > 0 else DEFAULT_RESOLUTION_PPI
+
+
+def pt_to_px(pt, ppi):
+    """Points -> pixels at the image's vertical resolution (1 pt = 1/72 in)."""
+    return pt * _resolution_ppi(ppi) / 72.0
+
+
+def px_to_pt(px, ppi):
+    return round(px * 72.0 / _resolution_ppi(ppi), 2)
+
+
+def unit_size_to_pt(size, unit_is_pixel, units_per_inch, ppi):
+    """A text layer's font size in points, whichever unit it is stored in: pixels convert through
+    the image resolution; any other unit through its own units-per-inch factor."""
+    if unit_is_pixel or not units_per_inch:
+        return px_to_pt(size, ppi)
+    return round(size / units_per_inch * 72.0, 2)
+
+
+def _font_tokens(name):
+    return re.sub(r'[-_]+', ' ', name).lower().split()
+
+
+def _font_key(name):
+    return ' '.join(_font_tokens(name))
+
+
+def font_suggestions(query, names, limit=FONT_SUGGESTION_LIMIT):
+    """Up to `limit` installed font names closest to `query`: names containing it (or contained
+    by it) first, then the nearest by spelling."""
+    import difflib
+    q = _font_key(query)
+    ordered = sorted(set(names), key=lambda n: n.lower())
+    out = [n for n in ordered if q and (q in _font_key(n) or _font_key(n) in q)][:limit]
+    if len(out) < limit:
+        by_key = {}
+        for n in ordered:
+            by_key.setdefault(_font_key(n), n)
+        for key in difflib.get_close_matches(q, list(by_key), n=limit, cutoff=0.0):
+            if by_key[key] not in out:
+                out.append(by_key[key])
+            if len(out) >= limit:
+                break
+    return out[:limit]
+
+
+def resolve_font(query, names):
+    """Resolve a family ("Inter", "Open Sans") or full name ("Inter Bold") to an installed font
+    name, case- and spacing-insensitively. Returns (name, matched_by) with matched_by in
+    'name' | 'family+regular' | 'family'. Raises ValueError listing the closest installed names
+    when nothing matches."""
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError('font_name must be a non-empty string')
+    ordered = sorted(set(names), key=lambda n: n.lower())
+    q = _font_key(query)
+    for n in ordered:
+        if _font_key(n) == q:
+            return n, 'name'
+    q_sorted = sorted(q.split())
+    for n in ordered:
+        if sorted(_font_tokens(n)) == q_sorted:
+            return n, 'name'
+    for style in _FONT_REGULAR_ORDER:
+        wanted = q + ' ' + style
+        for n in ordered:
+            if _font_key(n) == wanted:
+                return n, 'family+regular'
+    family = [
+        n for n in ordered
+        if _font_key(n).startswith(q + ' ')
+        and all(t in _FONT_STYLE_WORDS for t in _font_key(n)[len(q) + 1:].split())
+    ]
+    if family:
+        return min(family, key=lambda n: (len(n), n.lower())), 'family'
+    suggestions = font_suggestions(query, ordered)
+    if not suggestions:
+        raise ValueError('no installed font matches %r (no fonts are installed)' % query[:100])
+    raise ValueError(
+        'no installed font matches %r. Closest installed names: %s' % (query[:100], ', '.join(suggestions))
+    )
+
+
+def pick_default_font(names):
+    """The font a text layer gets when none is named: GIMP's built-in generic sans if listed,
+    else the first installed name (None when there are none)."""
+    ordered = sorted(set(names), key=lambda n: n.lower())
+    for n in ordered:
+        if _font_key(n) == _font_key(DEFAULT_TEXT_FONT):
+            return n
+    return ordered[0] if ordered else None
+
+
+def list_fonts(names, substring=None):
+    """(page, total) for gimp_inspect what=fonts: names sorted case-insensitively, filtered by a
+    case-insensitive substring, capped at TEXT_FONT_LIST_CAP; `total` counts every match."""
+    ordered = sorted(set(names), key=lambda n: n.lower())
+    if substring:
+        needle = substring.lower()
+        ordered = [n for n in ordered if needle in n.lower()]
+    return ordered[:TEXT_FONT_LIST_CAP], len(ordered)
+
+
+# Headroom on the small-size layout probe: glyph advances hinted at a few pixels round to whole
+# pixels, so scaling a probe up can undershoot the full-size layout.
+TEXT_ESTIMATE_MARGIN = 1.3
+
+
+def estimate_text_extent(probe_w, probe_h, probe_px, size_px, chars=0, lines=1, letter_spacing=0.0,
+                         line_spacing=0.0, indent=0.0):
+    """The (width, height) in px a text layer will render at `size_px`, from its layout measured
+    at `probe_px` (`probe_w` x `probe_h`), with headroom. Letter spacing, line spacing and indent
+    are absolute pixels that do not scale with the font, so each adds its full worst case: spacing
+    after every character and between every line, plus the indent. Never below 1x1."""
+    scale = size_px / float(probe_px)
+    width = math.ceil(probe_w * scale * TEXT_ESTIMATE_MARGIN) + chars * max(0.0, letter_spacing) + max(0.0, indent)
+    height = math.ceil(probe_h * scale * TEXT_ESTIMATE_MARGIN) + max(0, lines - 1) * max(0.0, line_spacing)
+    return max(1, int(math.ceil(width))), max(1, int(math.ceil(height)))
+
+
+def check_estimated_text_size(width, height):
+    """Refuses text whose estimated size (`estimate_text_extent`) is past the engine's size cap,
+    before anything is drawn at full size."""
+    try:
+        validate_resize_dims(width, height)
+    except ValueError as exc:
+        raise ValueError(
+            'the text would render as about %dx%d px, past the size limit (%s); use a smaller '
+            'font_size or less text' % (width, height, exc)
+        )
+
+
+# ---- text box and fit (gimp_text box / fit) --------------------------------------------------
+
+TEXT_FIT_DEFAULT_MIN_PX = 8
+TEXT_FIT_MAX_MIN_PX = 10000
+TEXT_FIT_MAX_PROBES = 12
+TEXT_BOX_SCAN_MAX_PIXELS = 16_000_000
+TEXT_OVERFLOW_LINES = 1_000_000  # "more lines than any box holds": what an overflowing probe reports
+TEXT_LINE_PITCH_SAMPLE_LINES = 10
+
+# A text box's own area ceiling, precision-aware like DOCUMENT_MEGAPIXEL_CAP but much tighter (a
+# text layer is a caption, not a canvas): 64 MP at 8-bit, halved for 16-bit and quartered for
+# 32-bit, and never above the matching document cap when EM_GIMP_MAX_MEGAPIXELS lowers those.
+TEXT_BOX_MEGAPIXEL_CAP = {
+    '8': min(64, MAX_RESIZE_MEGAPIXELS),
+    '16': min(32, MAX_RESIZE_MEGAPIXELS / 2),
+    '32': min(16, MAX_RESIZE_MEGAPIXELS / 4),
+}
+
+# Marks a text layer this tool put in a fixed box. GIMP cannot report a layer's box mode, so this
+# persistent layer parasite is how later edits know their size is bounded by the box.
+TEXT_BOX_TAG = 'editmamei-text-box'
+
+
+def check_text_box_area(width, height, precision='8'):
+    """Refuses a text box past the precision-aware text-box area cap (`TEXT_BOX_MEGAPIXEL_CAP`)."""
+    cap = TEXT_BOX_MEGAPIXEL_CAP[precision]
+    megapixels = (width * height) / 1_000_000.0
+    if megapixels > cap:
+        raise ValueError(
+            'a %dx%d px text box is %.1f MP, past the %g MP limit for a %s-bit text layer; use a '
+            'smaller box' % (width, height, megapixels, cap, precision)
+        )
+
+
+def text_scan_max_pixels(precision='8'):
+    """The largest probe layer (px) a box scan renders: `TEXT_BOX_SCAN_MAX_PIXELS`, or the text-box
+    area cap for `precision` when EM_GIMP_MAX_MEGAPIXELS has lowered it below that."""
+    return min(TEXT_BOX_SCAN_MAX_PIXELS, int(TEXT_BOX_MEGAPIXEL_CAP[precision] * 1_000_000))
+
+
+def check_text_fit_box(width, height, precision='8'):
+    """Refuses `fit` for a box too large to probe in one render (`text_scan_max_pixels`)."""
+    limit = text_scan_max_pixels(precision)
+    if width * height > limit:
+        raise ValueError(
+            'fit supports a box of at most %g MP (got %dx%d px); use a smaller box, or set the '
+            'box and font_size without fit' % (limit / 1_000_000.0, width, height)
+        )
+
+
+def text_scan_cap(width, precision='8'):
+    """The tallest probe layer (px) the box scan renders at `width`."""
+    return max(1, min(MAX_RESIZE_SIDE_PX, text_scan_max_pixels(precision) // max(1, width)))
+
+
+def fit_probe_plan(width, limit_h, pitch, precision='8'):
+    """(scan_h, clamped): the probe height for testing whether text fits `limit_h`, a little
+    taller than the limit so overflow shows as ink past it. `clamped` means the scan cap cut it
+    below that height, so ink on its last row only says "reaches the end of the probe"."""
+    ideal = int(math.ceil(limit_h + 2 * pitch)) + 1
+    scan_h = min(text_scan_cap(width, precision), ideal)
+    return scan_h, scan_h < ideal
+
+
+def fit_probe_overflows(ink_bottom_row, scan_h, clamped):
+    """Whether a clamped probe (`fit_probe_plan`) with ink on its last row means the text
+    overflows. An unclamped probe is judged by its line count instead."""
+    return bool(clamped and ink_bottom_row >= scan_h - 1)
+
+
+def validate_text_box(box):
+    """(width, height) from a `box` object `{width, height?}` in image px; height is None when
+    omitted (the layer grows to fit the wrapped text). Each side is held to the engine's resize
+    caps, and the area to its megapixel cap."""
+    if not isinstance(box, dict):
+        raise ValueError('box must be an object {width, height?}')
+    unknown = sorted(set(box) - {'width', 'height'})
+    if unknown:
+        raise ValueError('box has unknown keys: %s' % ', '.join(unknown))
+    if box.get('width') is None:
+        raise ValueError('box.width is required')
+    width = _box_side('box.width', box['width'])
+    height = None if box.get('height') is None else _box_side('box.height', box['height'])
+    validate_resize_dims(width, height if height is not None else 1)
+    return width, height
+
+
+def _box_side(name, value):
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or (isinstance(value, float) and not math.isfinite(value)) or int(value) != value):
+        raise ValueError('%s must be an integer' % name)
+    return validate_int_range(name, value, 1, MAX_RESIZE_SIDE_PX)
+
+
+def validate_text_fit(args, box):
+    """(fit, min_px) from `fit` / `min_size`. Fitting needs a box with both width and height;
+    `min_size` (pixels) is only meaningful with `fit`."""
+    fit = args.get('fit')
+    if fit is not None and not isinstance(fit, bool):
+        raise ValueError('fit must be a boolean')
+    min_given = args.get('min_size') is not None
+    if not fit:
+        if min_given:
+            raise ValueError('min_size only applies with fit: true')
+        return False, None
+    if box is None or box[1] is None:
+        raise ValueError('fit needs a box with both width and height')
+    min_px = TEXT_FIT_DEFAULT_MIN_PX
+    if min_given:
+        value = args['min_size']
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError('min_size must be a number')
+        min_px = validate_range('min_size', value, 1, TEXT_FIT_MAX_MIN_PX)
+    return True, min_px
+
+
+def fit_font_size(max_px, min_px, fits, max_probes=TEXT_FIT_MAX_PROBES):
+    """The largest font size in [min_px, max_px] for which `fits(size)` is true, searched in
+    whole pixels (the requested max is tried exactly as given). Returns (size, fitted, probes);
+    `fitted` is False when even `min_px` overflows (the size is then `min_px`). Never calls
+    `fits` more than `max_probes` times: the search keeps the best size that fit so far."""
+    if min_px > max_px:
+        min_px = max_px
+    probes = 0
+
+    def probe(size):
+        nonlocal probes
+        probes += 1
+        return fits(size)
+
+    if probe(max_px):
+        return max_px, True, probes
+    if min_px >= max_px or not probe(min_px):
+        return min_px, False, probes
+    lo, hi = min_px, max_px  # lo fits, hi does not
+    while probes < max_probes:
+        mid = math.floor((lo + hi) / 2.0)
+        if mid <= lo:
+            break
+        if probe(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo, True, probes
+
+
+def wrapped_line_count(ink_bottom_row, pitch, explicit_lines):
+    """How many lines a wrapped text layout occupies, from the last row holding ink
+    (`ink_bottom_row`, -1 when blank) and the line pitch (line height plus line spacing). The
+    last line's ink always sits below the top of its own line box and within it, so its index is
+    `floor(row / pitch)`; lines the content separates with newlines count even when blank."""
+    lines = explicit_lines
+    if ink_bottom_row >= 0 and pitch > 0:
+        lines = max(lines, int(ink_bottom_row // pitch) + 1)
+    return max(1, lines)
+
+
+TEXT_REPORT_MAX_CHARS = 200
+
+
+def text_for_report(text):
+    """(text, length, truncated) for reporting a layer's text: at most TEXT_REPORT_MAX_CHARS,
+    since a layer opened from a file can hold any amount."""
+    text = text or ''
+    return text[:TEXT_REPORT_MAX_CHARS], len(text), len(text) > TEXT_REPORT_MAX_CHARS
+
+
+def check_text_layer_size(width, height):
+    """Refuses a rendered text layer past the engine's size cap (`validate_resize_dims`)."""
+    try:
+        validate_resize_dims(width, height)
+    except ValueError as exc:
+        raise ValueError(
+            'the text would render as a %dx%d px layer, past the size limit (%s); use a smaller '
+            'font_size or less text' % (width, height, exc)
+        )
+
+
+# ---- retouch: heal / clone / spot heal --------------------------------------------------------
+#
+# Pure helpers (no gi). Coordinates are image pixels; `bounds` is the half-open box
+# (x0, y0, x1, y1) of the layer clipped to the canvas.
+
+RETOUCH_TAG = 'editmamei-retouch'
+RETOUCH_METHODS = ('heal', 'clone', 'spot_heal')
+RETOUCH_TARGETS = ('retouch_layer', 'in_place')
+RETOUCH_MAX_POINTS = 500
+RETOUCH_MAX_SPOTS = 50
+RETOUCH_MIN_BRUSH = 1
+RETOUCH_MAX_BRUSH = 1000
+RETOUCH_DEFAULT_BRUSH = 20
+RETOUCH_DEFAULT_HARDNESS = {'heal': 0.5, 'clone': 0.8}
+RETOUCH_SPOT_HARDNESS = 0.5
+RETOUCH_MAX_SPOT_RADIUS = 500
+# Spot-heal source search: 8 directions on two rings, as multiples of the spot radius.
+RETOUCH_SPOT_RINGS = (2.2, 3.5)
+RETOUCH_SPOT_DIRECTIONS = 8
+# Healing blends a dab to the pixels around its edge, so the dab must reach past the spot: 2.6x the
+# radius is 1.3x the spot's diameter. A smaller brush sits wholly inside the spot and keeps its color.
+RETOUCH_SPOT_BRUSH_FACTOR = 2.6
+RETOUCH_SPOT_MIN_BRUSH = 3.0
+# The annulus a spot's surround is measured over, as a multiple of the spot radius.
+RETOUCH_SPOT_RING_OUTER = 1.6
+# How far a spot's heal reaches, as a multiple of its radius: half the spot brush (1.3x) beyond the
+# spot's own edge. Source candidates must keep this footprint inside the layer, and the Retouch
+# layer's mask reveals a feathered disc of this radius around each spot.
+RETOUCH_SPOT_REACH = 2.3
+# Hardness of the dab that reveals a healed spot on the Retouch layer's mask.
+RETOUCH_REVEAL_HARDNESS = 0.7
+# Work budgets, measured on a 6000x4000 image so the worst accepted call stays under about a minute:
+# a heal stroke costs about (path length + one brush) x brush, at worst ~25 us per unit (brush 90-100;
+# ~2-9 us at other sizes; a clone is far cheaper), so 2,000,000 is ~50 s; spot_heal costs ~270 us per
+# unit of the sum of radius squared, so 200,000 is ~55 s. Mirrored in tools/gimp-retouch-tools.ts.
+RETOUCH_MAX_STROKE_WORK = 2000000
+RETOUCH_MAX_SPOT_WORK = 200000
+
+
+def _finite_number(name, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError('%s must be a finite number, got %r' % (name, value))
+    return float(value)
+
+
+def _xy(name, value):
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError('%s must be [x, y], got %r' % (name, value))
+    return [_finite_number(name, value[0]), _finite_number(name, value[1])]
+
+
+def validate_retouch_args(args):
+    """The validated, defaulted `retouch` options as a dict. Raises ValueError (-> invalid_argument)
+    naming the field. heal/clone need `points` plus exactly one of `source` / `source_offset`
+    (returned as `source_offset` (dx, dy) relative to points[0]); spot_heal needs `spots`."""
+    method = args.get('method')
+    if method is None:
+        raise ValueError('method is required')
+    validate_choice('method', method, RETOUCH_METHODS)
+    target = validate_choice('target', args.get('target') or 'retouch_layer', RETOUCH_TARGETS)
+    opts = {'method': method, 'target': target}
+    if method == 'spot_heal':
+        if args.get('hardness') is not None:
+            raise ValueError('hardness does not apply to method spot_heal (it sizes its own brush)')
+        spots = args.get('spots')
+        if not isinstance(spots, list) or not 1 <= len(spots) <= RETOUCH_MAX_SPOTS:
+            raise ValueError('spots must be a list of 1..%d spots' % RETOUCH_MAX_SPOTS)
+        clean = []
+        for i, spot in enumerate(spots):
+            if not isinstance(spot, dict):
+                raise ValueError('spots[%d] must be {x, y, radius}' % i)
+            radius = _finite_number('spots[%d].radius' % i, spot.get('radius'))
+            if not 1 <= radius <= RETOUCH_MAX_SPOT_RADIUS:
+                raise ValueError('spots[%d].radius must be within 1..%d' % (i, RETOUCH_MAX_SPOT_RADIUS))
+            clean.append((
+                _finite_number('spots[%d].x' % i, spot.get('x')),
+                _finite_number('spots[%d].y' % i, spot.get('y')),
+                radius,
+            ))
+        work = retouch_spots_work(clean)
+        if work > RETOUCH_MAX_SPOT_WORK:
+            raise ValueError(
+                'these spots are too large to heal in one call (the sum of radius squared is %g, '
+                'the limit is %d): split them into several calls or use smaller radii'
+                % (work, RETOUCH_MAX_SPOT_WORK)
+            )
+        opts['spots'] = clean
+        return opts
+    points = args.get('points')
+    if not isinstance(points, list) or not 1 <= len(points) <= RETOUCH_MAX_POINTS:
+        raise ValueError('points must be a list of 1..%d [x, y] points' % RETOUCH_MAX_POINTS)
+    opts['points'] = [_xy('points', p) for p in points]
+    source, offset = args.get('source'), args.get('source_offset')
+    if (source is None) == (offset is None):
+        raise ValueError('give exactly one of source {x, y} or source_offset {dx, dy}')
+    if source is not None:
+        if not isinstance(source, dict):
+            raise ValueError('source must be {x, y}')
+        sx = _finite_number('source.x', source.get('x'))
+        sy = _finite_number('source.y', source.get('y'))
+        opts['source_offset'] = (sx - opts['points'][0][0], sy - opts['points'][0][1])
+    else:
+        if not isinstance(offset, dict):
+            raise ValueError('source_offset must be {dx, dy}')
+        opts['source_offset'] = (
+            _finite_number('source_offset.dx', offset.get('dx')),
+            _finite_number('source_offset.dy', offset.get('dy')),
+        )
+    brush = args.get('brush_size')
+    opts['brush_size'] = validate_range(
+        'brush_size', RETOUCH_DEFAULT_BRUSH if brush is None else brush,
+        RETOUCH_MIN_BRUSH, RETOUCH_MAX_BRUSH,
+    )
+    work = retouch_stroke_work(opts['points'], opts['brush_size'])
+    if work > RETOUCH_MAX_STROKE_WORK:
+        raise ValueError(
+            'this stroke is too long for its brush size to paint in one call (about %d px of '
+            'path x brush, the limit is %d): split the stroke into several calls or use a '
+            'smaller brush' % (work, RETOUCH_MAX_STROKE_WORK)
+        )
+    hardness = args.get('hardness')
+    opts['hardness'] = validate_range(
+        'hardness', RETOUCH_DEFAULT_HARDNESS[method] if hardness is None else hardness, 0.0, 1.0
+    )
+    return opts
+
+
+def retouch_stroke_work(points, brush_size):
+    """The cost estimate of a heal/clone stroke: (path length + one brush) x brush, about the area
+    the brush sweeps (a single dab still costs its own area)."""
+    length = sum(
+        math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])
+    )
+    return (length + brush_size) * brush_size
+
+
+def retouch_spots_work(spots):
+    """The cost estimate of a spot_heal call: the sum of radius squared over its (x, y, r) spots."""
+    return sum(r * r for _x, _y, r in spots)
+
+
+def retouch_bounds(layer_x, layer_y, layer_width, layer_height, canvas_width, canvas_height):
+    """The layer's box clipped to the canvas as half-open (x0, y0, x1, y1); None when empty."""
+    x0, y0 = max(0, layer_x), max(0, layer_y)
+    x1 = min(canvas_width, layer_x + layer_width)
+    y1 = min(canvas_height, layer_y + layer_height)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def retouch_check_points(points, bounds, what):
+    """Raises ValueError naming `bounds` for the first point outside the half-open box."""
+    x0, y0, x1, y1 = bounds
+    for i, (x, y) in enumerate(points):
+        if not (x0 <= x < x1 and y0 <= y < y1):
+            raise ValueError(
+                '%s point %d (%g, %g) is outside the layer bounds x %d..%d, y %d..%d (image pixels)'
+                % (what, i, x, y, x0, x1 - 1, y0, y1 - 1)
+            )
+
+
+def retouch_spot_brush(radius):
+    """Brush diameter for healing a spot of `radius`: 1.3x the spot's diameter, within 3..1000."""
+    return max(RETOUCH_SPOT_MIN_BRUSH,
+               min(float(RETOUCH_MAX_BRUSH), radius * RETOUCH_SPOT_BRUSH_FACTOR))
+
+
+def retouch_cover_stroke(cx, cy, radius, brush_size, bounds=None, max_points=RETOUCH_MAX_POINTS):
+    """A stroke (list of [x, y]) whose brush (diameter `brush_size`) covers the disc at (cx, cy):
+    an Archimedean spiral from the center out to `radius` with a turn pitch of 0.6 x the brush, then
+    one full circle at `radius`, points spaced 0.4 x the brush apart (a heal dab blends to its
+    own edge, so several overlapping dabs beat one). Clamped into `bounds`; the
+    spacing widens if the stroke would exceed `max_points`."""
+    if radius <= 0 or brush_size <= 0:
+        return [[cx, cy]]
+    scale = 1.0
+    # Estimated point count (spiral length / spacing + the closing circle), so a stroke that would
+    # blow the cap widens its spacing up front instead of generating it first.
+    while ((math.pi * radius ** 2 / (0.6 * brush_size * scale) + 2 * math.pi * radius)
+           / (0.4 * brush_size * scale) > max_points * 0.9):
+        scale *= 1.1
+    while True:
+        pitch, step = 0.6 * brush_size * scale, 0.4 * brush_size * scale
+        pts = [(cx, cy)]
+        theta = 0.0
+        while True:
+            r = min(radius, pitch * theta / (2 * math.pi))
+            if r >= radius:
+                break
+            theta += step / max(r, step)
+            r = min(radius, pitch * theta / (2 * math.pi))
+            pts.append((cx + r * math.cos(theta), cy + r * math.sin(theta)))
+            if r >= radius:
+                break
+        n = max(3, int(math.ceil(2 * math.pi * radius / step)))
+        for k in range(1, n + 1):
+            a = theta + 2 * math.pi * k / n
+            pts.append((cx + radius * math.cos(a), cy + radius * math.sin(a)))
+        if len(pts) <= max_points:
+            break
+        scale *= 1.25
+    if bounds is not None:
+        x0, y0, x1, y1 = bounds
+        pts = [(min(max(x, x0), x1 - 1), min(max(y, y0), y1 - 1)) for x, y in pts]
+    return [[round(x, 2), round(y, 2)] for x, y in pts]
+
+
+def retouch_painted_bbox(points, brush_size, bounds):
+    """[x, y, w, h] of the stroke's brush footprint (points grown by half the brush), clipped to
+    `bounds`; [0, 0, 0, 0] when nothing is left."""
+    half = brush_size / 2.0
+    x0 = max(bounds[0], int(math.floor(min(p[0] for p in points) - half)))
+    y0 = max(bounds[1], int(math.floor(min(p[1] for p in points) - half)))
+    x1 = min(bounds[2], int(math.ceil(max(p[0] for p in points) + half)))
+    y1 = min(bounds[3], int(math.ceil(max(p[1] for p in points) + half)))
+    if x1 <= x0 or y1 <= y0:
+        return [0, 0, 0, 0]
+    return [x0, y0, x1 - x0, y1 - y0]
+
+
+def union_bbox_xywh(a, b):
+    """Union of two [x, y, w, h] boxes; an empty (zero-area) box is ignored."""
+    if a is None or a[2] <= 0 or a[3] <= 0:
+        return list(b) if b is not None else None
+    if b is None or b[2] <= 0 or b[3] <= 0:
+        return list(a)
+    x0, y0 = min(a[0], b[0]), min(a[1], b[1])
+    x1, y1 = max(a[0] + a[2], b[0] + b[2]), max(a[1] + a[3], b[1] + b[3])
+    return [x0, y0, x1 - x0, y1 - y0]
+
+
+def spot_candidates(cx, cy, radius, bounds, reach=None):
+    """Candidate source offsets (dx, dy) for a spot: 8 directions on each of the two rings
+    (2.2x and 3.5x the radius). A candidate is dropped when its source footprint -- a disc of
+    `reach` (default 2.3 x radius, RETOUCH_SPOT_REACH: the spot plus the healing brush's edge)
+    around the shifted center -- leaves `bounds`. Rounded to whole pixels; order is ring-major, then by angle."""
+    if reach is None:
+        reach = radius * RETOUCH_SPOT_REACH
+    x0, y0, x1, y1 = bounds
+    out = []
+    for ring in RETOUCH_SPOT_RINGS:
+        dist = ring * radius
+        for k in range(RETOUCH_SPOT_DIRECTIONS):
+            a = 2 * math.pi * k / RETOUCH_SPOT_DIRECTIONS
+            dx, dy = int(round(dist * math.cos(a))), int(round(dist * math.sin(a)))
+            sx, sy = cx + dx, cy + dy
+            if sx - reach < x0 or sy - reach < y0 or sx + reach > x1 or sy + reach > y1:
+                continue
+            out.append((dx, dy))
+    return out
+
+
+def spot_score(cand_mean, cand_std, ring_mean, ring_std):
+    """How far a candidate disc's (mean, std) is from the spot's surround ring: the sum of the two
+    absolute differences, in histogram units (0-255). Lower is better."""
+    return abs(cand_mean - ring_mean) + abs(cand_std - ring_std)
+
+
+def spot_pick_best(scored):
+    """The (dx, dy, score) with the lowest score from [(dx, dy, score), ...]; the earliest wins
+    a tie. None when empty."""
+    best = None
+    for item in scored:
+        if best is None or item[2] < best[2]:
+            best = item
+    return best
+
+
+# ---- render_region / keep_alpha ---------------------------------------------------------------
+
+# render_region is never downscaled: a box past either bound is refused outright.
+RENDER_REGION_MAX_PIXELS = 16_000_000
+RENDER_REGION_MAX_SIDE = 4096
+KEEP_ALPHA_EXTENSIONS = ('.png', '.webp')
+
+
+def _whole_pixels(name, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError('%s must be a whole number of pixels, got %r' % (name, value))
+    if value != int(value):
+        raise ValueError('%s must be a whole number of pixels, got %r' % (name, value))
+    return int(value)
+
+
+def validate_render_box(box, canvas_width, canvas_height):
+    """`box` [x, y, w, h] in image pixels, clamped to the canvas, as ints. Refuses a malformed box,
+    a box with no pixels on the canvas, and one past RENDER_REGION_MAX_PIXELS /
+    RENDER_REGION_MAX_SIDE (checked after clamping)."""
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        raise ValueError('box must be [x, y, width, height] in image pixels')
+    x, y, w, h = [_whole_pixels('box', v) for v in box]
+    if w <= 0 or h <= 0:
+        raise ValueError('box width and height must be positive')
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(canvas_width, x + w), min(canvas_height, y + h)
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError(
+            'box [%d, %d, %d, %d] does not overlap the %dx%d canvas' % (x, y, w, h, canvas_width, canvas_height)
+        )
+    w, h = x1 - x0, y1 - y0
+    if max(w, h) > RENDER_REGION_MAX_SIDE or w * h > RENDER_REGION_MAX_PIXELS:
+        raise ValueError(
+            'box is %dx%d px; render_region allows at most %d px on a side and %d megapixels '
+            '(it never downscales)' % (w, h, RENDER_REGION_MAX_SIDE, RENDER_REGION_MAX_PIXELS // 1_000_000)
+        )
+    return x0, y0, w, h
+
+
+def validate_keep_alpha(args, path):
+    """Whether `export` should keep transparency: `keep_alpha` must be a boolean (default False)
+    and only PNG and WebP can carry it."""
+    keep = optional_bool(args, 'keep_alpha', False)
+    if keep and os.path.splitext(path)[1].lower() not in KEEP_ALPHA_EXTENSIONS:
+        raise ValueError('keep_alpha only works with a .png or .webp file path')
+    return keep

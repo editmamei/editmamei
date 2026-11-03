@@ -6,7 +6,8 @@ import { generateKeyPairSync } from 'node:crypto';
 import { runRepair } from '@editmamei/cli/repair.ts';
 import { writeLicense } from '@editmamei/license/store.ts';
 import { readInstalledModule } from '@editmamei/delivery/store.ts';
-import { fakeDelivery, fakeDeliveryConfig as cfg } from '../fixtures/fake-delivery.ts';
+import { fakeDelivery, fakeDeliveryConfig as cfg, jsonRes } from '../fixtures/fake-delivery.ts';
+import { KERNEL_ABI } from '@editmamei/kernel/host-api.ts';
 
 /**
  * `editmamei repair` — re-provision a wedged/outdated Pro module using the cached
@@ -106,5 +107,34 @@ describe('runRepair', () => {
     ).rejects.toThrow('module re-provisioning failed');
     expect(err).toContain('could not provision');
     expect(readInstalledModule('pro', { dir })).toBeNull(); // nothing installed
+  });
+
+  it('succeeds (exit 0) when the published module simply needs a newer host', async () => {
+    // An entitled user on an older host hits this the moment the publisher bumps
+    // the module ABI. Nothing is broken and no lever repair has can help, so it
+    // must not look like a failure: stdout, not stderr, and no throw.
+    seedLicense(dir);
+    const fake = fakeDelivery('0.18.0');
+    await runRepair({
+      stdout: o,
+      stderr: e,
+      dir,
+      delivery: {
+        config: cfg,
+        fetchImpl: async (url, init) => {
+          const res = await fake.fetchImpl(url, init);
+          if (!url.endsWith('/v1/modules/manifest')) return res;
+          const m = JSON.parse(await res.text()) as { modules: { pro: { abi: number } } };
+          m.modules.pro.abi = KERNEL_ABI + 1;
+          return jsonRes(200, m);
+        },
+        signingKeys: [fake.pubB64],
+        sleep: async () => {},
+      },
+    });
+    expect(out).toMatch(/needs a newer Editmamei/i);
+    expect(out).toContain('update Editmamei');
+    expect(err).toBe(''); // never an Error: line
+    expect(readInstalledModule('pro', { dir })).toBeNull(); // and nothing was installed
   });
 });

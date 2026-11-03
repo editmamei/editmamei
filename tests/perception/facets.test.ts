@@ -52,28 +52,60 @@ describe('pickThresholdLevel (Otsu)', () => {
 describe('estimateHorizon', () => {
   const pick = { level: 128, bright_fraction: 0.5 };
 
+  /** Narrow to the measured branch, failing loudly if the facet refused. */
+  function detected(h: ReturnType<typeof estimateHorizon>) {
+    if (!h.detected) throw new Error(`expected a measured horizon, got refusal: ${h.reason}`);
+    return h;
+  }
+
   it('finds the horizon at the row where brightness drops below the threshold', () => {
     // 64 strips: top half bright (200), bottom half dark (40). Crossing at strip 32.
     const rows = [...Array(32).fill(200), ...Array(32).fill(40)];
-    const h = estimateHorizon(rows, 1000, pick);
+    const h = detected(estimateHorizon(rows, 1000, pick));
     // strip 32 / 64 * 1000 = 500
     expect(h.y).toBe(500);
     expect(h.placement).toBeCloseTo(0.5, 2);
     expect(h.confidence).toBeGreaterThan(0);
   });
 
-  it('falls back to the thirds prior (low confidence) when no row profile is given', () => {
-    const h = estimateHorizon(undefined, 900, pick);
-    expect(h.y).toBe(300);
-    expect(h.placement).toBeCloseTo(1 / 3, 2);
-    expect(h.confidence).toBeLessThanOrEqual(0.2);
+  // Refusal cases (2026-09-01). All three previously returned a rule-of-thirds
+  // prior — y = docHeight/3 at confidence 0.2 — a guess shaped exactly like a
+  // measurement. Readers that checked `confidence` coped; readers that took `y`
+  // did not, and ps_select_by_reference target=above_horizon was one of them:
+  // it sliced the top third of frames that contain no horizon at all.
+  it('refuses when no row profile is given', () => {
+    expect(estimateHorizon(undefined, 900, pick)).toMatchObject({
+      detected: false,
+      reason: 'no-row-profile',
+    });
   });
 
-  it('falls back to thirds when the whole frame stays above the threshold (no crossing)', () => {
-    const rows = Array(64).fill(200);
-    const h = estimateHorizon(rows, 1200, pick);
-    expect(h.y).toBe(400); // 1200/3
-    expect(h.confidence).toBeLessThanOrEqual(0.2);
+  it('refuses when the whole frame stays above the threshold (no crossing)', () => {
+    expect(estimateHorizon(Array(64).fill(200), 1200, pick)).toMatchObject({
+      detected: false,
+      reason: 'no-luminance-crossing',
+    });
+  });
+
+  it('never answers with the removed one-third prior on any unmeasurable frame', () => {
+    // Regression pin. The old code returned docHeight/3 from three different
+    // branches; this asserts none of them can resurface a coordinate, whichever
+    // branch a future change reintroduces it from.
+    const unmeasurable = [
+      estimateHorizon(undefined, 900, pick),
+      estimateHorizon(Array(64).fill(200), 1200, pick),
+      estimateHorizon(
+        [...Array(32).fill(200), ...Array(32).fill(40)],
+        1000,
+        pick,
+        [0, 50, 800, 950]
+      ),
+    ];
+    for (const h of unmeasurable) {
+      expect(h.detected).toBe(false);
+      expect(h).not.toHaveProperty('y');
+      expect(h).not.toHaveProperty('placement');
+    }
   });
 
   // Dominant-subject guard (2026-08-01). This estimator only knows "bright band
@@ -81,18 +113,17 @@ describe('estimateHorizon', () => {
   // foreground subject. Live 2026-07-30 a 51MP STUDIO HEADSHOT (pale backdrop
   // above, hair/clothing below) reported horizon y=5563 at confidence 0.73;
   // there is no horizon in that frame at all.
-  it('demotes a false horizon when a dominant subject explains the crossing', () => {
+  it('refuses when a dominant subject explains the crossing', () => {
     const rows = [...Array(32).fill(200), ...Array(32).fill(40)];
     // Subject spans 5%..95% of a 1000px frame and swallows the crossing at 500.
     const h = estimateHorizon(rows, 1000, pick, [0, 50, 800, 950]);
-    expect(h.y).toBe(333); // thirds prior, not the subject's shoulder line
-    expect(h.confidence).toBeLessThanOrEqual(0.2);
+    expect(h).toMatchObject({ detected: false, reason: 'dominant-subject' });
   });
 
   it('keeps a real horizon when the subject is only a minority of the frame', () => {
     const rows = [...Array(32).fill(200), ...Array(32).fill(40)];
     // A person standing in a landscape: 30% of frame height. Must NOT suppress.
-    const h = estimateHorizon(rows, 1000, pick, [400, 450, 600, 750]);
+    const h = detected(estimateHorizon(rows, 1000, pick, [400, 450, 600, 750]));
     expect(h.y).toBe(500);
     expect(h.confidence).toBeGreaterThan(0.2);
   });
@@ -101,7 +132,7 @@ describe('estimateHorizon', () => {
     // Subject is tall (70%) but sits BELOW the crossing — the brightness
     // transition is not explained by it, so the horizon stands.
     const rows = [...Array(16).fill(200), ...Array(48).fill(40)];
-    const h = estimateHorizon(rows, 1000, pick, [100, 300, 400, 1000]);
+    const h = detected(estimateHorizon(rows, 1000, pick, [100, 300, 400, 1000]));
     expect(h.y).toBe(250);
     expect(h.confidence).toBeGreaterThan(0.2);
   });
@@ -110,36 +141,35 @@ describe('estimateHorizon', () => {
   // frequently NOT classified `person` by COCO, so mainSubjectBox is null on
   // exactly the portraits most prone to a false horizon, while the face
   // detector fires cleanly.
-  it('demotes via the FACE when COCO produced no person box (tight crop)', () => {
+  it('refuses via the FACE when COCO produced no person box (tight crop)', () => {
     const rows = [...Array(32).fill(200), ...Array(32).fill(40)];
     // Face spans 20%..55% of a 1000px frame (35% — a headshot); crossing at 500
     // is below the face top, i.e. the hair/shoulder line.
     const h = estimateHorizon(rows, 1000, pick, null, [300, 200, 700, 550]);
-    expect(h.y).toBe(333);
-    expect(h.confidence).toBeLessThanOrEqual(0.2);
+    expect(h).toMatchObject({ detected: false, reason: 'dominant-subject' });
   });
 
-  it('does NOT demote for a small face in a landscape', () => {
+  it('does NOT refuse for a small face in a landscape', () => {
     const rows = [...Array(32).fill(200), ...Array(32).fill(40)];
     // A person standing in a scene: face is ~6% of frame height. A real horizon
     // behind them must survive.
-    const h = estimateHorizon(rows, 1000, pick, null, [480, 600, 520, 660]);
+    const h = detected(estimateHorizon(rows, 1000, pick, null, [480, 600, 520, 660]));
     expect(h.y).toBe(500);
     expect(h.confidence).toBeGreaterThan(0.2);
   });
 
-  it('does NOT demote when the crossing sits ABOVE a large face', () => {
+  it('does NOT refuse when the crossing sits ABOVE a large face', () => {
     // Horizon above the subject's head — genuinely a horizon, not their outline.
     const rows = [...Array(8).fill(200), ...Array(56).fill(40)];
-    const h = estimateHorizon(rows, 1000, pick, null, [300, 400, 700, 750]);
+    const h = detected(estimateHorizon(rows, 1000, pick, null, [300, 400, 700, 750]));
     expect(h.y).toBe(125);
     expect(h.confidence).toBeGreaterThan(0.2);
   });
 
   it('is unaffected when no subject box is supplied (back-compat)', () => {
     const rows = [...Array(32).fill(200), ...Array(32).fill(40)];
-    expect(estimateHorizon(rows, 1000, pick, null).y).toBe(500);
-    expect(estimateHorizon(rows, 1000, pick).y).toBe(500);
+    expect(detected(estimateHorizon(rows, 1000, pick, null)).y).toBe(500);
+    expect(detected(estimateHorizon(rows, 1000, pick)).y).toBe(500);
   });
 });
 

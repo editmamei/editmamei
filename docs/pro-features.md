@@ -6,6 +6,8 @@ Both editions follow the same rule: AI orchestration, not generation. Photoshop 
 
 This page describes the line between Community and Pro as it stands today. The split may evolve; see [editmamei.com/pricing](https://editmamei.com/pricing) for the current state.
 
+Everything on this page is Photoshop-only. Editmamei's GIMP support (see [docs/gimp.md](gimp.md)) is Community, beta, and has no Pro tier.
+
 ---
 
 ## Activating Pro
@@ -15,7 +17,7 @@ Pro is available now. Community is free; Pro is a paid license you buy at [editm
 - **Claude Code / npm clients:** run `editmamei activate YOUR-KEY` in your terminal, then restart your AI client. Check status anytime with `editmamei license`.
 - **Claude Desktop extension:** open **Settings → Extensions → Editmamei**, paste your key into the **Pro license key** field, save, and restart Claude Desktop.
 
-One license covers two devices; switch a device with `editmamei deactivate` or from your account portal. Pro works offline between periodic check-ins (roughly daily, with a seven-day grace window), and if a subscription lapses Editmamei keeps running as Community rather than locking you out. If Pro stops unlocking after an update, run `editmamei repair` to re-download the module; your templates, settings, and license stay untouched. Full walkthrough: [editmamei.com/activate](https://editmamei.com/activate).
+One license covers two devices; switch a device with `editmamei deactivate` or from your account portal. Pro works offline between periodic check-ins (roughly daily, with a seven-day grace window), and if a subscription lapses Editmamei keeps running as Community rather than locking you out. If Pro stops unlocking, run `editmamei license` to see whether the license is the problem before reaching for `editmamei repair`, which re-downloads the module and fixes a damaged download rather than a license that isn't checking in. Either way your templates, settings, and license stay untouched. Step-by-step: [troubleshooting.md](troubleshooting.md#pro-tools-are-missing-or-pro-shows-as-community). Full activation walkthrough: [editmamei.com/activate](https://editmamei.com/activate).
 
 ---
 
@@ -35,11 +37,11 @@ The Community edition covers the core editing surface most photographers need da
 - **Content-aware retouch:** Content-Aware Fill, Patch, and Content-Aware Move, each driven against a selection the AI can verify first. Erase a distraction or repair a blemish without leaving the conversation
 - **History:** undo, redo, inspect history states
 - **Visual verification:** downscaled preview JPEGs returned inline, layer-bounds diffs, region comparison, and 256-bin per-channel histograms with mean, stdev, and median
-- **Document insight:** camera metadata (make, model, lens, ISO, focal length, GPS), ACR develop settings, full layer tree as JSON, capability overview
+- **Document insight:** camera metadata (make, model, lens, ISO, focal length, GPS), ACR develop settings, full layer tree as JSON, capability overview, plus `ps_document` to list the open documents and switch which one is active
 - **Text:** create text layers, set font, size, color, and alignment, update content
 - **Image placement:** place image files into the document
 - **Scene awareness, on your machine:** `ps_detect` finds faces and objects on-device; `ps_read_scene` reads the scene; `ps_select_by_reference` turns a named thing ("the sky", "the person on the left") into a real selection
-- **AI selections:** `ps_select_subject` and `ps_select_sky` (Photoshop's Sensei selections), each returning the same rich feedback bundle as every other selection so the AI can verify before committing
+- **AI selections and sky replacement:** `ps_select_subject` and `ps_select_sky` (Photoshop's Sensei selections), each returning the same rich feedback bundle as every other selection so the AI can verify before committing, plus `ps_replace_sky` to swap a sky from a preset or your own file
 - **Vector shapes and pen paths:** `ps_shape` (rectangle, ellipse, line), `ps_path` (editable paths, path-to-selection and back), and `ps_vector_mask`
 - **Channel compositing:** `ps_apply_image` and `ps_calculations` for luminosity blends and channel-math masks, plus save / load / duplicate / delete of selection channels
 - **Canvas and guides:** rotate and flip the canvas, add guides and guide layouts, and skew / free-transform layers
@@ -51,7 +53,7 @@ This is enough to drive a full landscape or product editing workflow in conversa
 
 ## What Pro adds to Editmamei
 
-Pro adds the develop-grade and precision toolkit: Camera Raw develop, precision placement, named-object masks, face-aware editing, warp, subject-instance targeting, and the reproducible-template system, plus Photoshop Actions and scripting.
+Pro adds Camera Raw as a re-editable filter, raw files developed before they open, folder batch, templates, precise placement and warp, named-object and face selections, subject-instance targeting, detection-driven object edits and text placement, and Photoshop Actions and scripting.
 
 ### Templates: the whole reproducible-recipe system
 
@@ -73,13 +75,32 @@ Templates turn one-shot edits into repeatable looks. Bundling the whole surface 
 
 The part that matters: it reads back what's already applied. Ask for "a touch less dehaze" a day later and the AI reads the current settings, changes that one value, and reapplies. Nothing else moves, and nothing bakes into pixels.
 
-Scope note, honestly: this develops open documents. The raw-file import dialog (the develop screen you see when double-clicking a .CR3) and Camera Raw's local masks are not driveable this way.
+Scope note, honestly: this develops open documents, and Camera Raw's local masks are not driveable this way. For the raw file itself, before it opens, see below.
+
+### Raw files, developed before they open
+
+`ps_develop_raw` develops the raw file rather than the opened pixels. That distinction buys three things nothing else in Photoshop can reach from a script: Upright leveling and perspective correction, crop with straighten, and lens profile correction. A filter cannot change a layer's dimensions, so Photoshop disables that whole panel for the Camera Raw Filter. Working on the file instead sidesteps it.
+
+You also get Camera Raw's own Auto, the full modern develop set, and the option to open straight to 16 bit, which has to be decided at open because converting later flattens the document.
+
+It applies your own saved Camera Raw presets. Ask for one by name and its look comes across intact.
+
+How it works is deliberately unglamorous: it writes Camera Raw's settings file next to the raw, the same file Bridge and Lightroom have always used to carry settings between applications. Your existing develop is merged rather than replaced, the previous settings are backed up first, and masks you made by hand in Camera Raw are carried through untouched.
+
+Scope note, honestly: HEIC is not included. Photoshop opens HEIC by a route that never reads that settings file, so asking for it is refused rather than writing something that would quietly do nothing.
 
 ### Precision placement
 
 `ps_resolve_placement` is how the AI stops guessing coordinates. It names a location the way you would ("under the left eye", "along the roofline", "halfway between the two boats"). Local computer vision finds the anchors (faces, objects, edges, corners), a deterministic resolver turns the phrase into exact document pixels, and an objective geometric check runs before anything is applied. The AI then reviews a zoomed crop of the placement, not the full frame, because that's the judgment it can actually make reliably. Placements are measured, not eyeballed.
 
 It's the locator behind the precision workflow: name a place, get verified geometry, then drive the warps and named-object selection from it.
+
+### Detection-driven object edits
+
+- `ps_edit_object`: finds an object with the on-device detector and removes it, blurs the background behind it, or spotlights it.
+- `ps_add_text_to_object`: finds an object with the on-device detector and adds text relative to it.
+
+Both use box-level detection that runs on your machine. For a precise cutout of an object, use named-object selection below.
 
 ### Named-object selection
 
@@ -96,15 +117,26 @@ It's the locator behind the precision workflow: name a place, get verified geome
 
 ### Warp
 
-- `ps_warp_layer` and `ps_warp_layer_mesh`: standard warp styles plus a custom mesh that holds one edge pinned while the rest lifts, bends, or tapers.
-- `ps_warp_layer_along`: bend a layer to follow a named curve, like text along a shoreline.
-- `ps_warp_layer_region`: bulge or pinch around a named point or region.
-- `ps_warp_layer_to`: pin one edge and reach the far end to a named target.
+`ps_warp_layer` covers all of it under one `mode` argument:
+
+- `mode=style`: Photoshop's built-in warp styles.
+- `mode=mesh`: a custom mesh that holds one edge pinned while the rest lifts, bends, or tapers.
+- `mode=along`: bend a layer to follow a named curve, like text along a shoreline.
+- `mode=region`: bulge or pinch around a named point or region.
+- `mode=to`: pin one edge and reach the far end to a named target.
 
 ### Actions and scripting
 
 - `ps_list_actions` and `ps_play_action`: enumerate and play your recorded Photoshop Actions
 - `ps_execute_script`: the escape hatch, arbitrary ExtendScript for when no specific tool fits
+
+### Batch
+
+- `ps_batch`: apply one recipe to a whole folder as a single Photoshop batch. The recipe becomes
+  a Photoshop Action and Photoshop runs the set itself, so the per-call cost is paid once instead
+  of once per image.
+- `op=preview` reports what would be processed before anything is touched, and images a
+  percent-based crop would ruin are skipped and reported rather than quietly mangled.
 
 ### Coming later
 

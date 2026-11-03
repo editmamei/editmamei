@@ -1,9 +1,22 @@
 {
   "name": "editmamei",
-  "version": "1.1.0",
+  "version": "1.9.5",
   "private": true,
-  "description": "Photoshop MCP server: natural-language AI photo editing with your own Photoshop",
-  "mcpName": "io.github.editmamei/editmamei",
+  "description": "Photoshop MCP server: natural-language AI photo editing in desktop Photoshop",
+  "mcpName": "io.github.editmamei/editmamei-photoshop-mcp",
+  "editmamei": {
+    "fixesByVersion": {
+      "1.9.3": ["gimp_text"],
+      "1.9.1": ["ps_replace_sky"],
+      "1.9.0": ["ps_save_psd"],
+      "1.4.0": [
+        "ps_read_scene",
+        "ps_selection_channel",
+        "ps_select",
+        "ps_modify_selection"
+      ]
+    }
+  },
   "main": "dist/index.js",
   "type": "module",
   "bin": {
@@ -19,7 +32,7 @@
     "dev": "tsc --watch",
     "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true,maxRetries:5,retryDelay:100})\"",
     "build": "tsc",
-    "postbuild": "tsx scripts/build-skill-zip.ts && tsx scripts/build-go-core-dev.ts && tsx scripts/copy-models.ts",
+    "postbuild": "tsx scripts/build-skill-zip.ts && tsx scripts/build-go-core-dev.ts && tsx scripts/copy-models.ts && tsx scripts/copy-gimp-bridge.ts",
     "build:ce": "tsx scripts/build-ce.ts",
     "build:mcpb": "tsx scripts/build-mcpb.ts",
     "start": "node dist/index.js",
@@ -27,6 +40,8 @@
     "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.ts\"",
     "test": "vitest run",
+    "test:gimp": "vitest run tests/gimp-live",
+    "test:gimp:timing": "vitest run tests/gimp-live/large-image-timing.test.ts",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
@@ -65,22 +80,22 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4",
-    "adm-zip": "^0.6.0",
-    "jpeg-js": "^0.4.4",
-    "onnxruntime-web": "1.27.0"
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "adm-zip": "0.6.1",
+    "jpeg-js": "0.4.4",
+    "onnxruntime-web": "1.30.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^22.20.1",
-    "@typescript-eslint/eslint-plugin": "^8.66.0",
+    "@types/node": "^22.20.5",
+    "@typescript-eslint/eslint-plugin": "^8.71.1",
     "@typescript-eslint/parser": "^8.20.0",
-    "@vitest/coverage-v8": "^4.1.10",
-    "esbuild": "^0.28.0",
-    "eslint": "^10.8.1",
-    "globals": "^17.9.0",
-    "prettier": "^3.9.6",
-    "tsx": "^4.23.9",
+    "@vitest/coverage-v8": "^4.1.11",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.3",
     "vitest": "^4.1.7"
   }

@@ -132,8 +132,8 @@ export async function runInstall(opts: InstallOptions = {}): Promise<void> {
   }
   if (skillResult?.status === 'copied') {
     out(`  2. Upload the editmamei skill to your Claude account:\n`);
-    out(`       - Open https://claude.ai/settings (Customize > Skills)\n`);
-    out(`       - Click "Upload skill"\n`);
+    out(`       - Open https://claude.ai/settings (Settings > Skills)\n`);
+    out(`       - Click Add, then "Upload skill"\n`);
     out(`       - Choose the file at ${skillResult.destPath}\n`);
     out(`     The skill auto-loads in any photo-editing conversation. It's a one-time upload.\n`);
     out(
@@ -169,7 +169,7 @@ interface SkillCopyOptions {
 /**
  * Copies the bundled editmamei-skill.zip from <package>/dist/skills/
  * into the user's Downloads folder so they can hand-upload it to
- * claude.ai > Settings > Customize > Skills.
+ * claude.ai > Settings > Skills.
  *
  * Soft-fails by design — a missing zip or unwritable Downloads folder
  * should NOT block MCP server registration (which succeeded by the

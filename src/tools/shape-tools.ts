@@ -54,10 +54,10 @@ const shapeInputSchema: JsonSchemaObject = {
       description:
         'ANCHOR-RELATIONAL placement (preferred over guessing pixels): rectangle/ellipse ← a region relation ' +
         '(inside/gap) → the resolved region bounding box; line ← a path relation (along/offset-curve over a traced ' +
-        'edge or a Pro face-mesh landmark curve) → a straight line between the resolved curve endpoints. The shape ' +
+        'edge or a face-mesh landmark curve, where available) → a straight line between the resolved curve endpoints. The shape ' +
         'is created ONLY if the gate PASSES (otherwise an error and no layer). When set, left/top/right/bottom and ' +
         'start_x/start_y/end_x/end_y are ignored, but styling (fill_color/stroke/weight/corner_radius) still ' +
-        'applies. See ps_resolve_placement for the anchors + relation vocabulary.',
+        'applies. See the placement-resolver tool, when this build has one, for the anchors + relation vocabulary.',
     },
     // rectangle / ellipse bounding box (ABSOLUTE document pixels, top-left origin)
     left: {

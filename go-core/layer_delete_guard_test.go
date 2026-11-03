@@ -11,7 +11,7 @@ import (
 // reports a plain success, so an over-matched name silently destroys layers
 // the caller never named — and every later delete aimed at one of those
 // children then fails as "not found", which makes the cause look like the
-// symptom. Deleting a group is ps_delete_group's job.
+// symptom. Deleting a group is ps_group(op=delete)'s job.
 //
 // testdata/golden.json is deliberately NOT the pin for this: it is a drift
 // snapshot, not a correctness gate — remove the guard and the golden

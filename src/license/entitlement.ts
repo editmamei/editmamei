@@ -13,11 +13,19 @@ import {
   readLicense,
   writeLicense,
   clearLicense,
+  readCheckState,
+  updateCheckState,
   nextHighWaterMark,
   type LicenseRecord,
   type LicenseStoreOptions,
 } from './store.js';
-import { PolarLicenseClient, PolarLicenseError, type FetchLike } from './polar-client.js';
+import {
+  PolarLicenseClient,
+  PolarLicenseError,
+  unrefSleep,
+  type FetchLike,
+  type PolarClientOptions,
+} from './polar-client.js';
 import { Logger } from '../utils/logger.js';
 
 const logger = new Logger('License');
@@ -57,6 +65,35 @@ export const EXPIRED_REFRESH_TIMEOUT_MS = 5_000;
  * window we force a refresh; inside it, minor drift is tolerated as fresh.
  */
 export const CLOCK_SKEW_TOLERANCE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The persisted attempt-backoff written after a FAILED boot-path validate, so the
+ * very next boot does not simply repeat it. Before this, a failed validate left
+ * the record stale, and a stale record makes the next boot try again — the failure
+ * fed itself, once per boot, for as long as the failure lasted.
+ *
+ * `MIN`/`MAX` clamp whatever we decide to wait, including a wait the server itself
+ * asked for. The marker suppresses ATTEMPTS only — `evaluateEntitlement` never
+ * reads it, so it cannot deny, shorten grace, or change any verdict; the worst it
+ * can do is delay a recovery, bounded by MAX.
+ *
+ * The ceiling is enforced at BOTH ends of the marker's life, and the read side is
+ * what actually makes the bound true. Clamping only on write bounds the wait
+ * against the clock that wrote it: a machine whose clock is set a year ahead
+ * writes a marker a year out, and correcting the clock afterwards leaves a value
+ * no present time can reach — every subsequent boot would skip its validate,
+ * `last_validated_at` would never advance, and the license would run out of grace
+ * with a healthy key and a working network. So a marker further ahead than MAX is
+ * treated as the clock artefact it is and discarded. (Same class of bug as the
+ * FUTURE-skew guard above, and the module poll's own `>= 0` check.)
+ *
+ * `DEFAULT` applies when the failure carried no guidance of its own (a network
+ * drop, a timeout). When it did, that value wins inside the clamp — a server that
+ * says when it will answer again knows better than a constant here.
+ */
+export const VALIDATE_BACKOFF_MIN_MS = 60_000;
+export const VALIDATE_BACKOFF_DEFAULT_MS = 15 * 60_000;
+export const VALIDATE_BACKOFF_MAX_MS = 6 * 60 * 60 * 1000;
 
 export type EntitlementReason =
   'granted' | 'no-license' | 'revoked' | 'disabled' | 'expired' | 'grace-expired';
@@ -115,6 +152,8 @@ export interface LicenseOps extends LicenseStoreOptions {
   now?: () => number;
   /** Override the resolved Polar config (tests). */
   config?: PolarConfig;
+  /** Override the client's retry policy / backoff sleep (tests). */
+  client?: PolarClientOptions;
 }
 
 const defaultFetch: FetchLike = (url, init) => fetch(url, init);
@@ -129,7 +168,34 @@ function makeClient(ops: LicenseOps): { polar: PolarLicenseClient; cfg: PolarCon
       'not_configured'
     );
   }
-  return { polar: new PolarLicenseClient(cfg, ops.fetchImpl ?? defaultFetch), cfg };
+  return {
+    polar: new PolarLicenseClient(cfg, ops.fetchImpl ?? defaultFetch, ops.client ?? {}),
+    cfg,
+  };
+}
+
+/**
+ * Persist "do not attempt another validate before T" after a failed boot-path
+ * attempt. Honors the failure's own Retry-After when it carried one, else the
+ * default, clamped both ways by the VALIDATE_BACKOFF_* bounds above.
+ *
+ * Scheduling only: this writes to the check-state sidecar, never to the license
+ * record, and nothing on the entitlement path reads it. Its write already
+ * swallows its own errors, so a read-only home simply means no marker — the
+ * behaviour that existed before the marker did.
+ */
+function noteValidateFailure(err: unknown, ops: RefreshIfStaleOptions): void {
+  // `not_configured` never left this machine — it is thrown before any request,
+  // and waiting changes nothing about it. Backing off on it would only delay the
+  // first real attempt after the configuration is fixed.
+  if (err instanceof PolarLicenseError && err.code === 'not_configured') return;
+  const now = (ops.now ?? Date.now)();
+  const supplied = err instanceof PolarLicenseError ? err.retryAfterMs : undefined;
+  const waitMs = Math.min(
+    Math.max(supplied ?? VALIDATE_BACKOFF_DEFAULT_MS, VALIDATE_BACKOFF_MIN_MS),
+    VALIDATE_BACKOFF_MAX_MS
+  );
+  updateCheckState({ validate_retry_after: now + waitMs }, ops);
 }
 
 /** Boot-path gate: is Pro entitled right now (from the cached verdict)? */
@@ -172,6 +238,8 @@ export async function activate(key: string, ops: LicenseOps = {}): Promise<Licen
     high_water_mark: nextHighWaterMark(existing, nowMs),
   };
   writeLicense(rec, ops);
+  // Got through — drop any attempt-backoff a previous failure left behind.
+  updateCheckState({ validate_retry_after: null }, ops);
   return rec;
 }
 
@@ -237,10 +305,44 @@ export async function refreshIfStale(ops: RefreshIfStaleOptions = {}): Promise<v
 
   if (!clockSkewed && age <= REFRESH_AFTER_MS) return;
 
+  // A validate is warranted by age. Before firing one, honour any attempt-backoff
+  // a previous failure left: a client that restarts faster than a validate can
+  // finish would otherwise fire one on every single boot, and each failure leaves
+  // the record exactly as stale as it found it, so the next boot does it again.
+  // Strictly a scheduler — see VALIDATE_BACKOFF_MIN_MS. Skipping here returns the
+  // caller to precisely the state it would have been in had the attempt failed,
+  // which is what grace is for. An absent or malformed marker reads as undefined,
+  // so the failure mode is "attempt now", the behaviour that predates this.
+  const backoffUntil = readCheckState(ops).validate_retry_after;
+  if (backoffUntil !== undefined) {
+    // A marker further out than the longest wait we would ever write cannot have
+    // been written by a correct clock, so it is discarded rather than honoured —
+    // see VALIDATE_BACKOFF_MAX_MS. Without this the bound is only as good as the
+    // clock that wrote the marker, and a machine that was set ahead could park
+    // its own validates until the license fell out of grace.
+    const waitMs = backoffUntil - now;
+    if (waitMs > 0 && waitMs <= VALIDATE_BACKOFF_MAX_MS) return;
+    // Passed, or nonsense — either way drop it rather than leave it for the next
+    // read to weigh again.
+    updateCheckState({ validate_retry_after: null }, ops);
+  }
+
+  // From here on a validate is actually fired, and this is the one caller that
+  // fires one behind a long-lived process. A retry backoff here must not be the
+  // reason the host stays up after its client has gone, so the wait goes on an
+  // unref'd timer. Only this path: `withRetry` also serves the one-shot CLI
+  // commands, which need the ref'd default or they exit mid-backoff with nothing
+  // to show for it. An injected client (tests) still wins.
+  const bootOps: RefreshIfStaleOptions = {
+    ...ops,
+    client: { sleep: unrefSleep, ...ops.client },
+  };
+
   if (clockSkewed || age <= GRACE_MS) {
     // Still entitled: refresh in the background. Deliberately NOT awaited —
     // this runs ahead of the MCP handshake and must add zero latency to it.
-    refresh(ops).catch((err) => {
+    refresh(bootOps).catch((err) => {
+      noteValidateFailure(err, ops);
       logger.warn(
         `Background license refresh failed (grace covers offline use): ` +
           `${err instanceof Error ? err.message : String(err)}`
@@ -252,9 +354,13 @@ export async function refreshIfStale(ops: RefreshIfStaleOptions = {}): Promise<v
   // Past grace but recoverable: Pro is already dark, so this boot may pay a
   // bounded wait for the chance to come back online entitled.
   const timeoutMs = ops.expiredRefreshTimeoutMs ?? EXPIRED_REFRESH_TIMEOUT_MS;
-  const attempt = refresh(ops);
-  // A late settle after the deadline must not become an unhandled rejection.
-  attempt.catch(() => {});
+  const attempt = refresh(bootOps);
+  // A late settle after the deadline must not become an unhandled rejection — and
+  // whenever it DOES reject, that is a failed attempt worth backing off, however
+  // the race below happened to resolve. Attaching the note here rather than to the
+  // race's own catch is what covers the timeout case: a client that restarts
+  // faster than the deadline never reaches the catch at all.
+  attempt.catch((err) => noteValidateFailure(err, ops));
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const winner = await Promise.race([
@@ -298,6 +404,8 @@ export async function refresh(ops: LicenseOps = {}): Promise<LicenseRecord | nul
     high_water_mark: nextHighWaterMark(rec, nowMs),
   };
   writeLicense(updated, ops);
+  // Got through — drop any attempt-backoff a previous failure left behind.
+  updateCheckState({ validate_retry_after: null }, ops);
   return updated;
 }
 

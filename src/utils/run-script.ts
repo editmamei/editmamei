@@ -1,5 +1,6 @@
 import { PhotoshopAPI, PhotoshopAPIFactory } from '../api/photoshop-api.js';
 import type { PhotoshopConnection } from '../platform/connection.js';
+import { currentToolBudget } from './tool-budget-context.js';
 
 /**
  * Per-connection memo of the constructed `PhotoshopAPI`.
@@ -41,6 +42,23 @@ const apiCache = new WeakMap<PhotoshopConnection, PhotoshopAPI>();
  *
  * Returns whatever the underlying ExtendScript snippet returned; callers
  * typically cast to `Record<string, unknown>` for `structuredContent`.
+ *
+ * Inside a tool dispatch (`tool-budget-context.ts`, set once per call by
+ * `ToolRegistry.execute`), a script with NO explicit `timeoutMs` is bounded
+ * by however much of the call's DEADLINE remains, so a handler that runs
+ * several such scripts spends its budget once across all of them rather
+ * than getting it fresh per script. An explicit `timeoutMs` ALWAYS wins,
+ * unchanged, in both directions — above the tool's configured budget as
+ * well as below it, and even when the deadline has already passed. That is
+ * deliberate: a caller passing its own timeout (an annotated preview
+ * needing more than its tool's typical budget, a post-timeout re-probe
+ * that must still run after the original call's deadline is spent) knows
+ * something the generic per-tool number doesn't, and the deadline exists to
+ * fill the gap for calls that DIDN'T make that choice, not to overrule the
+ * ones that did. A timeout that fires is rethrown naming the tool and the
+ * bound that fired, on top of the runner's own message; a deadline-bound
+ * call that starts with no time left fails the same way without ever
+ * reaching Photoshop.
  */
 export async function runScript(
   connection: PhotoshopConnection,
@@ -53,5 +71,49 @@ export async function runScript(
     api = await apiFactory.createAPI();
     apiCache.set(connection, api);
   }
-  return api.executeScript(script, timeoutMs);
+
+  const budget = currentToolBudget();
+  let effectiveTimeoutMs = timeoutMs;
+  if (timeoutMs === undefined && budget) {
+    const remaining = budget.deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error(
+        `Tool '${budget.toolName}' exceeded its ${budget.budgetMs}ms budget before this script could run.`
+      );
+    }
+    effectiveTimeoutMs = remaining;
+  }
+
+  try {
+    return await api.executeScript(script, effectiveTimeoutMs);
+  } catch (error) {
+    if (budget && isScriptTimeoutError(error)) {
+      // effectiveTimeoutMs, not budget.budgetMs: a later script in a
+      // multi-script call can fail on a small REMAINING slice of a large
+      // tool budget, and naming the tool's full nominal budget there would
+      // read as "it had 164s and still failed" when it may have had only a
+      // few seconds left. What actually fired is the more honest number.
+      throw new Error(
+        `Tool '${budget.toolName}' exceeded its ${effectiveTimeoutMs}ms budget: ${error.message}`,
+        { cause: error }
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Recognizes both platforms' timeout-shaped failures. Windows and the
+ * shared script queue reject with a message starting "Script execution
+ * timeout" (run-child.ts / script-queue.ts). macOS never reaches that
+ * marker on a timeout — the Apple Event manager gives up on its own and
+ * `osascript` reports it on stderr as a non-zero exit whose text contains
+ * "AppleEvent timed out" and error -1712 (see macos-runner.ts's runOnce).
+ */
+function isScriptTimeoutError(error: unknown): error is Error {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message.startsWith('Script execution timeout') ||
+    /AppleEvent timed out|-1712\b/.test(error.message)
+  );
 }

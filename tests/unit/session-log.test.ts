@@ -14,9 +14,14 @@ import {
   computeResultBytes,
   jsonEscapedLength,
   ERROR_CLASS_TABLE,
+  ALL_ERROR_CLASSES,
+  NO_ERROR_TEXT_CLASS,
   type SessionLogMetaEntry,
   type SessionLogCallEntry,
 } from '@editmamei/utils/session-log.ts';
+import { ToolRegistry } from '@editmamei/core/tool-registry.ts';
+import { createGimpDocumentTools } from '@editmamei/tools/gimp-document-tools.ts';
+import { makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
 
 // Wrap `open` (not the other fs/promises functions this file also uses
 // directly, like mkdtemp/readFile/rm/stat) so the "held handle" tests below
@@ -197,6 +202,72 @@ describe('classifyError', () => {
     );
   });
 
+  // ── Perception pipeline classes ────────────────────────────────────────────
+  //
+  // ps_read_scene funnels every failure through one wrapper, so its class comes
+  // entirely from the cause text. Before these rows the whole perception
+  // pipeline landed in `other` — or worse, in a confidently wrong class, because
+  // the messages quote a decoder / the ONNX runtime / the OS, whose wording
+  // collides with the ordinary-English input-tier vocabulary.
+  //
+  // Every string below is the REAL message from the throw site named in the
+  // comment, not a paraphrase — a pin against a message we invented would pass
+  // while the field kept reporting `other`.
+  it('classifies a failed perception export', () => {
+    // detect-active-doc.ts: the export is read_scene's first step.
+    expect(classifyError('JPEG saveAs reported success but no file at C:/Temp/detect.jpg')).toBe(
+      'perception_export_failed'
+    );
+    expect(
+      classifyError('Error reading scene: JPEG saveAs reported success but no file at /tmp/d.jpg')
+    ).toBe('perception_export_failed');
+  });
+
+  it('classifies a decode failure by the DECODER, not by the word "Invalid" in its message', () => {
+    // runtime.ts. The old table sent this to `invalid_argument` on "Invalid SOS
+    // parameters" — third-party wording read as a caller mistake.
+    expect(classifyError('failed to decode JPEG at C:/t/d.jpg: Invalid SOS parameters')).toBe(
+      'image_decode_failed'
+    );
+    expect(classifyError('failed to decode JPEG buffer: unsupported marker')).toBe(
+      'image_decode_failed'
+    );
+    // The specific trap, stated directly.
+    expect(classifyError('failed to decode JPEG at x: Invalid SOS parameters')).not.toBe(
+      'invalid_argument'
+    );
+  });
+
+  it('classifies a detection-runtime failure as OUR runtime, not a Photoshop op', () => {
+    // Blaming ps_op_failed for a Node-side model problem sends debugging at
+    // Photoshop, which is the wrong place entirely.
+    //
+    // The package is onnxruntime-WEB. An earlier draft of this test pinned
+    // "Cannot find module onnxruntime-node", which nothing in this tree can
+    // produce — a pin against an invented message passes forever and proves
+    // nothing, which is precisely the failure the table's own comment warns of.
+    expect(classifyError('Cannot find module onnxruntime-web')).toBe('detection_unavailable');
+    expect(classifyError('ONNX Runtime error: failed to load model')).toBe('detection_unavailable');
+    expect(classifyError('ONNX Runtime error: failed to load model')).not.toBe('ps_op_failed');
+  });
+
+  it('classifies OS file-IO codes, case-sensitively', () => {
+    expect(classifyError("ENOENT: no such file or directory, open 'C:/t/detect.jpg'")).toBe(
+      'file_io'
+    );
+    expect(classifyError('EBUSY: resource busy or locked')).toBe('file_io');
+    expect(classifyError('EACCES: permission denied')).toBe('file_io');
+    // Lowercase prose must NOT trip it — the codes are uppercase by convention
+    // and a case-insensitive match would fire on ordinary sentences.
+    expect(classifyError('the layer eperm was renamed')).not.toBe('file_io');
+  });
+
+  it('leaves the perception classes behind a more specific target-not-found match', () => {
+    // Ordering: the not-found tier still wins, so a missing LUT that happens to
+    // mention a path does not become file_io.
+    expect(classifyError('LUT not found: C:/luts/teal.cube')).toBe('file_not_found');
+  });
+
   // `/layer.*not found/` spanned the whole message, so any wrapper mentioning a
   // layer stole the more specific class from the tail.
   it('does not let a wrapper that mentions a layer steal a more specific not-found class', () => {
@@ -338,6 +409,66 @@ describe('classifyError', () => {
     expect(classifyError('')).toBe('other');
   });
 
+  // Every string below is the REAL message shape from the throw site named
+  // in its comment, not a paraphrase. The discriminator VALUE in the first
+  // two is swapped for a placeholder since the pattern must not care what
+  // the value was, only the message's structure.
+  it('classifies recurring shapes not covered by the earlier tiers', () => {
+    // unknownDiscriminator() (tool-helpers.ts) — shared by every
+    // consolidated dispatcher's unknown type/op/mode rejection.
+    expect(
+      classifyError(
+        'Error: unknown filter type "X". Allowed: gaussian_blur, motion_blur, lens_blur, radial_blur, sharpen, smart_sharpen, noise, reduce_noise, high_pass, pixelate, distort, displace, oil_paint.'
+      )
+    ).toBe('unknown_discriminator');
+    expect(
+      classifyError('Error: unknown inspect target "X". Allowed: metadata, layer_tree, history.')
+    ).toBe('unknown_discriminator');
+    // A short kind/value pair still classifies the same way, not by luck of
+    // fitting under invalid_argument's 30-char cap.
+    expect(classifyError('Error: unknown op "x". Allowed: a, b.')).toBe('unknown_discriminator');
+    // A long value: the pattern matches the quoted value with `[^"]*`, not a
+    // length count, so it terminates on the real closing quote no matter how
+    // long an LLM's passed value is. A fixed bound here would reopen the gap.
+    expect(
+      classifyError(
+        'Error: unknown filter type "' +
+          'a'.repeat(85) +
+          '". Allowed: gaussian_blur, motion_blur, sharpen.'
+      )
+    ).toBe('unknown_discriminator');
+
+    // Photoshop's own message from a histogram read on a non-composite
+    // channel (region-precompute.ts) — a visibility STATE, not a missing
+    // channel.
+    expect(classifyError('You can only get a histogram for visible channels.')).toBe(
+      'channel_not_visible'
+    );
+
+    // ExtendScript's ReferenceError shape for an undefined global.
+    expect(classifyError('Error executing custom script: JSON is undefined')).toBe(
+      'extendscript_reference_error'
+    );
+    expect(classifyError('Error converting image mode: HalftoneScreenShape is undefined')).toBe(
+      'extendscript_reference_error'
+    );
+    // A trailing newline (a transport layer's own line terminator) must not
+    // demote this to `other` — the pattern allows trailing whitespace rather
+    // than relying on the `m` flag (which would also match before an
+    // INTERIOR newline, not just a trailing one).
+    expect(classifyError('Error executing custom script: JSON is undefined\n')).toBe(
+      'extendscript_reference_error'
+    );
+    // Must classify by its OWN class, not steal a wrapper that merely ends
+    // near the word "undefined" — the real go-core wording is "after 1
+    // retry", singular.
+    expect(
+      classifyError(
+        'Layer opacity write did not verify: requested 50 (expected readback 50), actual undefined (after 1 retry)'
+      )
+    ).toBe('write_not_verified');
+  });
+
   it('ERROR_CLASS_TABLE has all expected classes', () => {
     const classes = ERROR_CLASS_TABLE.map((e) => e.errorClass);
     expect(classes).toContain('schema_validation');
@@ -346,11 +477,116 @@ describe('classifyError', () => {
     expect(classes).toContain('ps_modal_blocking');
     expect(classes).toContain('ps_not_running');
     expect(classes).toContain('timeout');
+    // Perception pipeline (2026-08-25).
+    expect(classes).toContain('perception_export_failed');
+    expect(classes).toContain('image_decode_failed');
+    expect(classes).toContain('detection_unavailable');
+    expect(classes).toContain('file_io');
+    expect(classes).toContain('unknown_discriminator');
+    expect(classes).toContain('channel_not_visible');
+    expect(classes).toContain('extendscript_reference_error');
   });
 
-  it('every class token satisfies the telemetry server error_class contract', () => {
-    for (const { errorClass } of ERROR_CLASS_TABLE) {
+  // ALL_ERROR_CLASSES, not just ERROR_CLASS_TABLE — NO_ERROR_TEXT_CLASS is a
+  // sentinel assigned outside the table (append() falls back to it directly)
+  // and must satisfy the same wire contract even though it never appears as
+  // a regex here.
+  it('every class token, table AND sentinel, satisfies the telemetry server error_class contract', () => {
+    expect(ALL_ERROR_CLASSES).toContain(NO_ERROR_TEXT_CLASS);
+    expect(ALL_ERROR_CLASSES.length).toBe(ERROR_CLASS_TABLE.length + 1);
+    for (const errorClass of ALL_ERROR_CLASSES) {
       expect(errorClass).toMatch(/^[a-z0-9_]{1,48}$/);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// gimp_* error classification — through the REAL registry, not hand-written
+// strings. A tool handler's error text is never the bare GimpError message —
+// it's wrapped with the handler's own prefix first (`toolGimpErrorResult`,
+// e.g. "Error opening GIMP document: gimp_not_installed: ..."), so the only
+// trustworthy way to pin the classifier against it is to actually produce
+// that text through `ToolRegistry.execute()` the same way a real dispatch
+// would, then classify exactly what a call's `onCall` observer receives.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('gimp_* error classification, produced through the real registry', () => {
+  // `gimp_open_document`'s handler calls `requireAbsoluteGimpPath` with no
+  // explicit `platform` (it defaults to `process.platform`, same as every
+  // other gimp_* handler — a real GIMP session only ever runs on the host it
+  // started on). A hardcoded Windows-style `C:/...` literal is NOT absolute
+  // under POSIX, so it would fail that check before ever reaching the fake's
+  // `throwFor` on a macOS CI runner, capturing the wrong error entirely.
+  const OPEN_FILE_PATH = process.platform === 'win32' ? 'C:/photo.jpg' : '/photo.jpg';
+
+  /** Dispatches one gimp_open_document call through a real ToolRegistry and returns the error text the onCall observer saw (or undefined on success). */
+  async function dispatchAndCaptureError(thrown: Error): Promise<string | undefined> {
+    const gimp = makeGimpBackend({ throwFor: () => thrown });
+    let captured: string | undefined;
+    const registry = new ToolRegistry({
+      onCall: (entry) => {
+        captured = entry.error;
+      },
+    });
+    registry.registerAll(createGimpDocumentTools(gimp.asBackend()));
+    await registry.execute('gimp_open_document', { file_path: OPEN_FILE_PATH });
+    return captured;
+  }
+
+  const CASES: Array<[string, string]> = [
+    ['gimp_not_installed: no GIMP install was found on this machine.', 'gimp_not_installed'],
+    ['gimp_start_failed: could not start GIMP at "gimp-console.exe": ENOENT', 'gimp_start_failed'],
+    [
+      'gimp_starting: GIMP is still starting. Call gimp_ping again in about 30 seconds.',
+      'gimp_starting',
+    ],
+    ['gimp_python_missing: this GIMP install has no Python support', 'gimp_python_missing'],
+    [
+      'gimp_version_unsupported: Editmamei needs GIMP 3.2 or newer; found 3.0.0',
+      'gimp_version_unsupported',
+    ],
+    [
+      'gimp_session_restarted: GIMP stopped; open images and unapplied work are gone — reopen the file',
+      'gimp_session_restarted',
+    ],
+    ['gimp_timeout: open did not respond within 30000ms', 'gimp_timeout'],
+    [
+      'gimp_unsupported_file: GIMP could not open this .dng file (no raw loader)',
+      'gimp_unsupported_file',
+    ],
+    ['gimp_op_failed: open failed', 'gimp_op_failed'],
+    ['file_not_found: no file at /tmp/missing.jpg', 'file_not_found'],
+  ];
+
+  for (const [message, expectedClass] of CASES) {
+    it(`"${message}" (real tool result text) classifies as ${expectedClass}`, async () => {
+      const captured = await dispatchAndCaptureError(new Error(message));
+      expect(captured, 'onCall observer captured no error text').toBeDefined();
+      // The handler's own prefix rides ahead of the code in the real text —
+      // this is exactly the bug the anchored `^code:` patterns had.
+      expect(captured).toMatch(/^Error opening GIMP document: /);
+      expect(classifyError(captured)).toBe(expectedClass);
+    });
+  }
+
+  it('the invalid_argument GimpError code is NOT given its own row — it already matches the generic invalid_argument class through the real text', async () => {
+    const captured = await dispatchAndCaptureError(
+      new Error('invalid_argument: "file_path" must be an absolute path, got "x.jpg"')
+    );
+    expect(classifyError(captured)).toBe('invalid_argument');
+  });
+
+  it('the new gimp_* rows do not shadow existing ps_* classifications (a representative sample, unaffected by table order)', () => {
+    const psSamples: Array<[string, string]> = [
+      ['Layer not found: Curves 1', 'layer_not_found'],
+      ['No active document', 'no_document'],
+      ['Photoshop is not running', 'ps_not_running'],
+      ['Script execution timeout exceeded', 'timeout'],
+      ['Unknown adjustment type: vibrancy', 'invalid_argument'],
+      ['Content-Aware Fill requires an active selection. Make a selection first.', 'no_selection'],
+    ];
+    for (const [message, expectedClass] of psSamples) {
+      expect(classifyError(message), message).toBe(expectedClass);
     }
   });
 });
@@ -780,6 +1016,47 @@ describe('SessionLog', () => {
     expect(metas).toHaveLength(2); // initial + one re-emit (not two)
   });
 
+  it("gimp_version is OMITTED entirely (not `null`) from a ps_*-only session's meta line — byte-for-byte unchanged from before gimp_version existed", async () => {
+    const log = new SessionLog('no-gimp', { dir });
+    await log.append({ tool: 'ps_ping', args: {}, success: true, duration_ms: 1 });
+
+    const [meta] = await readMetaLines(log.path);
+    expect(Object.hasOwn(meta, 'gimp_version')).toBe(false);
+  });
+
+  it('setGimpVersion re-emits meta with the new gimp_version, once a GIMP session actually ran', async () => {
+    const log = new SessionLog('gimp-ver', { dir });
+    await log.append({ tool: 'gimp_ping', args: {}, success: true, duration_ms: 1 });
+    await log.setGimpVersion('3.2.6');
+
+    const metas = await readMetaLines(log.path);
+    expect(metas).toHaveLength(2);
+    expect(Object.hasOwn(metas[0], 'gimp_version')).toBe(false); // before setGimpVersion
+    expect(metas[1].gimp_version).toBe('3.2.6'); // after
+  });
+
+  it('setGimpVersion is a no-op when called with the same version', async () => {
+    const log = new SessionLog('gimp-ver-noop', { dir });
+    await log.append({ tool: 'gimp_ping', args: {}, success: true, duration_ms: 1 });
+    await log.setGimpVersion('3.2.6');
+    await log.setGimpVersion('3.2.6'); // second call — same version
+
+    const metas = await readMetaLines(log.path);
+    expect(metas).toHaveLength(2); // initial + one re-emit (not two)
+  });
+
+  it('setGimpVersion and setPsVersion compose — a session that used BOTH editors carries both fields', async () => {
+    const log = new SessionLog('both-editors', { dir });
+    await log.append({ tool: 'ps_ping', args: {}, success: true, duration_ms: 1 });
+    await log.setPsVersion('27.7.0');
+    await log.setGimpVersion('3.2.6');
+
+    const metas = await readMetaLines(log.path);
+    const last = metas.at(-1)!;
+    expect(last.ps_version).toBe('27.7.0');
+    expect(last.gimp_version).toBe('3.2.6');
+  });
+
   // ──────────────────────────────────────────────────────────────────────────
   // v2 call line fields
   // ──────────────────────────────────────────────────────────────────────────
@@ -925,6 +1202,20 @@ describe('SessionLog', () => {
 
     const [call] = await readCallLines(log.path);
     expect(call.error_class).toBe('ps_command_unavailable');
+  });
+
+  // A failed call with no error text at all (e.g. a handler's isError result
+  // with no text content block) must still carry a real class — never the
+  // empty string, and never an omitted field, both of which read as "nothing
+  // to act on" to a diagnostics-bundle reader.
+  it('error_class is a real, non-empty token for a failed call with no error text', async () => {
+    const log = new SessionLog('errclass-no-text', { dir });
+    await log.append({ tool: 't', args: {}, success: false, duration_ms: 1 });
+
+    const [call] = await readCallLines(log.path);
+    expect(call.error_class).toBeTruthy();
+    expect(call.error_class).not.toBe('');
+    expect(call.error_class).toBe(NO_ERROR_TEXT_CLASS);
   });
 
   it('result is NOT included by default (privacy default off)', async () => {

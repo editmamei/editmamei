@@ -247,8 +247,16 @@ func TestGaussianBlurGolden(t *testing.T) {
 		{"newDocument(800,600)", newDocument(800, 600, 72, "NewDocumentMode.RGB")},
 		{`placeImage("C:/img.png",10,20)`, placeImage("C:/img.png", 10, 20, 0, 0, false, false)},
 		{`placeImage("C:/img.png",0,0,50,75)`, placeImage("C:/img.png", 0, 0, 50, 75, true, true)},
-		{"closeDocument()", closeDocument(false)},
-		{"closeDocument(true)", closeDocument(true)},
+		{"closeDocument()", closeDocument(false, DocTarget{})},
+		{"closeDocument(true)", closeDocument(true, DocTarget{})},
+		// Targeted close + the ps_document pair. The by-name and by-id rows differ
+		// only in the resolution block, which is the part that can silently pick
+		// the wrong document, so both shapes are pinned.
+		{`closeDocument(name)`, closeDocument(false, DocTarget{Name: "a.psd", HasName: true})},
+		{`closeDocument(id)`, closeDocument(true, DocTarget{ID: 42, HasID: true})},
+		{"listDocuments()", listDocuments()},
+		{`activateDocument(name)`, activateDocument(DocTarget{Name: "b.jpg", HasName: true})},
+		{`activateDocument(id)`, activateDocument(DocTarget{ID: 7, HasID: true})},
 		{"resizeImage(800,600)", resizeImage(800, 600)},
 		{"cropDocument(0,0,400,300)", cropDocument(0, 0, 400, 300)},
 		// Pinned to the WINDOWS emitter explicitly, not the runtime.GOOS-derived
@@ -256,8 +264,12 @@ func TestGaussianBlurGolden(t *testing.T) {
 		// = <bool>` into the output, so a GOOS-derived call makes this golden
 		// pass only on Windows and fail on every macOS/Linux `go test`. Mirrors
 		// probe_open_document_test.go, which parameterizes for the same reason.
-		{`openDocumentPipeline("C:/photo.heic")`, openDocumentPipelineForPlatform("C:/photo.heic", true, true)},
-		{`openDocumentPipeline("C:/photo.jpg",false)`, openDocumentPipelineForPlatform("C:/photo.jpg", false, true)},
+		{`openDocumentPipeline("C:/photo.heic")`, openDocumentPipelineForPlatform("C:/photo.heic", true, 0, true)},
+		{`openDocumentPipeline("C:/photo.jpg",false)`, openDocumentPipelineForPlatform("C:/photo.jpg", false, 0, true)},
+		// Raw + an explicit open depth takes the CameraRAWOpenOptions branch;
+		// pinned because that path is unreachable for non-raw sources and easy
+		// to regress into a plain app.open that silently returns 8-bit.
+		{`openDocumentPipeline("C:/photo.cr2",true,16)`, openDocumentPipelineForPlatform("C:/photo.cr2", true, 16, true)},
 		{`savePsdAsCopy("C:/out.psd",true)`, savePsdAsCopy("C:/out.psd", true)},
 		{`exportJpegPipeline("C:/out.jpg",90,2048,true,true)`, exportJpegPipeline("C:/out.jpg", 90, 2048, true, true, true)},
 		{`exportJpegPipeline("C:/out2.jpg",80)`, exportJpegPipeline("C:/out2.jpg", 80, 0, false, true, true)},

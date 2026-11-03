@@ -167,13 +167,15 @@ describe('MacOSScriptRunner — AppleScript wrapper', () => {
 });
 
 describe('MacOSScriptRunner — launch', () => {
-  it('clears the startup timer when the spawn errors', () => {
+  it('guards the readiness poll against resolving after the spawn errors', () => {
+    // See the equivalent Windows test for the rationale — the poll itself is
+    // exercised in launch-readiness.test.ts.
     const launchSrc = (
       new MacOSScriptRunner() as unknown as {
         launch: (...args: unknown[]) => unknown;
       }
     ).launch.toString();
-    expect(launchSrc).toContain('clearTimeout');
     expect(launchSrc).toMatch(/['"]error['"]/);
+    expect(launchSrc).toContain('aborted');
   });
 });

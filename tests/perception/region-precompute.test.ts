@@ -34,7 +34,7 @@ function baseModel(overrides: Partial<SceneModel> = {}): SceneModel {
     subjects: [],
     faces: [],
     regions: [{ kind: 'sky', coverage: 0.2, recipe: { kind: 'threshold_white', level: 128 } }],
-    horizon: { y: 80, placement: 0.1, confidence: 1 },
+    horizon: { detected: true, y: 80, placement: 0.1, confidence: 1 },
     tonal_zones: {
       shadows: { lower: 0, upper: 80, coverage: 0.3 },
       midtones: { lower: 81, upper: 180, coverage: 0.4 },

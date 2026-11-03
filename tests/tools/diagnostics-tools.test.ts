@@ -17,6 +17,7 @@ function fakeBundle(over: Partial<DiagnosticBundle> = {}): DiagnosticBundle {
     node_version: 'v20.0.0',
     install_id: 'a'.repeat(32),
     ps_version: '27.7.0',
+    gimp_version: null,
     mcp_client: 'claude-ai 0.1.0',
     settings: {
       telemetry_usage: true,
@@ -63,7 +64,7 @@ describe('createDiagnosticsTools', () => {
     expect(def.tool.annotations?.readOnlyHint).toBe(false);
     expect(def.tool.annotations?.openWorldHint).toBe(true);
     // Description states the privacy posture so the LLM relays it accurately.
-    expect(def.tool.description).toMatch(/no tool arguments/i);
+    expect(def.tool.description).toMatch(/carries NO tool arguments/i);
     expect(def.tool.description).toMatch(/anonymized/i);
   });
 

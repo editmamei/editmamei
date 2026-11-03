@@ -1,7 +1,7 @@
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
-import type { JsonSchemaObject } from '../utils/validate.js';
+import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 
 import { getMetadata, getMetadataSchema } from './metadata-tools.js';
 import { getHistory } from './history-tools.js';
@@ -127,6 +127,11 @@ async function inspect(
   snippetClient: SnippetClient,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
+  // Only the discriminator here: each delegate still validates its own params.
+  validateArgs(
+    { type: 'object', properties: { what: { type: 'string' } }, required: ['what'] },
+    rawArgs
+  );
   const what = rawArgs.what;
   const { what: _omit, ...rest } = rawArgs;
   switch (what) {
@@ -145,7 +150,7 @@ async function inspect(
         content: [
           {
             type: 'text' as const,
-            text: `Error: unknown inspect target "${String(what)}". Allowed: ${INSPECT_WHATS.join(', ')}.`,
+            text: `Error: unknown \`what\` value "${String(what)}". Allowed: ${INSPECT_WHATS.join(', ')}.`,
           },
         ],
         isError: true,
