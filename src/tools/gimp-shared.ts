@@ -132,14 +132,27 @@ export interface GimpPreviewDeps {
 export const defaultPreviewsAllowed = (): boolean =>
   loadSettings().settings.privacy.send_previews_to_llm;
 
+/**
+ * A client may show only `structuredContent` when a result has it, so a warning the model must act
+ * on goes there too: copies any `WARNING: ...` tail of `text` into the `warning` field.
+ */
+export function withWarning<T extends object>(
+  structured: T,
+  text: string
+): T & { warning?: string } {
+  const at = text.indexOf('WARNING: ');
+  return at < 0 ? structured : { ...structured, warning: text.slice(at) };
+}
+
 export async function runGimpTool(spec: GimpToolSpec): Promise<ToolResult> {
   try {
     const args = validateArgs(spec.schema, spec.rawArgs);
     const bridgeArgs = spec.params ? spec.params(args) : pickSchemaDeclaredKeys(spec.schema, args);
     const result = await spec.gimp.call<Record<string, unknown>>(spec.op, bridgeArgs);
+    const text = spec.successText(result, args);
     return {
-      content: [{ type: 'text' as const, text: spec.successText(result, args) }],
-      structuredContent: result,
+      content: [{ type: 'text' as const, text }],
+      structuredContent: withWarning(result, text),
     };
   } catch (error) {
     return toolGimpErrorResult(spec.errorPrefix, error);

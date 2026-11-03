@@ -175,7 +175,7 @@ const exportJpegSchema: JsonSchemaObject = {
     quality: {
       type: 'integer',
       description:
-        "JPEG quality 0-100 (the Photoshop 'Save As' / JPEG-dialog scale humans and the UI use). 100 = maximum. Mapped internally to Photoshop's 0-12 JPEGSaveOptions scripting scale (e.g. 90→11, 100→12).",
+        "JPEG quality 0-100 (the Photoshop 'Export As' scale). 100 = maximum. Mapped internally to Photoshop's 0-12 JPEGSaveOptions scripting scale (e.g. 90→11, 100→12).",
       default: 90,
       minimum: 0,
       maximum: 100,
@@ -441,7 +441,7 @@ export function createDocumentTools(
       tool: {
         name: 'ps_export',
         description:
-          'Export the active document to a flattened image file — JPEG or PNG, chosen via `format`. Operates on a duplicate, so the working document is unchanged. Optionally downscales so the long edge equals long_edge_px. JPEG: quality 0-100 (Save-As scale), optional sRGB convert + profile embed. PNG: transparent background (alpha preserved) or flattened onto white, compression 0-9.',
+          'Export the active document to a flattened image file — JPEG or PNG, chosen via `format`. Operates on a duplicate, so the working document is unchanged. Optionally downscales so the long edge equals long_edge_px. JPEG: quality 0-100 (Export As scale), optional sRGB convert + profile embed. PNG: transparent background (alpha preserved) or flattened onto white, compression 0-9.',
         inputSchema: exportInputSchema,
         outputSchema: {
           type: 'object',

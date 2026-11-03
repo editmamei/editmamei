@@ -2,7 +2,12 @@ import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
 import { validateArgs, type JsonSchemaObject, type JsonSchemaProperty } from '../utils/validate.js';
 import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers.js';
-import { GIMP_IMAGE_PROP, runGimpTool, pickSchemaDeclaredKeys } from './gimp-shared.js';
+import {
+  GIMP_IMAGE_PROP,
+  runGimpTool,
+  pickSchemaDeclaredKeys,
+  withWarning,
+} from './gimp-shared.js';
 
 /**
  * gimp_crop_document / gimp_resize_image / gimp_transform_canvas.
@@ -163,7 +168,7 @@ async function gimpTransformCanvas(
       effectUpdateFailuresNote(result.effect_update_failures);
     return {
       content: [{ type: 'text' as const, text }],
-      structuredContent: result as unknown as Record<string, unknown>,
+      structuredContent: withWarning(result as unknown as Record<string, unknown>, text),
     };
   } catch (error) {
     return toolGimpErrorResult('Error transforming GIMP canvas', error);
