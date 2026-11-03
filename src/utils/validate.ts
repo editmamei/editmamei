@@ -74,6 +74,17 @@ export class ValidationError extends Error {
  * any violation. Returns a new object with defaults applied and string
  * numerics coerced.
  */
+/** The first `required` argument that is absent and has no schema default, if any. */
+export function missingRequiredArg(
+  schema: { required?: string[]; properties?: object },
+  args: Record<string, unknown>
+): string | undefined {
+  const props = (schema.properties ?? {}) as Record<string, { default?: unknown } | undefined>;
+  return schema.required?.find(
+    (key) => (args[key] === undefined || args[key] === null) && props[key]?.default === undefined
+  );
+}
+
 export function validateArgs(
   schema: JsonSchemaObject,
   args: Record<string, unknown> | undefined

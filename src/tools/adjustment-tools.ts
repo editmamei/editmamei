@@ -547,7 +547,7 @@ const addAdjustmentLayerSchema: JsonSchemaObject = {
     exp_gamma: {
       type: 'number',
       description:
-        'For type=exposure. Gamma correction (0.01 to 9.99). PS default 1.0 (identity). Values <1 brighten midtones; >1 darken them.',
+        'For type=exposure. Gamma correction (0.01 to 9.99). PS default 1.0 (identity). Values >1 brighten midtones; <1 darken them.',
       minimum: 0.01,
       maximum: 9.99,
       default: 1.0,
