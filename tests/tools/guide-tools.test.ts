@@ -31,6 +31,11 @@ describe('createGuideTools', () => {
     expect(schema.required).toContain('op');
   });
 
+  it('names `op` when it is missing', async () => {
+    const tools = createGuideTools(conn.asConnection(), sc);
+    await expect(callTool(tools, 'ps_guides', {})).rejects.toThrow('Missing required argument: op');
+  });
+
   it('an unknown op returns an error without dispatching', async () => {
     const tools = createGuideTools(conn.asConnection(), sc);
     const result = await callTool(tools, 'ps_guides', { op: 'bogus' });
