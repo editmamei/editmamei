@@ -579,6 +579,7 @@ describe('ps_ping — fast-fail when no Photoshop process exists', () => {
 
     expect(res.structuredContent).toEqual({
       connected: false,
+      message: 'Photoshop does not appear to be running. Start Photoshop, then call ps_ping again.',
       update_available: null,
       notify_user: false,
     });
@@ -2104,8 +2105,8 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
 // repo, where it also exercises Pro-tool registration and so can't be
 // hydrated here. The invariant itself: EditmameiServer.start() must connect
 // the MCP transport BEFORE warming the Photoshop connection, which it does
-// fire-and-forget via `void this.session.initialize()`. When PS isn't
-// reachable at boot, that warmup blocks for the executor's full 30s timeout;
+// fire-and-forget via `void this.session.initialize()`. When a running PS doesn't
+// answer at boot, that warmup blocks for the executor's full 30s timeout;
 // awaiting it ahead of `server.connect()` delays the `initialize` response by
 // ~30s, which Claude Desktop surfaces as "Unable to connect to extension
 // server". Booting the real stdio transport in a unit test is undesirable, so
