@@ -74,8 +74,8 @@ export interface McpbManifest {
  *     the server reads at boot to activate Pro (src/license/env-activation.ts). Blank
  *     by default → the bundle stays one-click Community.
  *   - **Telemetry toggles** — the same opt-out usage / opt-in diagnostics switches the
- *     CLI exposes, injected as EDITMAMEI_TELEMETRY_USAGE / _DIAGNOSTICS and applied over
- *     settings.json for the session (src/core/settings.ts applyTelemetryEnvOverrides).
+ *     CLI exposes, injected as EDITMAMEI_TELEMETRY_USAGE / _DIAGNOSTICS and reconciled with
+ *     settings.json at boot (src/core/settings.ts applyDesktopToggles).
  *     Defaults match the privacy posture (usage on, diagnostics off).
  * Photoshop is still auto-detected (no PHOTOSHOP_PATH field); a blank license key is a
  * safe no-op, unlike a blank PHOTOSHOP_PATH which would fight auto-detection.
@@ -90,12 +90,11 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
     EDITMAMEI_LICENSE_KEY: '${user_config.license_key}',
     // Telemetry consent toggles — Claude Desktop has no terminal for `editmamei config`, so
     // these expose the same opt-out/opt-in switches in the extension settings. The server
-    // applies them over settings.json for the session (src/core/settings.ts
-    // applyTelemetryEnvOverrides).
+    // reconciles them with settings.json at boot (src/core/settings.ts applyDesktopToggles).
     EDITMAMEI_TELEMETRY_USAGE: '${user_config.telemetry_usage}',
     EDITMAMEI_TELEMETRY_DIAGNOSTICS: '${user_config.telemetry_diagnostics}',
     // Boot update-check opt-out — Desktop has no terminal for `editmamei config`, so expose
-    // the same switch here (applied over settings.json via applyUpdateCheckEnvOverride).
+    // the same switch here (reconciled with settings.json via applyDesktopToggles).
     EDITMAMEI_UPDATE_CHECK: '${user_config.update_check}',
     // Verbose-logging opt-in — Desktop has no terminal to set LOG_LEVEL, so this toggle
     // lowers logging to DEBUG (Logger reads EDITMAMEI_VERBOSE_LOGGING) so a diagnostic

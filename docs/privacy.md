@@ -66,6 +66,7 @@ run. These are the keys:
 | `update_check` | boolean | `true` (on) | Check the public npm registry at startup for a newer version (see "Update check" below). The opt-out tier. |
 | `editor` | string | `"auto"` | Pin which editor(s) register at boot: `auto`, `photoshop`, or `gimp`. The `EDITMAMEI_EDITOR` env var still wins if set. See [docs/gimp.md](gimp.md#pinning-the-editor). |
 | `gimp_path` | string \| null | `null` | Pin a specific GIMP binary (an absolute path; `EDITMAMEI_GIMP_PATH=flatpak` is the way to use Flatpak). `null` = auto-detect (the `EDITMAMEI_GIMP_PATH` env var still wins if set). See [docs/gimp.md](gimp.md#pointing-at-a-custom-install). |
+| `desktop_toggles` | object | absent | The Claude Desktop extension's toggle values at its last launch, so Editmamei can tell when one was changed. Written by Editmamei, and never sent anywhere. |
 
 `install_id` is a random value; it is **not** derived from your username, machine name, email,
 or any other identifier.
@@ -74,7 +75,7 @@ or any other identifier.
 
 ## How to control it
 
-Three equivalent ways, all writing the same `~/.editmamei/settings.json`:
+Three ways, all controlling the same settings in `~/.editmamei/settings.json`:
 
 **Edit the file directly.** It's plain JSON and yours to inspect at any time:
 
@@ -113,8 +114,13 @@ Boolean values accept `true`/`false`, `on`/`off`, `yes`/`no`, or `1`/`0`.
 
 **In Claude Desktop.** The one-click extension has no terminal, so the same two switches appear in
 the extension's own settings (Settings → Extensions → Editmamei): **Share usage stats**
-(opt-out) and **Share error diagnostics** (opt-in). Toggling them there controls telemetry for
-Claude Desktop without editing any file.
+(opt-out) and **Share error diagnostics** (opt-in). A change there is saved to the settings file
+the next time Claude Desktop starts Editmamei. After that first start, a choice made in the file or
+the CLI stays in place unless you change the toggle. On that first start, an off **Share usage
+stats** toggle sets usage off in the file, and an on **Share error diagnostics** toggle sets
+diagnostics on in the file. The other position of each toggle leaves the file as it is. A toggle
+that is off keeps that switch off whenever Claude Desktop starts Editmamei, whatever the file says.
+**Check for updates** works the same way as **Share usage stats**.
 
 **First-run notice.** The first time Editmamei creates the settings file, it prints this to its
 log so the default is never a surprise:
