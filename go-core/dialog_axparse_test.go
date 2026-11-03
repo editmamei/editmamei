@@ -138,6 +138,23 @@ func TestParseProbeIndexIDsAreNotReadAsWindowsControlIDs(t *testing.T) {
 	}
 }
 
+// The three-way shape reads no IDs, so it holds where IDs are only positions.
+func TestParseProbeThreeWayPromptIsDataLoss(t *testing.T) {
+	r, ok := parseProbeOutput(axStream("dialog",
+		axField("PROGRESS", "0"),
+		axField("OTHER", "0"),
+		axField("BTN", "1", "0", "Don't Save"),
+		axField("BTN", "2", "0", "Cancel"),
+		axField("BTN", "3", "1", "Save"),
+	), 1)
+	if !ok {
+		t.Fatal("should parse")
+	}
+	if r.Stakes != StakesDataLoss {
+		t.Errorf("stakes = %q, want %q", r.Stakes, StakesDataLoss)
+	}
+}
+
 // A progress dialog on macOS has the same one-button shape as a harmless
 // notice, exactly as on Windows, and the same ordering rule has to hold.
 func TestParseProbeProgressBeatsSingleButton(t *testing.T) {

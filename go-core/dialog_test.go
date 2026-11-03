@@ -6,12 +6,12 @@ func TestCleanCaptionStripsBothAcceleratorMarkers(t *testing.T) {
 	// Photoshop uses BOTH conventions in the same product: "&Preview" on a
 	// filter dialog, "\x01Legacy" in Preferences. Captured live.
 	cases := map[string]string{
-		"&Preview":                          "Preview",
-		"P&ostScript (72 points/inch)":      "PostScript (72 points/inch)",
-		"Use \x01Legacy “New Document”":     "Use Legacy “New Document”",
-		"S\x01kip Transform when Placing":   "Skip Transform when Placing",
-		"Save && Close":                     "Save & Close", // && is a literal ampersand
-		"  spaced   out  ":                  "spaced out",
+		"&Preview":                        "Preview",
+		"P&ostScript (72 points/inch)":    "PostScript (72 points/inch)",
+		"Use \x01Legacy “New Document”":   "Use Legacy “New Document”",
+		"S\x01kip Transform when Placing": "Skip Transform when Placing",
+		"Save && Close":                   "Save & Close", // && is a literal ampersand
+		"  spaced   out  ":                "spaced out",
 	}
 	for in, want := range cases {
 		if got := cleanCaption(in); got != want {
@@ -73,6 +73,13 @@ func TestClassifyStakes(t *testing.T) {
 		{
 			name:    "three-way save prompt",
 			buttons: []Button{{ID: 6, Caption: "Save"}, {ID: 7, Caption: "Don't Save"}, {ID: 2, Caption: "Cancel"}},
+			want:    StakesDataLoss,
+		},
+		{
+			// Live capture: Photoshop 27.11 closing an unsaved document. These are
+			// not IDYES/IDNO, and "No" discards the work.
+			name:    "save prompt with Photoshop's own ids",
+			buttons: []Button{{ID: 10, Caption: "Yes"}, {ID: 11, Caption: "No"}, {ID: 12, Caption: "Cancel"}},
 			want:    StakesDataLoss,
 		},
 		{
@@ -170,13 +177,13 @@ func TestNormalizeCapsButtonCount(t *testing.T) {
 
 func TestParsePIDs(t *testing.T) {
 	tests := map[string][]int{
-		"123":          {123},
-		"123,456":      {123, 456},
-		" 456 , 123 ":  {123, 456}, // sorted, whitespace tolerated
-		"":             nil,
-		"0":            nil, // a zero pid is not a pid
-		"abc":          nil,
-		"123,abc,456":  {123, 456},
+		"123":         {123},
+		"123,456":     {123, 456},
+		" 456 , 123 ": {123, 456}, // sorted, whitespace tolerated
+		"":            nil,
+		"0":           nil, // a zero pid is not a pid
+		"abc":         nil,
+		"123,abc,456": {123, 456},
 	}
 	for in, want := range tests {
 		got := parsePIDs(in)

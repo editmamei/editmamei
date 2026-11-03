@@ -67,10 +67,10 @@ const (
 // Stakes values — the language-free routing signal. Computed from structure
 // only, never from caption text, so it behaves identically in any UI language.
 const (
-	StakesRunning     = "running"      // a progress bar: an operation is in flight
-	StakesDataLoss    = "data_loss"    // a save/discard/overwrite decision
+	StakesRunning       = "running"       // a progress bar: an operation is in flight
+	StakesDataLoss      = "data_loss"     // a save/discard/overwrite decision
 	StakesInformational = "informational" // one button, nothing else: no decision exists
-	StakesDecision    = "decision"     // anything else: a caller must choose
+	StakesDecision      = "decision"      // anything else: a caller must choose
 )
 
 // idScheme says what a Button.ID means on the backend that produced it, which
@@ -134,18 +134,16 @@ func clamp(s string, n int) string {
 // interactive control, which is bit-for-bit the informational signature — so
 // without this ordering, auto-clearing an informational dialog would cancel a
 // running operation.
-// The data-loss check is Windows-only because it is the only backend whose IDs
-// carry meaning. On macOS a save/discard prompt currently classifies as
-// `decision`, which is a COARSER answer, not a wrong one — a caller still has
-// to choose a button, it just is not warned that the choice is destructive.
-// Closing that gap needs a structural signal from real macOS dialogs, and
-// inventing one from the design would repeat the mistake the Windows spike
-// caught. Revisit against captured evidence.
+// A three-way prompt is data loss on every backend, because that check reads no
+// IDs. The Yes/No ID check stays Windows-only, as the only backend whose IDs
+// carry meaning, so a two-button overwrite prompt on macOS classifies as
+// `decision`: a COARSER answer, not a wrong one. Windows misses the same prompt
+// when Photoshop draws it with its own IDs.
 func classifyStakes(buttons []Button, otherControls int, hasProgress bool, ids idScheme) string {
 	if hasProgress {
 		return StakesRunning
 	}
-	if ids == idSchemeWin32 && impliesDataLoss(buttons) {
+	if isThreeWayPrompt(buttons, otherControls) || (ids == idSchemeWin32 && impliesDataLoss(buttons)) {
 		return StakesDataLoss
 	}
 	if len(buttons) == 1 && otherControls == 0 {
@@ -154,12 +152,19 @@ func classifyStakes(buttons []Button, otherControls int, hasProgress bool, ids i
 	return StakesDecision
 }
 
+// isThreeWayPrompt reports the shape of "Save changes?": exactly three buttons
+// and nothing else to fill in. IDs can't identify it: Photoshop 27.11 draws that
+// prompt's Yes/No/Cancel as 10/11/12, not IDYES/IDNO. Another three-button prompt
+// gets the same warning, and all that costs is asking the user first.
+func isThreeWayPrompt(buttons []Button, otherControls int) bool {
+	return len(buttons) == 3 && otherControls == 0
+}
+
 // impliesDataLoss reports whether the button SET looks like a destructive
 // choice, using standard Windows control IDs and arity only — never captions,
 // which are localized.
 //
-// IDYES/IDNO as a pair is the classic "Save changes?" / "Overwrite?" shape.
-// Three or more buttons with a yes/no among them is the three-way save prompt.
+// IDYES/IDNO as a pair is the classic "Overwrite?" shape.
 func impliesDataLoss(buttons []Button) bool {
 	const (
 		idYes = 6

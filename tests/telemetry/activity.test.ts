@@ -50,10 +50,11 @@ describe('READ_ONLY_TOOLS / KEPT_WORK_TOOLS', () => {
     }
   });
 
-  it('is exactly the original sixteen, six template/document additions, two orchestration wrappers, and seven gimp_* read-only twins (31 total)', () => {
+  it('is exactly the original sixteen, six template/document additions, two orchestration wrappers, seven gimp_* read-only twins, and ps_dialog (32 total)', () => {
     // A size pin is deliberately brittle: it forces anyone adding an entry to
-    // state why that tool does not count as an edit.
-    expect(READ_ONLY_TOOLS.size).toBe(31);
+    // state why that tool does not count as an edit. ps_dialog reads or clears a
+    // blocking dialog and never changes the document itself.
+    expect(READ_ONLY_TOOLS.size).toBe(32);
   });
 });
 
@@ -149,6 +150,7 @@ describe('classification mirror', () => {
       'ps_compare_regions',
       'ps_detect',
       'ps_detect_landmarks',
+      'ps_dialog',
       'ps_document',
       'ps_get_histogram',
       'ps_get_layer_bounds_diff',

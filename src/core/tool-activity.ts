@@ -67,6 +67,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'ps_template_recall',
   'ps_list_actions',
   'ps_report_problem',
+  'ps_dialog',
   'ps_detect',
   'ps_detect_landmarks',
   // ps_document — only op=list/activate reach telemetry as this tool name; neither
