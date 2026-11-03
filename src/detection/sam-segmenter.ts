@@ -8,9 +8,9 @@
  * The CE detectors return boxes; SAM turns a box into a clean object cutout.
  *
  * Contract (verified live, 2026-07-04; spike scratch-smoke/sam/):
- *   ENCODER  in  `input_image`      [H,W,3]      float32 raw RGB 0-255 (Acly's
- *                                                wrapper resizes/normalizes/pads
- *                                                to 1024 internally)
+ *   ENCODER  in  `input_image`      [H,W,3]      float32 raw RGB 0-255, long edge 1024
+ *                                                (`toSamFrame`; Acly's wrapper normalizes
+ *                                                and pads, but doesn't scale it up)
  *            out `image_embeddings` [1,256,64,64]
  *   DECODER  in  `image_embeddings` [1,256,64,64]
  *            in  `point_coords`     [1,N,2]      prompt points in the 1024 frame
@@ -180,10 +180,42 @@ function sameImageKey(a: ImageKey, b: ImageKey): boolean {
   );
 }
 
+/**
+ * The image at SAM's 1024 long edge, bilinear, as `ResizeLongestSide` makes it. The decoder assumes
+ * that frame whatever size was encoded, and the encoder doesn't scale a smaller image up.
+ */
+export function toSamFrame(img: DecodedImage): DecodedImage {
+  const long = Math.max(img.width, img.height);
+  if (long === SAM_INPUT) return img;
+  const scale = SAM_INPUT / long;
+  const width = Math.max(1, Math.round(img.width * scale));
+  const height = Math.max(1, Math.round(img.height * scale));
+  const data = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    const sy = Math.min(Math.max(((y + 0.5) * img.height) / height - 0.5, 0), img.height - 1);
+    const y0 = Math.floor(sy);
+    const y1 = Math.min(y0 + 1, img.height - 1);
+    const fy = sy - y0;
+    for (let x = 0; x < width; x++) {
+      const sx = Math.min(Math.max(((x + 0.5) * img.width) / width - 0.5, 0), img.width - 1);
+      const x0 = Math.floor(sx);
+      const x1 = Math.min(x0 + 1, img.width - 1);
+      const fx = sx - x0;
+      for (let c = 0; c < 4; c++) {
+        const top = img.data[(y0 * img.width + x0) * 4 + c] * (1 - fx) + img.data[(y0 * img.width + x1) * 4 + c] * fx;
+        const bottom = img.data[(y1 * img.width + x0) * 4 + c] * (1 - fx) + img.data[(y1 * img.width + x1) * 4 + c] * fx;
+        data[(y * width + x) * 4 + c] = Math.round(top * (1 - fy) + bottom * fy);
+      }
+    }
+  }
+  return { width, height, data };
+}
+
 /** The real encoder call (loads + runs the encoder session). Default `runEncoder` dep. */
 async function realRunEncoder(img: DecodedImage): Promise<Tensor> {
   const session = await loadModel(resolveModelPath(MODEL_ENCODER));
-  const input = new ort.Tensor('float32', toEncoderInput(img), [img.height, img.width, 3]);
+  const framed = toSamFrame(img);
+  const input = new ort.Tensor('float32', toEncoderInput(framed), [framed.height, framed.width, 3]);
   const out = await session.run({ input_image: input });
   return out.image_embeddings as Tensor;
 }

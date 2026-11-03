@@ -4,6 +4,7 @@ import {
   boxToPromptCoords,
   pointsToPromptCoords,
   toEncoderInput,
+  toSamFrame,
   thresholdMask,
   OnnxSamSegmenter,
   type SamMaskResult,
@@ -43,6 +44,34 @@ describe('sam-segmenter helpers', () => {
     expect(b.coords[0]).toBeCloseTo(5.12, 3);
     expect(b.coords[2]).toBeCloseTo(15.36, 3);
     expect(Array.from(b.labels)).toEqual([1, 0, -1]);
+  });
+
+  it('toSamFrame leaves a 1024 long edge alone and scales anything else to it, keeping the shape', () => {
+    const at = (width: number, height: number): DecodedImage => ({ width, height, data: new Uint8Array(width * height * 4).fill(200) });
+    const exact = at(1024, 768);
+    expect(toSamFrame(exact)).toBe(exact);
+    const up = toSamFrame(at(600, 450));
+    expect([up.width, up.height, up.data.length]).toEqual([1024, 768, 1024 * 768 * 4]);
+    expect(up.data[0]).toBe(200);
+    expect(up.data[up.data.length - 1]).toBe(200);
+    const tall = toSamFrame(at(500, 2000));
+    expect([tall.width, tall.height]).toEqual([256, 1024]);
+    const sliver = toSamFrame(at(3000, 1));
+    expect([sliver.width, sliver.height]).toEqual([1024, 1]);
+  });
+
+  it('toSamFrame interpolates, and keeps a feature where it was in the frame', () => {
+    const width = 256;
+    const height = 256;
+    const data = new Uint8Array(width * height * 4);
+    for (let y = 0; y < height; y++) for (let x = 128; x < width; x++) data[(y * width + x) * 4] = 255;
+    const out = toSamFrame({ width, height, data });
+    const red = (x: number) => out.data[(512 * out.width + x) * 4]!;
+    expect(red(500)).toBe(0);
+    expect(red(524)).toBe(255);
+    const edge = red(512);
+    expect(edge).toBeGreaterThan(0);
+    expect(edge).toBeLessThan(255);
   });
 
   it('toEncoderInput drops alpha to a tight HWC RGB float array', () => {
