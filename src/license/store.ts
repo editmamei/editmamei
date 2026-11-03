@@ -43,6 +43,12 @@ export interface LicenseRecord {
    * inert) until its next successful activate/refresh seeds one.
    */
   high_water_mark?: string;
+  /**
+   * The last check found the key valid but this device's activation gone. Optional
+   * so older license.json files still parse; cleared by the next successful
+   * validate of the activation, or by activating again.
+   */
+  activation_removed?: boolean;
 }
 
 export interface LicenseStoreOptions {
@@ -66,7 +72,8 @@ function isLicenseRecord(v: unknown): v is LicenseRecord {
     typeof r.device_hash === 'string' &&
     typeof r.display_key === 'string' &&
     typeof r.last_validated_at === 'string' &&
-    (r.high_water_mark === undefined || typeof r.high_water_mark === 'string')
+    (r.high_water_mark === undefined || typeof r.high_water_mark === 'string') &&
+    (r.activation_removed === undefined || typeof r.activation_removed === 'boolean')
   );
 }
 

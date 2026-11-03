@@ -291,6 +291,16 @@ function advisoryText(
         `then ${RESTART_TO_LOAD}. If it should be running already, send that output to ` +
         'support@editmamei.com.'
       );
+    case 'activation-removed':
+      return (
+        `${NOT_UNLOCKING} This device was removed from your license. If you removed it on ` +
+        "purpose, also clear the key from your AI client's settings if it is set there, or Pro " +
+        'will activate on this device again. Fix: if your license is on its maximum of 2 ' +
+        "devices, remove one in your account portal (the 'Manage' link in your purchase email). " +
+        `Then run \`editmamei activate YOUR-KEY\` in a terminal and ${RESTART_TO_LOAD}. If your ` +
+        `key is set in your AI client's settings, restarting the client is enough.` +
+        `${waitCaveat(facts)} ${SUPPORT_TAIL}`
+      );
     case 'expired':
       return (
         `${NOT_UNLOCKING} ${endedSentence(rec)} Fix: renew it, then run ` +

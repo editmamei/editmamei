@@ -12,7 +12,7 @@
  * tool gate (reads the license cache) and `resolveProModule` (reads the
  * installed-module pointer) see fresh state. Two best-effort phases, neither
  * throws into boot:
- *   1. Activate — register + validate the key with Polar, cache the verdict.
+ *   1. Activate — register the key with Polar, cache the verdict.
  *   2. Provision — when entitled and the Pro module isn't installed yet, fetch +
  *      verify + decrypt + install it. The CLI does this inside `editmamei
  *      activate`; without it here a Desktop buyer's key validates but the module
@@ -20,7 +20,8 @@
  * Any failure logs and returns — Pro stays gated and the server boots Community.
  *
  * Staleness-driven RE-validation deliberately does NOT live here: the
- * matching-cached-key early path below skips Polar entirely (seat safety),
+ * matching-cached-key early path below skips Polar (seat safety), unless the
+ * record is marked `activation_removed` and so holds no seat at all,
  * and index.ts calls `refreshIfStale()` (license/entitlement.ts) right
  * after this function on every boot — env key or not — so both install
  * channels share one refresh chokepoint instead of duplicating the policy.
@@ -28,7 +29,7 @@
 
 import { Logger } from '../utils/logger.js';
 import { readLicense } from './store.js';
-import { activate, isProEntitled, type LicenseOps } from './entitlement.js';
+import { activate, isProEntitled, reactivateAtBoot, type LicenseOps } from './entitlement.js';
 import { provisionModules, type ProvisionOptions } from '../delivery/provision.js';
 import { readInstalledModule, PRO_SKU } from '../delivery/store.js';
 
@@ -68,9 +69,12 @@ export async function maybeActivateFromEnv(
   // Polar activations stack (they don't dedupe by device), so re-activating an
   // already-cached key would consume a second seat. A cached key still falls
   // through to provisioning below (the unlock may have validated on an earlier
-  // boot that never managed to download the module).
+  // boot that never managed to download the module). A removed activation holds no
+  // seat, and this install has no terminal to re-activate from, so it asks again.
   const cached = readLicense(ops);
-  if (!cached || cached.key !== key) {
+  if (cached?.key === key && cached.activation_removed === true) {
+    await reactivateAtBoot(key, ops);
+  } else if (!cached || cached.key !== key) {
     try {
       await activate(key, ops);
       logger.info('Activated Pro from EDITMAMEI_LICENSE_KEY.');
