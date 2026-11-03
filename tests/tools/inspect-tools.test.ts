@@ -42,7 +42,9 @@ describe('createInspectTools', () => {
 
   it('names `what` when it is missing, and never suggests another parameter', async () => {
     const tools = createInspectTools(conn.asConnection(), snippetClient);
-    await expect(callTool(tools, 'ps_inspect', {})).rejects.toThrow('Missing required argument: what');
+    await expect(callTool(tools, 'ps_inspect', {})).rejects.toThrow(
+      'Missing required argument: what'
+    );
     const result = await callTool(tools, 'ps_inspect', { what: 'bogus' });
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain('`what`');

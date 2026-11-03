@@ -128,7 +128,10 @@ async function inspect(
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
   // Only the discriminator here: each delegate still validates its own params.
-  validateArgs({ type: 'object', properties: { what: { type: 'string' } }, required: ['what'] }, rawArgs);
+  validateArgs(
+    { type: 'object', properties: { what: { type: 'string' } }, required: ['what'] },
+    rawArgs
+  );
   const what = rawArgs.what;
   const { what: _omit, ...rest } = rawArgs;
   switch (what) {

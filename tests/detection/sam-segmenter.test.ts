@@ -48,7 +48,11 @@ describe('sam-segmenter helpers', () => {
   });
 
   it('toSamFrame leaves a 1024 long edge alone and scales anything else to it, keeping the shape', () => {
-    const at = (width: number, height: number): DecodedImage => ({ width, height, data: new Uint8Array(width * height * 4).fill(200) });
+    const at = (width: number, height: number): DecodedImage => ({
+      width,
+      height,
+      data: new Uint8Array(width * height * 4).fill(200),
+    });
     const exact = at(1024, 768);
     expect(toSamFrame(exact)).toBe(exact);
     const up = toSamFrame(at(600, 450));
@@ -65,7 +69,8 @@ describe('sam-segmenter helpers', () => {
     const width = 256;
     const height = 256;
     const data = new Uint8Array(width * height * 4);
-    for (let y = 0; y < height; y++) for (let x = 128; x < width; x++) data[(y * width + x) * 4] = 255;
+    for (let y = 0; y < height; y++)
+      for (let x = 128; x < width; x++) data[(y * width + x) * 4] = 255;
     const out = toSamFrame({ width, height, data });
     const red = (x: number) => out.data[(512 * out.width + x) * 4]!;
     expect(red(500)).toBe(0);
@@ -76,8 +81,17 @@ describe('sam-segmenter helpers', () => {
   });
 
   it('the encoder always receives the 1024 frame, whatever size the image is', () => {
-    const at = (width: number, height: number): DecodedImage => ({ width, height, data: new Uint8Array(width * height * 4) });
-    for (const [width, height] of [[600, 450], [800, 600], [1024, 768], [2048, 1536]] as const) {
+    const at = (width: number, height: number): DecodedImage => ({
+      width,
+      height,
+      data: new Uint8Array(width * height * 4),
+    });
+    for (const [width, height] of [
+      [600, 450],
+      [800, 600],
+      [1024, 768],
+      [2048, 1536],
+    ] as const) {
       const { data, dims } = encoderInputOf(at(width, height));
       expect(dims).toEqual([768, 1024, 3]);
       expect(data.length).toBe(768 * 1024 * 3);

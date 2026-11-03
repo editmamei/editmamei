@@ -89,7 +89,10 @@ async function transformCanvas(
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
   // Only the discriminator here: each delegate still validates its own params.
-  validateArgs({ type: 'object', properties: { op: { type: 'string' } }, required: ['op'] }, rawArgs);
+  validateArgs(
+    { type: 'object', properties: { op: { type: 'string' } }, required: ['op'] },
+    rawArgs
+  );
   const op = rawArgs.op;
   const { op: _omit, ...rest } = rawArgs;
   switch (op) {

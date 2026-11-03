@@ -202,8 +202,12 @@ export function toSamFrame(img: DecodedImage): DecodedImage {
       const x1 = Math.min(x0 + 1, img.width - 1);
       const fx = sx - x0;
       for (let c = 0; c < 4; c++) {
-        const top = img.data[(y0 * img.width + x0) * 4 + c] * (1 - fx) + img.data[(y0 * img.width + x1) * 4 + c] * fx;
-        const bottom = img.data[(y1 * img.width + x0) * 4 + c] * (1 - fx) + img.data[(y1 * img.width + x1) * 4 + c] * fx;
+        const top =
+          img.data[(y0 * img.width + x0) * 4 + c] * (1 - fx) +
+          img.data[(y0 * img.width + x1) * 4 + c] * fx;
+        const bottom =
+          img.data[(y1 * img.width + x0) * 4 + c] * (1 - fx) +
+          img.data[(y1 * img.width + x1) * 4 + c] * fx;
         data[(y * width + x) * 4 + c] = Math.round(top * (1 - fy) + bottom * fy);
       }
     }
@@ -212,7 +216,10 @@ export function toSamFrame(img: DecodedImage): DecodedImage {
 }
 
 /** What the encoder receives for `img`: its pixels in SAM's frame, and their [H,W,3] shape. */
-export function encoderInputOf(img: DecodedImage): { data: Float32Array; dims: [number, number, 3] } {
+export function encoderInputOf(img: DecodedImage): {
+  data: Float32Array;
+  dims: [number, number, 3];
+} {
   const framed = toSamFrame(img);
   return { data: toEncoderInput(framed), dims: [framed.height, framed.width, 3] };
 }
