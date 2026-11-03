@@ -14,13 +14,14 @@ import {
   copyModels,
   copyProModels,
   copyGimpBridge,
+  pruneOnnxWasm,
 } from '../../scripts/lib/build-common.ts';
 import {
   coreBinaryName,
   resolveCoreBinaryPath,
   resolveProBinaryPath,
 } from '../../src/api/snippet-client.ts';
-import { buildMcpbManifest, stageMcpb, pruneOnnxWasm } from '../../scripts/build-mcpb.ts';
+import { buildMcpbManifest, stageMcpb } from '../../scripts/build-mcpb.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');

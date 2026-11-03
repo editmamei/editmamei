@@ -51,8 +51,8 @@ const textSchema: JsonSchemaObject = {
       description:
         'create: a new text layer at the top of the stack with `text` at `x`/`y` (default ' +
         '100,100) and `font_size` (default 24), optionally with font_name, red/green/blue and ' +
-        'alignment. set_content: replace the text with `text`. set_font: set `font_name` ' +
-        '(optionally `font_size`). set_color: set red/green/blue. set_alignment: set ' +
+        'alignment. set_content: replace the text with `text`. set_font: set `font_name`, ' +
+        '`font_size`, or both (omit font_name to resize in the current font). set_color: set red/green/blue. set_alignment: set ' +
         '`alignment`. set_box: put the layer in a fixed `box` (re-wrapping its text). The ' +
         'set_* ops act on the text layer named by `layer_id` or `layer`.',
     },

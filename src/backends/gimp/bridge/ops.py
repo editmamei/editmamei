@@ -817,8 +817,11 @@ def op_open(args):
             # 'indexed'", but nothing propagates to Python), so a bare call here would silently
             # report `ok: true` with the ORIGINAL precision still in effect, misleading the
             # caller into thinking their promotion applied when it didn't. Checking the return
-            # value turns that into a real, catchable failure.
-            if not img.convert_precision(_PRECISION_ENUM[precision]):
+            # value turns that into a real, catchable failure. GIMP also returns `False` when the
+            # image already has the target precision (a 16-bit TIFF opened at '16'), and that is
+            # already the outcome asked for, so it is not attempted.
+            target = _PRECISION_ENUM[precision]
+            if img.get_precision() != target and not img.convert_precision(target):
                 raise lib.OpError(
                     'gimp_op_failed',
                     "precision promotion to %r failed for this image (base_type=%s); GIMP "
@@ -2254,22 +2257,40 @@ def _proxy_render(img, max_px):
     return dup, unmirrored
 
 
+# Filters whose geometry is a fraction of their layer's own extent (`lib.build_vignette_params`):
+# a crop before they render would re-centre them on the cropped area.
+_EXTENT_RELATIVE_OPERATIONS = frozenset({'gegl:vignette'})
+
+
 def _region_full_res(img, region):
-    """Full-res duplicate, cropped to `region`, flattened. Caller deletes it. A plain
+    """Full-res duplicate, cropped to `region` and flattened. Caller deletes it. A plain
     `Image.duplicate()` copies each layer's real live DrawableFilters (not just pixels), so
-    rendering this way is exact -- the filter runs at native resolution over the cropped area
-    BEFORE any later downscale, unlike the preview proxy (which shrinks the base first and then
-    has to approximate a spatial filter's radius, see `_mirror_filters`).
+    rendering this way is exact -- the filter runs at native resolution BEFORE any later
+    downscale, unlike the preview proxy (which shrinks the base first and then has to approximate
+    a spatial filter's radius, see `_mirror_filters`).
+
+    The crop comes first, because a full-size flatten per region is far slower with heavy filters.
+    An image carrying a filter in `_EXTENT_RELATIVE_OPERATIONS` is the exception: it is flattened
+    at full size and cropped after, so the filter lands where the whole image shows it.
 
     `region` is validated against `img`'s FULL-RES bounds before anything is duplicated (partly
     or fully outside raises `invalid_argument` rather than silently clamping to whatever sliver
     overlaps); the duplicate itself is torn down on ANY failure after that, not just the size
     check, so a crop/flatten error can never leak an orphaned image."""
     x, y, w, h = lib.validate_region(region, img.get_width(), img.get_height())
+    extent_relative = any(
+        f.get_operation_name() in _EXTENT_RELATIVE_OPERATIONS
+        for l in _all_layers(img)
+        for f in l.get_filters()
+    )
     dup = img.duplicate()
     try:
-        dup.crop(w, h, x, y)
-        layer = dup.flatten()
+        if extent_relative:
+            layer = dup.flatten()
+            dup.crop(w, h, x, y)
+        else:
+            dup.crop(w, h, x, y)
+            layer = dup.flatten()
     except Exception:
         dup.delete()
         raise
@@ -4158,20 +4179,25 @@ def _op_text_set_content(img, args):
 
 
 def _op_text_set_font(img, args):
-    font_name = lib.require(args, 'font_name')
+    font_name = args.get('font_name')
     size_pt = lib.validate_font_size_pt(args['font_size']) if args.get('font_size') is not None else None
-    font = _resolved_font(_font_list(), font_name)
+    if font_name is None and size_pt is None:
+        raise ValueError('set_font needs font_name, font_size, or both')
+    # No font_name: the layer keeps its font and only the size changes.
+    font = _resolved_font(_font_list(), font_name) if font_name is not None else None
     new_size_px = lib.pt_to_px(size_pt, _image_ppi(img)) if size_pt is not None else None
 
     def precheck_fn(layer):
         if _text_enforce_box(layer):
             return
         size_px = new_size_px if new_size_px is not None else _text_size_px(layer)
-        _check_estimated_text_size(layer.get_text(), font, size_px, img, layer)
+        _check_estimated_text_size(layer.get_text(), font or layer.get_font(), size_px, img, layer)
 
     def apply_fn(layer):
+        if font is None:
+            layer.set_font_size(new_size_px, Gimp.Unit.pixel())
         # Shrinking: size first, so the new font never renders at the larger old size.
-        if new_size_px is not None and new_size_px < _text_size_px(layer):
+        elif new_size_px is not None and new_size_px < _text_size_px(layer):
             layer.set_font_size(new_size_px, Gimp.Unit.pixel())
             layer.set_font(font)
         else:

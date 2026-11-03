@@ -10,6 +10,64 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.9.5] — 2026-11-03
+
+### Fixed
+
+- **AI object masks line up on images of any size.** Images are scaled to the size the model expects
+  before encoding, so masks no longer drift on images whose long side isn't 1024 px.
+- **Tools refuse a call that leaves out a required argument, and name it.** The check now runs before
+  any tool starts.
+  - `ps_inspect`, `ps_guides` and `ps_transform_canvas` also name their missing argument correctly.
+- **Tool descriptions say what the tools do.** Your AI no longer gets wrong directions from them.
+  - `exp_gamma` on `ps_add_adjustment_layer` had its direction reversed: above 1 brightens midtones,
+    below 1 darkens them.
+  - `bw_tint_hue` accepts its own default of 220.
+  - `ps_detect` and `ps_read_scene` now say that `annotate:true` returns a JPEG to your AI client.
+- **Warnings reach AI apps that read only a tool's structured result.** Warnings and next steps from
+  the GIMP preview, histogram, compare and transform tools now appear there, along with the notice
+  when an image is withheld.
+- **GIMP opens a file already at the requested precision, and vignettes stay in place in region
+  renders.**
+
+### Security
+
+- **Script, Action and preset files are refused where an image is expected.** This covers opening and
+  placing images, and map and sky files.
+- **Windows system tools start from System32.** `cscript`, `tasklist`, `reg`, `taskkill` and `where`
+  no longer resolve through the search path.
+- **The privacy doc says that diagnostic error text can name a layer or repeat a value.**
+
+## [1.9.3] — 2026-10-25
+
+### Fixed
+
+- **Text in GIMP can change size without naming a font.** Asking for a new size alone keeps the
+  layer's current font instead of being refused.
+  - `gimp_text` with `op: "set_font"` accepts `font_size` on its own. With neither a font nor a
+    size, it says so.
+
+### Security
+
+- **Every install gets exactly the dependencies the release was tested with.** The npm package now
+  carries its own dependency tree, so installing it fetches nothing else from the registry.
+  - Applies to `npx editmamei`, global installs, and the Claude plugin. The download is larger,
+    about 35 MB.
+  - Release builds check every dependency's registry signature before packaging it.
+
+## [1.9.2] — 2026-10-24
+
+### Changed
+
+- **Listed in the MCP Registry as `io.github.editmamei/editmamei-photoshop-mcp`.** The
+  registry's search matches server names only, so the new name makes Editmamei show up when
+  people search for Photoshop. The npm package name and existing setups are unchanged.
+
+### Security
+
+- **Dependencies updated for published advisories.** Picks up fixed releases of zod, body-parser,
+  hono, fast-uri and ip-address, which address denial-of-service and URL-parsing issues.
+
 ## [1.9.1] — 2026-10-21
 
 ### Fixed

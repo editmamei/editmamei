@@ -14,6 +14,7 @@ import {
   readRender,
   defaultPreviewsAllowed,
   type GimpPreviewDeps,
+  withWarning,
 } from './gimp-shared.js';
 import { regionStatsLines } from './gimp-result-text.js';
 
@@ -126,7 +127,13 @@ async function gimpGetPreview(
             : `privacy.send_previews_to_llm is false — image not returned to the model; ${fileNote}.`) +
           unmirroredNote,
       });
-      return { content, structuredContent: { ...result, path: published ? latestName : null } };
+      return {
+        content,
+        structuredContent: withWarning(
+          { ...result, path: published ? latestName : null },
+          unmirroredNote
+        ),
+      };
     } finally {
       await rm(renderPath, { force: true }).catch(() => undefined);
     }
@@ -210,7 +217,7 @@ async function gimpGetHistogram(
           text: `Histogram (${result.exact ? 'exact' : 'proxy'}${result.mask ? `, mask ${result.mask}` : ''}, ${result.pixels.toLocaleString()} px): ${summary}${unmirroredNote}`,
         },
       ],
-      structuredContent: result as unknown as Record<string, unknown>,
+      structuredContent: withWarning(result as unknown as Record<string, unknown>, unmirroredNote),
     };
   } catch (error) {
     return toolGimpErrorResult('Error reading GIMP histogram', error);
@@ -361,7 +368,13 @@ async function gimpCompare(
             : '') +
           unmirroredNote,
       });
-      return { content, structuredContent: reported as unknown as Record<string, unknown> };
+      return {
+        content,
+        structuredContent: withWarning(
+          reported as unknown as Record<string, unknown>,
+          unmirroredNote
+        ),
+      };
     } finally {
       if (beforePath) await rm(beforePath, { force: true }).catch(() => undefined);
       if (afterPath) await rm(afterPath, { force: true }).catch(() => undefined);

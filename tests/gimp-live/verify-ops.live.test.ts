@@ -78,6 +78,28 @@ describe.skipIf(!install)('verify ops: preview / histogram / compare', () => {
     }
   });
 
+  it('precision=16 on a file that is already 16-bit opens it unchanged', async () => {
+    const opened = await session.call<{ image: number }>('open', {
+      path: rampPath,
+      precision: '16',
+    });
+    const path = join(workDir, 'already-16.tif');
+    try {
+      await session.call('export', { image: opened.image, path, bit_depth: 16 });
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+    const reopened = await session.call<{ image: number; precision: string }>('open', {
+      path,
+      precision: '16',
+    });
+    try {
+      expect(reopened.precision).toBe('u16-non-linear');
+    } finally {
+      await session.call('close', { image: reopened.image });
+    }
+  });
+
   it('precision promotion (32-bit float): open reports the promoted precision', async () => {
     const opened = await session.call<{ image: number; precision: string }>('open', {
       path: rampPath,
@@ -273,6 +295,34 @@ describe.skipIf(!install)('verify ops: preview / histogram / compare', () => {
       });
       // Column x near 0 is near-black on this ramp; column x near WIDTH is near-white.
       expect(result.region_a.luminance.mean).toBeLessThan(result.region_b.luminance.mean);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('compare regions keeps a vignette where the whole image shows it, not re-centred on the crop', async () => {
+    const opened = await session.call<{ image: number }>('create_document', {
+      width: 800,
+      height: 800,
+      fill: 'white',
+    });
+    try {
+      await session.call('effect', {
+        image: opened.image,
+        type: 'vignette',
+        radius: 0.8,
+        softness: 0.5,
+      });
+      const result = await session.call<{
+        region_a: { luminance: { mean: number } };
+        region_b: { luminance: { mean: number } };
+      }>('compare', {
+        image: opened.image,
+        mode: 'regions',
+        region_a: { x: 380, y: 380, width: 40, height: 40 },
+        region_b: { x: 0, y: 0, width: 40, height: 40 },
+      });
+      expect(result.region_b.luminance.mean).toBeLessThan(result.region_a.luminance.mean - 20);
     } finally {
       await session.call('close', { image: opened.image });
     }

@@ -5,6 +5,7 @@ import {
   looksLikePath,
   PathArgumentError,
   recordOutputPath,
+  requireLocalImagePath,
   requireLocalPath,
   resetOutputPathsForTests,
 } from '@editmamei/utils/local-path.ts';
@@ -108,6 +109,48 @@ describe('requireLocalPath', () => {
     expect(requireLocalPath('output_path', '/out/a:b/CON.jpg', { platform: 'darwin' })).toBe(
       '/out/a:b/CON.jpg'
     );
+  });
+});
+
+describe('requireLocalImagePath', () => {
+  it('returns a local image or document path unchanged', () => {
+    for (const p of ['C:/in/x.jpg', 'C:/in/x.PSD', 'C:/in/x.tif', 'C:/in/x.cr2', 'C:/in/x.pdf']) {
+      expect(requireLocalImagePath('file_path', p, { platform: 'win32' })).toBe(p);
+    }
+  });
+
+  it.each([
+    'x.jsx',
+    'x.JSX',
+    'x.jsxbin',
+    'x.jsxinc',
+    'x.js',
+    'x.psjs',
+    'x.atn',
+    'x.abr',
+    'x.pat',
+    'x.asl',
+    'x.grd',
+    'x.tpl',
+  ])('refuses a script, Action or preset file Photoshop would run or load (%s)', (name) => {
+    expect(() =>
+      requireLocalImagePath('file_path', `C:/Users/me/Downloads/${name}`, { platform: 'win32' })
+    ).toThrow(/"file_path" is a script, Action or preset file, not an image/);
+  });
+
+  it.each(['x.jsx.', 'x.jsx ', 'x.atn. .'])(
+    'refuses a trailing dot or space Windows would drop on open (%j)',
+    (name) => {
+      expect(() =>
+        requireLocalImagePath('file_path', `C:/Users/me/Downloads/${name}`, { platform: 'win32' })
+      ).toThrow(/not an image/);
+    }
+  );
+
+  it('still applies every requireLocalPath rule first', () => {
+    expect(() =>
+      requireLocalImagePath('sky_file', '\\\\server\\s\\sky.jpg', { platform: 'win32' })
+    ).toThrow(/"sky_file" must be a file on this computer's own drives/);
   });
 });
 

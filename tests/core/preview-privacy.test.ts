@@ -36,7 +36,8 @@ describe('preview privacy helpers', () => {
     expect(out.content[0]).toEqual(text);
     const note = out.content[out.content.length - 1] as { type: string; text: string };
     expect(note.text).toMatch(/^2 images were withheld because the user's privacy/);
-    expect(out.structuredContent).toEqual({ bytes: 4 });
+    expect(out.structuredContent).toMatchObject({ bytes: 4 });
+    expect(out.structuredContent?.images_withheld).toContain('2 images were withheld');
     expect(JSON.stringify(out)).not.toContain('SECRETPIXELS');
   });
 

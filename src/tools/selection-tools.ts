@@ -484,7 +484,7 @@ const selectionPreviewSchema: JsonSchemaObject = {
       enum: ['overlay', 'mask', 'both'],
       default: 'overlay',
       description:
-        "Which rendered image(s) to return inline. 'overlay' (default): a 50% red wash over the selected area (Quick Mask-style — most intuitive). 'mask': a B/W mask (black=selected, white=not) instead. 'both': the overlay followed by the mask, for when you need to compare them side by side. selection_info is returned regardless of this choice.",
+        "Which rendered image(s) to return inline. 'overlay' (default): a 50% red wash over the selected area (most intuitive). 'mask': a B/W mask (black=selected, white=not) instead. 'both': the overlay followed by the mask, for when you need to compare them side by side. selection_info is returned regardless of this choice.",
     },
   },
 };
@@ -860,7 +860,7 @@ export function createSelectionTools(
       tool: {
         name: 'ps_get_selection_preview',
         description:
-          "Render an inline JPEG so the agent can visually verify what is currently selected: by default a red-wash OVERLAY (50% red over the selected area, Quick Mask-style — most intuitive); pass `image:'mask'` for a B/W MASK (black = selected, white = not) instead, or `image:'both'` for both. selection_info is always returned regardless of `image`. Heavier than the selection_info bundle alone (~2-4s) — call this when the stats look off or before committing a mask. Does NOT modify the source document.",
+          "Render an inline JPEG so the agent can visually verify what is currently selected: by default a red-wash OVERLAY (50% red over the selected area, most intuitive); pass `image:'mask'` for a B/W MASK (black = selected, white = not) instead, or `image:'both'` for both. selection_info is always returned regardless of `image`. Heavier than the selection_info bundle alone (~2-4s) — call this when the stats look off or before committing a mask. Does NOT modify the source document.",
         inputSchema: selectionPreviewSchema,
         outputSchema: {
           type: 'object',
@@ -884,7 +884,7 @@ export function createSelectionTools(
       tool: {
         name: 'ps_layer_mask',
         description:
-          'Manage the active layer\'s mask — choose with `op`. `create`: add a layer mask; if a selection is active it reveals the selection and hides the rest (the one-call "mask the placed image to the frame opening" — make the selection first, then create); with no selection, a reveal-all mask; adjustment layers load the current selection into their built-in mask. `delete`: remove the mask (layer pixels preserved). `apply`: DESTRUCTIVE — permanently bake the mask into the pixels (outside-mask pixels lost). `gradient`: draw a linear fade into the mask (fade_to names the side that ends hidden; start/end place the fade; auto-creates the mask; replaces existing mask content and clears any active selection first) — the standard fade for reflections, sky blends, and soft edge falloff. Verify with ps_get_preview. Prefer keeping masks non-destructive unless flattening for export. **Don\'t write `Mk Chnl At=Msk` or `Grdn` AM scripts in execute_script — this tool already does both.**',
+          'Manage the active layer\'s mask — choose with `op`. `create`: add a layer mask; if a selection is active it reveals the selection and hides the rest (the one-call "mask the placed image to the frame opening" — make the selection first, then create); with no selection, a reveal-all mask; adjustment layers load the current selection into their built-in mask. `delete`: remove the mask (layer pixels preserved). `apply`: DESTRUCTIVE — permanently bake the mask into the pixels (outside-mask pixels lost). `gradient`: draw a linear fade into the mask (fade_to names the side that ends hidden; start/end place the fade; auto-creates the mask; replaces existing mask content and clears any active selection first) — the standard fade for reflections, sky blends, and soft edge falloff. Verify with ps_get_preview. Prefer keeping masks non-destructive unless flattening for export. **Prefer this tool over a hand-written mask script; it already handles masks and gradients.**',
         inputSchema: LAYER_MASK_INPUT_SCHEMA,
         outputSchema: {
           type: 'object',

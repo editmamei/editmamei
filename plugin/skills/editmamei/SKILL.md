@@ -19,9 +19,11 @@ Before any photo-editing work, **invoke `ps_ping` as your first tool call.** Do 
 - **Error indicating the tool doesn't exist / isn't registered** (Claude's runtime reports "tool not available" or similar) → THEN report the install instructions below.
 - **Any other error** (Photoshop not running, can't detect install, etc.) → relay the actual error to the user verbatim. Do not generalize to "MCP isn't connected" when the MCP server is what reported the error.
 
-If and only if the ping fails because the tool itself is not registered, tell the user:
+**Exception: Editmamei Connect.** If `ps_ping` isn't registered but Connect's `overview` and `open_photo` tools are, the user is on the hosted service. Call `overview` and work from what it says. This skill's `ps_*` and `gimp_*` steps don't apply there, and neither do the install instructions below.
 
-> "I have the Editmamei skill loaded but the MCP server isn't connected. Editmamei runs on your own computer, next to Photoshop or GIMP, so it works in Claude Desktop, Claude Code, and Cowork sessions on your computer, but not in claude.ai on the web or on mobile.
+Otherwise, if the ping fails because the tool itself is not registered, tell the user:
+
+> "I have the Editmamei skill loaded but the MCP server isn't connected. Editmamei runs on your own computer, next to Photoshop or GIMP, so it works in Claude Desktop, Claude Code, and Cowork sessions on your computer. For claude.ai on the web or on mobile, use Editmamei Connect, the hosted version: add https://connect.editmamei.com/mcp as a connector.
 >
 > - **Claude Desktop:** install it from a terminal, then restart Claude Desktop:
 >

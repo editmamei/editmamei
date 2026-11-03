@@ -273,7 +273,7 @@ const canvasSchema: JsonSchemaObject = {
         'pre-existing transparency in those layers. On a GRAYSCALE image a hex color renders as ' +
         'its LUMINANCE (a weighted gray, not one channel picked out). transparent: genuinely ' +
         'transparent only in a live, layered document (e.g. saved via gimp_save_xcf) — ' +
-        'gimp_export and gimp_layer op=flatten both flatten first, which fills any transparent ' +
+        'gimp_export (unless keep_alpha or a layered psd) and gimp_layer op=flatten flatten first, which fills any transparent ' +
         "area with GIMP's ambient background color (white, unchanged by this tool) and drops " +
         'alpha, not with transparency. A non-transparent fill on an INDEXED image is REFUSED ' +
         'outright, before the canvas resizes at all — indexed has no backdrop layer type to add.',

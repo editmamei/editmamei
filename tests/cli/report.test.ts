@@ -16,7 +16,7 @@ describe('runReport (editmamei report)', () => {
     expect(write).toHaveBeenCalledOnce();
     expect(text).toContain('/dl/editmamei-diagnostics-x.json');
     expect(text).toMatch(/github\.com/);
-    expect(text).toMatch(/no tool arguments/i);
+    expect(text).toMatch(/no tool arguments outside error messages/i);
   });
 
   it('works with no note', async () => {
