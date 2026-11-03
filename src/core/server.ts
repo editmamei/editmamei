@@ -17,6 +17,7 @@ import {
   NO_ERROR_TEXT_CLASS,
 } from '../utils/session-log.js';
 import { loadSettings, applyDesktopToggles } from './settings.js';
+import { clientSupportsForm, runConsentPrompt } from './consent.js';
 import { TelemetryClient } from '../telemetry/client.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
 import { callFeatures } from '../telemetry/script-operations.js';
@@ -102,9 +103,11 @@ export const FIRST_RUN_DISCLOSURE =
   'First run: Editmamei collects content-free usage telemetry (tool name, ' +
   'success, duration, bytes returned, version/edition/OS/PS-version, install channel, ' +
   'which AI client connected, Node/OS/architecture versions, and per-session counts like ' +
-  'edits made and retries) to find what breaks. It never sends image content, file paths, ' +
-  'or tool arguments. The only identifier is a random install ID. Opt out anytime: ' +
-  '`editmamei config set telemetry.usage false` (or edit ~/.editmamei/settings.json). ' +
+  'edits made and retries) to find what breaks. It also sends the names of editing features ' +
+  'used, from a published list. It never sends image content, file paths, or anything you or ' +
+  'your assistant typed. The only identifier is a random install ID. Opt out anytime: ' +
+  '`editmamei config set telemetry.usage false` (or edit ~/.editmamei/settings.json), or ' +
+  '`editmamei config set telemetry.features false` for feature names alone. ' +
   'Opt in to sanitized diagnostics: `editmamei config set telemetry.diagnostics true`.';
 
 /**
@@ -673,6 +676,16 @@ export class EditmameiServer {
         capSampling: caps?.sampling != null,
         capElicitation: caps?.elicitation != null,
         capRoots: caps?.roots != null,
+      });
+      // Not awaited: no tool call waits on a person answering. Never rejects.
+      void runConsentPrompt({
+        settings: effectiveSettings,
+        degraded: degraded === true,
+        telemetryActive: this.telemetry.isActive(),
+        supportsForm: clientSupportsForm(caps?.elicitation),
+        elicit: (params, options) => this.server.elicitInput(params, options),
+        report: (info) =>
+          this.telemetry.recordConsentResult({ clientName: clientInfo?.name, ...info }),
       });
     };
 
