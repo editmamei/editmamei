@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -253,6 +253,18 @@ describe('TelemetryClient feature details', () => {
         result: 'declined',
         via: 'elicitation',
       });
+    });
+
+    it('goes out straight away, or to the outbox if the send fails', async () => {
+      const live = makeClient(settings());
+      live.client.recordConsentResult(info);
+      await vi.waitFor(() => expect(live.sent).toHaveLength(1));
+
+      const down = makeClient(settings(), { fail: true });
+      down.client.recordConsentResult(info);
+      await vi.waitFor(() =>
+        expect(readOutbox({ dir: down.dir }).map((e) => e.type)).toEqual(['consent_result'])
+      );
     });
 
     it('sends nothing with usage stats off', async () => {

@@ -54,6 +54,7 @@ export interface DesktopTogglesSeen {
   usage?: boolean;
   diagnostics?: boolean;
   update_check?: boolean;
+  features?: boolean;
 }
 
 /** How a consent answer was given, and when. Raising a question's version asks again. */
@@ -63,6 +64,8 @@ export interface ConsentRecord {
   via: 'elicitation' | 'install' | 'cli' | 'desktop';
   /** `YYYY-MM-DD`. */
   date: string;
+  /** The telemetry server has been told about this answer. */
+  reported?: boolean;
 }
 
 /** Which editor(s) `detectEditors()` + boot registration should honor. `'auto'` (default) is the detection-driven matrix. */
@@ -93,6 +96,8 @@ export interface Settings {
   desktop_toggles?: DesktopTogglesSeen;
   /** Absent until a question has an answer. */
   consent?: Partial<Record<ConsentQuestionId, ConsentRecord>>;
+  /** How many times the current version of a question was closed without an answer. */
+  consent_dismissals?: Partial<Record<ConsentQuestionId, { version: number; count: number }>>;
 }
 
 export interface LoadSettingsOptions {
@@ -207,6 +212,7 @@ function coerce(raw: unknown, installId: string): Settings {
   const a = (r.automation ?? {}) as Record<string, unknown>;
   const desktopToggles = coerceDesktopToggles(r.desktop_toggles);
   const consent = coerceConsent(r.consent);
+  const dismissals = coerceDismissals(r.consent_dismissals);
   return {
     telemetry: {
       usage: typeof t.usage === 'boolean' ? t.usage : base.telemetry.usage,
@@ -240,14 +246,23 @@ function coerce(raw: unknown, installId: string): Settings {
     gimp_path: coerceGimpPath(r.gimp_path),
     ...(desktopToggles ? { desktop_toggles: desktopToggles } : {}),
     ...(consent ? { consent } : {}),
+    ...(dismissals ? { consent_dismissals: dismissals } : {}),
   };
+}
+
+function coerceDismissals(raw: unknown): Settings['consent_dismissals'] {
+  const features = (raw as { features?: unknown } | null | undefined)?.features;
+  if (typeof features !== 'object' || features === null) return undefined;
+  const { version, count } = features as Record<string, unknown>;
+  if (!Number.isInteger(version) || !Number.isInteger(count)) return undefined;
+  return { features: { version: version as number, count: count as number } };
 }
 
 /** Keep only well-formed records. Anything else reads as not answered, so it is asked again. */
 function coerceConsent(raw: unknown): Settings['consent'] {
   const features = (raw as { features?: unknown } | null | undefined)?.features;
   if (typeof features !== 'object' || features === null) return undefined;
-  const { version, answer, via, date } = features as Record<string, unknown>;
+  const { version, answer, via, date, reported } = features as Record<string, unknown>;
   if (
     typeof version !== 'number' ||
     !Number.isInteger(version) ||
@@ -266,6 +281,7 @@ function coerceConsent(raw: unknown): Settings['consent'] {
       answer: answer as ConsentRecord['answer'],
       via: via as ConsentRecord['via'],
       date,
+      ...(reported === true ? { reported: true } : {}),
     },
   };
 }
@@ -278,6 +294,7 @@ function coerceDesktopToggles(raw: unknown): DesktopTogglesSeen | undefined {
   if (typeof r.usage === 'boolean') out.usage = r.usage;
   if (typeof r.diagnostics === 'boolean') out.diagnostics = r.diagnostics;
   if (typeof r.update_check === 'boolean') out.update_check = r.update_check;
+  if (typeof r.features === 'boolean') out.features = r.features;
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -373,8 +390,8 @@ function resolveDesktopToggle(
 /**
  * Apply the Claude Desktop extension's toggles at boot. Desktop has no terminal, so the `.mcpb`
  * manifest exposes them as `user_config` booleans passed as `EDITMAMEI_TELEMETRY_USAGE`,
- * `EDITMAMEI_TELEMETRY_DIAGNOSTICS` and `EDITMAMEI_UPDATE_CHECK`, a concrete value on every
- * launch. A change made in Desktop is written to settings.json; an unchanged toggle leaves the
+ * `EDITMAMEI_TELEMETRY_DIAGNOSTICS`, `EDITMAMEI_TELEMETRY_FEATURES` and `EDITMAMEI_UPDATE_CHECK`,
+ * a concrete value on every launch. A change made in Desktop is written to settings.json; an unchanged toggle leaves the
  * stored setting alone, so a choice made another way survives. Off still wins for this process.
  * With none of the variables set (the npm / CLI path), returns `settings` untouched. A failed
  * write is logged and this launch still honors the result. Pass `persist: false` when `settings`
@@ -388,10 +405,12 @@ export function applyDesktopToggles(
   const usageToggle = parseBoolEnv(env.EDITMAMEI_TELEMETRY_USAGE);
   const diagnosticsToggle = parseBoolEnv(env.EDITMAMEI_TELEMETRY_DIAGNOSTICS);
   const updateCheckToggle = parseBoolEnv(env.EDITMAMEI_UPDATE_CHECK);
+  const featuresToggle = parseBoolEnv(env.EDITMAMEI_TELEMETRY_FEATURES);
   if (
     usageToggle === undefined &&
     diagnosticsToggle === undefined &&
-    updateCheckToggle === undefined
+    updateCheckToggle === undefined &&
+    featuresToggle === undefined
   ) {
     return settings;
   }
@@ -416,6 +435,7 @@ export function applyDesktopToggles(
     ...(usageToggle !== undefined ? { usage: usageToggle } : {}),
     ...(diagnosticsToggle !== undefined ? { diagnostics: diagnosticsToggle } : {}),
     ...(updateCheckToggle !== undefined ? { update_check: updateCheckToggle } : {}),
+    ...(featuresToggle !== undefined ? { features: featuresToggle } : {}),
   };
   const stored: Settings = {
     ...settings,
@@ -423,11 +443,20 @@ export function applyDesktopToggles(
     update_check: updateCheck.stored,
     desktop_toggles: nextSeen,
   };
+  // Unlike the others this setting can be unanswered, and a toggle sitting at its on default is
+  // not an answer. Only an off at first sight or a move counts, and each is recorded as a choice.
+  if (featuresToggle !== undefined) {
+    const moved = seen.features !== undefined && featuresToggle !== seen.features;
+    const offAtFirstSight =
+      seen.features === undefined && !featuresToggle && settings.telemetry.features !== false;
+    if (moved || offAtFirstSight) setFeatureDetails(stored, featuresToggle, 'desktop');
+  }
   // A stored value only changes when its toggle's seen value does.
   const seenChanged =
     nextSeen.usage !== seen.usage ||
     nextSeen.diagnostics !== seen.diagnostics ||
-    nextSeen.update_check !== seen.update_check;
+    nextSeen.update_check !== seen.update_check ||
+    nextSeen.features !== seen.features;
   if (seenChanged && opts.persist !== false) {
     try {
       saveSettings(stored, { dir: opts.dir });
@@ -437,7 +466,13 @@ export function applyDesktopToggles(
   }
   return {
     ...stored,
-    telemetry: { ...stored.telemetry, usage: usage.effective, diagnostics: diagnostics.effective },
+    telemetry: {
+      ...stored.telemetry,
+      usage: usage.effective,
+      diagnostics: diagnostics.effective,
+      // An off toggle wins for this launch, as with the others. Otherwise leave it as stored.
+      ...(featuresToggle === false ? { features: false } : {}),
+    },
     update_check: updateCheck.effective,
   };
 }

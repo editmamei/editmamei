@@ -17,6 +17,7 @@ describe('core/tool-activity exports', () => {
       'RAW_DEVELOP_TOOL',
       'READ_ONLY_TOOLS',
       'RECIPE_TOOLS',
+      'SCRIPT_TOOL',
       'itemsFromResult',
     ]);
   });
