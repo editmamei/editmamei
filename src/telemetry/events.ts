@@ -248,13 +248,62 @@ export interface DiagnosticEvent {
   ps_locale?: string;
 }
 
+export type FeatureKind = 'option' | 'script_operation' | 'script_capability' | 'script_before';
+
+/**
+ * Feature details (opt-out, on top of usage stats): how many times a named feature was used in a
+ * day. NO install id and no device details, which is why this type doesn't take the shared
+ * dimensions. Names come from fixed lists (see feature-details.ts), never from arguments as typed.
+ */
+export interface FeatureUsageEvent {
+  v: 2;
+  type: 'feature_usage';
+  ts_bucket: string;
+  editmamei_version: string;
+  kind: FeatureKind;
+  tool: string;
+  name: string;
+  value?: string;
+  count: number;
+}
+
+export type ConsentResult =
+  | 'accepted'
+  | 'declined'
+  | 'dismissed'
+  | 'unsupported'
+  | 'timed_out'
+  | 'failed'
+  | 'install_default';
+
+/**
+ * What came back from a consent question (Category A, opt-out). Rides usage stats rather than the
+ * setting it asks about, so a no is recorded too. Fixed lists only.
+ */
+export interface ConsentResultEvent {
+  v: 2;
+  type: 'consent_result';
+  install_id: string;
+  ts_bucket: string;
+  editmamei_version: string;
+  edition: string;
+  platform: string;
+  client: ReturnType<typeof mapClientName>;
+  question: string;
+  question_version: number;
+  result: ConsentResult;
+  via: 'elicitation' | 'install' | 'cli' | 'desktop';
+}
+
 export type TelemetryEvent =
   | UsageEvent
   | SessionSummaryEvent
   | SessionStartEvent
   | ClientConnectedEvent
   | ModuleStatusEvent
-  | DiagnosticEvent;
+  | DiagnosticEvent
+  | FeatureUsageEvent
+  | ConsentResultEvent;
 
 /**
  * ps_version is `null` until the first ping identifies Photoshop, but the server requires
@@ -510,6 +559,33 @@ export function buildDiagnosticEvent(
     ...(diag.ps_locale !== undefined && PS_LOCALE_RE.test(diag.ps_locale)
       ? { ps_locale: diag.ps_locale }
       : {}),
+  };
+}
+
+export function buildConsentResult(
+  dims: TelemetryDimensions,
+  info: {
+    clientName: string | undefined;
+    question: string;
+    questionVersion: number;
+    result: ConsentResult;
+    via: ConsentResultEvent['via'];
+  },
+  now: Date
+): ConsentResultEvent {
+  return {
+    v: TELEMETRY_SCHEMA_VERSION,
+    type: 'consent_result',
+    install_id: dims.install_id,
+    ts_bucket: dayBucket(now),
+    editmamei_version: dims.editmamei_version,
+    edition: dims.edition,
+    platform: dims.platform,
+    client: mapClientName(info.clientName),
+    question: info.question,
+    question_version: info.questionVersion,
+    result: info.result,
+    via: info.via,
   };
 }
 

@@ -19,6 +19,7 @@ import {
 import { loadSettings, applyDesktopToggles } from './settings.js';
 import { TelemetryClient } from '../telemetry/client.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
+import { callFeatures } from '../telemetry/script-operations.js';
 import { resolveInstallChannel } from '../install-channel.js';
 import {
   checkForUpdateWithStatus,
@@ -189,6 +190,8 @@ export class EditmameiServer {
   private session: Session;
   private sessionLog: SessionLog;
   private telemetry: TelemetryClient;
+  /** The call before this one, so Feature details can say what preceded a script. */
+  private lastFeatureCall: { tool: string; success: boolean } | null = null;
   /** Resolved once in the constructor; see `EditmameiServerOptions.editors`. */
   private readonly editorOpts: EditorRegistrationDecision;
   /** Set only when `editorOpts.registerGimp` — the GIMP surface's session-owning backend. */
@@ -602,6 +605,16 @@ export class EditmameiServer {
             ...(this.lastDocMode !== null ? { doc_mode: this.lastDocMode } : {}),
           });
         }
+        const previousCall = this.lastFeatureCall;
+        this.lastFeatureCall = { tool: entry.tool, success: telemetrySuccess };
+        this.telemetry.recordFeatures(() =>
+          callFeatures(
+            entry.tool,
+            this.toolRegistry.get(entry.tool)?.tool.inputSchema,
+            entry.args,
+            previousCall
+          )
+        );
       },
     });
 
