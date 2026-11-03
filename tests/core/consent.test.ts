@@ -11,6 +11,7 @@ import {
   type ConsentDeps,
 } from '@editmamei/core/consent.ts';
 import { FEATURES_QUESTION } from '@editmamei/core/consent-questions.ts';
+import { TelemetryClient } from '@editmamei/telemetry/client.ts';
 import {
   applyDesktopToggles,
   featureDetailsEnabled,
@@ -37,7 +38,7 @@ async function existingInstall(extra: Record<string, unknown> = {}) {
 }
 
 function deps(over: Partial<ConsentDeps> & Pick<ConsentDeps, 'settings'>) {
-  const report = vi.fn();
+  const report = vi.fn(async () => true);
   const elicit = vi.fn(async () => ({ action: 'cancel' as const }));
   return {
     report,
@@ -339,7 +340,45 @@ describe('marking an answer as reported', () => {
     });
     let finishSend: () => void = () => undefined;
     const pending = new Promise<void>((resolve) => (finishSend = resolve));
-    const run = runConsentPrompt(deps({ settings, report: () => pending }).all);
+    const run = runConsentPrompt(deps({ settings, report: () => pending.then(() => true) }).all);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(loadSettings({ dir }).settings.consent?.features?.reported).toBeUndefined();
+    finishSend();
+    await run;
+    expect(loadSettings({ dir }).settings.consent?.features?.reported).toBe(true);
+  });
+
+  it('stays unmarked when the send could not be delivered or stored', async () => {
+    const settings = await existingInstall({
+      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      consent: { features: record },
+    });
+    await runConsentPrompt(deps({ settings, report: () => false }).all);
+    expect(loadSettings({ dir }).settings.consent?.features?.reported).toBeUndefined();
+  });
+
+  it('holds the mark until the real client has sent, even with a nearly full queue', async () => {
+    const settings = await existingInstall({
+      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      consent: { features: record },
+    });
+    let finishSend: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => (finishSend = resolve));
+    const client = new TelemetryClient({
+      settings,
+      getPsVersion: () => null,
+      active: true,
+      outboxDir: dir,
+      maxBatchSize: 2,
+      transport: () => pending,
+    });
+    client.recordCall({ tool: 'ps_ping', success: true, duration_ms: 1, error_class: null });
+    const run = runConsentPrompt(
+      deps({
+        settings,
+        report: (info) => client.recordConsentResult({ clientName: 'cursor', ...info }),
+      }).all
+    );
     await new Promise((r) => setTimeout(r, 10));
     expect(loadSettings({ dir }).settings.consent?.features?.reported).toBeUndefined();
     finishSend();
@@ -363,6 +402,7 @@ describe('marking an answer as reported', () => {
               consent: { features: { ...record, answer: 'accepted' } },
             })
           );
+          return true;
         },
       }).all
     );

@@ -401,19 +401,31 @@ export class TelemetryClient {
 
   /**
    * Record what came back from a consent question. Gated on usage stats alone, on purpose. Sent
-   * now rather than on the timer, and settles once it's delivered or in the outbox, so the caller
-   * knows when an answer can be marked as reported.
+   * on its own rather than through the queue, so this can say what became of it: true once it's
+   * delivered or safely in the outbox, which is when an answer can be marked as reported.
    */
-  recordConsentResult(info: {
+  async recordConsentResult(info: {
     clientName: string | undefined;
     question: string;
     questionVersion: number;
     result: ConsentResultEvent['result'];
     via: ConsentResultEvent['via'];
-  }): Promise<void> {
-    if (!this.active || !this.settings.telemetry.usage) return Promise.resolve();
-    this.enqueue(buildConsentResult(this.dims, info, this.now()));
-    return this.flush();
+  }): Promise<boolean> {
+    if (!this.active || !this.settings.telemetry.usage) return false;
+    const event = buildConsentResult(this.dims, info, this.now());
+    if (!isContentSafe(event)) {
+      this.droppedUnsafe += 1;
+      return false;
+    }
+    try {
+      await this.transport(this.endpoint, JSON.stringify({ events: [event] }));
+      return true;
+    } catch (err) {
+      this.logger.debug(`consent result send failed, using the outbox: ${errMsg(err)}`);
+      const discarded = appendOutboxSync([event], this.outboxOpts);
+      this.droppedOutbox += discarded;
+      return discarded === 0;
+    }
   }
 
   /** Move the rolled-up feature counts onto the queue, or drop them if consent was withdrawn. */
