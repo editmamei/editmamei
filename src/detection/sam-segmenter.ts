@@ -211,11 +211,17 @@ export function toSamFrame(img: DecodedImage): DecodedImage {
   return { width, height, data };
 }
 
+/** What the encoder receives for `img`: its pixels in SAM's frame, and their [H,W,3] shape. */
+export function encoderInputOf(img: DecodedImage): { data: Float32Array; dims: [number, number, 3] } {
+  const framed = toSamFrame(img);
+  return { data: toEncoderInput(framed), dims: [framed.height, framed.width, 3] };
+}
+
 /** The real encoder call (loads + runs the encoder session). Default `runEncoder` dep. */
 async function realRunEncoder(img: DecodedImage): Promise<Tensor> {
   const session = await loadModel(resolveModelPath(MODEL_ENCODER));
-  const framed = toSamFrame(img);
-  const input = new ort.Tensor('float32', toEncoderInput(framed), [framed.height, framed.width, 3]);
+  const { data, dims } = encoderInputOf(img);
+  const input = new ort.Tensor('float32', data, dims);
   const out = await session.run({ input_image: input });
   return out.image_embeddings as Tensor;
 }

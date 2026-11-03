@@ -3,6 +3,7 @@ import type { Tensor } from 'onnxruntime-web';
 import {
   boxToPromptCoords,
   pointsToPromptCoords,
+  encoderInputOf,
   toEncoderInput,
   toSamFrame,
   thresholdMask,
@@ -72,6 +73,15 @@ describe('sam-segmenter helpers', () => {
     const edge = red(512);
     expect(edge).toBeGreaterThan(0);
     expect(edge).toBeLessThan(255);
+  });
+
+  it('the encoder always receives the 1024 frame, whatever size the image is', () => {
+    const at = (width: number, height: number): DecodedImage => ({ width, height, data: new Uint8Array(width * height * 4) });
+    for (const [width, height] of [[600, 450], [800, 600], [1024, 768], [2048, 1536]] as const) {
+      const { data, dims } = encoderInputOf(at(width, height));
+      expect(dims).toEqual([768, 1024, 3]);
+      expect(data.length).toBe(768 * 1024 * 3);
+    }
   });
 
   it('toEncoderInput drops alpha to a tight HWC RGB float array', () => {
