@@ -60,7 +60,7 @@ Not with Photoshop. Editmamei drives Photoshop through Windows COM automation or
 
 ### Does Editmamei work with GIMP?
 
-Yes, as a beta. Editmamei can drive GIMP headless as a second editor, on Windows, macOS, or Linux, with GIMP 3.2. Use it when you ask for GIMP, or when Photoshop isn't available. It covers a smaller slice of editing than the Photoshop side today: documents, layers and composites, 13 non-destructive adjustment types and six effects, geometric masks, crop/resize/rotate/flip, checkpoints, and the same kind of preview/histogram verification. See [docs/gimp.md](gimp.md) for requirements, detection, and what it can't do yet. It's Community only; Pro's tools are Photoshop-only.
+Yes. Editmamei can drive GIMP headless as a second editor, on Windows, macOS, or Linux, with GIMP 3.2. Use it when you ask for GIMP, or when Photoshop isn't available. It covers a smaller slice of editing than the Photoshop side today: documents, layers and composites, 13 non-destructive adjustment types and six effects, geometric masks, crop/resize/rotate/flip, checkpoints, and the same kind of preview/histogram verification. See [docs/gimp.md](gimp.md) for requirements, detection, and what it can't do yet. It's Community only; Pro's tools are Photoshop-only.
 
 ### Does it need an internet connection?
 
@@ -139,7 +139,7 @@ It replaces coordinate guessing. The AI names a location in words, local vision 
 
 ### How do I activate a Pro license?
 
-Buy Pro at [editmamei.com/pricing](https://editmamei.com/pricing), then activate it. Pro is delivered as a downloaded module: activating your license makes Editmamei fetch and load the Pro module alongside your Community install, so nothing gets reinstalled. If you run Editmamei through Claude Code or another npm client, run `editmamei activate YOUR-KEY` in your terminal and restart the client (check status anytime with `editmamei license`). If you use the Claude Desktop extension, open **Settings → Extensions → Editmamei**, paste your key into the **Pro license key** field, save, and restart Claude Desktop. Full walkthrough at [editmamei.com/activate](https://editmamei.com/activate). See [pro-features.md](pro-features.md) for what Pro adds.
+Buy Pro at [editmamei.com/desktop/pricing](https://editmamei.com/desktop/pricing), then activate it. Pro is delivered as a downloaded module: activating your license makes Editmamei fetch and load the Pro module alongside your Community install, so nothing gets reinstalled. If you run Editmamei through Claude Code or another npm client, run `editmamei activate YOUR-KEY` in your terminal and restart the client (check status anytime with `editmamei license`). If you use the Claude Desktop extension, open **Settings → Extensions → Editmamei**, paste your key into the **Pro license key** field, save, and restart Claude Desktop. Full walkthrough at [editmamei.com/desktop/activate](https://editmamei.com/desktop/activate). See [pro-features.md](pro-features.md) for what Pro adds.
 
 ### Pro stopped unlocking. How do I fix it?
 
@@ -151,7 +151,7 @@ The most common cause is `grace-expired` on a healthy subscription, which usuall
 
 ### Do you offer a free trial?
 
-Yes. The monthly Pro plan has a 7-day free trial, which turns into the monthly plan automatically unless you cancel before it ends. Community is also free forever, so you can use the full core toolkit at no cost before deciding on Pro. For current Pro plans and terms, see [editmamei.com/pricing](https://editmamei.com/pricing). If a paid subscription ever lapses, Editmamei keeps running as Community rather than locking you out.
+Yes. The monthly Pro plan has a 7-day free trial, which turns into the monthly plan automatically unless you cancel before it ends. Community is also free forever, so you can use the full core toolkit at no cost before deciding on Pro. For current Pro plans and terms, see [editmamei.com/desktop/pricing](https://editmamei.com/desktop/pricing). If a paid subscription ever lapses, Editmamei keeps running as Community rather than locking you out.
 
 ---
 

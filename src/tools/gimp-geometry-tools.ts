@@ -2,7 +2,13 @@ import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
 import { validateArgs, type JsonSchemaObject, type JsonSchemaProperty } from '../utils/validate.js';
 import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers.js';
-import { GIMP_IMAGE_PROP, runGimpTool, pickSchemaDeclaredKeys } from './gimp-shared.js';
+import {
+  GIMP_IMAGE_PROP,
+  effectUpdateFailuresNote,
+  runGimpTool,
+  pickSchemaDeclaredKeys,
+  withWarning,
+} from './gimp-shared.js';
 
 /**
  * gimp_crop_document / gimp_resize_image / gimp_transform_canvas.
@@ -117,25 +123,6 @@ const transformCanvasSchema: JsonSchemaObject = {
   required: ['image', 'op'],
 };
 
-/** Appended to a rotate/flip/resize result's text when the bridge reports `effect_update_failures`
- * -- a live GEGL update that failed partway through applying the geometry transform to one of
- * gimp_add_effect's filters. The filter's OWN params are kept at their OLD position/angle/offset/
- * size in the ledger (guaranteed, bridge/ops.py's `_apply_planned_effect_transform`), and the
- * bridge also tries to restore those same OLD values to the live render (best effort -- it just
- * didn't move with the rest of the image, though rarely even that restore can fail too). */
-export function effectUpdateFailuresNote(failures: string[] | undefined): string {
-  if (!failures || failures.length === 0) return '';
-  const plural = failures.length > 1;
-  const it = plural ? 'them' : 'it';
-  return (
-    ` WARNING: ${failures.join(', ')} could not be updated for this transform and ` +
-    `${plural ? 'were' : 'was'} left at ${plural ? 'their' : 'its'} old position/angle/offset/size ` +
-    `instead -- delete ${it} (gimp_filter op=delete) and re-create ${it} if ${plural ? 'they need' : 'it needs'} ` +
-    `to track the content (re-applying THIS SAME transform again would move ${it} a second time, ` +
-    `misaligning ${it} the other way).`
-  );
-}
-
 async function gimpTransformCanvas(
   gimp: GimpBackend,
   rawArgs: Record<string, unknown>
@@ -163,7 +150,10 @@ async function gimpTransformCanvas(
       effectUpdateFailuresNote(result.effect_update_failures);
     return {
       content: [{ type: 'text' as const, text }],
-      structuredContent: result as unknown as Record<string, unknown>,
+      structuredContent: withWarning(
+        result as unknown as Record<string, unknown>,
+        effectUpdateFailuresNote(result.effect_update_failures)
+      ),
     };
   } catch (error) {
     return toolGimpErrorResult('Error transforming GIMP canvas', error);

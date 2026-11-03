@@ -174,7 +174,7 @@ export function createPortraitTools(
       tool: {
         name: 'ps_portrait_touchup',
         description:
-          'Detection-driven face touch-ups using LOCAL on-device face detection. op=dodge_face brightens the detected face(s) with a non-destructive masked adjustment layer. op=soften_skin applies a soft blur over the face(s) on a duplicate layer (light, bounding-box-level smoothing). Works from the face bounding box — precise landmark ops (eyes/teeth/lips) are a Pro feature. Multiple faces are handled together. Pair with ps_detect (target=faces) to preview detection first.',
+          'Detection-driven face touch-ups using LOCAL on-device face detection. op=dodge_face brightens the detected face(s) with a non-destructive masked adjustment layer. op=soften_skin applies a soft blur over the face(s) on a duplicate layer (light, bounding-box-level smoothing). Works from the face bounding box — precise landmark ops (eyes/teeth/lips) are not part of this tool. Multiple faces are handled together. Pair with ps_detect (target=faces) to preview detection first.',
         inputSchema: portraitSchema,
         outputSchema: {
           type: 'object',

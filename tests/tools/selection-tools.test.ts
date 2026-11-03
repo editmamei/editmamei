@@ -725,16 +725,15 @@ describe('createSelectionTools', () => {
     expect(build.params.extent).toBe('canvas');
   });
 
-  it('layer_mask description keeps the adjustment-layer + frame-opening + execute_script guidance', () => {
+  it('layer_mask description keeps the adjustment-layer + frame-opening + mask-script guidance', () => {
     const tools = createSelectionTools(conn.asConnection(), snippetClient);
     const tool = tools.find((t) => t.tool.name === 'ps_layer_mask')!;
     const desc = tool.tool.description ?? '';
     expect(desc).toMatch(/[Aa]djustment layers/);
     expect(desc).toMatch(/If a selection is active.*reveals the selection/i);
     expect(desc).toMatch(/frame opening/i);
-    // The execute_script anti-pattern callout must survive so the LLM doesn't
-    // hand-roll the Mk Chnl AM workaround.
-    expect(desc).toMatch(/Mk Chnl|execute_script/i);
+    // Keeps the model from hand-rolling what this tool already does.
+    expect(desc).toMatch(/hand-written mask script/i);
   });
 
   it('an unknown layer_mask op returns an error without dispatching', async () => {

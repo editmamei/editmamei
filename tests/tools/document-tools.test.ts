@@ -224,6 +224,17 @@ describe('createDocumentTools', () => {
     expect(conn.lastTimeout()).toBe(120000);
   });
 
+  it.each(['C:/Users/me/Downloads/x.jsx', 'C:/Users/me/Downloads/x.atn'])(
+    'open_document refuses a script or Action file (%s) without reaching Photoshop',
+    async (filePath) => {
+      const tools = createDocumentTools(conn.asConnection(), snippetClient);
+      const result = await callTool(tools, 'ps_open_document', { file_path: filePath });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('is a script, Action or preset file, not an image');
+      expect(() => conn.lastScript()).toThrow(/no script has been executed/);
+    }
+  );
+
   // Phase 3b — post-timeout success re-probe. A timeout on the initial open
   // no longer means Photoshop failed: the cscript child was killed, but PS
   // is a separate process that may have finished the open anyway. These

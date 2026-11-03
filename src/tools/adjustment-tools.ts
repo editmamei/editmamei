@@ -186,9 +186,9 @@ const addAdjustmentLayerSchema: JsonSchemaObject = {
     bw_tint_hue: {
       type: 'number',
       description:
-        'For type=black_and_white when bw_tint=true. Tint hue in degrees (-180 to 180). Default 220 (cool blue).',
+        'For type=black_and_white when bw_tint=true. Tint hue in degrees (0 to 360; negative values wrap). Default 220 (cool blue).',
       minimum: -180,
-      maximum: 180,
+      maximum: 360,
       default: 220,
     },
     bw_tint_saturation: {
@@ -547,7 +547,7 @@ const addAdjustmentLayerSchema: JsonSchemaObject = {
     exp_gamma: {
       type: 'number',
       description:
-        'For type=exposure. Gamma correction (0.01 to 9.99). PS default 1.0 (identity). Values <1 brighten midtones; >1 darken them.',
+        'For type=exposure. Gamma correction (0.01 to 9.99). PS default 1.0 (identity). Values >1 brighten midtones; <1 darken them.',
       minimum: 0.01,
       maximum: 9.99,
       default: 1.0,
@@ -736,7 +736,7 @@ const APPLY_ADJUSTMENT_INPUT_SCHEMA: JsonSchemaObject = {
       type: 'string',
       enum: [...APPLY_ADJUSTMENT_TYPES],
       description:
-        'Which destructive adjustment to bake (none exist as adjustment layers in PS). ' +
+        'Which destructive adjustment to bake. shadows_highlights and equalize have no adjustment layer in PS; color_lookup does, and this bakes it instead. ' +
         'shadows_highlights: one-pass shadow/highlight recovery (shadow_amount, highlight_amount, …). ' +
         'equalize: parameter-free histogram equalization. ' +
         'color_lookup: bake a 3DLUT grade — cl_lut_name REQUIRED. ' +
@@ -758,7 +758,7 @@ export function createAdjustmentTools(
       tool: {
         name: 'ps_apply_adjustment',
         description:
-          "Apply a DESTRUCTIVE tonal adjustment that Photoshop does NOT offer as an adjustment layer — chosen via `type`. Runs on a DUPLICATE of the active layer by default (auto-duplicate-first — the original is preserved; revert by deleting the copy); pass `apply_to_active_layer: true` to bake in place. Auto-rasterizes text/smart-object layers. `shadows_highlights` recovers blown highlights + crushed shadows in one pass (defaults match Adobe's dialog: 35 shadow amount, +20 color correction); `equalize` stretches/flattens the histogram (parameter-free); `color_lookup` bakes a 3DLUT grade (cl_lut_name required — leaf name of a file in Presets/3DLUTs/ or an absolute .cube/.3dl/.look path). For EDITABLE tonal/color work, prefer ps_add_adjustment_layer.",
+          "Apply a DESTRUCTIVE tonal adjustment, baked into pixels — chosen via `type`. Runs on a DUPLICATE of the active layer by default (auto-duplicate-first — the original is preserved; revert by deleting the copy); pass `apply_to_active_layer: true` to bake in place. Auto-rasterizes text/smart-object layers. `shadows_highlights` recovers blown highlights + crushed shadows in one pass (defaults match Adobe's dialog: 35 shadow amount, +20 color correction); `equalize` stretches/flattens the histogram (parameter-free); `color_lookup` bakes a 3DLUT grade (cl_lut_name required — leaf name of a file in Presets/3DLUTs/ or an absolute .cube/.3dl/.look path). For EDITABLE tonal/color work, prefer ps_add_adjustment_layer.",
         inputSchema: APPLY_ADJUSTMENT_INPUT_SCHEMA,
         outputSchema: {
           type: 'object',

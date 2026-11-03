@@ -8,6 +8,7 @@ import type { PlatformAdapter } from './ports.js';
 import { runChildWithTimeout } from './run-child.js';
 import { decodeScriptResult } from './script-result.js';
 import { waitForLaunchReady } from './launch-readiness.js';
+import { windowsSystemTool } from './windows-system-tool.js';
 
 const execAsync = promisify(exec);
 
@@ -59,10 +60,14 @@ export class WindowsScriptRunner implements PlatformAdapter {
       // Deliberately not execAsync: a Photoshop modal dialog blocks the COM
       // call indefinitely, and only a killable child gets us out of it. The
       // helper also lifts the output cap that truncated large script results.
-      const { stdout, stderr } = await runChildWithTimeout('cscript', ['//nologo', shimPath], {
-        timeout: timeoutMs,
-        diagLabel: 'cscript run.vbs',
-      });
+      const { stdout, stderr } = await runChildWithTimeout(
+        windowsSystemTool('cscript.exe'),
+        ['//nologo', shimPath],
+        {
+          timeout: timeoutMs,
+          diagLabel: 'cscript run.vbs',
+        }
+      );
       if (stderr) {
         this.logger.warn('Script execution reported a warning', stderr);
       }
@@ -121,9 +126,12 @@ End If
 
   async isRunning(): Promise<boolean> {
     try {
-      const { stdout } = await execAsync('tasklist /FI "IMAGENAME eq Photoshop.exe"', {
-        timeout: IS_RUNNING_EXEC_TIMEOUT_MS,
-      });
+      const { stdout } = await execAsync(
+        `"${windowsSystemTool('tasklist.exe')}" /FI "IMAGENAME eq Photoshop.exe"`,
+        {
+          timeout: IS_RUNNING_EXEC_TIMEOUT_MS,
+        }
+      );
       return stdout.toLowerCase().includes('photoshop.exe');
     } catch {
       // tasklist is missing, refused to run, or exceeded its own timeout;

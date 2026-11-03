@@ -13,7 +13,7 @@ import {
   asSmartFilterProp,
   unknownDiscriminator,
 } from '../utils/tool-helpers.js';
-import { requireLocalPath } from '../utils/local-path.js';
+import { requireLocalImagePath } from '../utils/local-path.js';
 import { LAYER_BLEND_MODES } from '../utils/blend-modes.js';
 import { runSmartFilterOp } from './smart-object-tools.js';
 
@@ -1914,7 +1914,7 @@ async function applyDisplace(
     snippet: 'applyDisplace',
     errorPrefix: 'Error applying Displace',
     params: (args) => ({
-      mapPath: requireLocalPath('map_path', args.map_path),
+      mapPath: requireLocalImagePath('map_path', args.map_path),
       horizontalScale: (args.horizontal_scale as number) ?? 10,
       verticalScale: (args.vertical_scale as number) ?? 10,
       displacementMap: (args.displacement_map as string) ?? 'stretch_to_fit',

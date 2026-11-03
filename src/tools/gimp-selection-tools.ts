@@ -14,6 +14,7 @@ import {
   pickSchemaDeclaredKeys,
   runGimpTool,
   type GimpPreviewDeps,
+  withWarning,
 } from './gimp-shared.js';
 
 /**
@@ -323,7 +324,17 @@ async function selectionPreview(
             : ' privacy.send_previews_to_llm is false — image not returned to the model.') +
           unmirroredNote,
       });
-      return { content, structuredContent: { width: r.width, height: r.height } };
+      return {
+        content,
+        structuredContent: withWarning(
+          {
+            width: r.width,
+            height: r.height,
+            ...(r.unmirrored_filters?.length ? { unmirrored_filters: r.unmirrored_filters } : {}),
+          },
+          unmirroredNote
+        ),
+      };
     } finally {
       await rm(out, { force: true }).catch(() => undefined);
     }

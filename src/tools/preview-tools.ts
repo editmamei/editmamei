@@ -294,7 +294,7 @@ export function createPreviewTools(
       tool: {
         name: 'ps_get_layer_bounds_diff',
         description:
-          'Numeric verification: compute the per-edge pixel deltas between a layer\'s actual bounds and a target rectangle. Returns left/top/right/bottom deltas (actual − target), scale ratio (actual_size / target_size), centroid offset, and a one-word verdict ("aligned", "shifted right", "layer too small", etc.). Use this AFTER place_image / scale_layer / move_layer to confirm the operation produced the intended result — far more reliable than eyeballing a preview for fine alignment. Read-only. Layers nested in groups are found by name recursively.',
+          'Numeric verification: compute the per-edge pixel deltas between a layer\'s actual bounds and a target rectangle. Returns left/top/right/bottom deltas (actual − target), scale ratio (actual_size / target_size), centroid offset, and a one-word verdict ("aligned", "shifted right", "layer too small", etc.). Use this AFTER ps_place_image / ps_transform_layer to confirm the operation produced the intended result — far more reliable than eyeballing a preview for fine alignment. Read-only. Layers nested in groups are found by name recursively.',
         inputSchema: boundsDiffSchema,
         outputSchema: {
           type: 'object',

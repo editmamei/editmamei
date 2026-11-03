@@ -33,6 +33,8 @@ import { LAYER_BLEND_MODES } from '../utils/blend-modes.js';
  * accept. Read an index, pass it straight back.
  */
 
+const INDICES_RENUMBERED = 'Indices renumbered — re-run op=list before the next index-taking call.';
+
 const SMART_FILTER_OPS = ['list', 'set_visibility', 'set_blend', 'remove'] as const;
 
 const smartFilterInputSchema: JsonSchemaObject = {
@@ -195,9 +197,16 @@ export async function runSmartFilterOp(
         params: (a) => ({ index: a.index }),
         successText: (result) => {
           const r = result as Record<string, unknown>;
-          return `Removed Smart Filter ${String(r.index)} (${String(r.removed_filter_name)}) from "${String(r.layer_name)}". ${String(r.remaining_count)} remaining. Indices renumbered — re-run op=list before the next index-taking call.`;
+          return `Removed Smart Filter ${String(r.index)} (${String(r.removed_filter_name)}) from "${String(r.layer_name)}". ${String(r.remaining_count)} remaining. ${INDICES_RENUMBERED}`;
         },
-      });
+      }).then((result) =>
+        result.isError
+          ? result
+          : {
+              ...result,
+              structuredContent: { ...result.structuredContent, note: INDICES_RENUMBERED },
+            }
+      );
 
     default:
       return toolErrorResult(

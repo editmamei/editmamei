@@ -20,6 +20,7 @@ import {
   loadVerifiedModule,
 } from '@editmamei/delivery/store.ts';
 import { KERNEL_ABI } from '@editmamei/kernel/host-api.ts';
+import { writeLicense } from '@editmamei/license/store.ts';
 import { packBundle, type BundleFile } from '@editmamei/delivery/bundle.ts';
 import type { DeliveryFetch, DeliveryResponse } from '@editmamei/delivery/client.ts';
 
@@ -151,6 +152,50 @@ describe('provisionModules', () => {
       expect(installed?.abi).toBe(1);
       // The bundle was decrypted + unpacked — the handler entry is on disk.
       expect(existsSync(moduleHandlersPath('pro', '0.17.0', { dir }))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('sends the stored activation id for this key, and none for a different key', async () => {
+    const dir = tmpDir();
+    const fake = fakeDelivery('0.17.0');
+    const activationHeaders: (string | undefined)[] = [];
+    const fetchImpl: DeliveryFetch = async (url, init) => {
+      activationHeaders.push(init.headers['x-editmamei-activation-id']);
+      return fake.fetchImpl(url, init);
+    };
+    try {
+      writeLicense(
+        {
+          key: 'LICENSE-KEY',
+          organization_id: 'org',
+          status: 'granted',
+          expires_at: null,
+          activation_id: 'act-9',
+          device_hash: 'h',
+          display_key: '****-KEY',
+          last_validated_at: new Date().toISOString(),
+        },
+        { dir }
+      );
+      await provisionModules('LICENSE-KEY', {
+        dir,
+        config: cfg,
+        fetchImpl,
+        signingKeys: [fake.pubB64],
+      });
+      expect(activationHeaders.length).toBeGreaterThan(0);
+      expect(new Set(activationHeaders)).toEqual(new Set(['act-9']));
+
+      activationHeaders.length = 0;
+      await provisionModules('OTHER-KEY', {
+        dir,
+        config: cfg,
+        fetchImpl,
+        signingKeys: [fake.pubB64],
+      });
+      expect(activationHeaders.every((h) => h === undefined)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

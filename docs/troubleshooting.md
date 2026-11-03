@@ -189,7 +189,7 @@ the npm side thinks, and check the **Pro license key** field for what the extens
 
 ---
 
-## GIMP (beta)
+## GIMP
 
 A few common ones; the full list lives in [docs/gimp.md](gimp.md#troubleshooting).
 

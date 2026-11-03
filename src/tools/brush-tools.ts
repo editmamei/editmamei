@@ -40,7 +40,7 @@ const applyBrushStrokeSchema: JsonSchemaObject = {
       // guard in tests/integration/readme-leak-guard.test.ts will catch it.
       description:
         'ANCHOR-RELATIONAL stroke path (preferred over supplying pixels): a PATH relation — `along` a traced edge ' +
-        'or a Pro face-mesh landmark curve, `offset-curve`, or `segment` between two anchors — so the stroke traces ' +
+        'or a face-mesh landmark curve, where available, `offset-curve`, or `segment` between two anchors — so the stroke traces ' +
         'the resolved, gate-verified curve (the FULL polyline, not just endpoints: paint along the jaw / horizon / ' +
         'under-eye). Strokes ONLY if the gate PASSES. When set, `path` is ignored; tool/brush_size/source_point/' +
         'colors/dynamics/jitter still apply. See ps_resolve_placement for the anchors + relation vocabulary.',
