@@ -89,12 +89,12 @@ async function gimpPing(gimp: GimpBackend): Promise<ToolResult> {
     // dispatch ops against yet) so the caller can tell "come back later"
     // from "actually broken".
     const isStarting = error instanceof GimpError && error.code === 'gimp_starting';
+    const text = isStarting ? message : `Not connected to GIMP: ${message}`;
     return {
-      content: [
-        { type: 'text' as const, text: isStarting ? message : `Not connected to GIMP: ${message}` },
-      ],
+      content: [{ type: 'text' as const, text }],
       structuredContent: {
         connected: false,
+        message: text,
         gimp_version: null,
         // Origin-aware even here: a `gimp_starting` thrown while RECOVERING
         // from a crash is still 'restarted', not 'cold' — same reasoning as
@@ -273,12 +273,15 @@ tool that lists every tool currently registered (both \`ps_*\` and
 const overviewSchema = { type: 'object' as const, properties: {} };
 
 function gimpOverview(): ToolResult {
+  // The brief is in structuredContent too: a client can show the model just that part of a
+  // result, and it is the whole answer here.
   const sections = GIMP_OVERVIEW_MARKDOWN.split('\n')
     .filter((line) => line.startsWith('## '))
     .map((line) => line.replace(/^##\s+/, ''));
   return {
     content: [{ type: 'text' as const, text: GIMP_OVERVIEW_MARKDOWN }],
     structuredContent: {
+      brief: GIMP_OVERVIEW_MARKDOWN,
       sections,
       bytes: GIMP_OVERVIEW_MARKDOWN.length,
     },
@@ -310,6 +313,10 @@ export function createGimpCoreTools(gimp: GimpBackend): ToolDefinition[] {
           type: 'object',
           properties: {
             connected: { type: 'boolean' },
+            message: {
+              type: 'string',
+              description: 'Why the connection is not ready. Present only when connected is false.',
+            },
             gimp_version: { type: ['string', 'null'] },
             session_state: { type: 'string', enum: ['cold', 'warm', 'restarted'] },
             open_images: {
@@ -350,6 +357,7 @@ export function createGimpCoreTools(gimp: GimpBackend): ToolDefinition[] {
         outputSchema: {
           type: 'object',
           properties: {
+            brief: { type: 'string', description: 'The whole brief, as markdown.' },
             sections: { type: 'array', items: { type: 'string' } },
             bytes: { type: 'number' },
           },

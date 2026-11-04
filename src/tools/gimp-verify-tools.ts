@@ -130,7 +130,11 @@ async function gimpGetPreview(
       return {
         content,
         structuredContent: withWarning(
-          { ...result, path: published ? latestName : null },
+          {
+            ...result,
+            path: published ? latestName : null,
+            ...(allowed ? {} : { preview_withheld: true }),
+          },
           unmirroredNote
         ),
       };
@@ -371,7 +375,10 @@ async function gimpCompare(
       return {
         content,
         structuredContent: withWarning(
-          reported as unknown as Record<string, unknown>,
+          {
+            ...(reported as unknown as Record<string, unknown>),
+            ...(previewsWithheld ? { previews_withheld: true } : {}),
+          },
           unmirroredNote
         ),
       };

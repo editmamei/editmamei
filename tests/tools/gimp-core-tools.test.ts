@@ -84,6 +84,9 @@ describe('createGimpCoreTools', () => {
       const result = await callTool(tools, 'gimp_ping');
       expect(result.isError).toBeFalsy();
       expect(result.structuredContent).toMatchObject({ connected: false, gimp_version: null });
+      expect(result.structuredContent?.message).toBe(
+        (result.content?.[0] as { text: string }).text
+      );
     });
 
     it('reports starting: true (still never isError) when the session is on a slow first launch', async () => {
@@ -98,6 +101,9 @@ describe('createGimpCoreTools', () => {
       const result = await callTool(tools, 'gimp_ping');
       expect(result.isError).toBeFalsy();
       expect(result.structuredContent).toMatchObject({ connected: false, starting: true });
+      expect(result.structuredContent?.message).toBe(
+        (result.content?.[0] as { text: string }).text
+      );
       expect((result.content?.[0] as { text: string }).text).toContain('Call gimp_ping again');
     });
 
@@ -148,14 +154,15 @@ describe('createGimpCoreTools', () => {
   });
 
   describe('gimp_overview', () => {
-    it('returns the static markdown brief with section headings', async () => {
+    it('carries the whole brief in structuredContent, for a client that shows only that part', async () => {
       const gimp = makeGimpBackend();
       const tools = createGimpCoreTools(gimp.asBackend());
       const result = await callTool(tools, 'gimp_overview');
       expect(gimp.calls).toHaveLength(0); // no bridge round trip
-      const sections = result.structuredContent?.sections as string[];
-      expect(sections.length).toBeGreaterThan(3);
       expect(result.content?.[0]).toMatchObject({ type: 'text' });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(result.structuredContent?.brief).toBe(text);
+      expect((result.structuredContent?.sections as string[]).length).toBeGreaterThan(3);
     });
   });
 });

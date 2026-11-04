@@ -841,6 +841,7 @@ async function checkpointRestore(
       precision: opened.precision,
       layers: opened.layers,
       close_failed: closeFailed,
+      close_note: closeNote,
     },
   };
 }
@@ -927,6 +928,11 @@ export function createGimpCheckpointTools(gimp: GimpBackend): ToolDefinition[] {
             created_at: { type: 'string' },
             deleted: { type: 'boolean' },
             close_failed: { type: 'boolean' },
+            close_note: {
+              type: 'string',
+              description:
+                'What happened to the old image on a restore, including when it is still open.',
+            },
             checkpoints: {
               type: 'array',
               items: {

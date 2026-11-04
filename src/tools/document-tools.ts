@@ -801,17 +801,14 @@ async function openDocumentPipeline(
     if (filePath !== undefined && isScriptTimeoutError(message)) {
       const reprobed = await reprobeOpenDocument(connection, snippetClient, filePath);
       if (reprobed) {
+        const note =
+          `Document opened (the open exceeded the ${OPEN_DOCUMENT_TIMEOUT_MS}ms budget and was ` +
+          `reported as a timeout, but a post-timeout check confirmed it actually completed)`;
         return {
           content: [
-            {
-              type: 'text' as const,
-              text:
-                `Document opened (the open exceeded the ${OPEN_DOCUMENT_TIMEOUT_MS}ms budget and was ` +
-                `reported as a timeout, but a post-timeout check confirmed it actually completed):\n` +
-                JSON.stringify(reprobed, null, 2),
-            },
+            { type: 'text' as const, text: `${note}:\n${JSON.stringify(reprobed, null, 2)}` },
           ],
-          structuredContent: reprobed,
+          structuredContent: { ...reprobed, message: note },
         };
       }
     }

@@ -593,6 +593,7 @@ async function runSequence(
   });
 
   const common = {
+    message,
     on_error: onError,
     return: returnMode,
     total_steps: steps.length,

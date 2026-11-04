@@ -261,16 +261,15 @@ async function detect(
       const tally = summarizeObjects(mapped.objects);
       parts.push(`${objCount} object${objCount === 1 ? '' : 's'}${tally ? ` (${tally})` : ''}`);
     }
-    content.push({
-      type: 'text' as const,
-      text:
-        `Detected ${parts.join(', ')} in the active document (${det.docWidth}×${det.docHeight}). ` +
-        `All bounding boxes are [x1, y1, x2, y2] in document pixels.`,
-    });
+    const message =
+      `Detected ${parts.join(', ')} in the active document (${det.docWidth}×${det.docHeight}). ` +
+      `All bounding boxes are [x1, y1, x2, y2] in document pixels.`;
+    content.push({ type: 'text' as const, text: message });
 
     return {
       content,
       structuredContent: {
+        message,
         image: mapped.image,
         backends: mapped.backends,
         ...(mapped.faces ? { faces: mapped.faces } : {}),

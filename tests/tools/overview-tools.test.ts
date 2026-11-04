@@ -83,16 +83,15 @@ describe('createOverviewTools (2026-06-02)', () => {
     expect(text).toMatch(/center_on_x[\s\S]*?center_on_y/);
   });
 
-  it('structuredContent surfaces section headings + bytes for clients that want a TOC', async () => {
+  it('carries the whole brief in structuredContent, for a client that shows only that part', async () => {
     const tools = createOverviewTools(makeConnection().asConnection(), makeSnippetClient());
     const result = await callTool(tools, 'ps_overview', {});
-    const sc = result.structuredContent as { sections: string[]; bytes: number };
-
-    expect(Array.isArray(sc.sections)).toBe(true);
-    expect(sc.sections.length).toBeGreaterThanOrEqual(5);
-    expect(sc.bytes).toBeGreaterThan(0);
-    // Sanity: bytes matches the actual markdown length.
+    const sc = result.structuredContent as { brief: string; sections: string[]; bytes: number };
     const text = (result.content?.[0] as { text: string }).text;
+
+    expect(sc.brief).toBe(text);
+    expect(sc.brief).toContain('## The workflow contract');
+    expect(sc.sections.length).toBeGreaterThanOrEqual(5);
     expect(sc.bytes).toBe(text.length);
   });
 

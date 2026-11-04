@@ -683,6 +683,7 @@ async function selectByReference(
       content: [{ type: 'text' as const, text: summary }],
       structuredContent: {
         op: 'select_by_reference',
+        message: summary,
         target: res.target,
         method: res.method,
         passed: res.passed,
@@ -822,6 +823,7 @@ export function createSceneTools(
             target: { type: 'string' },
             method: { type: 'string' },
             passed: { type: 'boolean' },
+            message: { type: 'string', description: 'The outcome and what to try next.' },
             confidence: { type: 'number' },
             reasons: { type: 'array', items: { type: 'string' } },
             selection_info: { type: ['object', 'null'] },

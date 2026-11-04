@@ -153,6 +153,7 @@ async function runPortraitOp(
       content: [{ type: 'text' as const, text: summary }],
       structuredContent: {
         op,
+        message: summary,
         faces: faces.length,
         boxes: faces.map((f) => f.bbox),
         image: det.result.image,
