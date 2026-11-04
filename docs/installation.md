@@ -24,11 +24,12 @@ Editmamei is an MCP server that drives desktop Adobe Photoshop. It installs two 
 The fastest path if you use Claude Desktop. No terminal, and nothing else to install: Claude Desktop ships its own Node runtime.
 
 1. Download the latest [`editmamei.mcpb`](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb).
-2. In Claude Desktop, open **Settings → Extensions**.
-3. Install the downloaded `editmamei.mcpb`.
-4. Restart Claude Desktop.
+2. In Claude Desktop, open **Settings → Desktop app** and select **Manage** next to Extensions. On older versions this page is **Settings → Extensions**.
+3. Select **Advanced settings**, then under **Extension Developer** select **Install Extension…** and choose the downloaded `editmamei.mcpb`.
+4. Follow the prompts to finish installing.
+5. Restart Claude Desktop.
 
-The telemetry switches and your Pro license key (if you have one) live in the extension's own settings under Settings → Extensions → Editmamei, so there's no config file to edit. Then skip ahead to [Photoshop preferences](#photoshop-preferences) and [Verify](#verify).
+The telemetry switches and your Pro license key (if you have one) live in the extension's own settings under Settings → Desktop app → Manage (next to Extensions) → Editmamei, so there's no config file to edit. Then skip ahead to [Photoshop preferences](#photoshop-preferences) and [Verify](#verify).
 
 ---
 
@@ -212,10 +213,10 @@ Restart your MCP client afterwards.
 **Claude Desktop extension (replace the bundle).** The `.mcpb` is a frozen copy and never updates
 on its own. Download the current
 [`editmamei.mcpb`](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb),
-open **Settings → Extensions** in Claude Desktop, drag the new file onto that page to replace the
-installed one, then restart Claude Desktop.
+install it with the [same steps](#one-click-install-claude-desktop) to replace the installed one,
+then restart Claude Desktop.
 
-If you have Pro, check **Settings → Extensions → Editmamei → Pro license key** afterwards and paste
+If you have Pro, check **Settings → Desktop app → Manage (next to Extensions) → Editmamei → Pro license key** afterwards and paste
 your key back if the field came up empty. Your stored license keeps Pro working for a while even
 when that field is blank, so a missing key doesn't show up until days later.
 
@@ -251,4 +252,4 @@ requirements, detection locations, and troubleshooting: [docs/gimp.md](gimp.md).
 
 ## Pro
 
-Pro is a downloaded **module**, not a separate install. Keep your Community setup as-is; when you activate a license, Editmamei fetches the signed Pro module and loads it alongside Community after a restart. Buy at [editmamei.com/desktop/pricing](https://editmamei.com/desktop/pricing), then activate with your license key: with an npm install, run `editmamei activate YOUR-KEY` and restart your client; with the Claude Desktop extension, paste your key into **Settings → Extensions → Editmamei → Pro license key** and restart. The license re-validates roughly daily in the background; if a subscription lapses there's a seven-day grace window, then Editmamei keeps running as Community rather than locking you out. Full steps at [editmamei.com/desktop/activate](https://editmamei.com/desktop/activate). See [pro-features.md](pro-features.md) for what Pro adds and [roadmap.md](roadmap.md) for what's planned next.
+Pro is a downloaded **module**, not a separate install. Keep your Community setup as-is; when you activate a license, Editmamei fetches the signed Pro module and loads it alongside Community after a restart. Buy at [editmamei.com/desktop/pricing](https://editmamei.com/desktop/pricing), then activate with your license key: with an npm install, run `editmamei activate YOUR-KEY` and restart your client; with the Claude Desktop extension, paste your key into **Settings → Desktop app → Manage (next to Extensions) → Editmamei → Pro license key** and restart. The license re-validates roughly daily in the background; if a subscription lapses there's a seven-day grace window, then Editmamei keeps running as Community rather than locking you out. Full steps at [editmamei.com/desktop/activate](https://editmamei.com/desktop/activate). See [pro-features.md](pro-features.md) for what Pro adds and [roadmap.md](roadmap.md) for what's planned next.

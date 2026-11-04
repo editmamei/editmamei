@@ -51,7 +51,7 @@ editmamei status    # confirms install state + Photoshop detection
 
 Then restart your AI client and ask it: _"Is Photoshop connected?"_
 
-Prefer not to use a terminal? Claude Desktop users can install the one-click [`.mcpb` extension](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb) directly (no system Node required, Claude Desktop ships its own runtime). Full walkthrough in the [install guide](docs/installation.md).
+Prefer not to use a terminal? Claude Desktop users can download the one-click [`.mcpb` extension](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb) instead (no system Node required, Claude Desktop ships its own runtime). In Claude Desktop, go to **Settings → Desktop app → Manage** (next to Extensions) **→ Advanced settings → Install Extension…** and choose the downloaded file. Full walkthrough in the [install guide](docs/installation.md#one-click-install-claude-desktop).
 
 **Requirements:** Adobe Photoshop 2026 (v27.x), Windows 10/11 or macOS 13+, Node.js 22+ (for the npm path), and an MCP-compatible AI client (Claude Desktop, Cursor, Claude Code). Editmamei ships no model of its own and runs on whichever client you connect, so every edit spends that client's tokens.
 
