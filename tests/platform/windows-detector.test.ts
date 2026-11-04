@@ -49,6 +49,23 @@ function asPrivate(d: WindowsDetector): PrivateDetector {
   return d as unknown as PrivateDetector;
 }
 
+describe('WindowsDetector — registry queries', () => {
+  it('runs reg.exe directly, with each argument separate', async () => {
+    execFileMock.mockClear();
+    await (
+      new WindowsDetector() as unknown as { findViaRegistry(): Promise<unknown> }
+    ).findViaRegistry();
+    const calls = execFileMock.mock.calls.map(([file, args]) => [file, args]);
+    expect(calls[0][0]).toMatch(/[\\/]System32[\\/]reg\.exe$/);
+    expect(calls[0][1]).toEqual(['query', 'HKLM\\SOFTWARE\\Adobe\\Photoshop', '/s']);
+    expect(calls[2][1]).toEqual([
+      'query',
+      'HKCR\\CLSID\\{06870682-6f3c-4b97-9143-f03e85c0bd3e}\\LocalServer32',
+      '/ve',
+    ]);
+  });
+});
+
 describe('WindowsDetector — pure parsing logic', () => {
   it('readRegistryEntries pulls (version, path) tuples out of `reg query /s` output', () => {
     const sample = [

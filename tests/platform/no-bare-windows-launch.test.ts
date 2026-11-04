@@ -7,10 +7,14 @@ const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
 
 const WINDOWS_TOOLS =
   'cscript|wscript|reg|tasklist|taskkill|where|cmd|powershell|pwsh|wmic|icacls|sc|net|netsh';
-const LAUNCH = '(?:exec|execAsync|execSync|execFile|execFileAsync|execFileSync|spawn|spawnSync)';
+const LAUNCH =
+  '(?:exec|execAsync|execSync|execFile|execFileAsync|execFileSync|spawn|spawnSync|runChildWithTimeout)';
 
 /** A Windows tool started by name: the current directory could shadow it (windows-system-tool.ts). */
-const BARE_NAME = new RegExp(`\\b${LAUNCH}\\(\\s*[\`'"]"?(?:${WINDOWS_TOOLS})(?:\\.exe)?\\b`, 'i');
+const BARE_NAME = new RegExp(
+  `\\b${LAUNCH}\\(\\s*[\`'"]"?(?:${WINDOWS_TOOLS})(?:\\.exe)?(?![\\w-])`,
+  'i'
+);
 /** A system tool run through a shell command line, which adds a cmd.exe layer it doesn't need. */
 const THROUGH_A_SHELL = /\b(?:exec|execAsync|execSync)\(\s*`[^`]*windowsSystemTool/;
 
@@ -32,7 +36,9 @@ describe('Windows tool launches', () => {
     );
     expect(BARE_NAME.test("spawn(windowsSystemTool('cscript.exe'), [path])")).toBe(false);
     expect(BARE_NAME.test("spawn('open', ['-a', path])")).toBe(false);
+    expect(BARE_NAME.test("runChildWithTimeout('cscript.exe', [path])")).toBe(true);
     expect(BARE_NAME.test("execFileAsync('registry-tool', [])")).toBe(false);
+    expect(BARE_NAME.test("execFileAsync('reg-tool', [])")).toBe(false);
   });
 
   it('never starts one by bare name or through a shell, anywhere in src', () => {
