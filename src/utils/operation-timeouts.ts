@@ -64,10 +64,24 @@ export const PHOTOSHOP_MIN_BUDGET_MS = 30_000;
 
 /**
  * How long the next script waits for Photoshop to answer after a script timed
- * out (`run-script.ts`). Photoshop runs one script at a time, so a trivial one
+ * out (`connection.ts`). Photoshop runs one script at a time, so a trivial one
  * returns only once whatever was still running has finished.
  */
 export const PHOTOSHOP_SETTLE_TIMEOUT_MS = 30_000;
+
+/**
+ * Whether a failure message is a script timeout: `run-child.ts`'s rejection, the
+ * queue watchdog's plain fallback, or macOS's AppleEvent timeout (-1712).
+ * Deliberately doesn't match "modal", see the `ERROR_CLASS_TABLE` ordering note
+ * in `session-log.ts`.
+ *
+ * The -1712 alternative is bounded on both sides. Bare `-1712` also matches
+ * inside an echoed file path, so a "could not open" error naming IMG-1712.dng
+ * would read as a timeout.
+ */
+export function isScriptTimeoutMessage(message: string): boolean {
+  return /Script execution timeout|AppleEvent timed out|(?:^|[\s(])-1712(?:[\s)]|$)/i.test(message);
+}
 
 /** `ps_open_document` — large RAW files can exceed 30s on first ACR engine init. */
 export const OPEN_DOCUMENT_TIMEOUT_MS = 120_000;

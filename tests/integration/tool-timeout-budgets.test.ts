@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { ToolRegistry, type ToolDefinition } from '@editmamei/core/tool-registry.ts';
 import {
@@ -203,6 +203,21 @@ const TOLERANCE_MS = 500;
  * every runScript call inside a handler used to fall straight through to the
  * platform runner's flat default regardless of which tool was calling.
  */
+describe('tool budget store', () => {
+  it('is one store per process, so a separately bundled copy sees the same deadline', async () => {
+    // Importing twice across a module reset is what a downloaded module's own
+    // bundled copy of this file amounts to.
+    const host = await import('@editmamei/utils/tool-budget-context.ts');
+    vi.resetModules();
+    const bundledCopy = await import('@editmamei/utils/tool-budget-context.ts');
+    expect(bundledCopy.runWithToolBudget).not.toBe(host.runWithToolBudget);
+
+    const context = host.budgetContextFor('ps_fake_tool', 4242);
+    const seen = host.runWithToolBudget(context, async () => bundledCopy.currentToolBudget());
+    await expect(seen).resolves.toBe(context);
+  });
+});
+
 describe('ToolRegistry.execute — per-tool budget propagation', () => {
   it('every script a handler runs inherits (approximately) the same tool budget', async () => {
     const conn = makeConnection();

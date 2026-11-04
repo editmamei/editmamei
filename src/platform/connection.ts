@@ -1,4 +1,8 @@
 import { Logger } from '../utils/logger.js';
+import {
+  PHOTOSHOP_SETTLE_TIMEOUT_MS,
+  isScriptTimeoutMessage,
+} from '../utils/operation-timeouts.js';
 import { resolveHostPlatform, type HostPlatform } from './host-platform.js';
 import type { PhotoshopInfo } from './ports.js';
 
@@ -17,6 +21,14 @@ export function truncateForLog(s: string, maxLen: number): string {
   if (s.length <= maxLen) return s;
   return `${s.slice(0, maxLen)}…[+${s.length - maxLen} chars]`;
 }
+
+/**
+ * Added to a timeout message that doesn't already say Photoshop may carry on.
+ * It says "working" because telemetry's error classes match on message text:
+ * "Photoshop ... not ... running" reads as `ps_not_running`, not `timeout`.
+ */
+const MAY_STILL_BE_WORKING =
+  ' Photoshop may still be working on that script, so check its state before retrying.';
 
 /**
  * How long a confirmed-running Photoshop is trusted before we probe again.
@@ -75,6 +87,15 @@ export class PhotoshopConnection {
 
   /** Set once a script has ever completed against Photoshop. See `hasReachedPhotoshop`. */
   private everReachedPhotoshop = false;
+
+  /**
+   * Set when a script times out. A timeout stops the wait, not Photoshop, which
+   * can still be running that script, so the next script waits for Photoshop to
+   * answer first. It lives here because this object is the one thing the host
+   * and a separately bundled module both hold: state in a shared utility would
+   * exist once per bundle, and a timeout in one wouldn't be seen by the other.
+   */
+  private awaitingAnswerAfterTimeout = false;
 
   constructor(opts: PhotoshopConnectionOptions = {}) {
     this.logger = new Logger('PhotoshopConnection');
@@ -153,6 +174,7 @@ export class PhotoshopConnection {
       }
 
       await this.ensureRunning(this.photoshopInfo);
+      await this.settleAfterTimeout();
 
       // Guarded rather than left to the logger's own level check: the argument
       // is built before the call, so the gate inside the logger cannot prevent
@@ -177,8 +199,45 @@ export class PhotoshopConnection {
       // than trusting a Photoshop that just failed to run something.
       this.runningLatchUntil = 0;
       this.logFailure(script, error);
+      if (error instanceof Error && isScriptTimeoutMessage(error.message)) {
+        this.awaitingAnswerAfterTimeout = true;
+        if (!/may have kept executing/.test(error.message)) {
+          throw new Error(error.message + MAY_STILL_BE_WORKING, { cause: error });
+        }
+      }
       throw error;
     }
+  }
+
+  /**
+   * For a post-timeout check that does its own waiting: the next script goes
+   * straight through instead of waiting for Photoshop twice.
+   */
+  skipSettleAfterTimeout(): void {
+    this.awaitingAnswerAfterTimeout = false;
+  }
+
+  /**
+   * Waits for Photoshop to answer after an earlier script timed out, and refuses
+   * to run the next one if it doesn't. Only a timeout counts as still busy: any
+   * other failure means Photoshop answered, or is gone, and the script that
+   * follows reports that better than this can.
+   */
+  private async settleAfterTimeout(): Promise<void> {
+    if (!this.awaitingAnswerAfterTimeout) return;
+    try {
+      await this.host.adapter.run("'ready';", PHOTOSHOP_SETTLE_TIMEOUT_MS);
+    } catch (error) {
+      if (error instanceof Error && isScriptTimeoutMessage(error.message)) {
+        throw new Error(
+          `Photoshop did not answer within ${PHOTOSHOP_SETTLE_TIMEOUT_MS}ms: an earlier script ` +
+            'timed out and may still be working, or a dialog may be open. This call did not run. ' +
+            'Try again once Photoshop is free.',
+          { cause: error }
+        );
+      }
+    }
+    this.awaitingAnswerAfterTimeout = false;
   }
 
   /**

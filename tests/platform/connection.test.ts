@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as connectionModule from '@editmamei/platform/connection.ts';
 import { PhotoshopConnection, RUNNING_LATCH_TTL_MS } from '@editmamei/platform/connection.ts';
+import { PHOTOSHOP_SETTLE_TIMEOUT_MS } from '@editmamei/utils/operation-timeouts.ts';
+import { classifyError } from '@editmamei/utils/session-log.ts';
 import type { HostPlatform } from '@editmamei/platform/host-platform.ts';
 import type { PhotoshopInfo, PlatformAdapter } from '@editmamei/platform/ports.ts';
 
@@ -354,5 +356,143 @@ describe('PhotoshopConnection — single-flight detection', () => {
     await conn.executeScript("'pong';");
 
     expect(detector.calls).toBe(2);
+  });
+});
+
+/**
+ * A timeout stops the wait, not Photoshop. The next script waits for Photoshop
+ * to answer first, and doesn't run if it never does.
+ */
+describe('PhotoshopConnection - after a script times out', () => {
+  const WINDOWS_TIMEOUT =
+    'Script execution timeout after 30000ms (cscript run.vbs). Photoshop may have kept executing.';
+  const MAC_TIMEOUT =
+    'osascript exited with code 1: Photoshop got an error: AppleEvent timed out. (-1712)';
+  const READY = "'ready';";
+
+  /** Records what reaches the runner, and answers through `answer`. */
+  function recording(answer: (script: string) => unknown = () => 'ok') {
+    const ran: Array<{ script: string; timeout?: number }> = [];
+    const adapter = new MockAdapter();
+    adapter.run = (async (script: string, timeout?: number) => {
+      ran.push({ script, timeout });
+      return answer(script);
+    }) as MockAdapter['run'];
+    return { ran, conn: makeConnection(adapter, () => 1_000_000) };
+  }
+
+  const scripts = (ran: Array<{ script: string }>) => ran.map((r) => r.script);
+
+  it('waits for Photoshop before the next script, then only once', async () => {
+    const { ran, conn } = recording((script) => {
+      if (script === 'first') throw new Error(WINDOWS_TIMEOUT);
+      return 'ok';
+    });
+    await expect(conn.executeScript('first')).rejects.toThrow(/timeout/);
+
+    await conn.executeScript('second', 777);
+    await conn.executeScript('third');
+
+    expect(scripts(ran)).toEqual(['first', READY, 'second', 'third']);
+    expect(ran[1].timeout).toBe(PHOTOSHOP_SETTLE_TIMEOUT_MS);
+    // The wait doesn't come out of the script's own time.
+    expect(ran[2].timeout).toBe(777);
+  });
+
+  it('does not wait when nothing timed out', async () => {
+    const { ran, conn } = recording();
+    await conn.executeScript('first');
+    await conn.executeScript('second');
+    expect(scripts(ran)).toEqual(['first', 'second']);
+  });
+
+  it('does not wait after a failure that is not a timeout', async () => {
+    const { ran, conn } = recording((script) => {
+      if (script === 'first') throw new Error('some other Photoshop failure');
+      return 'ok';
+    });
+    await expect(conn.executeScript('first')).rejects.toThrow(/other/);
+    await conn.executeScript('second');
+    expect(scripts(ran)).toEqual(['first', 'second']);
+  });
+
+  it('does not read a file name as a timeout', async () => {
+    const { ran, conn } = recording((script) => {
+      if (script === 'first') throw new Error('Could not open E:/photos/IMG-1712.dng');
+      return 'ok';
+    });
+    await expect(conn.executeScript('first')).rejects.toThrow(/^Could not open/);
+    await conn.executeScript('second');
+    expect(scripts(ran)).toEqual(['first', 'second']);
+  });
+
+  it('fails without running the script while Photoshop still does not answer, then tries again', async () => {
+    let busy = true;
+    const { ran, conn } = recording((script) => {
+      if (script === 'first' || busy) throw new Error(WINDOWS_TIMEOUT);
+      return 'ok';
+    });
+    await expect(conn.executeScript('first')).rejects.toThrow(/timeout/);
+
+    await expect(conn.executeScript('second')).rejects.toThrow(/This call did not run/);
+    expect(scripts(ran)).toEqual(['first', READY]);
+
+    busy = false;
+    await conn.executeScript('third');
+    expect(scripts(ran)).toEqual(['first', READY, READY, 'third']);
+  });
+
+  it('runs the script when the wait fails for any other reason', async () => {
+    const { ran, conn } = recording((script) => {
+      if (script === 'first') throw new Error(WINDOWS_TIMEOUT);
+      if (script === READY) throw new Error('some other Photoshop failure');
+      return 'ok';
+    });
+    await expect(conn.executeScript('first')).rejects.toThrow(/timeout/);
+    await expect(conn.executeScript('second')).resolves.toBe('ok');
+    expect(scripts(ran)).toEqual(['first', READY, 'second']);
+  });
+
+  it('skipSettleAfterTimeout lets a check that does its own waiting go straight through', async () => {
+    const { ran, conn } = recording((script) => {
+      if (script === 'first') throw new Error(WINDOWS_TIMEOUT);
+      return 'ok';
+    });
+    await expect(conn.executeScript('first')).rejects.toThrow(/timeout/);
+
+    conn.skipSettleAfterTimeout();
+    await conn.executeScript('probe');
+
+    expect(scripts(ran)).toEqual(['first', 'probe']);
+  });
+
+  it('says Photoshop may still be working on macOS, where the runner message does not', async () => {
+    const { conn } = recording(() => {
+      throw new Error(MAC_TIMEOUT);
+    });
+    await expect(conn.executeScript('first')).rejects.toThrow(
+      /AppleEvent timed out.*Photoshop may still be working on that script/
+    );
+  });
+
+  it('does not say it twice when the runner message already does', async () => {
+    const { conn } = recording(() => {
+      throw new Error(WINDOWS_TIMEOUT);
+    });
+    const error = await conn.executeScript('first').catch((e: Error) => e);
+    expect((error as Error).message).toBe(WINDOWS_TIMEOUT);
+  });
+
+  it('both new messages still count as a timeout in telemetry', async () => {
+    const { conn } = recording(() => {
+      throw new Error(MAC_TIMEOUT);
+    });
+    const timedOut = (await conn.executeScript('first').catch((e: Error) => e)) as Error;
+    expect(timedOut.message).toMatch(/may still be working/);
+    expect(classifyError(timedOut.message)).toBe('timeout');
+
+    const stillBusy = (await conn.executeScript('second').catch((e: Error) => e)) as Error;
+    expect(stillBusy.message).toMatch(/This call did not run/);
+    expect(classifyError(stillBusy.message)).toBe('timeout');
   });
 });

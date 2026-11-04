@@ -34,7 +34,18 @@ export interface ToolBudgetContext {
   deadline: number;
 }
 
-const storage = new AsyncLocalStorage<ToolBudgetContext>();
+/**
+ * One store per process, not per copy of this file. A downloaded module is a
+ * self-contained bundle with its own copy of everything it imports, so a plain
+ * module-level store would leave its scripts unable to see the deadline the host
+ * set, and they would silently fall back to the platform runner's default.
+ */
+const STORE_KEY = Symbol.for('editmamei.toolBudgetStore');
+const processGlobals = globalThis as unknown as Record<
+  symbol,
+  AsyncLocalStorage<ToolBudgetContext> | undefined
+>;
+const storage = (processGlobals[STORE_KEY] ??= new AsyncLocalStorage<ToolBudgetContext>());
 
 /**
  * Build the budget context for a dispatch, honoring any OUTER tool call
