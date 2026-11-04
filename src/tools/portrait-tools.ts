@@ -153,6 +153,7 @@ async function runPortraitOp(
       content: [{ type: 'text' as const, text: summary }],
       structuredContent: {
         op,
+        message: summary,
         faces: faces.length,
         boxes: faces.map((f) => f.bbox),
         image: det.result.image,
@@ -180,6 +181,7 @@ export function createPortraitTools(
           type: 'object',
           properties: {
             op: { type: 'string' },
+            message: { type: 'string', description: 'The result in words, with what to do next.' },
             faces: { type: 'number' },
             boxes: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
             image: { type: 'object' },

@@ -176,16 +176,12 @@ async function replaceSky(
     rawArgs.sky.trim().toLowerCase() === 'list'
   ) {
     const names = presets().map((p) => p.name);
+    const message = names.length
+      ? `Installed skies: ${names.join('; ')}.`
+      : "Photoshop's built-in skies were not found on this computer. Pass sky_file with the absolute path to any image to use as the sky.";
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: names.length
-            ? `Installed skies: ${names.join('; ')}.`
-            : "Photoshop's built-in skies were not found on this computer. Pass sky_file with the absolute path to any image to use as the sky.",
-        },
-      ],
-      structuredContent: { replaced: false, skies: names },
+      content: [{ type: 'text' as const, text: message }],
+      structuredContent: { replaced: false, skies: names, message },
     };
   }
   let sky: ResolvedSky | undefined;
@@ -242,6 +238,11 @@ export function createSkyTools(
           type: 'object',
           properties: {
             replaced: { type: 'boolean' },
+            message: {
+              type: 'string',
+              description:
+                "What sky: 'list' found, and what to do when no built-in skies were found.",
+            },
             strategy_used: { type: 'string' },
             group_name: {
               type: 'string',

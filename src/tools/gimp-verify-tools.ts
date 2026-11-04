@@ -130,7 +130,11 @@ async function gimpGetPreview(
       return {
         content,
         structuredContent: withWarning(
-          { ...result, path: published ? latestName : null },
+          {
+            ...result,
+            path: published ? latestName : null,
+            ...(allowed ? {} : { preview_withheld: true }),
+          },
           unmirroredNote
         ),
       };
@@ -371,7 +375,10 @@ async function gimpCompare(
       return {
         content,
         structuredContent: withWarning(
-          reported as unknown as Record<string, unknown>,
+          {
+            ...(reported as unknown as Record<string, unknown>),
+            ...(previewsWithheld ? { previews_withheld: true } : {}),
+          },
           unmirroredNote
         ),
       };
@@ -407,6 +414,11 @@ export function createGimpVerifyTools(
         outputSchema: {
           type: 'object',
           properties: {
+            preview_withheld: {
+              type: 'boolean',
+              description:
+                'Present and true when the privacy setting kept the image from the model.',
+            },
             width: { type: 'number' },
             height: { type: 'number' },
             proxy: { type: 'boolean' },
@@ -507,6 +519,11 @@ export function createGimpVerifyTools(
         outputSchema: {
           type: 'object',
           properties: {
+            previews_withheld: {
+              type: 'boolean',
+              description:
+                'Present and true when the privacy setting kept the images from the model.',
+            },
             before: { type: 'object' },
             after: { type: 'object' },
             delta: { type: 'object' },

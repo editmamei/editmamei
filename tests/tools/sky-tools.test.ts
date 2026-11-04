@@ -190,6 +190,7 @@ describe('createSkyTools', () => {
     expect(res.structuredContent).toEqual({
       replaced: false,
       skies: PRESETS.map((p) => p.name),
+      message: expect.stringContaining('Spectacular 004 by Russell Brown'),
     });
     expect(JSON.stringify(res.content)).toContain('Spectacular 004 by Russell Brown');
     expect(snippetClient.allBuilds()).toEqual([]);
@@ -199,7 +200,11 @@ describe('createSkyTools', () => {
   it('says how to proceed when listing finds no presets', async () => {
     const res = await callTool(withPresets([]), 'ps_replace_sky', { sky: 'list' });
     expect(res.isError).toBeFalsy();
-    expect(res.structuredContent).toEqual({ replaced: false, skies: [] });
+    expect(res.structuredContent).toEqual({
+      replaced: false,
+      skies: [],
+      message: expect.stringContaining('sky_file'),
+    });
     expect(JSON.stringify(res.content)).toContain('sky_file');
   });
 

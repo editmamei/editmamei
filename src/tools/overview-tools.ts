@@ -260,6 +260,7 @@ export function createOverviewTools(
         outputSchema: {
           type: 'object',
           properties: {
+            brief: { type: 'string', description: 'The whole brief, as markdown.' },
             sections: { type: 'array', items: { type: 'string' } },
             bytes: { type: 'number' },
           },
@@ -271,16 +272,15 @@ export function createOverviewTools(
         },
       },
       handler: async (): Promise<ToolResult> => {
-        // Surface section headings in structuredContent so a downstream
-        // client can render a table of contents without re-parsing the
-        // markdown. Source of truth is the markdown body — the heading
-        // list is derived.
+        // The brief is in structuredContent too: a client can show the model just that part of a
+        // result, and it is the whole answer here.
         const sections = OVERVIEW_MARKDOWN.split('\n')
           .filter((line) => line.startsWith('## '))
           .map((line) => line.replace(/^##\s+/, ''));
         return {
           content: [{ type: 'text' as const, text: OVERVIEW_MARKDOWN }],
           structuredContent: {
+            brief: OVERVIEW_MARKDOWN,
             sections,
             bytes: OVERVIEW_MARKDOWN.length,
           },

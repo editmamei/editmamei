@@ -705,6 +705,7 @@ describe('createGimpCheckpointTools', () => {
       expect(structured.old_image).toBe(5);
       expect(structured.image).toBe(9);
       expect(structured.close_failed).toBe(true);
+      expect(restored.structuredContent?.close_note).toMatch(/could not be closed.*still open/);
       const text = (restored.content?.[0] as { text: string }).text;
       expect(text).toMatch(/disk went away/);
       expect(text).toMatch(/restored as image 9/);
