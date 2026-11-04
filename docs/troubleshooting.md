@@ -9,8 +9,8 @@ Two install types, and they update and store settings differently.
 
 | | **Claude Desktop extension** | **npm / npx** |
 |---|---|---|
-| You installed it by | dragging `editmamei.mcpb` onto the Extensions page | a config entry, or `npm install -g editmamei` |
-| Settings live in | Claude Desktop → **Settings → Extensions → Editmamei** | `~/.editmamei/`, and the `editmamei` CLI |
+| You installed it by | installing `editmamei.mcpb` from Claude Desktop's extension settings | a config entry, or `npm install -g editmamei` |
+| Settings live in | Claude Desktop → **Settings → Desktop app → Manage (next to Extensions) → Editmamei** | `~/.editmamei/`, and the `editmamei` CLI |
 | Updates | only when you install a new bundle | see [Did my update apply?](#did-my-update-apply) |
 
 If you're not sure, run `editmamei status`. It reports which MCP clients Editmamei is registered
@@ -104,7 +104,7 @@ Installing a new bundle can reset the extension's settings, including the **Pro 
 field. Your stored license in `~/.editmamei/` keeps working for a while on its own, so Pro won't
 break immediately. It stops days later, which makes it easy to miss the connection to the update.
 
-After installing a new bundle, open **Settings → Extensions → Editmamei** and check the **Pro
+After installing a new bundle, open **Settings → Desktop app → Manage (next to Extensions) → Editmamei** and check the **Pro
 license key** field still has your key in it. If it's empty, paste it back, save, and restart
 Claude Desktop.
 
@@ -162,8 +162,8 @@ Then restart your AI client.
 **If you use the Claude Desktop extension**, the bundle is a frozen copy. It never updates on its
 own. Download the current
 [`editmamei.mcpb`](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb),
-drag it onto **Settings → Extensions** in Claude Desktop to replace the installed one, then restart
-Claude Desktop. Afterwards, check your **Pro license key** field is still populated.
+install it with the [same steps](installation.md#one-click-install-claude-desktop) to replace the
+installed one, then restart Claude Desktop. Afterwards, check your **Pro license key** field is still populated.
 
 To see what you're actually running, ask your assistant to run `ps_ping`, which reports the
 Editmamei version along with the Photoshop connection.

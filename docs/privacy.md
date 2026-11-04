@@ -119,7 +119,7 @@ Boolean values accept `true`/`false`, `on`/`off`, `yes`/`no`, or `1`/`0`.
 `automation.allow_execute_script` (default `true`): set to `false` to make every tool that runs code refuse: arbitrary scripts (`ps_execute_script`) and recorded Actions (`ps_play_action`), since an Action can contain a script step.
 
 **In Claude Desktop.** The one-click extension has no terminal, so the same two switches appear in
-the extension's own settings (Settings → Extensions → Editmamei): **Share usage stats**
+the extension's own settings (Settings → Desktop app → Manage (next to Extensions) → Editmamei): **Share usage stats**
 (opt-out) and **Share error diagnostics** (opt-in). Toggling them there controls telemetry for
 Claude Desktop without editing any file.
 
