@@ -213,10 +213,7 @@ describe('tool budget store', () => {
 /**
  * The dispatch seam: `ToolRegistry.execute` computes the call's deadline once
  * (`tool-budget-context.ts`), and `runScript` derives each script's own
- * timeout from however much of it remains. Fails against the pre-fix
- * registry, which invoked handlers directly with no budget context at all —
- * every runScript call inside a handler used to fall straight through to the
- * platform runner's flat default regardless of which tool was calling.
+ * timeout from however much of it remains.
  */
 describe('ToolRegistry.execute — per-tool budget propagation', () => {
   it('every script a handler runs inherits (approximately) the same tool budget', async () => {
