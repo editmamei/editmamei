@@ -262,6 +262,35 @@ describe('Kernel.loadDownloaded', () => {
   });
 });
 
+describe('Kernel.isNestedCall', () => {
+  it('is false for a direct dispatch and true for a step run through invokeTool', async () => {
+    const seen: Record<string, boolean> = {};
+    const { kernel, registry } = makeKernel();
+    kernel.loadBuiltins([
+      {
+        manifest: { id: 'm', name: 'M', abi: KERNEL_ABI },
+        register: (host) => {
+          host.registerTools([
+            textTool('photoshop_inner', async () => {
+              seen.inner = kernel.isNestedCall();
+              return { content: [] };
+            }),
+            textTool('photoshop_outer', async () => {
+              seen.outerBefore = kernel.isNestedCall();
+              const res = await host.invokeTool('photoshop_inner', {});
+              seen.outerAfter = kernel.isNestedCall();
+              return res;
+            }),
+          ]);
+        },
+      },
+    ]);
+    await registry.execute('photoshop_outer', {});
+    expect(seen).toEqual({ outerBefore: false, inner: true, outerAfter: false });
+    expect(kernel.isNestedCall()).toBe(false);
+  });
+});
+
 describe('Kernel.invokeTool (broker)', () => {
   it('dispatches to a loaded tool and returns its structured result', async () => {
     const { kernel } = makeKernel();

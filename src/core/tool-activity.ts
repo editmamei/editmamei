@@ -37,6 +37,46 @@ export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   'ps_play_action',
 ]);
 
+/** Ceiling for `UsageEvent.items` — matches the server's per-call bound. */
+export const MAX_CALL_ITEMS = 10_000;
+
+/** A sequence step that puts a new document in front of the steps after it. */
+const DOCUMENT_OPENING_STEPS: ReadonlySet<string> = new Set([
+  'ps_open_document',
+  'ps_create_document',
+  'ps_develop_raw',
+  'gimp_open_document',
+  'gimp_create_document',
+]);
+
+/**
+ * How many documents a batch or sequence call processed, read from the tool's RESULT and never
+ * its arguments. Undefined for every other tool, for a failed call, and when no document was
+ * processed: the server's lower bound is 1, and one bad value rejects the whole batch.
+ *
+ * `ps_batch` reports its own count. `ps_sequence` doesn't, so it is the steps that opened a
+ * document, or 1 when steps ran on whatever was already open.
+ */
+export function itemsFromResult(
+  tool: string,
+  result: { isError?: boolean; structuredContent?: unknown } | undefined
+): number | undefined {
+  if (!result || result.isError) return undefined;
+  const sc = result.structuredContent as { files_processed?: unknown; steps?: unknown } | undefined;
+  let items: unknown;
+  if (tool === 'ps_batch') {
+    items = sc?.files_processed;
+  } else if (tool === 'ps_sequence' && Array.isArray(sc?.steps)) {
+    const ran = (sc.steps as { tool?: unknown; ok?: unknown }[]).filter((s) => s?.ok === true);
+    const opened = ran.filter(
+      (s) => typeof s.tool === 'string' && DOCUMENT_OPENING_STEPS.has(s.tool)
+    ).length;
+    items = ran.length === 0 ? 0 : Math.max(1, opened);
+  }
+  if (typeof items !== 'number' || !Number.isInteger(items) || items < 1) return undefined;
+  return Math.min(items, MAX_CALL_ITEMS);
+}
+
 /**
  * Tools whose successful call reads state without changing the document — used to decide
  * `edits_ok` (a successful call outside this set). See the module doc comment above for the

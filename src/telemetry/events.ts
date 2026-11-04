@@ -74,6 +74,9 @@ export interface UsageEvent {
   /** Serialized result size in bytes (see utils/session-log.ts's computeResultBytes),
    *  clamped to MAX_RESULT_BYTES. Omitted when the caller doesn't have a result to size. */
   result_bytes?: number;
+  /** Documents a ps_batch or ps_sequence call processed (activity.ts's itemsFromResult). Read
+   *  from the result, never the arguments, and omitted for every other tool. */
+  items?: number;
 }
 
 export interface SessionSummaryEvent {
@@ -134,6 +137,11 @@ export interface SessionSummaryEvent {
    * the transport-loss signal, not a bug in the counters.
    */
   usage_calls_sent?: number;
+  /** Bytes returned to the AI client this session. Each call is clamped to MAX_RESULT_BYTES,
+   *  and a sequence's inner steps are left out: only the sequence's own result goes back. */
+  result_bytes?: number;
+  /** Successful calls to a tool in RECIPE_TOOLS (core/tool-activity.ts), at any depth. */
+  recipe_calls?: number;
   /** Boot-time Pro-module background refresh outcome. Included only for installs with a
    *  license record (see TelemetryClient.setModuleUpdate) — a pure-CE install sends nothing. */
   module_update?: 'none' | 'updated' | 'failed';
@@ -313,6 +321,7 @@ export function buildUsageEvent(
     duration_ms: number;
     error_class: string | null;
     result_bytes?: number;
+    items?: number;
   },
   now: Date
 ): UsageEvent {
@@ -332,6 +341,7 @@ export function buildUsageEvent(
     ...(call.result_bytes !== undefined
       ? { result_bytes: Math.min(call.result_bytes, MAX_RESULT_BYTES) }
       : {}),
+    ...(call.items !== undefined ? { items: call.items } : {}),
   };
 }
 
@@ -358,6 +368,8 @@ export function buildSessionSummary(
     dropped_outbox?: number;
     dropped_unsafe?: number;
     usage_calls_sent?: number;
+    result_bytes?: number;
+    recipe_calls?: number;
     module_update?: 'none' | 'updated' | 'failed';
     templates_saved?: number;
     action_sets?: number;
@@ -391,6 +403,8 @@ export function buildSessionSummary(
     ...(summary.usage_calls_sent !== undefined
       ? { usage_calls_sent: summary.usage_calls_sent }
       : {}),
+    ...(summary.result_bytes !== undefined ? { result_bytes: summary.result_bytes } : {}),
+    ...(summary.recipe_calls !== undefined ? { recipe_calls: summary.recipe_calls } : {}),
     ...(summary.module_update !== undefined ? { module_update: summary.module_update } : {}),
     ...(summary.templates_saved !== undefined ? { templates_saved: summary.templates_saved } : {}),
     ...(summary.action_sets !== undefined ? { action_sets: summary.action_sets } : {}),

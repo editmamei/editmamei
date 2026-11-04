@@ -136,6 +136,8 @@ export interface PersistedSessionState {
   dropped_outbox?: number;
   dropped_unsafe?: number;
   usage_calls_sent?: number;
+  result_bytes?: number;
+  recipe_calls?: number;
   module_update?: 'none' | 'updated' | 'failed';
   templates_saved?: number;
   action_sets?: number;

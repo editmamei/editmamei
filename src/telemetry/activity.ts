@@ -13,7 +13,14 @@
  * for the telemetry client. Its sync and exhaustiveness rules are documented there.
  */
 
-export { READ_ONLY_TOOLS, KEPT_WORK_TOOLS, MUTATING_TOOLS } from '../core/tool-activity.js';
+export {
+  READ_ONLY_TOOLS,
+  KEPT_WORK_TOOLS,
+  MUTATING_TOOLS,
+  RECIPE_TOOLS,
+  MAX_CALL_ITEMS,
+  itemsFromResult,
+} from '../core/tool-activity.js';
 
 /**
  * Map the MCP client's self-reported `name` (from the `initialize` handshake) to a fixed
