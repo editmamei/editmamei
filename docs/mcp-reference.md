@@ -46,7 +46,7 @@ MCP client ──stdio, JSON-RPC──▶ editmamei (Node.js MCP server)
 ## Design principles
 
 - **Measure, don't eyeball.** A dedicated set of verification tools (histogram, region compare, layer-bounds diff, selection preview) lets the model check its own work numerically instead of trusting a thumbnail.
-- **Non-destructive by default.** Adjustments are adjustment layers, and destructive pixel operations run on an auto-created duplicate, so an edit stays reversible.
+- **Non-destructive by default.** In Photoshop, adjustments are adjustment layers and destructive pixel operations run on an auto-created duplicate, so an edit stays reversible. In GIMP, adjustments are live filters, and checkpoints stand in for undo.
 - **Built for modern Photoshop.** Editmamei targets Photoshop 2026 (v27.x) so it can rely on current, stable scripting descriptors rather than carrying a decade of drifted behavior.
 
 ## The MCP surface

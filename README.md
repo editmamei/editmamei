@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  An MCP server that lets AI apps edit your photos in desktop Photoshop or GIMP. It edits the photo you have instead of generating a new one, and leaves you a layered file you can keep working on.
+  An MCP (Model Context Protocol) server that lets AI apps edit your photos in desktop Photoshop or GIMP. It edits the photo you have instead of generating a new one, and leaves you a layered file you can keep working on.
 </p>
 
 <p align="center">
@@ -49,7 +49,7 @@ Talk to your assistant the way you'd brief a retoucher. These are three real req
       <br><br>
       <sub>About 8 minutes</sub>
     </td>
-    <td width="62%"><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/example-falls.webp" alt="A waterfall under a flat gray sky, and the same photo with a sunset sky. The waterfall and cliffs are unchanged."></td>
+    <td width="62%"><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/example-falls.webp" alt="A waterfall under a flat gray sky, and the same photo with a sunset sky. The waterfall and cliffs are kept."></td>
   </tr>
   <tr>
     <td>
@@ -118,15 +118,15 @@ Connect is a separate product, and its source isn't in this repository. It edits
 ## How it works
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/how-it-works.webp" width="100%" alt="Diagram. On your computer, your AI app sends tool calls over MCP to Editmamei, which runs each step in Photoshop 2026 through ExtendScript, or in GIMP 3.2 through a headless Python-Fu process, and returns results and previews. The editor produces a layered file you can keep editing. Only your request and small previews cross to the AI model in the cloud, which replies with the next step.">
+  <img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/how-it-works.webp" width="100%" alt="Diagram. On your computer, your AI app sends tool calls over MCP to Editmamei, which runs each step in Photoshop 2026 through ExtendScript, or in GIMP 3.2 through a headless Python-Fu process, and returns results and previews. The editor produces a layered file you can keep editing. Your request, tool results, and previews cross to the AI model in the cloud, which replies with the next step.">
 </p>
 
-Your AI app decides each step and calls Editmamei's tools. Editmamei carries the step out in your editor and reports back with structured results and, when your AI needs to look, a small preview. Your AI reads those and decides what to do next.
+Your AI app decides each step and calls Editmamei's tools. Editmamei carries the step out in your editor and reports back with structured results and, when your AI needs to look, a preview. Your AI reads those and decides what to do next. Editmamei also sends content-free usage telemetry and checks npm for updates; see [Privacy](#privacy).
 
-- **Real edits.** Photoshop or GIMP does the pixel work with its own engine, so nothing is redrawn.
-- **Reversible.** Adjustments land as adjustment layers, and destructive pixel operations run on an automatic duplicate.
+- **Real edits.** Photoshop or GIMP does the pixel work with its own engine, and no generative model touches your photo.
+- **Reversible.** In Photoshop, adjustments land as adjustment layers and destructive pixel operations run on an automatic duplicate. In GIMP, adjustments stay live filters, and checkpoints stand in for undo.
 - **Checked, not assumed.** Histograms, region comparisons, and selection previews let your AI measure its own work.
-- **On-device vision.** Face, object, and scene detection run locally on bundled ONNX models, so your AI can target "the person on the left" without a cloud vision call.
+- **On-device vision.** In Photoshop, face, object, and scene detection run locally on bundled ONNX models, so your AI can target "the person on the left" without a cloud vision call.
 - **Only verified tools ship.** A new tool stays out of the tool list until it has passed live sessions against real Photoshop or GIMP.
 
 **112 tools:** 83 for Photoshop (62 Community, 21 Pro) and 29 for GIMP (all Community). The full list is in [docs/tools.md](docs/tools.md).
@@ -162,13 +162,14 @@ Editmamei runs on your computer and edits in your desktop editor. No image conte
 
 | What | Where it goes | Setting |
 | --- | --- | --- |
-| Your full-size photo | Stays on your computer | |
-| Small previews | Your AI app's model provider, the same as dropping a photo into a chat | `privacy.send_previews_to_llm` (on) |
-| Content-free usage telemetry | Editmamei | `telemetry.usage` (on) |
+| Your photo file | Stays on your computer, apart from the previews below | |
+| Previews, 1024px on the long edge by default (your AI can ask for up to 8192px) | Your AI app's model provider, the same as dropping a photo into a chat | `privacy.send_previews_to_llm` (on) |
+| Tool results: file names, layer names, measurements, and metadata such as GPS if your AI asks for it | Your AI app's model provider | |
+| Content-free usage telemetry, with a random install ID | Editmamei | `telemetry.usage` (on) |
 | Sanitized error details | Editmamei, only if you opt in | `telemetry.diagnostics` (off) |
 | Update check, with no identifiers | The npm registry | `update_check` (on) |
 
-Change any of these with `editmamei config set <setting> false` (or `true`). Pro also checks its license and looks for module updates. Photoshop's own Select Subject and Select Sky can use Adobe's cloud, depending on Photoshop's Image Processing preference.
+Change these with `editmamei config set <setting> false` (or `true`). The Claude Desktop extension has its own switches for telemetry and diagnostics. Pro also sends your license key to a third-party licensing service and to Editmamei's delivery service to check for module updates, and a hashed device ID at activation; these have no setting. Photoshop's own Select Subject and Select Sky can use Adobe's cloud, depending on Photoshop's Image Processing preference.
 
 Every field is documented in [privacy.md](docs/privacy.md), including [your rights, and the legal basis](docs/privacy.md#your-rights-and-the-legal-basis). npm releases are published from this repository with signed provenance, so you can check the package against this source.
 
