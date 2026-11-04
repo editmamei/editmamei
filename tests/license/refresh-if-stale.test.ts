@@ -212,6 +212,13 @@ describe('refreshIfStale', () => {
   // launch 30-day grace but is PAST the 7-day grace. The relational boundary
   // tests below pass under ANY GRACE_MS value, so without this fixture a silent
   // revert to 30 days would pass the whole suite (QA finding, 2026-07-22).
+  it('a stale record marked activation_removed is checked again, and a good answer clears it', async () => {
+    writeLicense(agedRec(31 * DAY_MS, { activation_removed: true }), { dir });
+    const { fetchImpl } = validateFetch('granted');
+    await refreshIfStale(ops({ fetchImpl }));
+    expect(readLicense({ dir })?.activation_removed).toBeUndefined();
+  });
+
   it('day 10 is past the (7-day) grace: grace-expired, and the awaited recovery path runs', async () => {
     writeLicense(agedRec(10 * DAY_MS), { dir });
     expect(evaluateEntitlement(readLicense({ dir }), NOW).reason).toBe('grace-expired');

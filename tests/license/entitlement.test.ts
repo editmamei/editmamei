@@ -60,6 +60,38 @@ function fakeFetch(routes: Route[]): {
   return { fetchImpl, bodies };
 }
 
+/**
+ * The validate endpoint as it behaves with an activation id: 404 when that activation
+ * is gone, 200 for the key alone. `keyStatus` 404 stands for a dead key, which 404s both.
+ */
+function activationGoneFetch(
+  keyStatus = 200,
+  activateStatus = 200
+): {
+  fetchImpl: FetchLike;
+  calls: Array<{ url: string; body: Record<string, unknown> }>;
+} {
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const fetchImpl: FetchLike = async (url, init) => {
+    const body = JSON.parse(init.body) as Record<string, unknown>;
+    calls.push({ url, body });
+    if (url.includes('/validate') && (body.activation_id || keyStatus !== 200)) {
+      return { ok: false, status: 404, text: async () => '{"error":"ResourceNotFound"}' };
+    }
+    if (url.includes('/activate') && activateStatus !== 200) {
+      return { ok: false, status: activateStatus, text: async () => 'activation limit reached' };
+    }
+    const payload = url.includes('/activate')
+      ? {
+          id: 'act_new',
+          license_key: { id: 'lk', display_key: '****-AAAA', status: 'granted', expires_at: null },
+        }
+      : { id: 'lk', status: 'granted', expires_at: null, display_key: '****-AAAA' };
+    return { ok: true, status: 200, text: async () => JSON.stringify(payload) };
+  };
+  return { fetchImpl, calls };
+}
+
 describe('evaluateEntitlement', () => {
   it('no record → not entitled (no-license)', () => {
     expect(evaluateEntitlement(null, NOW)).toEqual({ entitled: false, reason: 'no-license' });
@@ -70,6 +102,16 @@ describe('evaluateEntitlement', () => {
   it('revoked / disabled → not entitled', () => {
     expect(evaluateEntitlement(rec({ status: 'revoked' }), NOW).reason).toBe('revoked');
     expect(evaluateEntitlement(rec({ status: 'disabled' }), NOW).reason).toBe('disabled');
+  });
+  it('a removed activation → not entitled (activation-removed)', () => {
+    expect(evaluateEntitlement(rec({ activation_removed: true }), NOW)).toEqual({
+      entitled: false,
+      reason: 'activation-removed',
+    });
+  });
+  it('an expired license says expired even when its activation was removed', () => {
+    const over = { activation_removed: true, expires_at: new Date(NOW - 1000).toISOString() };
+    expect(evaluateEntitlement(rec(over), NOW).reason).toBe('expired');
   });
   it('past expires_at → expired', () => {
     expect(
@@ -141,26 +183,18 @@ describe('activate', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('activates, validates, and persists the cache (tokenless bodies)', async () => {
+  it('activates and persists the cache from that one response (tokenless body)', async () => {
     const { fetchImpl, bodies } = fakeFetch([
       {
         match: '/activate',
         body: {
           id: 'act_99',
-          license_key: { id: 'lk', display_key: '****-Z', status: 'granted', expires_at: null },
-        },
-      },
-      {
-        match: '/validate',
-        body: {
-          id: 'lk',
-          status: 'granted',
-          limit_activations: 2,
-          usage: 1,
-          validations: 1,
-          expires_at: '2027-06-15T00:00:00.000Z',
-          last_validated_at: null,
-          display_key: '****-Z',
+          license_key: {
+            id: 'lk',
+            display_key: '****-Z',
+            status: 'granted',
+            expires_at: '2027-06-15T00:00:00.000Z',
+          },
         },
       },
     ]);
@@ -177,7 +211,8 @@ describe('activate', () => {
     expect(readLicense({ dir })?.high_water_mark).toBe(new Date(NOW).toISOString());
     expect(bodies[0]).toMatchObject({ key: 'etta-key', organization_id: 'org_test' });
     expect(typeof bodies[0].label).toBe('string');
-    expect(bodies[1]).toEqual({ key: 'etta-key', organization_id: 'org_test' });
+    // Nothing can fail between taking the seat and recording its id.
+    expect(bodies).toHaveLength(1);
   });
 
   it('maps the seat-cap 403 and writes nothing', async () => {
@@ -227,6 +262,45 @@ describe('activate', () => {
     expect(urls.some((u) => u.includes('/validate'))).toBe(true);
     expect(urls.some((u) => u.includes('/activate'))).toBe(false);
   });
+
+  it('takes a new seat when the check finds the activation removed, in three requests', async () => {
+    writeLicense(rec({ key: 'SAME' }), { dir });
+    const { fetchImpl, calls } = activationGoneFetch();
+    const r = await activate('SAME', { dir, fetchImpl, config: CFG, now: () => NOW });
+    expect(r.activation_id).toBe('act_new');
+    expect(r.activation_removed).toBeUndefined();
+    expect(readLicense({ dir })?.activation_id).toBe('act_new');
+    expect(calls.map((c) => c.url.split('/').pop())).toEqual(['validate', 'validate', 'activate']);
+  });
+
+  it('a record marked removed whose activation validates again takes no new seat', async () => {
+    writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+    const { fetchImpl, bodies } = fakeFetch([
+      { match: '/validate', body: { status: 'granted', expires_at: null, display_key: 'k' } },
+    ]);
+    const r = await activate('SAME', { dir, fetchImpl, config: CFG, now: () => NOW });
+    expect(r.activation_id).toBe('act_1');
+    expect(r.activation_removed).toBeUndefined();
+    expect(bodies).toHaveLength(1);
+  });
+
+  it('takes no seat for a dead key', async () => {
+    writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+    const { fetchImpl, calls } = activationGoneFetch(404);
+    await expect(activate('SAME', { dir, fetchImpl, config: CFG })).rejects.toMatchObject({
+      code: 'invalid_license',
+    });
+    expect(calls.some((c) => c.url.includes('/activate'))).toBe(false);
+  });
+
+  it('keeps the removed mark and the key when the new activation is refused', async () => {
+    writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+    const { fetchImpl } = activationGoneFetch(200, 403);
+    await expect(activate('SAME', { dir, fetchImpl, config: CFG })).rejects.toMatchObject({
+      code: 'seat_limit_reached',
+    });
+    expect(readLicense({ dir })).toMatchObject({ key: 'SAME', activation_removed: true });
+  });
 });
 
 describe('refresh + deactivate', () => {
@@ -258,6 +332,84 @@ describe('refresh + deactivate', () => {
     const updated = await refresh({ dir, fetchImpl, config: CFG, now: () => NOW });
     expect(updated?.status).toBe('revoked');
     expect(readLicense({ dir })?.status).toBe('revoked');
+  });
+
+  it('refresh validates with the activation id', async () => {
+    writeLicense(rec(), { dir });
+    const { fetchImpl, bodies } = fakeFetch([
+      { match: '/validate', body: { status: 'granted', expires_at: null, display_key: 'k' } },
+    ]);
+    await refresh({ dir, fetchImpl, config: CFG, now: () => NOW });
+    expect(bodies).toEqual([
+      { key: 'ETTA-KEY', organization_id: 'org_test', activation_id: 'act_1' },
+    ]);
+  });
+
+  it('refresh marks a removed activation only after the key alone validates', async () => {
+    writeLicense(rec(), { dir });
+    const { fetchImpl, calls } = activationGoneFetch();
+    const updated = await refresh({ dir, fetchImpl, config: CFG, now: () => NOW + 1000 });
+    expect(updated?.activation_removed).toBe(true);
+    expect(calls.map((c) => c.body.activation_id)).toEqual(['act_1', undefined]);
+    // The key stays on disk, and the check still counts as a check.
+    expect(readLicense({ dir })).toMatchObject({
+      key: 'ETTA-KEY',
+      activation_removed: true,
+      last_validated_at: new Date(NOW + 1000).toISOString(),
+    });
+    expect(evaluateEntitlement(readLicense({ dir }), NOW + 1000).reason).toBe('activation-removed');
+  });
+
+  it('refresh leaves the record alone when the key itself is dead', async () => {
+    const before = rec();
+    writeLicense(before, { dir });
+    const { fetchImpl, calls } = activationGoneFetch(404);
+    await expect(refresh({ dir, fetchImpl, config: CFG })).rejects.toMatchObject({
+      code: 'invalid_license',
+      httpStatus: 404,
+    });
+    expect(calls).toHaveLength(2);
+    expect(readLicense({ dir })).toEqual(before);
+  });
+
+  it('refresh does not mark anything when the confirming check does not get through', async () => {
+    const before = rec();
+    writeLicense(before, { dir });
+    const fetchImpl: FetchLike = async (_url, init) => ({
+      ok: false,
+      status: (JSON.parse(init.body) as { activation_id?: string }).activation_id ? 404 : 503,
+      text: async () => '',
+    });
+    await expect(
+      refresh({ dir, fetchImpl, config: CFG, client: { sleep: async () => {} } })
+    ).rejects.toMatchObject({ code: 'transient' });
+    expect(readLicense({ dir })).toEqual(before);
+  });
+
+  it('refresh clears the mark when the activation validates again', async () => {
+    writeLicense(rec({ activation_removed: true }), { dir });
+    const { fetchImpl } = fakeFetch([
+      { match: '/validate', body: { status: 'granted', expires_at: null, display_key: 'k' } },
+    ]);
+    const updated = await refresh({ dir, fetchImpl, config: CFG, now: () => NOW });
+    expect(updated?.activation_removed).toBeUndefined();
+    expect(evaluateEntitlement(readLicense({ dir }), NOW).entitled).toBe(true);
+  });
+
+  it('refresh does not overwrite an activation that landed during its requests', async () => {
+    writeLicense(rec(), { dir });
+    const replaced = rec({ activation_id: 'act_2' });
+    const fetchImpl: FetchLike = async () => {
+      writeLicense(replaced, { dir });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '{"status":"granted","expires_at":null,"display_key":"k"}',
+      };
+    };
+    const r = await refresh({ dir, fetchImpl, config: CFG, now: () => NOW });
+    expect(r?.activation_id).toBe('act_2');
+    expect(readLicense({ dir })).toEqual(replaced);
   });
 
   it('refresh returns null when there is no license', async () => {
@@ -329,6 +481,14 @@ describe('refresh + deactivate', () => {
       organization_id: 'org_test',
       activation_id: 'act_1',
     });
+  });
+
+  it('deactivate of a removed activation clears locally without asking the server', async () => {
+    writeLicense(rec({ activation_removed: true }), { dir });
+    const { fetchImpl, bodies } = fakeFetch([]);
+    expect(await deactivate({ dir, fetchImpl, config: CFG })).toBe(true);
+    expect(bodies).toEqual([]);
+    expect(existsSync(join(dir, 'license.json'))).toBe(false);
   });
 
   it('deactivate clears locally even when the network call fails', async () => {

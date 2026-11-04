@@ -47,6 +47,7 @@ Read the reason in brackets and follow the matching row:
 | `granted` | Pro is unlocked | If tools are still missing, restart your AI client. A newly downloaded module only loads on the next start. |
 | `grace-expired` | Your license hasn't checked in recently enough | Usually [the restart loop](#the-restart-loop) below. If your system clock has been wrong, see [a clock set behind](#a-clock-set-behind) instead. |
 | `revoked` / `disabled` | The license is no longer active | Check your subscription status. Once it's running again, run `editmamei license` to re-check it, then restart your AI client so the Pro tools load. |
+| `activation-removed` | This device was removed from your license | If you removed it on purpose, also clear the key from your AI client's settings if it's set there, or Pro will activate on this device again. Otherwise, if your license is on its maximum of 2 devices, remove one in your account portal (the "Manage" link in your purchase email). Then run `editmamei activate YOUR-KEY` and restart your AI client so the Pro tools load. If your key is set in your AI client's settings, restarting the client is enough. |
 | `expired` | The license has an end date that has passed | Renew, then run `editmamei activate YOUR-KEY` and restart your AI client so the Pro tools load. |
 
 If `editmamei license` says **"No license activated on this device"** instead of printing the

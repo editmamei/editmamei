@@ -37,7 +37,7 @@ export interface ValidatedLicenseKey {
 /** Polar's `LicenseKeyActivationRead` (subset). */
 export interface ActivationResult {
   id: string;
-  license_key: { id: string; display_key: string; status: string; expires_at: string | null };
+  license_key?: { id: string; display_key: string; status: string; expires_at: string | null };
 }
 
 export class PolarLicenseError extends Error {
@@ -149,11 +149,19 @@ export class PolarLicenseClient {
   /**
    * The ONLY retried endpoint, because it is the only idempotent one: validating
    * twice reads the same verdict twice and costs nothing else. See `post`.
+   *
+   * With an `activationId`, a 404 can mean the activation is gone OR the key is
+   * dead: the endpoint answers both the same way. Validate again without it to
+   * tell them apart (see `refresh` in entitlement.ts).
    */
-  async validate(key: string): Promise<ValidatedLicenseKey> {
+  async validate(key: string, activationId?: string): Promise<ValidatedLicenseKey> {
     return this.post<ValidatedLicenseKey>(
       '/customer-portal/license-keys/validate',
-      { key, organization_id: this.cfg.organizationId },
+      {
+        key,
+        organization_id: this.cfg.organizationId,
+        ...(activationId ? { activation_id: activationId } : {}),
+      },
       { retry: true }
     );
   }

@@ -277,6 +277,26 @@ describe('licenseAdvisory — the cause it names is the cause it is', () => {
 
   const now = () => NOW;
 
+  it('tells a removed device how to come back, not round the restart loop', () => {
+    writeLicense(rec({ activation_removed: true }), { dir });
+    const text = licenseAdvisory({ dir, now }) ?? '';
+
+    expect(text).toContain('Pro is not unlocking');
+    expect(text).toContain('removed from your license');
+    expect(text).toContain('editmamei activate YOUR-KEY');
+    expect(text).toContain('restart your MCP client');
+    expect(text).toContain('support@editmamei.com');
+    for (const phrase of [...RESTART_LOOP_WORDS, ...GRACE_WINDOW_WORDS, ...WAIT_CAVEAT_WORDS]) {
+      expect(text).not.toContain(phrase);
+    }
+  });
+
+  it('says a removed device may take a while only while a retry is being held off', () => {
+    writeLicense(rec({ activation_removed: true }), { dir });
+    updateCheckState({ validate_retry_after: NOW + 60_000 }, { dir });
+    expect(licenseAdvisory({ dir, now })).toContain(WAIT_CAVEAT_WORDS[0]);
+  });
+
   it('sends a revoked license to its subscription status, not round the restart loop', () => {
     writeLicense(rec({ status: 'revoked' }), { dir });
     const text = licenseAdvisory({ dir, now }) ?? '';

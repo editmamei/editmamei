@@ -25,6 +25,7 @@ import {
   unrefSleep,
   type FetchLike,
   type PolarClientOptions,
+  type ValidatedLicenseKey,
 } from './polar-client.js';
 import { Logger } from '../utils/logger.js';
 
@@ -96,7 +97,13 @@ export const VALIDATE_BACKOFF_DEFAULT_MS = 15 * 60_000;
 export const VALIDATE_BACKOFF_MAX_MS = 6 * 60 * 60 * 1000;
 
 export type EntitlementReason =
-  'granted' | 'no-license' | 'revoked' | 'disabled' | 'expired' | 'grace-expired';
+  | 'granted'
+  | 'no-license'
+  | 'revoked'
+  | 'disabled'
+  | 'activation-removed'
+  | 'expired'
+  | 'grace-expired';
 
 export interface Entitlement {
   entitled: boolean;
@@ -111,6 +118,7 @@ export function evaluateEntitlement(rec: LicenseRecord | null, now: number): Ent
   if (rec.expires_at !== null && Date.parse(rec.expires_at) <= now) {
     return { entitled: false, reason: 'expired' };
   }
+  if (rec.activation_removed === true) return { entitled: false, reason: 'activation-removed' };
   const last = Date.parse(rec.last_validated_at);
   if (!Number.isFinite(last) || now - last > GRACE_MS) {
     return { entitled: false, reason: 'grace-expired' };
@@ -203,7 +211,7 @@ export function isProEntitled(ops: LicenseStoreOptions = {}): boolean {
   return evaluateEntitlement(readLicense(ops), Date.now()).entitled;
 }
 
-/** Register this device with Polar, validate, and cache the result. */
+/** Register this device with Polar and cache the result. */
 export async function activate(key: string, ops: LicenseOps = {}): Promise<LicenseRecord> {
   const trimmed = key.trim();
   if (!trimmed) throw new PolarLicenseError('A license key is required.', 0, 'invalid_license');
@@ -212,26 +220,30 @@ export async function activate(key: string, ops: LicenseOps = {}): Promise<Licen
   // device — so re-running `activate` on a machine already activated with this
   // key would consume the SECOND seat (sandbox-verified footgun). If the cache
   // already holds this key on this device, re-validate instead of activating.
+  // The exception is an activation that no longer exists: there is no seat held
+  // here to protect, so this goes on to take a new one.
   const existing = readLicense(ops);
   if (existing && existing.key === trimmed && existing.activation_id) {
     const refreshed = await refresh(ops);
-    if (refreshed) return refreshed;
+    if (refreshed && refreshed.activation_removed !== true) return refreshed;
   }
 
   const { polar, cfg } = makeClient(ops);
   const now = ops.now ?? Date.now;
   const deviceHash = computeDeviceHash();
   const activation = await polar.activate(trimmed, deviceHash);
-  const v = await polar.validate(trimmed);
   const nowMs = now();
+  // Written from this response with no further request first: the seat is already
+  // taken, and losing its id to a later failure would make the next attempt take
+  // another one. A successful activation means the key is granted.
   const rec: LicenseRecord = {
     key: trimmed,
     organization_id: cfg.organizationId,
-    status: v.status,
-    expires_at: v.expires_at,
+    status: 'granted',
+    expires_at: activation.license_key?.expires_at ?? null,
     activation_id: activation.id,
     device_hash: deviceHash,
-    display_key: v.display_key,
+    display_key: activation.license_key?.display_key ?? '',
     last_validated_at: new Date(nowMs).toISOString(),
     // Seed the monotonic high-water-mark from whatever this device
     // already recorded (if any) plus now.
@@ -339,7 +351,7 @@ export async function refreshIfStale(ops: RefreshIfStaleOptions = {}): Promise<v
   };
 
   if (clockSkewed || age <= GRACE_MS) {
-    // Still entitled: refresh in the background. Deliberately NOT awaited —
+    // Inside the window: refresh in the background. Deliberately NOT awaited —
     // this runs ahead of the MCP handshake and must add zero latency to it.
     refresh(bootOps).catch((err) => {
       noteValidateFailure(err, ops);
@@ -385,19 +397,88 @@ export async function refreshIfStale(ops: RefreshIfStaleOptions = {}): Promise<v
   }
 }
 
+/**
+ * Boot-path re-activation of a record marked `activation_removed`, for an install
+ * whose key comes from its environment. It runs ahead of the MCP handshake and can
+ * repeat on every boot while the license is at its seat cap, so the wait is bounded
+ * and a failure backs off through the same marker as a failed validate. A license
+ * the last check found inactive, or past its end date, is left alone.
+ */
+export async function reactivateAtBoot(
+  key: string,
+  ops: RefreshIfStaleOptions = {}
+): Promise<void> {
+  const rec = readLicense(ops);
+  if (!rec || rec.key !== key || rec.activation_removed !== true) return;
+  if (rec.status !== 'granted') return;
+  const now = (ops.now ?? Date.now)();
+  if (rec.expires_at !== null && Date.parse(rec.expires_at) <= now) return;
+  const backoffUntil = readCheckState(ops).validate_retry_after;
+  if (backoffUntil !== undefined) {
+    const waitMs = backoffUntil - now;
+    if (waitMs > 0 && waitMs <= VALIDATE_BACKOFF_MAX_MS) return;
+  }
+
+  const attempt = activate(key, { ...ops, client: { sleep: unrefSleep, ...ops.client } });
+  // Attached here so a rejection after the deadline still backs off, and is handled.
+  attempt.catch((err) => noteValidateFailure(err, ops));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const winner = await Promise.race([
+      attempt,
+      new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(
+          () => resolve('timeout'),
+          ops.expiredRefreshTimeoutMs ?? EXPIRED_REFRESH_TIMEOUT_MS
+        );
+        timer.unref?.();
+      }),
+    ]);
+    if (winner === 'timeout') {
+      logger.warn('Re-activation did not finish in time — continuing as Community.');
+    } else {
+      logger.info('Re-activated this device from EDITMAMEI_LICENSE_KEY.');
+    }
+  } catch (err) {
+    logger.warn(
+      `Could not re-activate this device (continuing as Community): ` +
+        `${err instanceof Error ? err.message : String(err)}`
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** Re-validate the cached key online and refresh the verdict. Returns null if no license. */
 export async function refresh(ops: LicenseOps = {}): Promise<LicenseRecord | null> {
   const rec = readLicense(ops);
   if (!rec) return null;
   const { polar } = makeClient(ops);
   const now = ops.now ?? Date.now;
-  const v = await polar.validate(rec.key);
+  let activationRemoved = false;
+  let v: ValidatedLicenseKey;
+  try {
+    v = await polar.validate(rec.key, rec.activation_id);
+  } catch (err) {
+    if (!(err instanceof PolarLicenseError) || err.httpStatus !== 404 || !rec.activation_id) {
+      throw err;
+    }
+    // A 404 here is either a removed activation or a dead key. Validating the key
+    // alone tells them apart, and throws as before when the key is the problem.
+    v = await polar.validate(rec.key);
+    activationRemoved = true;
+  }
+  // A deactivate or a new activation may have landed during those requests, and
+  // this verdict is about the record they replaced.
+  const current = readLicense(ops);
+  if (!current || current.activation_id !== rec.activation_id) return current;
   const nowMs = now();
   const updated: LicenseRecord = {
     ...rec,
     status: v.status,
     expires_at: v.expires_at,
     display_key: v.display_key,
+    activation_removed: activationRemoved ? true : undefined,
     last_validated_at: new Date(nowMs).toISOString(),
     // Never let the high-water-mark move backward, even if this
     // refresh's clock reading is behind what was already recorded.
@@ -415,7 +496,8 @@ export async function deactivate(ops: LicenseOps = {}): Promise<boolean> {
   if (!rec) return false;
   const { polar } = makeClient(ops);
   try {
-    await polar.deactivate(rec.key, rec.activation_id);
+    // A removed activation has no seat left to free, and asking would only fail.
+    if (rec.activation_removed !== true) await polar.deactivate(rec.key, rec.activation_id);
   } finally {
     // Always clear locally — even if the network call fails, the user intends
     // to stop using Pro here; the seat reconciles on the next server-side check.

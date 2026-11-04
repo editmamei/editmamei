@@ -169,6 +169,72 @@ describe('maybeActivateFromEnv', () => {
     expect(polarCalled).toBe(false);
   });
 
+  describe('a record marked activation_removed', () => {
+    const urlsFor = (activateStatus = 200) => {
+      const urls: string[] = [];
+      const fetchImpl: FetchLike = async (url, init) => {
+        urls.push(url);
+        const withId = (JSON.parse(init.body) as { activation_id?: string }).activation_id;
+        if (url.includes('/validate') && withId) {
+          return { ok: false, status: 404, text: async () => '' };
+        }
+        if (url.includes('/activate') && activateStatus !== 200) {
+          return { ok: false, status: activateStatus, text: async () => 'activation limit' };
+        }
+        return okFetch(url, init);
+      };
+      return { urls, fetchImpl };
+    };
+    const boot = (fetchImpl: FetchLike, extra: Record<string, unknown> = {}) =>
+      maybeActivateFromEnv(
+        { EDITMAMEI_LICENSE_KEY: 'SAME' },
+        { dir, config: CFG, fetchImpl, ...extra },
+        NO_DELIVERY
+      );
+
+    it('takes a new seat, and the next boot takes none', async () => {
+      writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+      const { urls, fetchImpl } = urlsFor();
+      await boot(fetchImpl);
+      expect(readLicense({ dir })).toMatchObject({ activation_id: 'act' });
+      expect(readLicense({ dir })?.activation_removed).toBeUndefined();
+      expect(urls.filter((u) => u.includes('/activate'))).toHaveLength(1);
+
+      urls.length = 0;
+      await boot(fetchImpl);
+      expect(urls).toEqual([]);
+    });
+
+    it('backs off after a refusal, so the next boot makes no request', async () => {
+      writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+      const { urls, fetchImpl } = urlsFor(403);
+      await boot(fetchImpl);
+      expect(urls.some((u) => u.includes('/activate'))).toBe(true);
+      expect(readLicense({ dir })?.activation_removed).toBe(true);
+
+      urls.length = 0;
+      await boot(fetchImpl);
+      expect(urls).toEqual([]);
+    });
+
+    it('makes no request for a license the last check found inactive or ended', async () => {
+      const { urls, fetchImpl } = urlsFor();
+      writeLicense(rec({ key: 'SAME', activation_removed: true, status: 'revoked' }), { dir });
+      await boot(fetchImpl);
+      const ended = new Date(Date.now() - 1000).toISOString();
+      writeLicense(rec({ key: 'SAME', activation_removed: true, expires_at: ended }), { dir });
+      await boot(fetchImpl);
+      expect(urls).toEqual([]);
+    });
+
+    it('does not hold boot when the request hangs', async () => {
+      writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+      const hang: FetchLike = () => new Promise(() => {});
+      await boot(hang, { expiredRefreshTimeoutMs: 20 });
+      expect(readLicense({ dir })?.activation_removed).toBe(true);
+    });
+  });
+
   it('env key differs from cache → re-activates', async () => {
     writeLicense(rec({ key: 'OLD' }), { dir });
     await maybeActivateFromEnv(
