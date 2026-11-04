@@ -66,7 +66,7 @@ Yes. Editmamei can drive GIMP headless as a second editor, on Windows, macOS, or
 
 Core editing doesn't. Editmamei never requires a network call to drive Photoshop. Its own network calls are few and content-free: usage telemetry (which tools ran, whether they succeeded, versions, and per-session counts), sent best-effort in the background and switchable off with `editmamei config set telemetry.usage false`; a boot-time update check (an anonymous version lookup against the npm registry, also switchable off in settings); and, on Pro, license activation and daily revalidation (sent to a third-party licensing service, carrying your license key) plus a check on every startup against Editmamei's delivery endpoint for a newer Pro module (your license key in a request header and a fixed user-agent string that is the same for every install; not governed by the update-check setting). None of these carry images, paths, or tool arguments; usage telemetry is tied to a random install ID. Every telemetry field is documented in [privacy.md](privacy.md).
 
-Your AI assistant is separate. Editmamei runs as a stdio subprocess of your AI assistant (Claude Desktop, Cursor, etc.), and that assistant is itself a cloud service governed by its own privacy policy. When you ask the AI to look at a visual preview, Editmamei sends a downscaled JPEG to *that AI provider* on your behalf, exactly as if you'd dropped the file into a chat with it. To stop that, set `privacy.send_previews_to_llm` to `false` (it covers Photoshop and GIMP; see [privacy.md](privacy.md)). So an internet connection is required for the AI to function, even if Editmamei the server isn't transmitting anything itself.
+Your AI assistant is separate. Editmamei runs as a stdio subprocess of your AI assistant (Claude Desktop, Cursor, etc.), and that assistant is itself a cloud service governed by its own privacy policy. When you ask the AI to look at a visual preview, Editmamei sends a preview JPEG to *that AI provider* on your behalf, exactly as if you'd dropped the file into a chat with it. To stop that, set `privacy.send_previews_to_llm` to `false` (it covers Photoshop and GIMP; see [privacy.md](privacy.md)). So an internet connection is required for the AI to function, even if Editmamei the server isn't transmitting anything itself.
 
 ### Does it need Generative Fill / Adobe cloud features?
 
@@ -98,7 +98,7 @@ Yes. A Pro template carries the look, photo by photo: save a look once, then hav
 
 ### How does the AI know what the image looks like?
 
-Through `ps_get_preview`, which returns a downscaled JPEG of the current document state. The AI calls this when it needs to verify its own work or judge an aesthetic outcome. It can also call `ps_get_histogram` for per-channel pixel distributions and `ps_inspect` for dimensions, color mode, and embedded profile.
+Through `ps_get_preview`, which returns a preview JPEG of the current document state. The AI calls this when it needs to verify its own work or judge an aesthetic outcome. It can also call `ps_get_histogram` for per-channel pixel distributions and `ps_inspect` for dimensions, color mode, and embedded profile.
 
 ### Does the AI see my photos? Where do the vision models run?
 

@@ -36,7 +36,7 @@ The Community edition covers the core editing surface most photographers need da
 - **Layer transforms and straightening:** move, scale, rotate, and fit-to-document on the active layer; background layers auto-promote instead of erroring, so you can straighten a tilted phone shot in one step
 - **Content-aware retouch:** Content-Aware Fill, Patch, and Content-Aware Move, each driven against a selection the AI can verify first. Erase a distraction or repair a blemish without leaving the conversation
 - **History:** undo, redo, inspect history states
-- **Visual verification:** downscaled preview JPEGs returned inline, layer-bounds diffs, region comparison, and 256-bin per-channel histograms with mean, stdev, and median
+- **Visual verification:** preview JPEGs returned inline, layer-bounds diffs, region comparison, and 256-bin per-channel histograms with mean, stdev, and median
 - **Document insight:** camera metadata (make, model, lens, ISO, focal length, GPS), ACR develop settings, full layer tree as JSON, capability overview, plus `ps_document` to list the open documents and switch which one is active
 - **Text:** create text layers, set font, size, color, and alignment, update content
 - **Image placement:** place image files into the document

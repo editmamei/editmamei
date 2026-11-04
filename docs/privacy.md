@@ -11,8 +11,8 @@ The short version: your photos aren't uploaded to us. What Editmamei sends to it
 servers is content-free usage data, tied to a random install ID (documented field-for-field
 below, and you can switch it off with one command). If you have Pro, your license key also goes
 to a third-party licensing service, and to Editmamei's delivery endpoint on each startup (see
-[Pro](#pro)). (When your AI assistant needs to see an edit, a downscaled preview
-goes to that assistant; covered under "Your AI assistant is a cloud service" below.)
+[Pro](#pro)). (When your AI assistant needs to see an edit, a preview goes to
+that assistant, along with tool results; covered under "Your AI assistant is a cloud service" below.)
 
 ---
 
@@ -22,7 +22,8 @@ There is one line Editmamei does not cross, on any setting or edition:
 
 - **Your images.** No photos, previews, thumbnails, layer renders, or other pixel data are ever
   sent to Editmamei.
-- **Your file paths.** Full paths stay local. Where a path is unavoidable in an opt-in
+- **Your file paths.** Full paths are never sent to Editmamei. Tool results can show them to your
+  AI assistant. Where a path is unavoidable in an opt-in
   diagnostic message, it's reduced to a bare filename first (see [Sanitization](#sanitization)).
 - **Your metadata.** Camera info, GPS, and author fields are never sent to Editmamei. Your
   AI assistant can read them (for example when it requests a document's metadata).
@@ -474,8 +475,11 @@ cleanup; delete the files whenever you like.
 
 The AI assistant you drive Editmamei with (Claude Desktop, Cursor, and the like) is a cloud
 service governed by its own privacy policy. When you ask it to look at an image (for example,
-the visual-verification preview), Editmamei hands a downscaled JPEG to **that AI provider** on
-your behalf, exactly as if you'd dropped the file into a chat with it. That's a property of
+the visual-verification preview), Editmamei hands a preview JPEG to **that AI provider** on
+your behalf, exactly as if you'd dropped the file into a chat with it. Previews are 1024 pixels on
+the long edge by default, and your AI assistant can ask for up to 8192, so a smaller photo can go at
+full size. Tool results go to the same provider, and they can include file paths, layer names,
+measurements, and document metadata. That's a property of
 using a cloud AI, and a function of which assistant you choose, not a hop Editmamei adds.
 
 ---
@@ -484,13 +488,14 @@ using a cloud AI, and a function of which assistant you choose, not a hop Editma
 
 Pro licensing is content-free. Activation sends your license key and a hashed device identifier
 (a salted SHA-256 of hostname, username, platform and architecture, so no raw values; Pro covers
-two devices per license) to the licensing service, a third-party licensing provider. About once a
-day, revalidation sends the license key (plus the store's organization ID) to the same service,
-without the device identifier. Neither request carries document, image, or path data.
+two devices per license) to the licensing service, a third-party licensing provider, which assigns
+an activation ID to that device. About once a day, revalidation sends the license key and activation
+ID (plus the store's organization ID) to the same service, without the hashed device identifier.
+Neither request carries document, image, or path data.
 
 On every Pro startup, Editmamei also asks its own delivery endpoint whether a newer Pro module
-exists, and downloads the signed, encrypted module if so. That request carries your license key (in
-a request header) and a fixed user-agent string that is the same for every install, and no document
+exists, and downloads the signed, encrypted module if so. That request carries your license key and
+activation ID (in request headers) and a fixed user-agent string that is the same for every install, and no document
 data. It is not governed by the `update_check` setting. Your photos stay on your machine, exactly as
 with the rest of Editmamei.
 
