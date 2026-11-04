@@ -20,6 +20,10 @@
 </p>
 
 <p align="center">
+  <a href="https://aipluginindex.com/mcp/editmamei-editmamei-photoshop-mcp"><img src="https://aipluginindex.com/badge/mcp/editmamei-editmamei-photoshop-mcp.svg" height="44" alt="AI Plugin Index security grade"></a>
+</p>
+
+<p align="center">
   <a href="#install"><strong>Install</strong></a> ·
   <a href="https://editmamei.com">Website</a> ·
   <a href="docs/getting-started.md">Docs</a> ·
@@ -39,15 +43,42 @@
 
 ## What you can ask
 
-Once it's connected, talk to your assistant the way you'd brief a retoucher:
+Talk to your assistant the way you'd brief a retoucher. These are three real requests, each in a fresh chat, with the result each one got.
 
-- _"Open my vacation photo."_
-- _"Make the sky more dramatic but keep the foreground natural."_
-- _"Sharpen the eyes, soften the skin, leave everything else alone."_
-- _"Isolate the subject onto its own layer with a clean mask."_
-- _"Export a 2048px web JPEG."_
+<table>
+  <tr>
+    <td width="38%">
+      <em>"Replace the sky with one of Photoshop's sunset skies. Keep the waterfall, the cliffs and the spray exactly as they are, warm the foreground a little so the light matches the new sky, then check the horizon at full size for halos or leftover patches of the old sky and fix them before you call it done."</em>
+      <br><br>
+      <sub>About 8 minutes</sub>
+    </td>
+    <td width="62%"><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/example-falls.webp" alt="A waterfall under a flat gray sky, and the same photo with a sunset sky. The waterfall and cliffs are unchanged."></td>
+  </tr>
+  <tr>
+    <td>
+      <em>"Give this beach photo a bright, airy summer-afternoon look. Lift the shadows on the sand so it reads clean and white, deepen the blue in the sky while keeping the clouds bright, and let the umbrella's colors pop without looking fake."</em>
+      <br><br>
+      <sub>About 6 minutes</sub>
+    </td>
+    <td><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/example-beach.webp" alt="A beach with a rainbow umbrella, and the same photo with brighter sand, a deeper blue sky and stronger umbrella colors."></td>
+  </tr>
+  <tr>
+    <td>
+      <em>"Get this ready for three places: an Instagram post, an Instagram story with room at the top and bottom for text, and an 8x10 print for a frame. Keep the puppy's face and both ears in frame in all three."</em>
+      <br><br>
+      <sub>About 4 minutes</sub>
+    </td>
+    <td><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/example-puppy.webp" alt="A puppy lying in autumn leaves, and three versions of the photo: an Instagram post, an Instagram story and an 8x10 print, each with the face and both ears in frame."></td>
+  </tr>
+</table>
 
-Your assistant turns those into tool calls, checks the result with previews and measurements, and iterates.
+Smaller requests work too, like _"Isolate the subject onto its own layer with a clean mask"_ or _"Export a 2048px web JPEG."_
+
+Here's the waterfall edit in its session. Your AI app runs beside your editor, and the result arrives on layers you can open and change yourself.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/session.webp" width="100%" alt="Claude Desktop next to Photoshop. The chat shows the sky replacement request and a report of what was checked. Photoshop shows the waterfall with its new sky, and the layers panel lists separate named layers with masks.">
+</p>
 
 ## Install
 
@@ -74,8 +105,12 @@ Then restart your AI app and ask it: _"Is Photoshop connected?"_ For anything `e
 | | |
 | --- | --- |
 | **Editor** | Adobe Photoshop 2026 (v27.x) on Windows 10/11 or macOS 13+, or GIMP 3.2 on Windows, macOS, or Linux |
-| **AI app** | Any app that can run a local MCP server. Editmamei ships no model of its own, so every edit spends that app's tokens. |
+| **AI app** | Any app that can run a local MCP server |
 | **Node.js** | 22+, for the npm route only |
+
+**What to expect**
+
+A first edit takes a while. The three requests above took 4 to 8 minutes, because your AI looks, plans, and checks at every step. Editmamei ships no model of its own, so every edit spends your AI app's tokens, and [we measured what an edit costs](https://editmamei.com/blog/what-an-edit-costs).
 
 ## Editmamei Connect
 
