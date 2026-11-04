@@ -46,8 +46,42 @@ const logger = new Logger('operation-timeouts');
  */
 export const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
 
-/** No per-tool budget in the table below goes under this, however fast the tool measures. */
+/**
+ * Hard floor on any resolved budget, including one scaled down by
+ * `EDITMAMEI_SCRIPT_TIMEOUT_MS`. `gimp_*` budgets are measured against this.
+ */
 export const SCRIPT_TIMEOUT_FLOOR_MS = 5_000;
+
+/**
+ * No `ps_*` budget in the table below goes under this, however fast the tool
+ * measures. A measured number describes the installs it was measured on: time
+ * in Photoshop grows with document size and machine load, and a call that runs
+ * while Photoshop is finishing something else waits for it first. A budget that
+ * fires too early reports a failure for an operation Photoshop goes on to
+ * finish, so measurement only ever raises a budget above this.
+ */
+export const PHOTOSHOP_MIN_BUDGET_MS = 30_000;
+
+/**
+ * How long the next script waits for Photoshop to answer after a script timed
+ * out (`connection.ts`). Photoshop runs one script at a time, so a trivial one
+ * returns only once whatever was still running has finished.
+ */
+export const PHOTOSHOP_SETTLE_TIMEOUT_MS = 30_000;
+
+/**
+ * Whether a failure message is a script timeout: `run-child.ts`'s rejection, the
+ * queue watchdog's plain fallback, or macOS's AppleEvent timeout (-1712).
+ * Deliberately doesn't match "modal", see the `ERROR_CLASS_TABLE` ordering note
+ * in `session-log.ts`.
+ *
+ * The -1712 alternative is bounded on both sides. Bare `-1712` also matches
+ * inside an echoed file path, so a "could not open" error naming IMG-1712.dng
+ * would read as a timeout.
+ */
+export function isScriptTimeoutMessage(message: string): boolean {
+  return /Script execution timeout|AppleEvent timed out|(?:^|[\s(])-1712(?:[\s)]|$)/i.test(message);
+}
 
 /** `ps_open_document` — large RAW files can exceed 30s on first ACR engine init. */
 export const OPEN_DOCUMENT_TIMEOUT_MS = 120_000;
@@ -148,7 +182,8 @@ export const SEQUENCE_OVERALL_TIMEOUT_MS = 300_000;
  * the old flat 30s ceiling (`ceiling_hits > 0`) floors its candidate at
  * 30000, since the clean subset of a censored row understates the true
  * tail. The tool's budget is the max candidate across all its rows, rounded
- * up to the nearest second. A false timeout is worse than a slow one —
+ * up to the nearest second, and never below `PHOTOSHOP_MIN_BUDGET_MS`. A false
+ * timeout is worse than a slow one —
  * Photoshop keeps executing after the child is killed — so the max/1.5x
  * term exists specifically to keep the budget at or above every duration
  * already observed for that tool, not just its percentile.
@@ -160,11 +195,11 @@ export const SEQUENCE_OVERALL_TIMEOUT_MS = 300_000;
  * this table has never heard of. `getToolTimeoutMs()`'s own completeness is
  * pinned by `tests/integration/tool-timeout-budgets.test.ts`.
  *
- * A tool that needs a bigger budget than whatever this table (or the
- * default) resolves to isn't stuck with it: its own handler passes its own
- * explicit `timeoutMs` at its own `runScript` call site instead, which
- * always wins — see `run-script.ts`. The overrides above this table already
- * do exactly that.
+ * A tool that isn't in this table can declare a budget on its own
+ * `ToolDefinition` (`budgetMs`), which every script in the call then shares.
+ * One script that needs more than the call's budget passes its own explicit
+ * `timeoutMs` at its `runScript` call site instead, which always wins — see
+ * `run-script.ts`. The overrides above this table already do exactly that.
  */
 export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   ps_open_document: OPEN_DOCUMENT_TIMEOUT_MS,
@@ -187,63 +222,60 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   ps_read_scene: 164_000,
   ps_selection_channel: 123_000,
 
-  // Moderately long.
+  // Measured above the minimum.
   ps_select: 54_000,
   ps_modify_selection: 37_000,
   ps_filter: 31_000,
-  ps_get_histogram: 25_000,
-  ps_create_document: 20_000,
-  ps_detect: 19_000,
-  ps_get_preview: 17_000,
-  ps_resize_image: 16_000,
-  ps_get_selection_preview: 14_000,
-  ps_undo: 12_000,
-  ps_export: 9_000,
-  ps_path: 10_000,
-  ps_crop_document: 10_000,
-  ps_inspect: 7_000,
-  ps_duplicate_layer: 7_000,
-  ps_shape: 7_000,
-  ps_text: 7_000,
-  ps_set_layer: 6_000,
-  ps_bake_layer: 6_000,
 
-  // Rows carrying calls already censored at the old flat 30s ceiling — the
-  // formula's own max(...,30000) floor, not a hand-picked number.
-  ps_document: 30_000,
-  ps_apply_adjustment: 30_000,
-  ps_close_document: 30_000,
-  ps_group: 30_000,
-  ps_clipping_mask: 30_000,
-  ps_convert_image_mode: 30_000,
-  ps_convert_to_smart_object: 30_000,
-  ps_create_layer: 30_000,
-  ps_fill_layer: 30_000,
-  ps_select_layer: 30_000,
-  ps_transform_layer: 30_000,
-  ps_transform_canvas: 30_000,
-  ps_guides: 30_000,
-  ps_retouch: 30_000,
-  ps_select_by_reference: 30_000,
-
-  // Clean p99 well under the shared default; floored at SCRIPT_TIMEOUT_FLOOR_MS.
-  ps_list_capabilities: 5_000,
-  ps_add_adjustment_layer: 5_000,
-  ps_redo: 5_000,
-  ps_place_image: 5_000,
-  ps_move_layer_to_position: 5_000,
-  ps_rasterize_layer: 5_000,
-  ps_copy_to_new_layer: 5_000,
-  ps_merge: 5_000,
-  ps_add_layer_style: 5_000,
-  ps_delete_layer: 5_000,
-  ps_add_fill_layer: 5_000,
-  ps_overview: 5_000,
-  ps_get_layer_bounds_diff: 5_000,
-  ps_compare_regions: 5_000,
-  ps_layer_mask: 5_000,
-  ps_vector_mask: 5_000,
-  ps_apply_image: 5_000,
+  // At the minimum.
+  ps_get_histogram: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_create_document: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_detect: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_get_preview: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_resize_image: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_get_selection_preview: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_undo: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_export: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_path: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_crop_document: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_inspect: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_duplicate_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_shape: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_text: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_set_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_bake_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_document: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_apply_adjustment: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_close_document: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_group: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_clipping_mask: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_convert_image_mode: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_convert_to_smart_object: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_create_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_fill_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_select_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_transform_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_transform_canvas: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_guides: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_retouch: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_select_by_reference: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_list_capabilities: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_add_adjustment_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_redo: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_place_image: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_move_layer_to_position: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_rasterize_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_copy_to_new_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_merge: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_add_layer_style: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_delete_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_add_fill_layer: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_overview: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_get_layer_bounds_diff: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_compare_regions: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_layer_mask: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_vector_mask: PHOTOSHOP_MIN_BUDGET_MS,
+  ps_apply_image: PHOTOSHOP_MIN_BUDGET_MS,
 
   // No deadline of its own, deliberately — the one entry here that is not a
   // duration. ps_sequence dispatches other tools and runs no script itself, so
@@ -454,7 +486,8 @@ function resolveScriptTimeoutScale(): number {
 export const SCRIPT_TIMEOUT_SCALE = resolveScriptTimeoutScale();
 
 /**
- * The budget for one MCP tool call — this tool's table entry if it has one,
+ * The budget for one MCP tool call — the budget the tool declares on its own
+ * definition if it does, otherwise this tool's table entry if it has one,
  * otherwise `DEFAULT_SCRIPT_TIMEOUT_MS`, scaled by
  * `EDITMAMEI_SCRIPT_TIMEOUT_MS` if set, and floored at
  * `SCRIPT_TIMEOUT_FLOOR_MS` regardless of how small that scaling would
@@ -471,10 +504,12 @@ export const SCRIPT_TIMEOUT_SCALE = resolveScriptTimeoutScale();
  * false against every bound, so it would reach a platform runner as a timeout
  * and fail every script instantly.
  */
-export function getToolTimeoutMs(toolName: string): number {
-  const base = Object.hasOwn(TOOL_TIMEOUT_BUDGETS_MS, toolName)
-    ? TOOL_TIMEOUT_BUDGETS_MS[toolName]
-    : DEFAULT_SCRIPT_TIMEOUT_MS;
+export function getToolTimeoutMs(toolName: string, declaredBudgetMs?: number): number {
+  const base =
+    declaredBudgetMs ??
+    (Object.hasOwn(TOOL_TIMEOUT_BUDGETS_MS, toolName)
+      ? TOOL_TIMEOUT_BUDGETS_MS[toolName]
+      : DEFAULT_SCRIPT_TIMEOUT_MS);
   if (!Number.isFinite(base)) return base;
   return Math.max(Math.round(base * SCRIPT_TIMEOUT_SCALE), SCRIPT_TIMEOUT_FLOOR_MS);
 }

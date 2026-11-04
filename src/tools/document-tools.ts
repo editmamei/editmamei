@@ -9,6 +9,7 @@ import {
   OPEN_DOCUMENT_REPROBE_TIMEOUT_MS,
   SAVE_PSD_REPROBE_TIMEOUT_MS,
   getToolTimeoutMs,
+  isScriptTimeoutMessage,
 } from '../utils/operation-timeouts.js';
 import { toolErrorResult, runSnippetTool } from '../utils/tool-helpers.js';
 import { checkOutputPath, recordOutputPath, requireLocalImagePath } from '../utils/local-path.js';
@@ -695,30 +696,6 @@ async function closeDocument(
   }
 }
 
-/** Matches run-child.ts's timeout rejection (both the richer per-exec message
- * and the queue watchdog's plain "Script execution timeout" fallback) — the
- * only path 3b's re-probe is allowed to fire on. Deliberately does NOT match
- * on "modal" — see the ERROR_CLASS_TABLE ordering note in session-log.ts for
- * the matching classifier decision.
- *
- * Also matches macOS's AppleEvent timeout
- * ("AppleEvent timed out (-1712)" / bare "-1712"). AppleScript's own Apple
- * Event timeout (default 120s, now explicitly set to match the caller's
- * budget — see macos-runner.ts's buildAppleScriptWrapper) is a distinct
- * failure class from run-child.ts's own kill-timeout, but it means the same
- * thing for this re-probe's purposes: Photoshop kept running past the
- * caller's wrapper giving up, so the post-timeout success re-probe should
- * fire on it too. */
-function isScriptTimeoutError(message: string): boolean {
-  // The -1712 alternative is bounded on both sides. Bare `-1712` matched
-  // anywhere in the message, including inside an echoed file path — a
-  // "could not open" error naming E:/photos/IMG-1712.dng would classify as
-  // a timeout, fire the re-probe, and (if that file happened to be open
-  // already) report "confirmed it actually completed" for an open that
-  // never ran. Exactly the false-success class this release exists to kill.
-  return /Script execution timeout|AppleEvent timed out|(?:^|[\s(])-1712(?:[\s)]|$)/i.test(message);
-}
-
 /**
  * Phase 3b — post-timeout success re-probe. Fires ONLY when
  * openDocumentPipeline's own runScript() rejected with a timeout: the
@@ -746,6 +723,7 @@ async function reprobeOpenDocument(
 ): Promise<Record<string, unknown> | null> {
   try {
     const probeScript = await snippetClient.build('probeOpenDocument', { filePath });
+    connection.skipSettleAfterTimeout();
     const result = (await runScript(connection, probeScript, OPEN_DOCUMENT_REPROBE_TIMEOUT_MS)) as {
       success?: boolean;
     } & Record<string, unknown>;
@@ -802,7 +780,7 @@ async function openDocumentPipeline(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
-    if (filePath !== undefined && isScriptTimeoutError(message)) {
+    if (filePath !== undefined && isScriptTimeoutMessage(message)) {
       const reprobed = await reprobeOpenDocument(connection, snippetClient, filePath);
       if (reprobed) {
         const note =
@@ -839,6 +817,7 @@ async function reprobeSavedPsd(
   outputPath: string,
   startedAt: number
 ): Promise<ToolResult | null> {
+  connection.skipSettleAfterTimeout();
   try {
     await runScript(connection, 'return { ready: true };', SAVE_PSD_REPROBE_TIMEOUT_MS);
   } catch {
@@ -936,7 +915,7 @@ async function savePsdPipeline(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (isScriptTimeoutError(message)) {
+    if (isScriptTimeoutMessage(message)) {
       res =
         (await reprobeSavedPsd(connection, outputPath, startedAt)) ??
         toolErrorResult(

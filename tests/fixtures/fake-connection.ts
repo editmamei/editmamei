@@ -93,6 +93,9 @@ export class FakePhotoshopConnection {
     return this.info;
   }
 
+  /** Mirrors PhotoshopConnection.skipSettleAfterTimeout. The fake has nothing to wait for. */
+  skipSettleAfterTimeout(): void {}
+
   /** Mirrors PhotoshopConnection.hasReachedPhotoshop (2026-08-11). */
   hasReachedPhotoshop(): boolean {
     return this.everReachedPhotoshop;
