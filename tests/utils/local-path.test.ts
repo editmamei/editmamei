@@ -147,6 +147,23 @@ describe('requireLocalImagePath', () => {
     }
   );
 
+  it.each(['x.jsx/', 'x.jsx/.', 'x.jsx\\.', 'x.jsx/y/..', 'x.jsx/./', 'x.jsx/ ', 'x.jsx./.'])(
+    'refuses a path that resolves to a script (%j)',
+    (name) => {
+      expect(() =>
+        requireLocalImagePath('file_path', `C:/Users/me/Downloads/${name}`, { platform: 'win32' })
+      ).toThrow(/not an image/);
+    }
+  );
+
+  it('refuses the same on macOS paths, and leaves an image behind a dot segment alone', () => {
+    expect(() =>
+      requireLocalImagePath('file_path', '/Users/me/x.jsx/.', { platform: 'darwin' })
+    ).toThrow(/not an image/);
+    const image = '/Users/me/./x.jpg';
+    expect(requireLocalImagePath('file_path', image, { platform: 'darwin' })).toBe(image);
+  });
+
   it('still applies every requireLocalPath rule first', () => {
     expect(() =>
       requireLocalImagePath('sky_file', '\\\\server\\s\\sky.jpg', { platform: 'win32' })

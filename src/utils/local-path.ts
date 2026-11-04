@@ -121,10 +121,13 @@ export function requireLocalPath(
   }
 }
 
-/** `path` without trailing dots and spaces (a loop, not a regex: no backtracking on a long run). */
-function withoutTrailingDotsAndSpaces(path: string): string {
+/**
+ * `path` without trailing dots, spaces and separators (a loop, not a regex: no backtracking on a
+ * long run).
+ */
+function withoutTrailingFiller(path: string): string {
   let end = path.length;
-  while (end > 0 && (path[end - 1] === '.' || path[end - 1] === ' ')) end--;
+  while (end > 0 && '. /\\'.includes(path[end - 1])) end--;
   return path.slice(0, end);
 }
 
@@ -142,8 +145,11 @@ export function requireLocalImagePath(
   opts: LocalPathOptions = {}
 ): string {
   const path = requireLocalPath(field, value, opts);
-  // Windows drops trailing dots and spaces when it opens a file, so `x.jsx.` opens `x.jsx`.
-  if (NOT_AN_IMAGE_EXT_RE.test(withoutTrailingDotsAndSpaces(path))) {
+  const platform = opts.platform ?? platformOverride ?? process.platform;
+  // Check what the path resolves to, so `x.jsx/.` and `x.jsx/y/..` read as `x.jsx`. Windows also
+  // drops trailing dots and spaces when it opens a file, so `x.jsx.` opens `x.jsx`.
+  const resolved = (platform === 'win32' ? pathWin32 : pathPosix).resolve(path);
+  if (NOT_AN_IMAGE_EXT_RE.test(withoutTrailingFiller(resolved))) {
     throw new PathArgumentError(
       `"${field}" is a script, Action or preset file, not an image: "${String(value)}". ` +
         'Open or place an image or document instead.'

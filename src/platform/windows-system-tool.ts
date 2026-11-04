@@ -11,6 +11,9 @@ export function windowsSystemTool(
   name: string,
   env: Record<string, string | undefined> = process.env
 ): string {
-  const root = env.SystemRoot || env.windir || 'C:\\Windows';
+  const root =
+    env.SystemRoot ||
+    env.windir ||
+    (env.SystemDrive ? `${env.SystemDrive}\\Windows` : 'C:\\Windows');
   return pathWin32.join(root, 'System32', name);
 }

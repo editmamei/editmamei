@@ -7,13 +7,17 @@ import { Logger } from '@editmamei/utils/logger.ts';
 // exercised without touching a real filesystem. Hoisted per Vitest's
 // vi.mock() hoisting rules (the factory runs before this file's other
 // top-level statements, so the mock fn must be created via vi.hoisted()).
-const { accessMock, execMock } = vi.hoisted(() => ({
+const { accessMock, execFileMock } = vi.hoisted(() => ({
   accessMock: vi.fn(async (_path: string): Promise<void> => {
     throw new Error('ENOENT');
   }),
-  execMock: vi.fn(
-    (_cmd: string, cb: (err: Error | null, result: { stdout: string; stderr: string }) => void) =>
-      cb(null, { stdout: '', stderr: '' })
+  execFileMock: vi.fn(
+    (
+      _file: string,
+      _args: string[],
+      _opts: unknown,
+      cb: (err: Error | null, result: { stdout: string; stderr: string }) => void
+    ) => cb(null, { stdout: '', stderr: '' })
   ),
 }));
 
@@ -24,7 +28,7 @@ vi.mock('fs/promises', async (importOriginal) => {
 
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>();
-  return { ...actual, exec: execMock };
+  return { ...actual, execFile: execFileMock };
 });
 
 /**
@@ -44,6 +48,23 @@ type PrivateDetector = {
 function asPrivate(d: WindowsDetector): PrivateDetector {
   return d as unknown as PrivateDetector;
 }
+
+describe('WindowsDetector — registry queries', () => {
+  it('runs reg.exe directly, with each argument separate', async () => {
+    execFileMock.mockClear();
+    await (
+      new WindowsDetector() as unknown as { findViaRegistry(): Promise<unknown> }
+    ).findViaRegistry();
+    const calls = execFileMock.mock.calls.map(([file, args]) => [file, args]);
+    expect(calls[0][0]).toMatch(/[\\/]System32[\\/]reg\.exe$/);
+    expect(calls[0][1]).toEqual(['query', 'HKLM\\SOFTWARE\\Adobe\\Photoshop', '/s']);
+    expect(calls[2][1]).toEqual([
+      'query',
+      'HKCR\\CLSID\\{06870682-6f3c-4b97-9143-f03e85c0bd3e}\\LocalServer32',
+      '/ve',
+    ]);
+  });
+});
 
 describe('WindowsDetector — pure parsing logic', () => {
   it('readRegistryEntries pulls (version, path) tuples out of `reg query /s` output', () => {
