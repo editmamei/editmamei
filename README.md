@@ -46,7 +46,7 @@ You don't need Node.js for this route, because Claude Desktop ships its own runt
 ```bash
 npm install -g editmamei
 editmamei install   # registers with Claude Desktop, Cursor, Claude Code
-editmamei status    # confirms install state + Photoshop detection
+editmamei status    # shows which AI apps it's registered with
 ```
 
 Then restart your AI app and ask it: _"Is Photoshop connected?"_ For anything `editmamei install` doesn't detect, see [docs/clients.md](docs/clients.md).
@@ -130,7 +130,6 @@ Settings live in `~/.editmamei/settings.json`, managed by the `editmamei config`
 ```bash
 editmamei config list
 editmamei config set telemetry.usage false      # turn off usage telemetry
-editmamei config set ps_path "/path/to/Photoshop"
 ```
 
 `PHOTOSHOP_PATH` (env var) overrides Photoshop auto-detection for a single run.
