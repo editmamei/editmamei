@@ -101,15 +101,15 @@ describe('createSequenceTools', () => {
     // as a script timeout and fail every step instantly.
     const conn = makeConnection();
     const registry = new ToolRegistry();
-    // ps_get_histogram deliberately: its budget differs from
+    // ps_read_scene deliberately: its budget differs from
     // DEFAULT_SCRIPT_TIMEOUT_MS, so the bounds below can tell the step's own
     // budget apart from a fallback to the shared default — a tool whose budget
     // happens to equal the default could not. It is also absent from
     // HISTORY_UNSAFE_TOOLS, so extending this test to on_error='rollback'
     // later fails on a budget assertion rather than at validation.
     registry.register(
-      'ps_get_histogram',
-      fakeTool('ps_get_histogram', async () => {
+      'ps_read_scene',
+      fakeTool('ps_read_scene', async () => {
         await runScript(conn.asConnection(), 'inner script');
         return ok();
       })
@@ -120,7 +120,7 @@ describe('createSequenceTools', () => {
     registry.register('ps_sequence', seq);
 
     await registry.execute('ps_sequence', {
-      steps: [{ tool: 'ps_get_histogram', args: {} }],
+      steps: [{ tool: 'ps_read_scene', args: {} }],
     });
 
     // One execution, and the bounds below show it carried the STEP's budget.
@@ -130,7 +130,7 @@ describe('createSequenceTools', () => {
     expect(conn.executions).toHaveLength(1);
     const timeout = conn.executions[0].timeout;
     expect(Number.isFinite(timeout), `runner got a non-finite timeout: ${timeout}`).toBe(true);
-    const own = getToolTimeoutMs('ps_get_histogram');
+    const own = getToolTimeoutMs('ps_read_scene');
     expect(own).not.toBe(DEFAULT_SCRIPT_TIMEOUT_MS);
     const TOLERANCE_MS = 500;
     expect(timeout).toBeGreaterThan(own - TOLERANCE_MS);

@@ -1,5 +1,6 @@
 import { PhotoshopAPI, PhotoshopAPIFactory } from '../api/photoshop-api.js';
 import type { PhotoshopConnection } from '../platform/connection.js';
+import { isScriptTimeoutMessage } from './operation-timeouts.js';
 import { currentToolBudget } from './tool-budget-context.js';
 
 /**
@@ -87,7 +88,7 @@ export async function runScript(
   try {
     return await api.executeScript(script, effectiveTimeoutMs);
   } catch (error) {
-    if (budget && isScriptTimeoutError(error)) {
+    if (budget && error instanceof Error && isScriptTimeoutMessage(error.message)) {
       // effectiveTimeoutMs, not budget.budgetMs: a later script in a
       // multi-script call can fail on a small REMAINING slice of a large
       // tool budget, and naming the tool's full nominal budget there would
@@ -100,20 +101,4 @@ export async function runScript(
     }
     throw error;
   }
-}
-
-/**
- * Recognizes both platforms' timeout-shaped failures. Windows and the
- * shared script queue reject with a message starting "Script execution
- * timeout" (run-child.ts / script-queue.ts). macOS never reaches that
- * marker on a timeout — the Apple Event manager gives up on its own and
- * `osascript` reports it on stderr as a non-zero exit whose text contains
- * "AppleEvent timed out" and error -1712 (see macos-runner.ts's runOnce).
- */
-function isScriptTimeoutError(error: unknown): error is Error {
-  if (!(error instanceof Error)) return false;
-  return (
-    error.message.startsWith('Script execution timeout') ||
-    /AppleEvent timed out|-1712\b/.test(error.message)
-  );
 }

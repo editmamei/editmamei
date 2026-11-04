@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runScript } from '@editmamei/utils/run-script.ts';
+import { classifyError } from '@editmamei/utils/session-log.ts';
 import { PhotoshopAPIFactory } from '@editmamei/api/photoshop-api.ts';
 import { budgetContextFor, runWithToolBudget } from '@editmamei/utils/tool-budget-context.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
@@ -91,12 +92,12 @@ describe('runScript — deadline fallback and timeout enrichment', () => {
   });
 
   it('an explicit timeoutMs ABOVE the tool budget still wins, unclamped — annotated-preview shape', async () => {
-    // Mirrors ps_get_preview (17s budget) passing ANNOTATED_PREVIEW_TIMEOUT_MS
+    // Mirrors ps_get_preview (30s budget) passing ANNOTATED_PREVIEW_TIMEOUT_MS
     // (90s) for an annotated call: the explicit request is what the caller
     // knows it needs, and it must not be silently cut down to the tool's
     // typical-case budget.
     const conn = makeConnection();
-    await runWithToolBudget(budgetContextFor('ps_get_preview', 17_000), () =>
+    await runWithToolBudget(budgetContextFor('ps_get_preview', 30_000), () =>
       runScript(conn.asConnection(), 'return 1;', 90_000)
     );
     expect(conn.lastTimeout()).toBe(90_000);
@@ -158,6 +159,17 @@ describe('runScript — deadline fallback and timeout enrichment', () => {
     expect(conn.executions).toHaveLength(0);
   });
 
+  it('a call that ran out of budget before starting counts as a timeout in telemetry', async () => {
+    const conn = makeConnection();
+    const pastContext = { toolName: 'ps_fake_tool', budgetMs: 4242, deadline: Date.now() - 1000 };
+
+    const error = await runWithToolBudget(pastContext, () =>
+      runScript(conn.asConnection(), 'return 1;')
+    ).catch((e: Error) => e);
+
+    expect(classifyError((error as Error).message)).toBe('timeout');
+  });
+
   it('names the tool and the bound that fired when a timeout fires, keeping the runner warning', async () => {
     const conn = makeConnection({
       throwOnExecute: new Error(
@@ -192,6 +204,18 @@ describe('runScript — deadline fallback and timeout enrichment', () => {
         runScript(conn.asConnection(), 'return 1;')
       )
     ).rejects.toThrow(/^Tool 'ps_fake_tool' exceeded its \d+ms budget: .*AppleEvent timed out/);
+  });
+
+  it('does not read a file name as a macOS timeout', async () => {
+    const conn = makeConnection({
+      throwOnExecute: new Error('Could not open E:/photos/IMG-1712.dng: not a valid document'),
+    });
+
+    await expect(
+      runWithToolBudget(budgetContextFor('ps_fake_tool', 4242), () =>
+        runScript(conn.asConnection(), 'return 1;')
+      )
+    ).rejects.toThrow(/^Could not open/);
   });
 
   it('reports the explicit override that actually fired, when it is smaller than the tool budget', async () => {
