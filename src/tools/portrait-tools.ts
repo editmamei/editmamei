@@ -181,6 +181,7 @@ export function createPortraitTools(
           type: 'object',
           properties: {
             op: { type: 'string' },
+            message: { type: 'string', description: 'The result in words, with what to do next.' },
             faces: { type: 'number' },
             boxes: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
             image: { type: 'object' },

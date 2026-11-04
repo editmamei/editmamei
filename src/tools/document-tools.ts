@@ -370,6 +370,10 @@ export function createDocumentTools(
         outputSchema: {
           type: 'object',
           properties: {
+            message: {
+              type: 'string',
+              description: 'Present when a timed-out open turned out to have completed.',
+            },
             success: { type: 'boolean' },
             document_name: { type: 'string' },
             width_px: { type: 'number' },

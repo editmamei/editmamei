@@ -414,6 +414,11 @@ export function createGimpVerifyTools(
         outputSchema: {
           type: 'object',
           properties: {
+            preview_withheld: {
+              type: 'boolean',
+              description:
+                'Present and true when the privacy setting kept the image from the model.',
+            },
             width: { type: 'number' },
             height: { type: 'number' },
             proxy: { type: 'boolean' },
@@ -514,6 +519,11 @@ export function createGimpVerifyTools(
         outputSchema: {
           type: 'object',
           properties: {
+            previews_withheld: {
+              type: 'boolean',
+              description:
+                'Present and true when the privacy setting kept the images from the model.',
+            },
             before: { type: 'object' },
             after: { type: 'object' },
             delta: { type: 'object' },

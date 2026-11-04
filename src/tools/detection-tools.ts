@@ -302,6 +302,7 @@ export function createDetectionTools(
         outputSchema: {
           type: 'object',
           properties: {
+            message: { type: 'string', description: 'The result in words, with what to do next.' },
             image: {
               type: 'object',
               properties: { width: { type: 'number' }, height: { type: 'number' } },

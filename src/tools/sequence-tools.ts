@@ -127,6 +127,10 @@ const stepResultItemSchema = {
 const sequenceOutputSchema = {
   type: 'object' as const,
   properties: {
+    message: {
+      type: 'string',
+      description: 'The outcome in words, including why a rollback failed.',
+    },
     on_error: { type: 'string' },
     return: { type: 'string' },
     total_steps: { type: 'number' },
