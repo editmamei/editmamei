@@ -1,17 +1,32 @@
-# Editmamei
+<p align="center">
+  <a href="https://editmamei.com"><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/logo.webp" width="96" height="96" alt="Editmamei logo"></a>
+</p>
 
-**Give your AI assistant a real photo editor.**
+<h1 align="center">Editmamei</h1>
 
-Editmamei is an MCP (Model Context Protocol) server that lets AI apps edit your photos in desktop Adobe Photoshop. Ask for the edit in your own words, and your assistant carries it out with Photoshop's real adjustment layers, masks, selections, and filters. It edits the photo you have instead of generating a new one, and you end up with a layered file you can keep working on yourself. GIMP is supported too.
+<p align="center">
+  <strong>Give your AI assistant a real photo editor.</strong>
+</p>
 
-> Independent project, not affiliated with or endorsed by Adobe Inc.
+<p align="center">
+  An MCP (Model Context Protocol) server that lets AI apps edit your photos in desktop Photoshop or GIMP. It edits the photo you have instead of generating a new one, and leaves you a layered file you can keep working on.
+</p>
 
-[![npm version](https://img.shields.io/npm/v/editmamei.svg)](https://www.npmjs.com/package/editmamei)
-[![CI](https://github.com/editmamei/editmamei/actions/workflows/ci.yml/badge.svg)](https://github.com/editmamei/editmamei/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](LICENSE.md)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](docs/installation.md)
+<p align="center">
+  <a href="https://www.npmjs.com/package/editmamei"><img src="https://img.shields.io/npm/v/editmamei.svg" alt="npm version"></a>
+  <a href="https://github.com/editmamei/editmamei/actions/workflows/ci.yml"><img src="https://github.com/editmamei/editmamei/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg" alt="License: FSL-1.1-MIT"></a>
+  <a href="docs/installation.md"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="Platform: Windows, macOS, Linux"></a>
+  <a href="https://glama.ai/mcp/servers/editmamei/editmamei"><img src="https://glama.ai/mcp/servers/editmamei/editmamei/badges/score.svg" alt="Glama score"></a>
+</p>
 
-**[Install](#install)** · [Website](https://editmamei.com) · [Docs](docs/getting-started.md) · [Editmamei Connect](#editmamei-connect) · [Report a bug](https://github.com/editmamei/editmamei/issues)
+<p align="center">
+  <a href="#install"><strong>Install</strong></a> ·
+  <a href="https://editmamei.com">Website</a> ·
+  <a href="docs/getting-started.md">Docs</a> ·
+  <a href="#editmamei-connect">Editmamei Connect</a> ·
+  <a href="https://github.com/editmamei/editmamei/issues">Report a bug</a>
+</p>
 
 <p align="center">
   <a href="https://editmamei.com"><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/batch-flip.webp" width="540" alt="Seventy-three travel photos graded in Photoshop from one sentence: the prompt, the grading calls three photos at a time, and the finished set."></a>
@@ -19,29 +34,60 @@ Editmamei is an MCP (Model Context Protocol) server that lets AI apps edit your 
   <sub>A real run: 73 travel photos, one sentence, graded in Photoshop.</sub>
 </p>
 
+<p align="center">
+  <sub>Independent project, not affiliated with or endorsed by Adobe Inc.</sub>
+</p>
+
 ## What you can ask
 
-Once it's connected, talk to your assistant the way you'd brief a retoucher:
+Talk to your assistant the way you'd brief a retoucher. These are three real requests, each in a fresh chat, with the result each one got.
 
-- _"Open my vacation photo."_
-- _"Make the sky more dramatic but keep the foreground natural."_
-- _"Sharpen the eyes, soften the skin, leave everything else alone."_
-- _"Isolate the subject onto its own layer with a clean mask."_
-- _"Export a 2048px web JPEG."_
+<table>
+  <tr>
+    <td width="38%">
+      <em>"Replace the sky with one of Photoshop's sunset skies. Keep the waterfall, the cliffs and the spray exactly as they are, warm the foreground a little so the light matches the new sky, then check the horizon at full size for halos or leftover patches of the old sky and fix them before you call it done."</em>
+      <br><br>
+      <sub>About 8 minutes</sub>
+    </td>
+    <td width="62%"><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/example-falls.webp" alt="A waterfall under a flat gray sky, and the same photo with a sunset sky. The waterfall and cliffs are kept."></td>
+  </tr>
+  <tr>
+    <td>
+      <em>"Give this beach photo a bright, airy summer-afternoon look. Lift the shadows on the sand so it reads clean and white, deepen the blue in the sky while keeping the clouds bright, and let the umbrella's colors pop without looking fake."</em>
+      <br><br>
+      <sub>About 6 minutes</sub>
+    </td>
+    <td><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/example-beach.webp" alt="A beach with a rainbow umbrella, and the same photo with brighter sand, a deeper blue sky and stronger umbrella colors."></td>
+  </tr>
+  <tr>
+    <td>
+      <em>"Get this ready for three places: an Instagram post, an Instagram story with room at the top and bottom for text, and an 8x10 print for a frame. Keep the puppy's face and both ears in frame in all three."</em>
+      <br><br>
+      <sub>About 4 minutes</sub>
+    </td>
+    <td><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/example-puppy.webp" alt="A puppy lying in autumn leaves, and three versions of the photo: an Instagram post, an Instagram story and an 8x10 print, each with the face and both ears in frame."></td>
+  </tr>
+</table>
 
-Your assistant turns those into tool calls, checks the result with previews and measurements, and iterates.
+Smaller requests work too, like _"Isolate the subject onto its own layer with a clean mask"_ or _"Export a 2048px web JPEG."_
+
+Here's the waterfall edit in its session. Your AI app runs beside your editor, and the result arrives on layers you can open and change yourself.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/session.webp" width="100%" alt="Claude Desktop next to Photoshop. The chat shows the sky replacement request and a report of what was checked. Photoshop shows the waterfall with its new sky, and the layers panel lists separate named layers with masks.">
+</p>
 
 ## Install
 
-### Claude Desktop (no terminal)
+**Claude Desktop, no terminal**
 
 1. Download [`editmamei.mcpb`](https://github.com/editmamei/editmamei/releases/latest/download/editmamei.mcpb).
 2. In Claude Desktop, go to **Settings → Desktop app → Manage** (next to Extensions) **→ Advanced settings → Install Extension…** and choose the downloaded file.
 3. Restart Claude Desktop, then ask it: _"Is Photoshop connected?"_
 
-You don't need Node.js for this route, because Claude Desktop ships its own runtime. The [install guide](docs/installation.md#one-click-install-claude-desktop) covers older versions of the app and updates.
+This route doesn't need Node.js, because Claude Desktop ships its own runtime. The [install guide](docs/installation.md#one-click-install-claude-desktop) covers older versions of the app and updates.
 
-### Claude Code, Cursor, and other MCP apps
+**Claude Code, Cursor, and other MCP apps**
 
 ```bash
 npm install -g editmamei
@@ -51,11 +97,17 @@ editmamei status    # shows which AI apps it's registered with
 
 Then restart your AI app and ask it: _"Is Photoshop connected?"_ For anything `editmamei install` doesn't detect, see [docs/clients.md](docs/clients.md).
 
-### Requirements
+**Requirements**
 
-- Adobe Photoshop 2026 (v27.x) on Windows 10/11 or macOS 13+, or GIMP 3.2 on Windows, macOS, or Linux
-- Node.js 22+ (for the npm route only)
-- An AI app that can run a local MCP server. Editmamei ships no model of its own and runs on whichever app you connect, so every edit spends that app's tokens.
+| | |
+| --- | --- |
+| **Editor** | Adobe Photoshop 2026 (v27.x) on Windows 10/11 or macOS 13+, or GIMP 3.2 on Windows, macOS, or Linux |
+| **AI app** | Any app that can run a local MCP server |
+| **Node.js** | 22+, for the npm route only |
+
+**What to expect**
+
+A first edit takes a while. The three requests above took 4 to 8 minutes, because your AI looks, plans, and checks at every step. Editmamei ships no chat model of its own, so every edit spends your AI app's tokens, and [we measured what an edit costs](https://editmamei.com/blog/what-an-edit-costs).
 
 ## Editmamei Connect
 
@@ -65,75 +117,67 @@ Connect is a separate product, and its source isn't in this repository. It edits
 
 ## How it works
 
-Editmamei runs on your computer as an MCP **stdio** server written in Node. Your AI app launches it as a subprocess and calls its tools over stdio. Each tool builds a small Photoshop script and runs it in your local Photoshop over the platform's native automation channel:
+<p align="center">
+  <img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/how-it-works.webp" width="100%" alt="Diagram. On your computer, your AI app sends tool calls over MCP to Editmamei, which runs each step in Photoshop 2026 through ExtendScript, or in GIMP 3.2 through a headless Python-Fu process, and returns results and previews. The editor produces a layered file you can keep editing. Your request, tool results, and previews cross to the AI model in the cloud, which replies with the next step.">
+</p>
 
-```
-AI client  ──stdio──▶  Editmamei (Node MCP server)
-                              │  builds a Photoshop script per tool call
-                              ▼
-                    COM (Windows) / AppleScript (macOS)
-                              │
-                              ▼
-                     Your local Adobe Photoshop
-```
+Your AI app decides each step and calls Editmamei's tools. Editmamei carries the step out in your editor and reports back with structured results and, when your AI needs to look, a preview. Your AI reads those and decides what to do next. Editmamei also sends content-free usage telemetry and checks npm for updates; see [Privacy](#privacy).
 
-- **Windows** drives Photoshop through COM (the `Photoshop.Application` object).
-- **macOS** drives it through AppleScript / OSA.
-- Perception (face, object, and scene detection) runs **on-device** with local ONNX computer vision, so the model gets real document coordinates without your image leaving the machine.
-
-Photoshop does the pixel work with its own engine, and edits land as adjustment layers, masks, and duplicates you can keep changing by hand.
+- **Real edits.** Photoshop or GIMP does the pixel work with its own engine, and no generative model changes your pixels.
+- **Reversible.** In Photoshop, adjustments land as adjustment layers and destructive pixel operations run on an automatic duplicate. In GIMP, adjustments stay live filters, and checkpoints stand in for undo.
+- **Checked, not assumed.** Histograms, region comparisons, and selection previews let your AI measure its own work.
+- **On-device vision.** In Photoshop, face, object, and scene detection run locally on bundled ONNX models, so your AI can target "the person on the left" without a cloud vision call.
+- **Only verified tools ship.** A new tool stays out of the tool list until it has passed live sessions against real Photoshop or GIMP.
 
 **112 tools:** 83 for Photoshop (62 Community, 21 Pro) and 29 for GIMP (all Community). The full list is in [docs/tools.md](docs/tools.md).
 
 ### GIMP
 
-Editmamei can also drive GIMP, headless, as a second editor alongside (or instead of) Photoshop. When GIMP 3.2 is detected on your machine, a `gimp_*` tool set registers next to the `ps_*` one; use it when you ask for GIMP, or when Photoshop isn't available. There's no visible window: edits happen in a background `gimp-console` process, and you follow along through rendered previews in the conversation instead of watching a window change. GIMP doesn't yet cover heal/clone or AI subject and sky selection. Details, requirements (including Linux), and troubleshooting are in [docs/gimp.md](docs/gimp.md).
+When GIMP 3.2 is detected on your machine, a `gimp_*` tool set registers next to the `ps_*` one, for when you ask for GIMP or Photoshop isn't available. Edits happen in a background `gimp-console` process with no visible window, and you follow along through previews in the conversation. GIMP doesn't yet cover heal/clone or AI subject and sky selection. Details and troubleshooting, including Linux, are in [docs/gimp.md](docs/gimp.md).
 
 ## Free and Pro
 
-- **Community** is free and covers the everyday editing surface: documents, layers, selections (including AI Select Subject and Select Sky), non-destructive adjustments, filters, masks, type, retouching, on-device perception, and the inspect/verify primitives.
-- **Pro** adds Camera Raw as a re-editable filter, raw files developed before they open, folder batch, the reproducible-template system, the grounded precision tools (warp, named-object masks, precision placement), subject-instance and face-mesh targeting, and Photoshop Actions plus the scripting escape hatch.
+| | Community (free) | Pro |
+| --- | :---: | :---: |
+| Documents, layers, masks, type, filters, and retouching | ✓ | ✓ |
+| Non-destructive adjustments | ✓ | ✓ |
+| AI Select Subject and Select Sky | ✓ | ✓ |
+| On-device perception | ✓ | ✓ |
+| Previews, histograms, and comparisons | ✓ | ✓ |
+| GIMP tools | ✓ | ✓ |
+| Camera Raw as a re-editable filter, and raw files developed before they open | | ✓ |
+| Folder batch | | ✓ |
+| Reproducible templates | | ✓ |
+| Warp, named-object masks, and precision placement | | ✓ |
+| Subject-instance and face-mesh targeting | | ✓ |
+| Photoshop Actions and the scripting escape hatch | | ✓ |
 
-Pro is a Photoshop-only upgrade: it adds nothing to the GIMP tools.
+Pro is a Photoshop-only upgrade and adds nothing to the GIMP tools. The split is detailed in [pro-features.md](docs/pro-features.md), and pricing is at [editmamei.com/desktop/pricing](https://editmamei.com/desktop/pricing).
 
-The split is detailed in [pro-features.md](docs/pro-features.md). Pricing is at [editmamei.com/desktop/pricing](https://editmamei.com/desktop/pricing).
-
-This repository holds the Community source. Pro is a separately licensed module and its source is not published here; Community never imports it, so this tree builds and runs on its own.
+This repository holds the Community source. Pro is a separately licensed module and its source is not published here. Community never imports it, so this tree builds and runs on its own.
 
 ## Privacy
 
-Editmamei runs on your computer and edits in desktop Photoshop. No image content or file paths are sent to Editmamei's servers. It reports content-free usage telemetry (on by default, turn it off with `editmamei config set telemetry.usage false`). Diagnostics are off unless you opt in, and they add sanitized error details. When your AI assistant needs to see a result, Editmamei sends it a downscaled preview, the same as dropping a photo into a chat with that assistant. Every field is documented in [privacy.md](docs/privacy.md), including [your rights, and the legal basis](docs/privacy.md#your-rights-and-the-legal-basis).
+Editmamei runs on your computer and edits in your desktop editor. No image content or file paths are sent to Editmamei's servers.
 
-The source in this repository is the same code published to npm, so none of the above has to be taken on trust.
+| What | Where it goes | Setting |
+| --- | --- | --- |
+| Your photo file | Stays on your computer, apart from the previews below and any Adobe cloud selection | |
+| Previews, 1024px on the long edge by default (your AI can ask for up to 8192px) | Your AI app's model provider, the same as dropping a photo into a chat | `privacy.send_previews_to_llm` (on) |
+| Tool results, such as file paths, layer names, measurements, and metadata like GPS if your AI asks for it | Your AI app's model provider | |
+| Content-free usage telemetry, with a random install ID | Editmamei | `telemetry.usage` (on) |
+| Sanitized error details | Editmamei, only if you opt in | `telemetry.diagnostics` (off) |
+| Update check, with no identifiers | The npm registry | `update_check` (on) |
+
+Change these with `editmamei config set <setting> false` (or `true`). The Claude Desktop extension has its own switches for telemetry, diagnostics, and the update check. Pro also sends your license key and a per-device activation ID to a third-party licensing service, and to Editmamei's delivery service to check for module updates, plus a hashed device ID at activation. These have no setting. Photoshop's own Select Subject and Select Sky can use Adobe's cloud, depending on Photoshop's Image Processing preference.
+
+Every field is documented in [privacy.md](docs/privacy.md), including [your rights, and the legal basis](docs/privacy.md#your-rights-and-the-legal-basis). npm releases are published from this repository with signed provenance, so you can check the package against this source.
 
 ## For developers
 
-The [MCP reference](docs/mcp-reference.md) covers the generic client config, architecture, MCP surface, the user-facing settings and environment variables, and each network request the server makes.
+Editmamei is a stdio MCP server. In any MCP client, add a server that runs `npx -y editmamei`. The [MCP reference](docs/mcp-reference.md) covers client config, architecture, the MCP surface, settings and environment variables, and each network request the server makes.
 
-The discovery chain is `ps_ping` (liveness), then `ps_overview` (the working method and capability map), then `tools/list` (the full schema-typed inventory).
-
-### Design principles
-
-These are the choices that shape the surface, and the reason an AI assistant can drive it reliably rather than hopefully.
-
-- **Structured results, not prose.** Every tool declares an `outputSchema` and returns a typed JSON payload. Any tool that changes what is active reports the current document and layer back, so the model keeps an accurate picture of Photoshop's state between calls instead of re-deriving it.
-- **Guidance lives in the surface.** `ps_overview` returns the working method (assess, plan, enact, check, iterate) and `ps_list_capabilities` returns a live map of what exists. The model orients itself from the server rather than from guesswork or a stale prompt.
-- **Measure, don't eyeball.** A dedicated set of verification tools (histogram, region compare, layer-bounds diff, selection preview) lets the model check its own work numerically instead of trusting a thumbnail.
-- **On-device perception.** Local computer vision (ONNX) detects faces, objects, and scene regions and returns real document coordinates. The image stays on your machine for this step and is never sent to a cloud vision model.
-- **Non-destructive by default.** Adjustments are adjustment layers, and destructive pixel operations run on an auto-created duplicate. An edit is reversible by construction.
-- **Verified against real Photoshop.** Every tool is built on Photoshop's own native scripting functions and verified in live Photoshop sessions before it ships. A new tool stays disabled until it has passed live verification, so the shipped surface is the verified surface.
-- **Built for modern Photoshop.** Editmamei targets Photoshop 2026 (v27.x) so it can rely on current, stable scripting descriptors rather than carrying a decade of drifted behavior.
-
-### Configuration
-
-Settings live in `~/.editmamei/settings.json`, managed by the `editmamei config` CLI:
-
-```bash
-editmamei config list
-editmamei config set telemetry.usage false      # turn off usage telemetry
-```
-
-`PHOTOSHOP_PATH` (env var) overrides Photoshop auto-detection for a single run.
+The discovery chain is `ps_ping` (liveness), then `ps_overview` (the working method and capability map), then `tools/list` (the full schema-typed inventory). Every tool declares an `outputSchema` and returns typed JSON.
 
 ### Build from source
 
@@ -145,46 +189,35 @@ npm run build
 npm test
 ```
 
-You need Node.js 22+ and Go 1.21+ (the build compiles the `editmamei-core` binary that generates Photoshop scripts; it needs Go 1.27, which Go fetches for you from 1.21 on). The build warns instead of failing when Go is missing, so you can still run the test suite; set `EDITMAMEI_CORE_BIN` to a prebuilt binary if you would rather not install Go.
+You need Node.js 22+ and Go 1.21+. The build compiles the `editmamei-core` binary that generates Photoshop scripts; it needs Go 1.27, which Go fetches for you from 1.21 on. The build warns instead of failing when Go is missing, so you can still run the test suite. Set `EDITMAMEI_CORE_BIN` to a prebuilt binary if you would rather not install Go.
 
 The test suite runs without Photoshop. It verifies the ExtendScript Editmamei generates, never that Photoshop accepted it, so live verification against a real Photoshop is a separate step.
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), which covers the CLA, the branch and pull-request flow, and what to include in a bug report.
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the CLA, the branch and pull-request flow, and what to include in a bug report.
 
-## Docs and support
+## Documentation
 
-- **Features and pricing:** [editmamei.com](https://editmamei.com)
-- **Install:** [docs/installation.md](docs/installation.md)
-- **Getting started:** [docs/getting-started.md](docs/getting-started.md)
-- **Tools:** [docs/tools.md](docs/tools.md)
-- **MCP reference:** [docs/mcp-reference.md](docs/mcp-reference.md)
-- **FAQ:** [docs/faq.md](docs/faq.md)
-- **AI clients:** [docs/clients.md](docs/clients.md)
-- **Troubleshooting:** [docs/troubleshooting.md](docs/troubleshooting.md)
-- **GIMP:** [docs/gimp.md](docs/gimp.md)
-- **Pro features:** [docs/pro-features.md](docs/pro-features.md)
-- **Roadmap:** [docs/roadmap.md](docs/roadmap.md)
-- **Bugs and feature requests:** [the issue tracker](https://github.com/editmamei/editmamei/issues). If something's broken, ask your assistant to "report a problem" (or run `editmamei report`) to drop an anonymized diagnostic bundle in your Downloads folder, then attach it to the issue.
-- **Security:** see [SECURITY.md](SECURITY.md) (don't file security issues publicly)
+| Guide | What's in it |
+| --- | --- |
+| [Installation](docs/installation.md) | Every install route, updates, and Photoshop detection |
+| [Getting started](docs/getting-started.md) | Your first session and how to get good results |
+| [AI apps](docs/clients.md) | Setup for each client, and known limits |
+| [Tools](docs/tools.md) | Every tool, by group and edition |
+| [GIMP](docs/gimp.md) | Requirements, coverage, and troubleshooting |
+| [Pro features](docs/pro-features.md) | What Pro adds, and how to activate it |
+| [MCP reference](docs/mcp-reference.md) | Architecture, settings, and network requests |
+| [FAQ](docs/faq.md) | Common questions |
+| [Troubleshooting](docs/troubleshooting.md) | Fixes for common problems |
+| [Roadmap](docs/roadmap.md) | What's planned |
+
+**Found a bug or want a feature?** Use [the issue tracker](https://github.com/editmamei/editmamei/issues). If something's broken, ask your assistant to "report a problem" (or run `editmamei report`) to drop an anonymized diagnostic bundle in your Downloads folder, then attach it to the issue. For security issues, see [SECURITY.md](SECURITY.md) and don't file them publicly.
 
 ## License
 
-Editmamei CE is [Fair Source](https://fair.io) software under the
-[Functional Source License, v1.1, MIT Future License](LICENSE.md) (FSL-1.1-MIT).
+Editmamei CE is [Fair Source](https://fair.io) software under the [Functional Source License, v1.1, MIT Future License](LICENSE.md) (FSL-1.1-MIT).
 
-You can read, run, modify, and redistribute the code for almost anything: commercial photo
-editing, internal tools, education, research, security review. The one thing the license
-holds back, for two years per release, is offering the code to others in a commercial
-product or service that competes with Editmamei CE or Pro. If you redistribute the code,
-keep the license and copyright notices with it. Two years after each version ships, that
-version automatically becomes available under plain [MIT](LICENSE.md).
+You can read, run, modify, and redistribute the code for almost anything: commercial photo editing, internal tools, education, research, security review. The one thing the license holds back, for two years per release, is offering the code to others in a commercial product or service that competes with Editmamei CE or Pro. If you redistribute the code, keep the license and copyright notices with it. Two years after each version ships, that version automatically becomes available under plain [MIT](LICENSE.md).
 
-This section is a plain-English summary. The [LICENSE](LICENSE.md) file is the license;
-where they differ, the LICENSE file controls.
+This section is a plain-English summary. The [LICENSE](LICENSE.md) file is the license; where they differ, the LICENSE file controls. Editmamei is not open source under the OSI definition, and we don't call it that. It is source-available, with the full CE stack developed in the open.
 
-Editmamei is not open source under the OSI definition, and we don't call it that. It is
-source-available, with the full CE stack developed in the open.
-
-Editmamei Pro is a separate, commercially licensed module; its source is not published.
-
-Third-party dependencies keep their own licenses, listed in [NOTICES.md](NOTICES.md).
+Editmamei Pro is a separate, commercially licensed module; its source is not published. Third-party dependencies keep their own licenses, listed in [NOTICES.md](NOTICES.md).
