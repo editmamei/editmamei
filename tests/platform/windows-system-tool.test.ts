@@ -15,6 +15,9 @@ describe('windowsSystemTool', () => {
     expect(windowsSystemTool('tasklist.exe', { windir: 'E:\\Win' })).toBe(
       'E:\\Win\\System32\\tasklist.exe'
     );
+    expect(windowsSystemTool('reg.exe', { SystemDrive: 'D:' })).toBe(
+      'D:\\Windows\\System32\\reg.exe'
+    );
     expect(windowsSystemTool('taskkill.exe', {})).toBe('C:\\Windows\\System32\\taskkill.exe');
   });
 });

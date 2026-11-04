@@ -135,8 +135,9 @@ log so the default is never a surprise:
 > to sanitized diagnostics (error messages, which can name a layer or repeat a value you
 > passed): `editmamei config set telemetry.diagnostics true`.
 
-> **Note:** Editmamei reads the settings file once at startup. After changing a setting, restart
-> your AI client so the server picks it up.
+> **Note:** Editmamei reads most settings once at startup, so after changing one, restart your AI
+> client. `privacy.send_previews_to_llm` and `automation.allow_execute_script` are read each time
+> they're needed and take effect right away.
 
 ---
 
