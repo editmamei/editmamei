@@ -11,7 +11,8 @@ import {
 import { tmpdir, release } from 'node:os';
 import { join } from 'node:path';
 import { osMajor, nodeMajor, boundMajor } from '@editmamei/telemetry/activity.ts';
-import { TelemetryClient } from '@editmamei/telemetry/client.ts';
+import { TelemetryClient, type RecordedCall } from '@editmamei/telemetry/client.ts';
+import { MAX_RESULT_BYTES } from '@editmamei/telemetry/events.ts';
 import {
   appendOutboxSync,
   outboxPath,
@@ -1208,6 +1209,138 @@ type LossCounts = {
   usage_calls_sent: number;
   tool_call_count: number;
 };
+
+describe('session result weight', () => {
+  type WeightCounts = { result_bytes: number; recipe_calls: number; kept_work: number };
+  const call = (over: Partial<RecordedCall> & { tool: string }): RecordedCall => ({
+    success: true,
+    duration_ms: 1,
+    error_class: null,
+    ...over,
+  });
+  const summaryOf = (dir: string) =>
+    readOutbox({ dir }).find((e) => e.type === 'session_summary') as WeightCounts | undefined;
+
+  it('reports both at 0 for a session with nothing to count', async () => {
+    const { client: c, dir } = makeClientD(makeSettings(), recorder());
+    c.recordCall(call({ tool: 'ps_inspect' }));
+    await c.shutdown();
+    expect(summaryOf(dir)).toMatchObject({ result_bytes: 0, recipe_calls: 0 });
+  });
+
+  it('sums top-level result bytes, leaving out a sequence step', async () => {
+    const { client: c, dir } = makeClientD(makeSettings(), recorder());
+    c.recordCall(call({ tool: 'ps_get_preview', result_bytes: 500_000, nested: true }));
+    c.recordCall(call({ tool: 'ps_sequence', result_bytes: 2_000 }));
+    c.recordCall(call({ tool: 'ps_inspect', result_bytes: 300 }));
+    await c.shutdown();
+    expect(summaryOf(dir)?.result_bytes).toBe(2_300);
+  });
+
+  it('counts a failed call toward bytes, since its error text goes back too', async () => {
+    const { client: c, dir } = makeClientD(makeSettings(), recorder());
+    c.recordCall(call({ tool: 'ps_inspect', success: false, error_class: 'x', result_bytes: 40 }));
+    await c.shutdown();
+    expect(summaryOf(dir)?.result_bytes).toBe(40);
+  });
+
+  it('clamps one call to MAX_RESULT_BYTES in the sum, so the server ceiling holds', async () => {
+    const { client: c, dir } = makeClientD(makeSettings(), recorder());
+    c.recordCall(call({ tool: 'ps_inspect', result_bytes: MAX_RESULT_BYTES + 5 }));
+    await c.shutdown();
+    expect(summaryOf(dir)?.result_bytes).toBe(MAX_RESULT_BYTES);
+  });
+
+  it('counts successful recipe calls at any depth, and no failed ones', async () => {
+    const { client: c, dir } = makeClientD(makeSettings(), recorder());
+    c.recordCall(call({ tool: 'ps_template_apply', nested: true }));
+    c.recordCall(call({ tool: 'ps_sequence' }));
+    c.recordCall(call({ tool: 'ps_batch', success: false, error_class: 'x' }));
+    c.recordCall(call({ tool: 'ps_export' }));
+    await c.shutdown();
+    expect(summaryOf(dir)?.recipe_calls).toBe(2);
+  });
+
+  it('never puts nested on the wire, and carries items on the usage event', async () => {
+    const rec = recorder();
+    const { client: c } = makeClientD(makeSettings(), rec);
+    c.recordCall(call({ tool: 'ps_batch', items: 12, nested: true, retry: false }));
+    await c.flush();
+    const sent = rec.batches.flat()[0] as unknown as Record<string, unknown>;
+    expect(sent.items).toBe(12);
+    expect('nested' in sent).toBe(false);
+    expect('retry' in sent).toBe(false);
+  });
+
+  it('sends both at 0 on a boot that only has loss to report', async () => {
+    const dir = freshOutboxDir();
+    appendFileSync(outboxPath({ dir }), 'not json at all\n', 'utf8');
+    const c = makeClient(makeSettings(), recorder(), { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    await c.shutdown();
+    expect(summaryOf(dir)).toMatchObject({ result_bytes: 0, recipe_calls: 0 });
+  });
+
+  it('carries what a killed session recorded through to its rebuilt summary', async () => {
+    const rec = recorder();
+    const { client: killed, dir } = makeClientD(makeSettings(), rec);
+    killed.recordCall(call({ tool: 'ps_batch', result_bytes: 900, items: 3 }));
+    // No shutdown: the next start finds the state file the first call persisted.
+    const next = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await next.flushOutboxOnStartup();
+    const summary = rec.batches.flat().find((e) => e.type === 'session_summary');
+    expect(summary).toMatchObject({ result_bytes: 900, recipe_calls: 1 });
+  });
+
+  it('omits both when a state file lacks them or holds something unusable', async () => {
+    const base = {
+      install_id: 'i',
+      ts_bucket: '2026-06-15',
+      editmamei_version: '1.0.0',
+      edition: 'community',
+      platform: 'win32',
+      ps_version: '27.8.0',
+      tool_call_count: 1,
+      distinct_tools: 1,
+      any_failures: false,
+    };
+    for (const extra of [{}, { result_bytes: 'x', recipe_calls: null }]) {
+      const rec = recorder();
+      const dir = freshOutboxDir();
+      writeSessionStateSync({ ...base, ...extra } as unknown as PersistedSessionState, { dir });
+      await makeClient(makeSettings(), rec, { outboxDir: dir }).flushOutboxOnStartup();
+      const summary = rec.batches.flat().find((e) => e.type === 'session_summary');
+      expect(summary).toBeDefined();
+      expect('result_bytes' in (summary ?? {})).toBe(false);
+      expect('recipe_calls' in (summary ?? {})).toBe(false);
+    }
+  });
+
+  it('rebuilds both from a killed session, clamped to the server bounds', async () => {
+    const rec = recorder();
+    const dir = freshOutboxDir();
+    writeSessionStateSync(
+      {
+        install_id: 'i',
+        ts_bucket: '2026-06-15',
+        editmamei_version: '1.0.0',
+        edition: 'community',
+        platform: 'win32',
+        ps_version: '27.8.0',
+        tool_call_count: 1,
+        distinct_tools: 1,
+        any_failures: false,
+        result_bytes: MAX_RESULT_BYTES * 3,
+        recipe_calls: 2.5,
+      },
+      { dir }
+    );
+    const c = makeClient(makeSettings(), rec, { outboxDir: dir });
+    await c.flushOutboxOnStartup();
+    const summary = rec.batches.flat().find((e) => e.type === 'session_summary');
+    expect(summary).toMatchObject({ result_bytes: MAX_RESULT_BYTES, recipe_calls: 2 });
+  });
+});
 
 describe('telemetry loss accounting', () => {
   it('reports all four counters, at 0, for an ordinary session', async () => {

@@ -30,6 +30,7 @@ import type { Settings } from '../core/settings.js';
 import {
   READ_ONLY_TOOLS,
   KEPT_WORK_TOOLS,
+  RECIPE_TOOLS,
   nodeMajor,
   archToken,
   osMajor,
@@ -45,6 +46,7 @@ import {
   dayBucket,
   normalizeDayBucket,
   isContentSafe,
+  MAX_RESULT_BYTES,
   PS_VERSION_UNKNOWN,
   type ModuleStatusInfo,
   type SessionSummaryEvent,
@@ -75,6 +77,8 @@ const SESSION_PERSIST_THROTTLE_MS = 10_000;
 const MAX_SESSION_DURATION_S = 604_800;
 /** Cap for `session_summary.templates_saved` / `action_sets` — matches the server's field spec. */
 const MAX_INSTALL_ASSET_COUNT = 100_000;
+/** Cap for `session_summary.recipe_calls` — matches the server's field spec. */
+const MAX_SESSION_COUNT = 1_000_000;
 
 export interface RecordedCall {
   tool: string;
@@ -83,9 +87,14 @@ export interface RecordedCall {
   error_class: string | null;
   /** Serialized result size in bytes (see utils/session-log.ts's computeResultBytes). */
   result_bytes?: number;
+  /** Documents the call processed — see activity.ts's itemsFromResult. */
+  items?: number;
   /** Same tool + identically-serializing args as the immediately preceding call. Directional,
    *  not exact — see the retry-signal comment in core/server.ts for the two known biases. */
   retry?: boolean;
+  /** A step run by another tool (Kernel.isNestedCall). Its result goes to that tool rather than
+   *  the AI client, so it stays out of the session's result_bytes. Never sent. */
+  nested?: boolean;
 }
 
 export interface RecordedDiagnostic {
@@ -208,6 +217,10 @@ export class TelemetryClient {
   private droppedUnsafe = 0;
   /** Tool CALLS handed to a transport call that returned without throwing — not events. */
   private usageCallsSent = 0;
+  /** Bytes returned to the AI client this session — see RecordedCall.nested. */
+  private sessionResultBytes = 0;
+  /** Successful calls to a tool in RECIPE_TOOLS this session. */
+  private recipeCalls = 0;
   /** Whether the boot-time update check found a strictly newer published version. null =
    *  never determined this session (check disabled, or it hadn't resolved by shutdown). */
   private behindLatest: boolean | null = null;
@@ -328,9 +341,13 @@ export class TelemetryClient {
     if (!call.success) this.anyFailures = true;
     this.lastCallSuccess = call.success;
     if (call.retry) this.retryCount += 1;
+    if (!call.nested && call.result_bytes !== undefined) {
+      this.sessionResultBytes += Math.min(call.result_bytes, MAX_RESULT_BYTES);
+    }
     if (call.success) {
       if (!READ_ONLY_TOOLS.has(call.tool)) this.editsOk += 1;
       if (KEPT_WORK_TOOLS.has(call.tool)) this.keptWork += 1;
+      if (RECIPE_TOOLS.has(call.tool)) this.recipeCalls += 1;
     }
     if (this.firstCallAtMs === null) this.firstCallAtMs = nowMs;
     this.lastCallAtMs = nowMs;
@@ -405,6 +422,8 @@ export class TelemetryClient {
     dropped_outbox: number;
     dropped_unsafe: number;
     usage_calls_sent: number;
+    result_bytes: number;
+    recipe_calls: number;
     module_update?: 'none' | 'updated' | 'failed';
     templates_saved?: number;
     action_sets?: number;
@@ -428,6 +447,8 @@ export class TelemetryClient {
       dropped_outbox: this.droppedOutbox,
       dropped_unsafe: this.droppedUnsafe,
       usage_calls_sent: this.usageCallsSent,
+      result_bytes: this.sessionResultBytes,
+      recipe_calls: this.recipeCalls,
       ...(moduleStatus !== null ? { module_update: this.moduleUpdate } : {}),
       ...(this.installAssets.templates_saved !== undefined
         ? { templates_saved: this.installAssets.templates_saved }
@@ -765,6 +786,12 @@ function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
   // reading to fall back on here, so it's omitted rather than sent as a false 0.
   const templatesSaved = s.templates_saved !== undefined ? clampCount(s.templates_saved) : null;
   const actionSets = s.action_sets !== undefined ? clampCount(s.action_sets) : null;
+  const resultBytes =
+    s.result_bytes !== undefined
+      ? clampTo(s.result_bytes, s.tool_call_count * MAX_RESULT_BYTES)
+      : null;
+  const recipeCalls =
+    s.recipe_calls !== undefined ? clampTo(s.recipe_calls, MAX_SESSION_COUNT) : null;
   return {
     v: 2,
     type: 'session_summary',
@@ -789,6 +816,8 @@ function summaryFromState(s: PersistedSessionState): SessionSummaryEvent {
     ...(s.dropped_outbox !== undefined ? { dropped_outbox: s.dropped_outbox } : {}),
     ...(s.dropped_unsafe !== undefined ? { dropped_unsafe: s.dropped_unsafe } : {}),
     ...(s.usage_calls_sent !== undefined ? { usage_calls_sent: s.usage_calls_sent } : {}),
+    ...(resultBytes !== null ? { result_bytes: resultBytes } : {}),
+    ...(recipeCalls !== null ? { recipe_calls: recipeCalls } : {}),
     ...(s.module_update !== undefined ? { module_update: s.module_update } : {}),
     ...(templatesSaved !== null ? { templates_saved: templatesSaved } : {}),
     ...(actionSets !== null ? { action_sets: actionSets } : {}),
@@ -831,6 +860,11 @@ function countUsageCalls(events: TelemetryEvent[]): number {
  *  reading as the guard it is) — the server validates both fields as integers and rejects
  *  the whole batch otherwise, so a fractional count is the same poison as NaN. */
 function clampCount(n: number): number | null {
+  return clampTo(n, MAX_INSTALL_ASSET_COUNT);
+}
+
+/** `clampCount` against any ceiling. */
+function clampTo(n: number, max: number): number | null {
   if (!Number.isFinite(n)) return null;
-  return Math.min(Math.max(0, Math.trunc(n)), MAX_INSTALL_ASSET_COUNT);
+  return Math.min(Math.max(0, Math.trunc(n)), max);
 }

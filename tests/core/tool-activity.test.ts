@@ -8,14 +8,16 @@ import * as activity from '../../src/core/tool-activity.js';
 import { TOOL_TIERS } from '../../src/core/tool-tiers.js';
 
 describe('core/tool-activity exports', () => {
-  it('exports exactly the activity sets and the tracked tool names', () => {
+  it('exports exactly the activity sets, the tracked tool names and the items helper', () => {
     expect(Object.keys(activity).sort()).toEqual([
       'CAMERA_RAW_TOOL',
       'KEPT_WORK_TOOLS',
+      'MAX_CALL_ITEMS',
       'MUTATING_TOOLS',
       'RAW_DEVELOP_TOOL',
       'READ_ONLY_TOOLS',
       'RECIPE_TOOLS',
+      'itemsFromResult',
     ]);
   });
 

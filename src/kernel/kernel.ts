@@ -142,6 +142,11 @@ export class Kernel {
     return this.invokeDepth.run(depth + 1, () => this.registry.execute(name, args));
   }
 
+  /** Whether the code running now is inside a dispatch made through `invokeTool`. */
+  isNestedCall(): boolean {
+    return (this.invokeDepth.getStore() ?? 0) > 0;
+  }
+
   /**
    * Guard a module against an ABI this kernel can't satisfy. Logs and returns
    * true ("skip it") rather than crashing the host — "update the host first".

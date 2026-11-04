@@ -1344,6 +1344,7 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       error_class: 'ps_not_running',
       result_bytes: expect.any(Number),
       retry: false,
+      nested: false,
     });
     // The downgrade is a failure, so it feeds the opt-in diagnostic too, carrying
     // the round trip's real error rather than a placeholder. Asserted whole for the
@@ -1496,6 +1497,7 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       error_class: null,
       result_bytes: expect.any(Number),
       retry: false,
+      nested: false,
     });
     // A success feeds no diagnostic.
     expect(telemetry.recordDiagnostic).not.toHaveBeenCalled();
@@ -1658,6 +1660,7 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
       error_class: NO_ERROR_TEXT_CLASS,
       result_bytes: expect.any(Number),
       retry: false,
+      nested: false,
     });
     expect(telemetry.recordDiagnostic.mock.calls[0][0]).toEqual({
       tool: 'ps_export',
@@ -2583,6 +2586,38 @@ describe('telemetry: retry signal (hashed key)', () => {
 
     expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({ retry: false });
     expect(telemetry.recordCall.mock.calls[1][0]).toMatchObject({ retry: true });
+  });
+
+  it('marks a sequence step nested, and sends items on the sequence alone', async () => {
+    const server = new EditmameiServer() as unknown as RetryServer;
+    server.toolRegistry.register('ps_open_document', stub('ps_open_document'));
+    server.toolRegistry.register('ps_export', stub('ps_export'));
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_export', {});
+    await server.handleToolCall('ps_sequence', {
+      steps: [
+        { tool: 'ps_open_document', args: {} },
+        { tool: 'ps_export', args: {} },
+        { tool: 'ps_open_document', args: {} },
+      ],
+      on_error: 'stop',
+      return: 'summary',
+    });
+
+    const calls = telemetry.recordCall.mock.calls.map(([c]) => ({
+      tool: c.tool,
+      nested: c.nested,
+      items: c.items,
+    }));
+    expect(calls).toEqual([
+      { tool: 'ps_export', nested: false, items: undefined },
+      { tool: 'ps_open_document', nested: true, items: undefined },
+      { tool: 'ps_export', nested: true, items: undefined },
+      { tool: 'ps_open_document', nested: true, items: undefined },
+      { tool: 'ps_sequence', nested: false, items: 2 },
+    ]);
   });
 
   it('does not flag the second call as a retry when the args differ', async () => {

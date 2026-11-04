@@ -183,6 +183,7 @@ serving datacenter that the network edge derives from the connection. See *Proce
 | `error_class` | On failure, a short error **category** (e.g. `wrong_layer_kind`), never a message or free text. `null` on success. |
 | `duration_ms` | How long the call took, in milliseconds. |
 | `result_bytes` | The **size** of the tool's response, in bytes — never its content. `0` when the tool returned nothing, and omitted entirely if the size wasn't measured. |
+| `items` | Sent only for `ps_batch` and `ps_sequence`: how many documents the call processed, up to 10,000. A count read from the tool's response, never its arguments, and nothing about which documents they were. Omitted when the call failed or processed none. |
 
 ### Session start: once when Editmamei launches (on by default)
 
@@ -302,6 +303,8 @@ No image content, no paths, no tool arguments, just an enum outcome plus the mod
   "dropped_outbox": 0,
   "dropped_unsafe": 0,
   "usage_calls_sent": 47,
+  "result_bytes": 1048576,
+  "recipe_calls": 1,
   "module_update": "none",
   "templates_saved": 6,
   "action_sets": 2
@@ -323,6 +326,8 @@ many tool calls happened, how many distinct tools, whether anything failed. No p
 | `dropped_outbox` | Events dropped from the on-disk retry queue — because it hit its size limit, because a line in it was corrupt and could not be read back, or because writing to it failed. Almost always `0`. |
 | `dropped_unsafe` | Events this client refused to send because one of their own fields failed its content check. Should always be `0`; anything else is a bug worth reporting. |
 | `usage_calls_sent` | How many tool calls the client believes it successfully sent. A count, nothing about which calls they were — it exists so we can tell "you did less" apart from "we lost some of it", which we previously could not. |
+| `result_bytes` | The total **size** of the responses returned to your AI client this session, in bytes — never their content. |
+| `recipe_calls` | How many successful calls used a template, batch, sequence, or Photoshop Action. A count only, never which one. |
 | `module_update` | Whether the background Pro-module refresh installed something (`updated`), failed (`failed`), or did neither (`none`). Sent only for installs with a Pro license on file — a Community install never sends this field. |
 | `templates_saved` / `action_sets` | How many templates you've saved and how many Photoshop Action Sets you have loaded, as counts only — never their names or content. `templates_saved` is read from your own disk and is omitted if that read fails; `action_sets` is omitted until a connection to Photoshop has reported it. |
 
@@ -336,7 +341,7 @@ than any other summary.
 `duration_s`, `ended_after_failure`, `behind_latest`, `module_update`, `templates_saved`, and
 `action_sets` are each omitted (never sent as a false zero) when this session never learned
 them. `retry_count`, `edits_ok`, `kept_work`, `dropped_events`, `dropped_outbox`, `dropped_unsafe`,
-and `usage_calls_sent` are present on any summary this version writes normally: `0` is a real
+`usage_calls_sent`, `result_bytes`, and `recipe_calls` are present on any summary this version writes normally: `0` is a real
 observation (no retries, no edits kept, nothing dropped), not an unknown. The one exception is
 a summary reconstructed after the program was killed outright. It carries only the counters
 that had been written to disk before the kill, so an older build's leftover state file can

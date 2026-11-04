@@ -21,6 +21,7 @@ import {
   applyTelemetryEnvOverrides,
   applyUpdateCheckEnvOverride,
 } from './settings.js';
+import { itemsFromResult } from '../telemetry/activity.js';
 import { TelemetryClient } from '../telemetry/client.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
 import { resolveInstallChannel } from '../install-channel.js';
@@ -581,13 +582,16 @@ export class EditmameiServer {
         const isTelemetryRetry =
           telemetryCallKeyHash !== null && telemetryCallKeyHash === this.lastTelemetryCallKeyHash;
         if (telemetryCallKeyHash !== null) this.lastTelemetryCallKeyHash = telemetryCallKeyHash;
+        const items = itemsFromResult(entry.tool, entry.result);
         this.telemetry.recordCall({
           tool: entry.tool,
           success: telemetrySuccess,
           duration_ms: entry.duration_ms,
           error_class: errorClass,
           result_bytes: resultBytes,
+          ...(items !== undefined ? { items } : {}),
           retry: isTelemetryRetry,
+          nested: this.kernel.isNestedCall(),
         });
         // Gate on the signal telemetry actually recorded, not the registry's raw
         // flag. Keying these two branches off different notions of failure is

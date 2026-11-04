@@ -6,6 +6,8 @@ import {
   READ_ONLY_TOOLS,
   KEPT_WORK_TOOLS,
   MUTATING_TOOLS,
+  MAX_CALL_ITEMS,
+  itemsFromResult,
   mapClientName,
   parseMajor,
   boundMajor,
@@ -17,6 +19,86 @@ import { TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
+
+describe('itemsFromResult', () => {
+  const steps = (...list: [string, boolean][]) => ({
+    structuredContent: { steps: list.map(([tool, ok]) => ({ tool, ok })) },
+  });
+
+  it('reads files_processed from a batch result', () => {
+    expect(itemsFromResult('ps_batch', { structuredContent: { files_processed: 40 } })).toBe(40);
+  });
+
+  it('omits a batch that processed nothing, and a batch preview', () => {
+    expect(itemsFromResult('ps_batch', { structuredContent: { files_processed: 0 } })).toBe(
+      undefined
+    );
+    expect(itemsFromResult('ps_batch', { structuredContent: { op: 'preview' } })).toBe(undefined);
+  });
+
+  it('caps at the server ceiling', () => {
+    expect(itemsFromResult('ps_batch', { structuredContent: { files_processed: 20_000 } })).toBe(
+      MAX_CALL_ITEMS
+    );
+  });
+
+  it('counts the documents a sequence opened', () => {
+    expect(
+      itemsFromResult(
+        'ps_sequence',
+        steps(
+          ['ps_open_document', true],
+          ['ps_add_adjustment_layer', true],
+          ['ps_open_document', true],
+          ['ps_open_document', false]
+        )
+      )
+    ).toBe(2);
+  });
+
+  it('counts the other steps that bring in a document', () => {
+    expect(
+      itemsFromResult(
+        'ps_sequence',
+        steps(['ps_develop_raw', true], ['ps_create_document', true], ['gimp_open_document', true])
+      )
+    ).toBe(3);
+  });
+
+  it('reads a sequence that opened nothing as one document', () => {
+    expect(itemsFromResult('ps_sequence', steps(['ps_add_adjustment_layer', true]))).toBe(1);
+  });
+
+  it('omits a sequence where no step worked', () => {
+    expect(itemsFromResult('ps_sequence', steps(['ps_inspect', false]))).toBe(undefined);
+  });
+
+  it('omits a failed call, whatever its result says', () => {
+    expect(
+      itemsFromResult('ps_batch', { isError: true, structuredContent: { files_processed: 4 } })
+    ).toBe(undefined);
+  });
+
+  it('sends nothing for any other tool, including ps_template_apply', () => {
+    const shaped = { structuredContent: { files_processed: 4, steps: [{ ok: true }] } };
+    expect(itemsFromResult('ps_template_apply', shaped)).toBe(undefined);
+    expect(itemsFromResult('ps_export', shaped)).toBe(undefined);
+  });
+
+  it('survives a result with the wrong shape', () => {
+    expect(itemsFromResult('ps_batch', undefined)).toBe(undefined);
+    expect(itemsFromResult('ps_batch', { structuredContent: { files_processed: '4' } })).toBe(
+      undefined
+    );
+    expect(itemsFromResult('ps_batch', { structuredContent: { files_processed: 1.5 } })).toBe(
+      undefined
+    );
+    expect(itemsFromResult('ps_sequence', { structuredContent: { steps: 'x' } })).toBe(undefined);
+    expect(itemsFromResult('ps_sequence', { structuredContent: { steps: [null] } })).toBe(
+      undefined
+    );
+  });
+});
 
 describe('READ_ONLY_TOOLS / KEPT_WORK_TOOLS', () => {
   it('is a fixed, disjoint pair of sets', () => {
