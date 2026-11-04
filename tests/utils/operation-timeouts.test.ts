@@ -35,7 +35,7 @@ describe('operation-timeouts — EDITMAMEI_SCRIPT_TIMEOUT_MS (module-load-once s
     expect(getToolTimeoutMs('ps_definitely_not_a_real_tool')).toBe(2 * DEFAULT_SCRIPT_TIMEOUT_MS);
     // A tool with its own table entry scales by the same factor, not to a
     // flat number.
-    expect(getToolTimeoutMs('ps_export')).toBe(2 * 30_000);
+    expect(getToolTimeoutMs('ps_read_scene')).toBe(2 * 164_000);
   });
 
   it('never scales an explicit call-site override — only the table/default lookup', async () => {

@@ -721,9 +721,9 @@ async function reprobeOpenDocument(
   snippetClient: SnippetClient,
   filePath: string
 ): Promise<Record<string, unknown> | null> {
-  connection.skipSettleAfterTimeout();
   try {
     const probeScript = await snippetClient.build('probeOpenDocument', { filePath });
+    connection.skipSettleAfterTimeout();
     const result = (await runScript(connection, probeScript, OPEN_DOCUMENT_REPROBE_TIMEOUT_MS)) as {
       success?: boolean;
     } & Record<string, unknown>;

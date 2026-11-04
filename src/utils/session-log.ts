@@ -367,7 +367,10 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
   { errorClass: 'channel_not_visible', pattern: /histogram for visible channels/i },
   // ── PS-native outcomes ───────────────────────────────────────────────────
   { errorClass: 'ps_command_unavailable', pattern: /not currently available/i },
-  { errorClass: 'timeout', pattern: /timed? ?out|Script execution timeout|exceeded.*bytes/i },
+  {
+    errorClass: 'timeout',
+    pattern: /timed? ?out|Script execution timeout|exceeded.*bytes|exceeded its \d+ms budget/i,
+  },
   {
     errorClass: 'ps_modal_blocking',
     pattern: /modal.*dialog|dialog.*blocking|blocked.*modal|photoshop.*modal/i,

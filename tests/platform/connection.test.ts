@@ -475,6 +475,15 @@ describe('PhotoshopConnection - after a script times out', () => {
     );
   });
 
+  it('keeps the sentences apart on the queue watchdog fallback, which has no full stop', async () => {
+    const { conn } = recording(() => {
+      throw new Error('Script execution timeout');
+    });
+    await expect(conn.executeScript('first')).rejects.toThrow(
+      /^Script execution timeout\. Photoshop may still be working/
+    );
+  });
+
   it('does not say it twice when the runner message already does', async () => {
     const { conn } = recording(() => {
       throw new Error(WINDOWS_TIMEOUT);

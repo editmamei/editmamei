@@ -195,14 +195,6 @@ function fakeTool(name: string, handler: ToolDefinition['handler']): ToolDefinit
 /** Generous tolerance for the few ms of real wall-clock time a test itself spends. */
 const TOLERANCE_MS = 500;
 
-/**
- * The dispatch seam: `ToolRegistry.execute` computes the call's deadline once
- * (`tool-budget-context.ts`), and `runScript` derives each script's own
- * timeout from however much of it remains. Fails against the pre-fix
- * registry, which invoked handlers directly with no budget context at all —
- * every runScript call inside a handler used to fall straight through to the
- * platform runner's flat default regardless of which tool was calling.
- */
 describe('tool budget store', () => {
   it('is one store per process, so a separately bundled copy sees the same deadline', async () => {
     // Importing twice across a module reset is what a downloaded module's own
@@ -218,6 +210,14 @@ describe('tool budget store', () => {
   });
 });
 
+/**
+ * The dispatch seam: `ToolRegistry.execute` computes the call's deadline once
+ * (`tool-budget-context.ts`), and `runScript` derives each script's own
+ * timeout from however much of it remains. Fails against the pre-fix
+ * registry, which invoked handlers directly with no budget context at all —
+ * every runScript call inside a handler used to fall straight through to the
+ * platform runner's flat default regardless of which tool was calling.
+ */
 describe('ToolRegistry.execute — per-tool budget propagation', () => {
   it('every script a handler runs inherits (approximately) the same tool budget', async () => {
     const conn = makeConnection();

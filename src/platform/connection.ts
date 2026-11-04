@@ -202,7 +202,9 @@ export class PhotoshopConnection {
       if (error instanceof Error && isScriptTimeoutMessage(error.message)) {
         this.awaitingAnswerAfterTimeout = true;
         if (!/may have kept executing/.test(error.message)) {
-          throw new Error(error.message + MAY_STILL_BE_WORKING, { cause: error });
+          throw new Error(error.message.replace(/\.?\s*$/, '.') + MAY_STILL_BE_WORKING, {
+            cause: error,
+          });
         }
       }
       throw error;

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runScript } from '@editmamei/utils/run-script.ts';
+import { classifyError } from '@editmamei/utils/session-log.ts';
 import { PhotoshopAPIFactory } from '@editmamei/api/photoshop-api.ts';
 import { budgetContextFor, runWithToolBudget } from '@editmamei/utils/tool-budget-context.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
@@ -156,6 +157,17 @@ describe('runScript — deadline fallback and timeout enrichment', () => {
       /^Tool 'ps_fake_tool' exceeded its 4242ms budget before this script could run\.$/
     );
     expect(conn.executions).toHaveLength(0);
+  });
+
+  it('a call that ran out of budget before starting counts as a timeout in telemetry', async () => {
+    const conn = makeConnection();
+    const pastContext = { toolName: 'ps_fake_tool', budgetMs: 4242, deadline: Date.now() - 1000 };
+
+    const error = await runWithToolBudget(pastContext, () =>
+      runScript(conn.asConnection(), 'return 1;')
+    ).catch((e: Error) => e);
+
+    expect(classifyError((error as Error).message)).toBe('timeout');
   });
 
   it('names the tool and the bound that fired when a timeout fires, keeping the runner warning', async () => {
