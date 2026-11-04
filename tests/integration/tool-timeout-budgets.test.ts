@@ -5,6 +5,7 @@ import {
   getToolTimeoutMs,
   DEFAULT_SCRIPT_TIMEOUT_MS,
   SCRIPT_TIMEOUT_FLOOR_MS,
+  PHOTOSHOP_MIN_BUDGET_MS,
   TOOL_TIMEOUT_BUDGETS_MS,
   TOOLS_WITHOUT_A_BUDGET,
   OPEN_DOCUMENT_TIMEOUT_MS,
@@ -24,9 +25,10 @@ import { makeConnection } from '../fixtures/fake-connection.ts';
  * are expected to be re-derived as usage evolves.
  *
  * The table and its allowlist name community tools only. A tool absent from
- * both takes `DEFAULT_SCRIPT_TIMEOUT_MS`, and a handler that needs more than
- * its budget passes its own `timeoutMs`, which always wins. This file ships
- * in the community bundle, so it must not carry any other tool's name.
+ * both takes `DEFAULT_SCRIPT_TIMEOUT_MS` unless it declares `budgetMs` on its
+ * definition, and a handler that needs more than its budget passes its own
+ * `timeoutMs`, which always wins. This file ships in the community bundle, so
+ * it must not carry any other tool's name.
  */
 describe('getToolTimeoutMs — table completeness (community)', () => {
   it('every community tool has an explicit table entry or a documented allowlist reason', () => {
@@ -66,6 +68,21 @@ describe('getToolTimeoutMs — table completeness (community)', () => {
     }
   });
 
+  it('no ps_ table entry dips below the Photoshop minimum', () => {
+    expect(PHOTOSHOP_MIN_BUDGET_MS).toBe(30_000);
+    for (const [name, ms] of Object.entries(TOOL_TIMEOUT_BUDGETS_MS)) {
+      if (!name.startsWith('ps_')) continue;
+      expect(ms, `${name}: ${ms}ms is below the Photoshop minimum`).toBeGreaterThanOrEqual(
+        PHOTOSHOP_MIN_BUDGET_MS
+      );
+    }
+  });
+
+  it('a budget the tool declares wins over the table and the default', () => {
+    expect(getToolTimeoutMs('ps_definitely_not_a_real_tool', 120_000)).toBe(120_000);
+    expect(getToolTimeoutMs('ps_export', 120_000)).toBe(120_000);
+  });
+
   it('every table entry and every allowlist entry names a real, currently-registered tool', () => {
     // The reverse of completeness — catches a typo'd key that would
     // otherwise sit dead in either object forever.
@@ -103,8 +120,8 @@ describe('getToolTimeoutMs — table completeness (community)', () => {
   });
 
   it('a Pro-tier tool still resolves to a sane fallback budget', () => {
-    // Weaker, by design: a Pro tool's real budget lives in its own handler,
-    // which does not ship in this repository. This only proves the CE-side
+    // Weaker, by design: a Pro tool's real budget lives on its own definition or
+    // handler, which does not ship in this repository. This only proves the CE-side
     // mechanism doesn't misbehave for a name it has deliberately never seen.
     const aProTool = Object.entries(TOOL_TIERS).find(([, tier]) => tier === 'pro')?.[0];
     expect(aProTool).toBeDefined();
@@ -228,6 +245,27 @@ describe('ToolRegistry.execute — per-tool budget propagation', () => {
     expect(conn.executions[1].timeout).toBe(777);
   });
 
+  it('a declared budgetMs bounds every script the call runs', async () => {
+    const conn = makeConnection();
+    const registry = new ToolRegistry();
+    registry.register('ps_not_in_the_table', {
+      ...fakeTool('ps_not_in_the_table', async () => {
+        await runScript(conn.asConnection(), 'script one');
+        await runScript(conn.asConnection(), 'script two');
+        return { content: [{ type: 'text', text: 'ok' }] };
+      }),
+      budgetMs: 120_000,
+    });
+
+    await registry.execute('ps_not_in_the_table', {});
+
+    expect(conn.executions).toHaveLength(2);
+    for (const exec of conn.executions) {
+      expect(exec.timeout).toBeLessThanOrEqual(120_000);
+      expect(exec.timeout).toBeGreaterThan(120_000 - TOLERANCE_MS);
+    }
+  });
+
   it('two different tools in the same process get their own independent budgets', async () => {
     const conn = makeConnection();
     const registry = new ToolRegistry();
@@ -284,8 +322,8 @@ describe('ToolRegistry.execute — per-tool budget propagation', () => {
 
     await registry.execute('ps_read_scene', { viaOuter: true });
 
-    // ps_export's own budget is small already (9s), and well under
-    // ps_read_scene's 164s — so this alone doesn't prove capping, but it
+    // ps_export's own budget is already well under ps_read_scene's 164s — so
+    // this alone doesn't prove capping, but it
     // does prove the nested dispatch actually ran and got a sane, bounded
     // timeout rather than an undefined/unbounded one.
     const exportBudget = getToolTimeoutMs('ps_export');

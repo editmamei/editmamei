@@ -1,6 +1,7 @@
 import { PhotoshopAPI, PhotoshopAPIFactory } from '../api/photoshop-api.js';
 import type { PhotoshopConnection } from '../platform/connection.js';
-import { currentToolBudget } from './tool-budget-context.js';
+import { PHOTOSHOP_SETTLE_TIMEOUT_MS } from './operation-timeouts.js';
+import { currentToolBudget, type ToolBudgetContext } from './tool-budget-context.js';
 
 /**
  * Per-connection memo of the constructed `PhotoshopAPI`.
@@ -25,6 +26,30 @@ import { currentToolBudget } from './tool-budget-context.js';
  * be — the memo caches the wrapper, never anything inside it.
  */
 const apiCache = new WeakMap<PhotoshopConnection, PhotoshopAPI>();
+
+/**
+ * Connections whose last script timed out. A timeout stops the wait, not
+ * Photoshop, which can still be running that script. The next script waits for
+ * Photoshop to answer first, so it doesn't start against a busy Photoshop and
+ * time out for a reason that has nothing to do with it.
+ */
+const awaitingPhotoshop = new WeakSet<PhotoshopConnection>();
+
+/**
+ * Added to a timeout message that doesn't already say Photoshop may carry on.
+ * It says "working" because telemetry's error classes match on message text:
+ * "Photoshop ... not ... running" reads as `ps_not_running`, not `timeout`.
+ */
+const MAY_STILL_BE_WORKING =
+  ' Photoshop may still be working on that script, so check its state before retrying.';
+
+/**
+ * For a post-timeout check that does its own waiting: the next script goes
+ * straight through instead of waiting for Photoshop twice.
+ */
+export function skipPhotoshopSettle(connection: PhotoshopConnection): void {
+  awaitingPhotoshop.delete(connection);
+}
 
 /**
  * One-shot helper that collapses the per-handler boilerplate
@@ -59,6 +84,9 @@ const apiCache = new WeakMap<PhotoshopConnection, PhotoshopAPI>();
  * bound that fired, on top of the runner's own message; a deadline-bound
  * call that starts with no time left fails the same way without ever
  * reaching Photoshop.
+ *
+ * After a timeout, the next script on that connection first waits for
+ * Photoshop to answer. If it doesn't, that script fails without running.
  */
 export async function runScript(
   connection: PhotoshopConnection,
@@ -73,6 +101,10 @@ export async function runScript(
   }
 
   const budget = currentToolBudget();
+  if (awaitingPhotoshop.has(connection)) {
+    await settleAfterTimeout(connection, api, budget);
+  }
+
   let effectiveTimeoutMs = timeoutMs;
   if (timeoutMs === undefined && budget) {
     const remaining = budget.deadline - Date.now();
@@ -87,19 +119,49 @@ export async function runScript(
   try {
     return await api.executeScript(script, effectiveTimeoutMs);
   } catch (error) {
+    if (isScriptTimeoutError(error)) awaitingPhotoshop.add(connection);
     if (budget && isScriptTimeoutError(error)) {
       // effectiveTimeoutMs, not budget.budgetMs: a later script in a
       // multi-script call can fail on a small REMAINING slice of a large
       // tool budget, and naming the tool's full nominal budget there would
       // read as "it had 164s and still failed" when it may have had only a
       // few seconds left. What actually fired is the more honest number.
+      const note = /may have kept executing/.test(error.message) ? '' : MAY_STILL_BE_WORKING;
       throw new Error(
-        `Tool '${budget.toolName}' exceeded its ${effectiveTimeoutMs}ms budget: ${error.message}`,
+        `Tool '${budget.toolName}' exceeded its ${effectiveTimeoutMs}ms budget: ${error.message}${note}`,
         { cause: error }
       );
     }
     throw error;
   }
+}
+
+/**
+ * Waits for Photoshop to answer after an earlier script timed out. The wait
+ * isn't this call's own work, so it comes back onto the call's deadline. Only a
+ * timeout counts as still busy: any other failure means Photoshop answered, or
+ * is gone, and the script that follows reports that better than this can.
+ */
+async function settleAfterTimeout(
+  connection: PhotoshopConnection,
+  api: PhotoshopAPI,
+  budget: ToolBudgetContext | undefined
+): Promise<void> {
+  const started = Date.now();
+  try {
+    await api.executeScript('return { ready: true };', PHOTOSHOP_SETTLE_TIMEOUT_MS);
+  } catch (error) {
+    if (isScriptTimeoutError(error)) {
+      throw new Error(
+        `Photoshop did not answer within ${PHOTOSHOP_SETTLE_TIMEOUT_MS}ms: an earlier script timed ` +
+          'out and may still be working, or a dialog may be open. This call did not run. Try again ' +
+          'once Photoshop is free.',
+        { cause: error }
+      );
+    }
+  }
+  awaitingPhotoshop.delete(connection);
+  if (budget) budget.deadline += Date.now() - started;
 }
 
 /**

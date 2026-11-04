@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
-import { runScript } from '../utils/run-script.js';
+import { runScript, skipPhotoshopSettle } from '../utils/run-script.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import {
   OPEN_DOCUMENT_TIMEOUT_MS,
@@ -744,6 +744,7 @@ async function reprobeOpenDocument(
   snippetClient: SnippetClient,
   filePath: string
 ): Promise<Record<string, unknown> | null> {
+  skipPhotoshopSettle(connection);
   try {
     const probeScript = await snippetClient.build('probeOpenDocument', { filePath });
     const result = (await runScript(connection, probeScript, OPEN_DOCUMENT_REPROBE_TIMEOUT_MS)) as {
@@ -839,6 +840,7 @@ async function reprobeSavedPsd(
   outputPath: string,
   startedAt: number
 ): Promise<ToolResult | null> {
+  skipPhotoshopSettle(connection);
   try {
     await runScript(connection, 'return { ready: true };', SAVE_PSD_REPROBE_TIMEOUT_MS);
   } catch {

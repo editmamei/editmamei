@@ -15,6 +15,11 @@ export type ToolResult = CallToolResult;
 export interface ToolDefinition {
   tool: Tool;
   handler: ToolHandler;
+  /**
+   * This call's budget in ms, shared by every script it runs. Takes precedence
+   * over the budget table, for a tool that doesn't have an entry there.
+   */
+  budgetMs?: number;
 }
 
 /**
@@ -137,8 +142,9 @@ export class ToolRegistry {
             content: [{ type: 'text', text: `Missing required argument: ${missing}` }],
             isError: true,
           }
-        : await runWithToolBudget(budgetContextFor(name, getToolTimeoutMs(name)), () =>
-            definition.handler(args)
+        : await runWithToolBudget(
+            budgetContextFor(name, getToolTimeoutMs(name, definition.budgetMs)),
+            () => definition.handler(args)
           );
       // Handlers signal failure via { isError: true } rather than throwing.
       if (result?.isError) {

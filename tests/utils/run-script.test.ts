@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { runScript } from '@editmamei/utils/run-script.ts';
+import { runScript, skipPhotoshopSettle } from '@editmamei/utils/run-script.ts';
+import { PHOTOSHOP_SETTLE_TIMEOUT_MS } from '@editmamei/utils/operation-timeouts.ts';
+import { classifyError } from '@editmamei/utils/session-log.ts';
 import { PhotoshopAPIFactory } from '@editmamei/api/photoshop-api.ts';
 import { budgetContextFor, runWithToolBudget } from '@editmamei/utils/tool-budget-context.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
@@ -91,12 +93,12 @@ describe('runScript — deadline fallback and timeout enrichment', () => {
   });
 
   it('an explicit timeoutMs ABOVE the tool budget still wins, unclamped — annotated-preview shape', async () => {
-    // Mirrors ps_get_preview (17s budget) passing ANNOTATED_PREVIEW_TIMEOUT_MS
+    // Mirrors ps_get_preview (30s budget) passing ANNOTATED_PREVIEW_TIMEOUT_MS
     // (90s) for an annotated call: the explicit request is what the caller
     // knows it needs, and it must not be silently cut down to the tool's
     // typical-case budget.
     const conn = makeConnection();
-    await runWithToolBudget(budgetContextFor('ps_get_preview', 17_000), () =>
+    await runWithToolBudget(budgetContextFor('ps_get_preview', 30_000), () =>
       runScript(conn.asConnection(), 'return 1;', 90_000)
     );
     expect(conn.lastTimeout()).toBe(90_000);
@@ -194,6 +196,49 @@ describe('runScript — deadline fallback and timeout enrichment', () => {
     ).rejects.toThrow(/^Tool 'ps_fake_tool' exceeded its \d+ms budget: .*AppleEvent timed out/);
   });
 
+  it('tells the caller Photoshop may still be working, once, on either platform', async () => {
+    const mac = makeConnection({
+      throwOnExecute: new Error('osascript exited with code 1: AppleEvent timed out (-1712)'),
+    });
+    await expect(
+      runWithToolBudget(budgetContextFor('ps_fake_tool', 4242), () =>
+        runScript(mac.asConnection(), 'return 1;')
+      )
+    ).rejects.toThrow(/Photoshop may still be working on that script/);
+
+    // The Windows message already says so, so it isn't said twice.
+    const windows = makeConnection({
+      throwOnExecute: new Error(
+        'Script execution timeout after 4242ms (cscript run.vbs). Photoshop may have kept executing.'
+      ),
+    });
+    await expect(
+      runWithToolBudget(budgetContextFor('ps_fake_tool', 4242), () =>
+        runScript(windows.asConnection(), 'return 1;')
+      )
+    ).rejects.not.toThrow(/Photoshop may still be working on that script/);
+  });
+
+  it('a timeout with the added note still counts as a timeout in telemetry', async () => {
+    const conn = makeConnection({
+      throwOnExecute: new Error(
+        'osascript exited with code 1: Photoshop got an error: AppleEvent timed out. (-1712)'
+      ),
+    });
+
+    let caught: Error | undefined;
+    try {
+      await runWithToolBudget(budgetContextFor('ps_fake_tool', 4242), () =>
+        runScript(conn.asConnection(), 'return 1;')
+      );
+    } catch (error) {
+      caught = error as Error;
+    }
+
+    expect(caught?.message).toMatch(/may still be working/);
+    expect(classifyError(caught?.message)).toBe('timeout');
+  });
+
   it('reports the explicit override that actually fired, when it is smaller than the tool budget', async () => {
     const conn = makeConnection({
       throwOnExecute: new Error('Script execution timeout after 999ms (cscript run.vbs).'),
@@ -272,5 +317,141 @@ describe('runScript — nested tool budget inherits the tighter deadline', () =>
       );
     });
     expect(conn.executions).toHaveLength(0);
+  });
+});
+
+/**
+ * A timeout stops the wait, not Photoshop. The next script on that connection
+ * waits for Photoshop to answer first, and doesn't run if it never does.
+ */
+describe('runScript - waiting for Photoshop after a timeout', () => {
+  const TIMEOUT = 'Script execution timeout after 30000ms (cscript run.vbs).';
+  const PROBE = 'return { ready: true };';
+
+  /** Scripts reach the connection wrapped, so name each one by what it contains. */
+  const NAMES = ['script_first', 'script_second', 'script_third', 'script_probe', PROBE];
+  const nameOf = (script: string) => NAMES.find((name) => script.includes(name));
+  const ran = (conn: ReturnType<typeof makeConnection>) =>
+    conn.executions.map((e) => nameOf(e.script));
+
+  /** A connection whose scripts answer through `answer`, in order of arrival. */
+  function scripted(answer: (script: string, nth: number) => unknown) {
+    let nth = 0;
+    return makeConnection({ resultFor: (script) => answer(script, nth++) });
+  }
+
+  /** The first script times out, then `answer` handles the rest. */
+  function timesOutOnce(answer: (script: string) => unknown = () => 'ok') {
+    return scripted((script, nth) => {
+      if (nth === 0) throw new Error(TIMEOUT);
+      return answer(script);
+    });
+  }
+
+  it('waits for Photoshop before the next script, then only once', async () => {
+    const conn = timesOutOnce();
+    await expect(runScript(conn.asConnection(), 'script_first')).rejects.toThrow(/timeout/);
+
+    await runScript(conn.asConnection(), 'script_second');
+    await runScript(conn.asConnection(), 'script_third');
+
+    expect(ran(conn)).toEqual(['script_first', PROBE, 'script_second', 'script_third']);
+    expect(conn.executions[1].timeout).toBe(PHOTOSHOP_SETTLE_TIMEOUT_MS);
+  });
+
+  it('does not wait when nothing timed out', async () => {
+    const conn = makeConnection();
+    await runScript(conn.asConnection(), 'script_first');
+    await runScript(conn.asConnection(), 'script_second');
+    expect(ran(conn)).toEqual(['script_first', 'script_second']);
+  });
+
+  it('does not wait after a failure that is not a timeout', async () => {
+    const conn = scripted((_script, nth) => {
+      if (nth === 0) throw new Error('some other Photoshop failure');
+      return 'ok';
+    });
+    await expect(runScript(conn.asConnection(), 'script_first')).rejects.toThrow(/other/);
+    await runScript(conn.asConnection(), 'script_second');
+    expect(ran(conn)).toEqual(['script_first', 'script_second']);
+  });
+
+  it('fails without running the script when Photoshop still does not answer, then tries again', async () => {
+    let busy = true;
+    const conn = scripted((script) => {
+      if (script.includes('script_first') || busy) throw new Error(TIMEOUT);
+      return 'ok';
+    });
+    await expect(runScript(conn.asConnection(), 'script_first')).rejects.toThrow(/timeout/);
+
+    await expect(runScript(conn.asConnection(), 'script_second')).rejects.toThrow(
+      /This call did not run/
+    );
+    expect(ran(conn)).toEqual(['script_first', PROBE]);
+
+    busy = false;
+    await runScript(conn.asConnection(), 'script_third');
+    expect(ran(conn)).toEqual(['script_first', PROBE, PROBE, 'script_third']);
+  });
+
+  it('a still-busy failure counts as a timeout in telemetry', async () => {
+    const conn = scripted(() => {
+      throw new Error(TIMEOUT);
+    });
+    await expect(runScript(conn.asConnection(), 'script_first')).rejects.toThrow(/timeout/);
+
+    let caught: Error | undefined;
+    try {
+      await runScript(conn.asConnection(), 'script_second');
+    } catch (error) {
+      caught = error as Error;
+    }
+    expect(classifyError(caught?.message ?? '')).toBe('timeout');
+  });
+
+  it('runs the script when the wait fails for any other reason', async () => {
+    const conn = scripted((script, nth) => {
+      if (nth === 0) throw new Error(TIMEOUT);
+      if (script.includes(PROBE)) throw new Error('some other Photoshop failure');
+      return 'ok';
+    });
+    await expect(runScript(conn.asConnection(), 'script_first')).rejects.toThrow(/timeout/);
+    await expect(runScript(conn.asConnection(), 'script_second')).resolves.toBe('ok');
+  });
+
+  it('the wait does not come off the call that had to wait', async () => {
+    const conn = timesOutOnce();
+    await expect(runScript(conn.asConnection(), 'script_first')).rejects.toThrow(/timeout/);
+
+    const budget = budgetContextFor('ps_fake_tool', 5_000);
+    const deadlineBefore = budget.deadline;
+    const realNow = Date.now;
+    let advanced = false;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => {
+      return realNow() + (advanced ? 3_000 : 0);
+    });
+    const executeScript = conn.executeScript.bind(conn);
+    vi.spyOn(conn, 'executeScript').mockImplementation(async (script, timeout) => {
+      if (script.includes(PROBE)) advanced = true;
+      return executeScript(script, timeout);
+    });
+
+    await runWithToolBudget(budget, () => runScript(conn.asConnection(), 'script_second'));
+    spy.mockRestore();
+
+    expect(budget.deadline).toBeGreaterThanOrEqual(deadlineBefore + 3_000);
+    const got = conn.lastTimeout() as number;
+    expect(got).toBeLessThanOrEqual(5_000);
+    expect(got).toBeGreaterThan(5_000 - 500);
+  });
+
+  it('skipPhotoshopSettle lets a check that does its own waiting go straight through', async () => {
+    const conn = timesOutOnce();
+    await expect(runScript(conn.asConnection(), 'script_first')).rejects.toThrow(/timeout/);
+
+    skipPhotoshopSettle(conn.asConnection());
+    await runScript(conn.asConnection(), 'script_probe');
+
+    expect(ran(conn)).toEqual(['script_first', 'script_probe']);
   });
 });
