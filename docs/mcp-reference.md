@@ -48,7 +48,7 @@ MCP client ──stdio, JSON-RPC──▶ editmamei (Node.js MCP server)
 - **Tools only.** The server declares the `tools` capability; there are no resources or prompts.
 - **Self-describing.** The discovery chain is `ps_ping` (liveness and versions), then `ps_overview` (the working method: assess, plan, enact, check, iterate, plus a map of the tool groups), then `ps_list_capabilities`, a live map of what is registered in this session. GIMP has `gimp_ping` and `gimp_overview`.
 - **Structured results.** Every tool declares an `outputSchema`, and successful calls return `structuredContent` alongside a short text summary. Tools that change what is active report the current document and layer back, so the model keeps an accurate picture of editor state between calls.
-- **Images as content blocks.** Preview tools return downscaled JPEGs as MCP image content, which is how the model checks its own work. Setting `privacy.send_previews_to_llm` to `false` strips every image block from every result at the server boundary, nested results included.
+- **Images as content blocks.** Preview tools return JPEGs as MCP image content, 1024 pixels on the long edge by default and up to 8192 on request, which is how the model checks its own work. Setting `privacy.send_previews_to_llm` to `false` strips every image block from every result at the server boundary, nested results included.
 - **Multi-step calls.** `ps_sequence` runs several steps in one call, with the option to roll them all back if one fails.
 - **Only verified tools ship.** A new tool is registered at a `dev` tier and stays out of the tool list until it has passed live sessions against real Photoshop or GIMP ([`src/core/tool-tiers.ts`](../src/core/tool-tiers.ts)).
 - **Listed in the [MCP Registry](https://registry.modelcontextprotocol.io)** as `io.github.editmamei/editmamei-photoshop-mcp` ([server.json](../server.json)).
@@ -99,9 +99,9 @@ Core editing needs no network from this server: it talks to your editor through 
 - **Usage telemetry** (on by default, `telemetry.usage`) to Editmamei's own endpoint: tool name, success or error category, duration, response size, versions, OS and CPU architecture, install channel, which AI client connected and its capability flags, per-session counts and a random install ID. The network edge records country, time zone and serving datacenter on arrival.
 - **Diagnostics** (off by default, `telemetry.diagnostics`) to the same endpoint: the failing tool and step, a sanitized error message and error-output tail, Photoshop's locale, and the open document's bit depth and color mode. Paths are reduced to file names, but an error message can still name a layer or repeat a value passed to a tool.
 - **Update check** (on by default, `update_check`) to the public npm registry, with no identifiers.
-- **Pro only:** activation (the license key and a hashed device ID) and a daily license check (the key) to the licensing service, a check for a newer Pro module, with the key, to Editmamei's delivery service at each start (it downloads the module if there is one), and a startup telemetry event reporting whether the module loaded.
+- **Pro only:** activation (the license key and a hashed device ID) and a daily license check (the key and activation ID) to the licensing service, a check for a newer Pro module, with the key and activation ID, to Editmamei's delivery service at each start (it downloads the module if there is one), and a startup telemetry event reporting whether the module loaded.
 
-The previews your client shows its model go to that model's provider, as any image in a chat would; `privacy.send_previews_to_llm=false` stops them. Every field, and your rights over the data, are documented in [privacy.md](privacy.md).
+The previews your client shows its model go to that model's provider, as any image in a chat would; `privacy.send_previews_to_llm=false` stops them. Tool results go there too, and can include file paths, layer names, and document metadata. Every field, and your rights over the data, are documented in [privacy.md](privacy.md).
 
 ## Remote server: Editmamei Connect
 

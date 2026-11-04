@@ -44,7 +44,7 @@ Editmamei always prefers non-destructive operations (adjustment layers, masks, a
 
 > "Show me what the image looks like now."
 
-The AI calls `ps_get_preview`, which returns a downscaled JPEG of the current document state inline. This is how the AI sees its own work; the preview goes to your AI assistant, which is a cloud service (see [privacy.md](privacy.md#your-ai-assistant-is-a-cloud-service)). You can ask it to compare against the original, evaluate exposure, or check if a particular edit landed.
+The AI calls `ps_get_preview`, which returns a preview JPEG of the current document state inline. This is how the AI sees its own work; the preview goes to your AI assistant, which is a cloud service (see [privacy.md](privacy.md#your-ai-assistant-is-a-cloud-service)). You can ask it to compare against the original, evaluate exposure, or check if a particular edit landed.
 
 ---
 
