@@ -109,6 +109,8 @@ The source in this repository is the same code published to npm, so none of the 
 
 ## For developers
 
+The [MCP reference](docs/mcp-reference.md) covers the generic client config, architecture, MCP surface, every setting and environment variable, and each network request the server makes.
+
 The discovery chain is `ps_ping` (liveness), then `ps_overview` (the working method and capability map), then `tools/list` (the full schema-typed inventory).
 
 ### Design principles
@@ -156,6 +158,7 @@ Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), which 
 - **Install:** [docs/installation.md](docs/installation.md)
 - **Getting started:** [docs/getting-started.md](docs/getting-started.md)
 - **Tools:** [docs/tools.md](docs/tools.md)
+- **MCP reference:** [docs/mcp-reference.md](docs/mcp-reference.md)
 - **FAQ:** [docs/faq.md](docs/faq.md)
 - **AI clients:** [docs/clients.md](docs/clients.md)
 - **Troubleshooting:** [docs/troubleshooting.md](docs/troubleshooting.md)
