@@ -60,7 +60,7 @@ Not with Photoshop. Editmamei drives Photoshop through Windows COM automation or
 
 ### Does Editmamei work with GIMP?
 
-Yes. Editmamei can drive GIMP headless as a second editor, on Windows, macOS, or Linux, with GIMP 3.2. Use it when you ask for GIMP, or when Photoshop isn't available. It covers a smaller slice of editing than the Photoshop side today: documents, layers and composites, 13 non-destructive adjustment types and six effects, geometric masks, crop/resize/rotate/flip, checkpoints, and the same kind of preview/histogram verification. See [docs/gimp.md](gimp.md) for requirements, detection, and what it can't do yet. It's Community only; Pro's tools are Photoshop-only.
+Yes. Editmamei can drive GIMP headless as a second editor, on Windows, macOS, or Linux, with GIMP 3.2. Use it when you ask for GIMP, or when Photoshop isn't available. It covers a smaller slice of editing than the Photoshop side today: documents, layers and composites, 13 non-destructive adjustment types and nine effects, geometric masks, crop/resize/rotate/flip, checkpoints, and the same kind of preview/histogram verification. See [docs/gimp.md](gimp.md) for requirements, detection, and what it can't do yet. It's Community only; Pro's tools are Photoshop-only.
 
 ### Does it need an internet connection?
 
