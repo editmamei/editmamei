@@ -1,0 +1,185 @@
+<!doctype html>
+<!--
+  Source for docs/media/how-it-works.png.
+  Render: screenshot #diagram at 1200px wide, device scale 2, transparent page background.
+  Facts on it must match docs/mcp-reference.md.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>How Editmamei works</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=block" rel="stylesheet">
+<style>
+  :root {
+    --deep: #08130f; --brand-deep: #0f2922; --brand: #143731; --brand-light: #1f4d44;
+    --lime: #ceff8c; --paper: #f7f4ec; --muted: #b9c9c2; --clay: #ffb08f;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { background: transparent; }
+  body { width: 1200px; font-family: 'Bricolage Grotesque', system-ui, sans-serif; color: var(--paper); }
+  #diagram {
+    position: relative; width: 1200px; height: 744px; border-radius: 30px; overflow: hidden;
+    background:
+      radial-gradient(52% 58% at 50% 56%, rgba(206,255,140,.085), transparent 72%),
+      radial-gradient(50% 60% at 0% 100%, rgba(31,77,68,.6), transparent 70%),
+      var(--deep);
+  }
+  .abs { position: absolute; }
+  svg.wires { position: absolute; inset: 0; width: 1200px; height: 744px; }
+
+  /* Regions */
+  .cloud { left: 44px; top: 28px; width: 392px; height: 94px; border: 2px dashed rgba(255,176,143,.6);
+    border-radius: 22px; background: rgba(255,138,92,.05); display: flex; align-items: center; gap: 16px; padding: 0 22px; }
+  .computer { left: 24px; top: 196px; width: 1152px; height: 528px; border: 1.5px solid rgba(206,255,140,.38);
+    border-radius: 26px; background: rgba(255,255,255,.022); }
+  .region-tag { font-size: 15px; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; color: var(--lime);
+    display: flex; align-items: center; gap: 9px; }
+
+  /* Nodes */
+  .node { border-radius: 20px; background: rgba(20,55,49,.62); border: 1px solid rgba(255,255,255,.14); padding: 20px 22px; }
+  .title { font-size: 26px; font-weight: 720; letter-spacing: -.015em; line-height: 1.1; }
+  .sub { margin-top: 7px; font-size: 18px; line-height: 1.32; color: var(--muted); }
+  .icon { flex: none; width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center; }
+  .bubble { margin-top: 18px; padding: 12px 15px; border-radius: 15px 15px 4px 15px; background: #faf9f5; color: var(--brand);
+    font-size: 18px; line-height: 1.28; font-weight: 500; }
+
+  .hero { background: linear-gradient(180deg, #1a4a40, #123229); border: 2px solid var(--lime);
+    box-shadow: 0 0 46px -8px rgba(206,255,140,.42); }
+  .hero .head { display: flex; align-items: center; gap: 14px; }
+  .hero img { width: 54px; height: 54px; }
+  .hero .title { font-size: 30px; }
+  .cap { margin-top: 12px; padding-top: 11px; border-top: 1px solid rgba(206,255,140,.22); }
+  .cap b { display: block; font-size: 18px; font-weight: 680; color: var(--lime); }
+  .cap span { display: block; margin-top: 2px; font-size: 16.5px; line-height: 1.28; color: #cfdcd6; }
+
+  .group { border-radius: 20px; border: 1px solid rgba(206,255,140,.26); background: rgba(206,255,140,.035); }
+  .group-tag { font-size: 16px; font-weight: 650; color: #d3dfd9; }
+  .ed { position: absolute; left: 16px; width: 236px; height: 118px; padding: 0 18px; display: flex; flex-direction: column; justify-content: center; }
+  .ed .title { font-size: 25px; white-space: nowrap; }
+  /* Wire labels */
+  .wl { position: absolute; font-size: 17px; line-height: 1.22; font-weight: 560; color: var(--lime); text-align: center; }
+  .wl small { display: block; font-size: 15.5px; font-weight: 450; color: var(--muted); }
+  .wl.clay { color: var(--clay); text-align: left; }
+
+  /* Result strip */
+  .result { display: flex; align-items: center; gap: 20px; padding: 14px 22px; background: rgba(250,249,245,.055); border: 1px solid rgba(255,255,255,.14); border-radius: 20px; }
+  .result > img { width: 76px; height: 92px; object-fit: cover; border-radius: 9px; box-shadow: 0 8px 20px -8px #000; flex: none; }
+  .layers { margin-left: auto; flex: none; width: 236px; display: grid; gap: 5px; }
+  .layer { display: flex; align-items: center; gap: 9px; padding: 3px 11px; border-radius: 8px; background: rgba(255,255,255,.07); font-size: 15.5px; font-weight: 520; color: #e8eee9; }
+  .layer i { width: 13px; height: 13px; border-radius: 3px; background: var(--lime); flex: none; }
+  .layer.mask i { background: linear-gradient(135deg, #fff 50%, #111 50%); }
+  .layer.base i { background: #7f9a8e; }
+
+  /* Legend */
+  .legend { right: 44px; top: 42px; display: grid; gap: 13px; font-size: 17px; color: #d3dfd9; font-weight: 500; }
+  .legend div { display: flex; align-items: center; gap: 13px; }
+  .legend u { display: inline-block; width: 46px; border-top: 3.5px solid var(--lime); text-decoration: none; }
+  .legend u.d { border-top: 3.5px dashed var(--clay); }
+</style>
+</head>
+<body>
+<div id="diagram">
+  <div class="abs computer"></div>
+  <div class="abs group" style="left:888px;top:240px;width:268px;height:306px"></div>
+
+  <svg class="wires" viewBox="0 0 1200 744" fill="none">
+    <defs>
+      <marker id="al" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4.2" markerHeight="4.2" orient="auto-start-reverse"><path d="M0 .6 9 5 0 9.4z" fill="#ceff8c"/></marker>
+      <marker id="ac" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4.2" markerHeight="4.2" orient="auto-start-reverse"><path d="M0 .6 9 5 0 9.4z" fill="#ffb08f"/></marker>
+    </defs>
+    <!-- AI model and AI app -->
+    <g stroke="#ffb08f" stroke-width="3" stroke-dasharray="7 7">
+      <path d="M165 236V128" marker-end="url(#ac)"/>
+      <path d="M193 128V236" marker-end="url(#ac)"/>
+    </g>
+    <!-- AI app and Editmamei -->
+    <g stroke="#ceff8c" stroke-width="3">
+      <path d="M310 363H456" marker-end="url(#al)"/>
+      <path d="M456 423H310" marker-end="url(#al)"/>
+    </g>
+    <!-- Editmamei and the editors -->
+    <g stroke="#ceff8c" stroke-width="3">
+      <path d="M720 363C790 363 810 334 900 334" marker-end="url(#al)" marker-start="url(#al)"/>
+      <path d="M720 423C790 423 810 468 900 468" marker-end="url(#al)" marker-start="url(#al)"/>
+    </g>
+    <!-- Editors to the layered file -->
+    <path d="M1022 548V586" stroke="#ceff8c" stroke-width="3" marker-end="url(#al)"/>
+  </svg>
+
+  <!-- AI model -->
+  <div class="abs cloud">
+    <div class="icon" style="background:rgba(255,138,92,.15);border:1px solid rgba(255,176,143,.45)">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#ffb08f" stroke-width="1.8" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.2 9.1 4.5 4.5 0 0 0 7 18z"/></svg>
+    </div>
+    <div><div class="title">The AI model</div><div class="sub" style="margin-top:4px;white-space:nowrap">In the cloud, as with any chat</div></div>
+  </div>
+  <div class="wl clay" style="left:215px;top:138px">Your request and<br>small previews</div>
+  <div class="wl clay" style="left:60px;top:138px;width:92px;text-align:right">The next<br>step</div>
+
+  <!-- Legend -->
+  <div class="abs legend">
+    <div><u></u>Stays on your computer</div>
+    <div><u class="d"></u>Goes to the AI model</div>
+  </div>
+
+  <div class="abs region-tag" style="right:44px;top:208px">
+    <svg width="22" height="22" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"><rect x="6" y="7" width="20" height="13" rx="2"/><path d="M3 24h26l-2 2.5H5L3 24z"/></svg>
+    Your computer
+  </div>
+
+  <!-- AI app -->
+  <div class="abs node" style="left:48px;top:240px;width:262px;height:306px">
+    <div class="icon" style="background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.2);width:46px;height:46px;margin-bottom:12px">
+      <svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4V5z"/></svg>
+    </div>
+    <div class="title">Your AI app</div>
+    <div class="sub">Claude Desktop, Claude Code, Cursor and others</div>
+    <div class="bubble">Make the sky more dramatic but keep the foreground natural.</div>
+  </div>
+
+  <!-- AI app and Editmamei labels -->
+  <div class="wl" style="left:310px;top:335px;width:146px">Tool calls</div>
+  <div class="wl" style="left:310px;top:383px;width:146px;font-size:15.5px;font-weight:450;color:var(--muted)">MCP over stdio</div>
+  <div class="wl" style="left:310px;top:431px;width:146px">Results and<br>previews</div>
+
+  <!-- Editmamei -->
+  <div class="abs node hero" style="left:460px;top:240px;width:260px;height:306px;padding:18px 20px">
+    <div class="head"><img src="logo.png" alt=""><div class="title">Editmamei</div></div>
+    <div class="sub" style="color:#dbe6e0;margin-top:6px">Runs each step with the editor's own tools</div>
+    <div class="cap"><b>On-device vision</b><span>Faces, objects and scenes</span></div>
+    <div class="cap"><b>Measurements</b><span>Histograms, comparisons</span></div>
+  </div>
+
+  <!-- Editmamei and editor labels -->
+  <div class="wl" style="left:734px;top:272px;width:150px;text-align:left">ExtendScript<small>COM or AppleScript</small></div>
+  <div class="wl" style="left:734px;top:482px;width:150px;text-align:left">Python-Fu<small>Headless process</small></div>
+
+  <!-- Editors -->
+  <div class="abs group-tag" style="left:904px;top:252px">Your editor</div>
+  <div class="abs" style="left:888px;top:240px;width:268px;height:306px">
+    <div class="node ed" style="top:38px">
+      <div class="title">Photoshop 2026</div>
+      <div class="sub">Windows, macOS</div>
+    </div>
+    <div class="node ed" style="top:172px">
+      <div class="title">GIMP 3.2</div>
+      <div class="sub">Windows, macOS, Linux</div>
+    </div>
+  </div>
+
+  <!-- Result -->
+  <div class="abs result" style="left:48px;top:590px;width:1108px;height:116px">
+    <img src="falls.webp" alt="">
+    <div>
+      <div class="title">A layered file you can keep editing</div>
+      <div class="sub" style="margin-top:5px">The full-size photo stays here. Edits land as adjustment layers, masks and duplicate layers, saved as PSD or XCF.</div>
+    </div>
+    <div class="layers">
+      <div class="layer"><i></i>Curves</div>
+      <div class="layer mask"><i></i>Sky mask</div>
+      <div class="layer base"><i></i>Background</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

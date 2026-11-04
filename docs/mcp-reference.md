@@ -43,6 +43,12 @@ MCP client ──stdio, JSON-RPC──▶ editmamei (Node.js MCP server)
 - **Perception.** Face, object and scene detection run locally on bundled ONNX models (UltraFace, D-FINE) and return real document coordinates, so the model can target "the person on the left" without a cloud vision call.
 - **Editor registration.** By default the `ps_*` tools register, and the `gimp_*` tools join them when GIMP is found at startup. Pin one editor with `EDITMAMEI_EDITOR=photoshop` or `EDITMAMEI_EDITOR=gimp`.
 
+## Design principles
+
+- **Measure, don't eyeball.** A dedicated set of verification tools (histogram, region compare, layer-bounds diff, selection preview) lets the model check its own work numerically instead of trusting a thumbnail.
+- **Non-destructive by default.** Adjustments are adjustment layers, and destructive pixel operations run on an auto-created duplicate, so an edit stays reversible.
+- **Built for modern Photoshop.** Editmamei targets Photoshop 2026 (v27.x) so it can rely on current, stable scripting descriptors rather than carrying a decade of drifted behavior.
+
 ## The MCP surface
 
 - **Tools only.** The server declares the `tools` capability; there are no resources or prompts.
