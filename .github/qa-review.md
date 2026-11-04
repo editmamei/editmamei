@@ -1,6 +1,6 @@
 # QA review
 
-Every pull request records a QA review before it merges. The `qa-review` required
+Every pull request outside the [exemptions](#exemptions) records a QA review before it merges. The `qa-review` required
 check enforces the *recording*: it passes only when the pull request carries a
 comment in the format below, stamped with the pull request's current head SHA,
 posted by someone with write access. This file is the canonical instruction set.
@@ -93,6 +93,10 @@ alike. They are gated by CI and by the pinned-majors policy in
 everyone to paste without reading. A Dependabot PR that deserves human eyes —
 an Actions bump that changes workflow behavior, say — deserves them before the
 merge button regardless of what this check reports.
+
+A pull request that changes only `README.md` or Markdown files under `docs/` also
+passes automatically. CI, including the leak guard, still runs on it. A rename
+counts both paths, and pushing any other file re-arms the gate.
 
 ## Enforcement
 

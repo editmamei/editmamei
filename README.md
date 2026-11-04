@@ -9,7 +9,7 @@ Editmamei is an MCP (Model Context Protocol) server that lets AI apps edit your 
 [![npm version](https://img.shields.io/npm/v/editmamei.svg)](https://www.npmjs.com/package/editmamei)
 [![CI](https://github.com/editmamei/editmamei/actions/workflows/ci.yml/badge.svg)](https://github.com/editmamei/editmamei/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](LICENSE.md)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey.svg)](docs/installation.md)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](docs/installation.md)
 
 **[Install](#install)** · [Website](https://editmamei.com) · [Docs](docs/getting-started.md) · [Editmamei Connect](#editmamei-connect) · [Report a bug](https://github.com/editmamei/editmamei/issues)
 
@@ -53,8 +53,7 @@ Then restart your AI app and ask it: _"Is Photoshop connected?"_ For anything `e
 
 ### Requirements
 
-- Adobe Photoshop 2026 (v27.x)
-- Windows 10/11 or macOS 13+
+- Adobe Photoshop 2026 (v27.x) on Windows 10/11 or macOS 13+, or GIMP 3.2 on Windows, macOS, or Linux
 - Node.js 22+ (for the npm route only)
 - An AI app that can run a local MCP server. Editmamei ships no model of its own and runs on whichever app you connect, so every edit spends that app's tokens.
 
