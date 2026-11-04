@@ -107,7 +107,7 @@ Then restart your AI app and ask it: _"Is Photoshop connected?"_ For anything `e
 
 **What to expect**
 
-A first edit takes a while. The three requests above took 4 to 8 minutes, because your AI looks, plans, and checks at every step. Editmamei ships no model of its own, so every edit spends your AI app's tokens, and [we measured what an edit costs](https://editmamei.com/blog/what-an-edit-costs).
+A first edit takes a while. The three requests above took 4 to 8 minutes, because your AI looks, plans, and checks at every step. Editmamei ships no chat model of its own, so every edit spends your AI app's tokens, and [we measured what an edit costs](https://editmamei.com/blog/what-an-edit-costs).
 
 ## Editmamei Connect
 
@@ -123,7 +123,7 @@ Connect is a separate product, and its source isn't in this repository. It edits
 
 Your AI app decides each step and calls Editmamei's tools. Editmamei carries the step out in your editor and reports back with structured results and, when your AI needs to look, a preview. Your AI reads those and decides what to do next. Editmamei also sends content-free usage telemetry and checks npm for updates; see [Privacy](#privacy).
 
-- **Real edits.** Photoshop or GIMP does the pixel work with its own engine, and no generative model touches your photo.
+- **Real edits.** Photoshop or GIMP does the pixel work with its own engine, and no generative model changes your pixels.
 - **Reversible.** In Photoshop, adjustments land as adjustment layers and destructive pixel operations run on an automatic duplicate. In GIMP, adjustments stay live filters, and checkpoints stand in for undo.
 - **Checked, not assumed.** Histograms, region comparisons, and selection previews let your AI measure its own work.
 - **On-device vision.** In Photoshop, face, object, and scene detection run locally on bundled ONNX models, so your AI can target "the person on the left" without a cloud vision call.
@@ -162,14 +162,14 @@ Editmamei runs on your computer and edits in your desktop editor. No image conte
 
 | What | Where it goes | Setting |
 | --- | --- | --- |
-| Your photo file | Stays on your computer, apart from the previews below | |
+| Your photo file | Stays on your computer, apart from the previews below and any Adobe cloud selection | |
 | Previews, 1024px on the long edge by default (your AI can ask for up to 8192px) | Your AI app's model provider, the same as dropping a photo into a chat | `privacy.send_previews_to_llm` (on) |
-| Tool results: file names, layer names, measurements, and metadata such as GPS if your AI asks for it | Your AI app's model provider | |
+| Tool results, such as file paths, layer names, measurements, and metadata like GPS if your AI asks for it | Your AI app's model provider | |
 | Content-free usage telemetry, with a random install ID | Editmamei | `telemetry.usage` (on) |
 | Sanitized error details | Editmamei, only if you opt in | `telemetry.diagnostics` (off) |
 | Update check, with no identifiers | The npm registry | `update_check` (on) |
 
-Change these with `editmamei config set <setting> false` (or `true`). The Claude Desktop extension has its own switches for telemetry and diagnostics. Pro also sends your license key to a third-party licensing service and to Editmamei's delivery service to check for module updates, and a hashed device ID at activation; these have no setting. Photoshop's own Select Subject and Select Sky can use Adobe's cloud, depending on Photoshop's Image Processing preference.
+Change these with `editmamei config set <setting> false` (or `true`). The Claude Desktop extension has its own switches for telemetry, diagnostics, and the update check. Pro also sends your license key and a per-device activation ID to a third-party licensing service, and to Editmamei's delivery service to check for module updates, plus a hashed device ID at activation. These have no setting. Photoshop's own Select Subject and Select Sky can use Adobe's cloud, depending on Photoshop's Image Processing preference.
 
 Every field is documented in [privacy.md](docs/privacy.md), including [your rights, and the legal basis](docs/privacy.md#your-rights-and-the-legal-basis). npm releases are published from this repository with signed provenance, so you can check the package against this source.
 
