@@ -88,7 +88,7 @@ Photoshop does the pixel work with its own engine, and edits land as adjustment 
 
 ### GIMP
 
-Editmamei can also drive GIMP, headless, as a second editor alongside (or instead of) Photoshop. When GIMP 3.2 or newer is detected on your machine, a `gimp_*` tool set registers next to the `ps_*` one; use it when you ask for GIMP, or when Photoshop isn't available. There's no visible window: edits happen in a background `gimp-console` process, and you follow along through rendered previews in the conversation instead of watching a window change. GIMP doesn't yet cover heal/clone or AI subject and sky selection. Details, requirements (including Linux), and troubleshooting are in [docs/gimp.md](docs/gimp.md).
+Editmamei can also drive GIMP, headless, as a second editor alongside (or instead of) Photoshop. When GIMP 3.2 is detected on your machine, a `gimp_*` tool set registers next to the `ps_*` one; use it when you ask for GIMP, or when Photoshop isn't available. There's no visible window: edits happen in a background `gimp-console` process, and you follow along through rendered previews in the conversation instead of watching a window change. GIMP doesn't yet cover heal/clone or AI subject and sky selection. Details, requirements (including Linux), and troubleshooting are in [docs/gimp.md](docs/gimp.md).
 
 ## Free and Pro
 
@@ -103,13 +103,13 @@ This repository holds the Community source. Pro is a separately licensed module 
 
 ## Privacy
 
-Editmamei runs on your computer and edits in desktop Photoshop. No image content, document data, or file paths are sent to Editmamei's servers. It reports content-free usage telemetry (on by default, turn it off with `editmamei config set telemetry.usage false`). When your AI assistant needs to see a result, Editmamei sends it a downscaled preview, the same as dropping a photo into a chat with that assistant. Every field is documented in [privacy.md](docs/privacy.md), including [your rights, and the legal basis](docs/privacy.md#your-rights-and-the-legal-basis).
+Editmamei runs on your computer and edits in desktop Photoshop. No image content or file paths are sent to Editmamei's servers. It reports content-free usage telemetry (on by default, turn it off with `editmamei config set telemetry.usage false`). Diagnostics are off unless you opt in, and they add sanitized error details. When your AI assistant needs to see a result, Editmamei sends it a downscaled preview, the same as dropping a photo into a chat with that assistant. Every field is documented in [privacy.md](docs/privacy.md), including [your rights, and the legal basis](docs/privacy.md#your-rights-and-the-legal-basis).
 
 The source in this repository is the same code published to npm, so none of the above has to be taken on trust.
 
 ## For developers
 
-The [MCP reference](docs/mcp-reference.md) covers the generic client config, architecture, MCP surface, every setting and environment variable, and each network request the server makes.
+The [MCP reference](docs/mcp-reference.md) covers the generic client config, architecture, MCP surface, the user-facing settings and environment variables, and each network request the server makes.
 
 The discovery chain is `ps_ping` (liveness), then `ps_overview` (the working method and capability map), then `tools/list` (the full schema-typed inventory).
 

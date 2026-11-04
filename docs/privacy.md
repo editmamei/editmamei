@@ -104,6 +104,8 @@ Three equivalent ways, all writing the same `~/.editmamei/settings.json`:
 }
 ```
 
+`ps_path` is unused and has no effect. To point Editmamei at a specific Photoshop, set the `PHOTOSHOP_PATH` environment variable.
+
 **Use the CLI.** The `editmamei config` command reads and writes the same file:
 
 ```bash
