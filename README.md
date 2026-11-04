@@ -17,10 +17,7 @@
   <a href="https://github.com/editmamei/editmamei/actions/workflows/ci.yml"><img src="https://github.com/editmamei/editmamei/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg" alt="License: FSL-1.1-MIT"></a>
   <a href="docs/installation.md"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="Platform: Windows, macOS, Linux"></a>
-</p>
-
-<p align="center">
-  <a href="https://aipluginindex.com/mcp/editmamei-editmamei-photoshop-mcp"><img src="https://aipluginindex.com/badge/mcp/editmamei-editmamei-photoshop-mcp.svg" height="44" alt="AI Plugin Index security grade"></a>
+  <a href="https://glama.ai/mcp/servers/editmamei/editmamei"><img src="https://glama.ai/mcp/servers/editmamei/editmamei/badges/score.svg" alt="Glama score"></a>
 </p>
 
 <p align="center">
