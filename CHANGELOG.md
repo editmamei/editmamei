@@ -10,6 +10,39 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.9.6] — 2026-11-04
+
+### Fixed
+
+- **Tools get enough time to finish.** Every Photoshop tool now has its own time limit of at least
+  30 seconds, so ordinary work on a busy machine isn't cut off early.
+  - `ps_execute_script` and `ps_play_action` get 120 seconds, and each Pro tool now gets its own
+    limit, up to 300 seconds for `ps_batch`.
+- **After a timeout, the next call waits for Photoshop.** A timeout stops the wait, not Photoshop.
+  The next script now waits up to 30 seconds for Photoshop to answer, and fails without running if
+  it doesn't, so two scripts don't run on top of each other.
+- **Starting your AI client no longer opens Photoshop.** The check at startup only talks to
+  Photoshop if it is already running. Tool calls still start it when needed.
+- **A device removed from your license gets a clear message (Pro).** Pro locks on that device with
+  its own reason and the steps to fix it, instead of appearing active while updates fail.
+  - Activating no longer risks taking a second device slot if a step fails partway through.
+- **Guidance reaches AI apps that read only a tool's structured result.** This covers guidance that
+  used to appear only in the text, including the message to start Photoshop from `ps_ping`.
+
+### Security
+
+- **Script, Action and preset files are refused by where a path really points.** A link or a
+  different spelling of the path no longer gets past the check.
+  - `ps_batch` uses the same check, and refuses a folder given as an input image.
+- **Windows system tools run without a shell.**
+
+### Changed
+
+- **Usage stats gain three counts.** Documents processed per `ps_batch` or `ps_sequence` call, result
+  size per session, and how many calls used a template, batch, sequence or Action. Counts only, never
+  content. [`docs/privacy.md`](docs/privacy.md) lists every field.
+- **The README is shorter, and the technical reference moved into `docs/`.**
+
 ## [1.9.5] — 2026-11-03
 
 ### Fixed
