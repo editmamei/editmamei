@@ -110,6 +110,28 @@ jobs:
               return;
             }
 
+            // A change to only the README or docs ships no code, and CI still
+            // runs on it, leak guard included. A rename counts both paths, so
+            // moving code into docs/ is not exempt. The list API stops at 3000
+            // files, so a truncated list is not exempt either.
+            const isDoc = (path) => path === 'README.md' || /^docs\/.+\.md$/.test(path);
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
+            const docsOnly =
+              files.length > 0 &&
+              files.length === pr.changed_files &&
+              files.every(
+                (f) => isDoc(f.filename) && (!f.previous_filename || isDoc(f.previous_filename)),
+              );
+            if (docsOnly) {
+              await setStatus('success', 'Exempt: README and docs only. CI is the gate.');
+              return;
+            }
+
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner,
               repo,
