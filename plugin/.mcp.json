@@ -1,11 +1,8 @@
 {
   "mcpServers": {
-    "editmamei": {
-      "command": "npx",
-      "args": ["-y", "editmamei@1.9.6"],
-      "env": {
-        "EDITMAMEI_INSTALL_CHANNEL": "plugin"
-      }
+    "editmamei-connect": {
+      "type": "http",
+      "url": "https://connect.editmamei.com/mcp"
     }
   }
 }
