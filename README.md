@@ -18,6 +18,7 @@
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg" alt="License: FSL-1.1-MIT"></a>
   <a href="docs/installation.md"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="Platform: Windows, macOS, Linux"></a>
   <a href="https://glama.ai/mcp/servers/editmamei/editmamei"><img src="https://glama.ai/mcp/servers/editmamei/editmamei/badges/score.svg" alt="Glama score"></a>
+  <a href="https://mcptoplist.com/server/io.github.editmamei%2Feditmamei-photoshop-mcp"><img src="https://mcptoplist.com/badge/io.github.editmamei%2Feditmamei-photoshop-mcp.svg" alt="MCP Toplist rank"></a>
 </p>
 
 <p align="center">
