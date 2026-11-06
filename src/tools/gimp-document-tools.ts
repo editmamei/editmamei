@@ -9,7 +9,14 @@ import {
   refuseExistingGimpFile,
 } from '../utils/tool-helpers.js';
 import { GimpError } from '../backends/gimp/errors.js';
-import { GIMP_IMAGE_PROP, runGimpTool } from './gimp-shared.js';
+import {
+  GIMP_COLOR_PROFILE_SCHEMA,
+  GIMP_IMAGE_PROP,
+  colorProfileText,
+  exportedProfileText,
+  runGimpTool,
+  type GimpColorProfile,
+} from './gimp-shared.js';
 
 /**
  * gimp_open_document / gimp_close_document / gimp_save_xcf / gimp_export.
@@ -31,6 +38,7 @@ interface OpenResult {
   height: number;
   base_type: string;
   precision: string;
+  color_profile?: GimpColorProfile;
   layers: string[];
   orientation_applied?: number;
 }
@@ -77,7 +85,9 @@ async function gimpOpenDocument(
           type: 'text' as const,
           text:
             `Opened ${basename(filePath)} as image ${result.image} ` +
-            `(${result.width}x${result.height}, ${result.base_type}, ${result.precision}). ` +
+            `(${result.width}x${result.height}, ${result.base_type}, ${result.precision}` +
+            (result.color_profile ? `, ${colorProfileText(result.color_profile)}` : '') +
+            '). ' +
             `${result.layers.length} layer(s): ${result.layers.join(', ') || '(none)'}.` +
             (result.orientation_applied !== undefined
               ? ` Rotated upright for EXIF orientation ${result.orientation_applied}.`
@@ -219,6 +229,16 @@ const exportSchema: JsonSchemaObject = {
         'canvas, so areas no layer covers (a cut-out, say) stay transparent. Default false ' +
         'flattens onto white. Refused for JPEG and TIFF.',
     },
+    color_profile: {
+      type: 'string',
+      enum: ['keep', 'srgb', 'adobe-rgb'],
+      default: 'keep',
+      description:
+        "'keep' writes the image in its own color space with that profile embedded, so a " +
+        "phone's Display P3 photo keeps its full color. 'srgb' converts to sRGB first, the " +
+        "safest choice for viewers that ignore profiles; 'adobe-rgb' converts to Adobe RGB " +
+        '(RGB images only). Plain sRGB is written with no profile, which viewers assume.',
+    },
   },
   required: ['image', 'file_path'],
 };
@@ -230,6 +250,7 @@ interface LayeredExportResult {
   merged_groups: string[];
   rasterized_text: string[];
   may_blend_differently: string[];
+  color_profile?: GimpColorProfile;
 }
 
 const LAYER_NAMES_SHOWN = 10;
@@ -262,6 +283,7 @@ function layeredExportText(result: LayeredExportResult): string {
         `may look slightly different there: ${layerNames(result.may_blend_differently)}.`
     );
   }
+  if (result.color_profile) parts.push(exportedProfileText(result.color_profile));
   parts.push('Metadata (EXIF/XMP/IPTC/GPS, thumbnail) was stripped.');
   return parts.join(' ');
 }
@@ -303,7 +325,11 @@ async function gimpExport(
     // png, a string enum for tiff) depends on the format it's exporting,
     // so the two tool-level fields (png_compression / tiff_compression)
     // are never sent together.
-    const bridgeArgs: Record<string, unknown> = { image: args.image, path: filePath };
+    const bridgeArgs: Record<string, unknown> = {
+      image: args.image,
+      path: filePath,
+      color_profile: args.color_profile,
+    };
     if (ext === '.jpg' || ext === '.jpeg') {
       bridgeArgs.quality = args.quality;
     } else if (ext === '.png') {
@@ -328,17 +354,27 @@ async function gimpExport(
         structuredContent: { ...result, format },
       };
     }
-    const result = await gimp.call<{ path: string; bytes: number }>('export', bridgeArgs);
+    const result = await gimp.call<{
+      path: string;
+      bytes: number;
+      color_profile?: GimpColorProfile;
+    }>('export', bridgeArgs);
     return {
       content: [
         {
           type: 'text' as const,
           text:
             `Exported ${result.bytes.toLocaleString()} bytes to ${result.path}. ` +
+            (result.color_profile ? `${exportedProfileText(result.color_profile)} ` : '') +
             'Metadata (EXIF/XMP/IPTC/GPS, thumbnail) was stripped.',
         },
       ],
-      structuredContent: { path: result.path, bytes: result.bytes, format },
+      structuredContent: {
+        path: result.path,
+        bytes: result.bytes,
+        format,
+        ...(result.color_profile ? { color_profile: result.color_profile } : {}),
+      },
     };
   } catch (error) {
     return toolGimpErrorResult('Error exporting GIMP document', error);
@@ -370,6 +406,7 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
             height: { type: 'number' },
             base_type: { type: 'string' },
             precision: { type: 'string' },
+            color_profile: GIMP_COLOR_PROFILE_SCHEMA,
             layers: { type: 'array', items: { type: 'string' } },
           },
         },
@@ -455,7 +492,9 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
           'Refuses to overwrite an existing file unless overwrite: true (with it, the existing ' +
           'file is replaced). A flattened image is composited onto white by default; keep_alpha: ' +
           'true (png or webp only) keeps transparency, so a cut-out exports with a transparent ' +
-          'background.',
+          'background. The color profile is not metadata and is kept: a wide-gamut photo ' +
+          "(an iPhone's Display P3) is written with its profile embedded unless color_profile " +
+          'converts it, and the result reports the space written.',
         inputSchema: exportSchema,
         outputSchema: {
           type: 'object',
@@ -480,6 +519,7 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
               description:
                 'PSD only: visible layers below 100% opacity or with a non-normal blend mode.',
             },
+            color_profile: GIMP_COLOR_PROFILE_SCHEMA,
           },
         },
         annotations: {

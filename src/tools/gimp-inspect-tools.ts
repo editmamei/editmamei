@@ -2,7 +2,12 @@ import { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { toolGimpErrorResult, unknownDiscriminator } from '../utils/tool-helpers.js';
-import { pickSchemaDeclaredKeys } from './gimp-shared.js';
+import {
+  GIMP_COLOR_PROFILE_SCHEMA,
+  colorProfileText,
+  pickSchemaDeclaredKeys,
+  type GimpColorProfile,
+} from './gimp-shared.js';
 import { capLines, channelsText, filterLine, layerTreeLines } from './gimp-result-text.js';
 
 /**
@@ -143,7 +148,11 @@ function describeSummary(
   const topLevelCount = (result.top_level_count as number | undefined) ?? layers.length;
   return withLayerTree(
     `Document ${result.image}: ${result.width}x${result.height} ${result.base_type as string} ` +
-      `${result.precision as string}, ${topLevelCount} top-level layer(s)${truncatedSuffix}, ` +
+      `${result.precision as string}` +
+      (result.color_profile
+        ? `, ${colorProfileText(result.color_profile as GimpColorProfile)}`
+        : '') +
+      `, ${topLevelCount} top-level layer(s)${truncatedSuffix}, ` +
       `${channels.length} channel(s)` +
       (channels.length > 0 ? `: ${channelsText(channels)}.` : '.') +
       (layers.length > 0 ? ' Layers, top of stack first:' : ''),
@@ -218,7 +227,7 @@ export function createGimpInspectTools(gimp: GimpBackend): ToolDefinition[] {
         description:
           "Headless GIMP: read-only state reader. `what`: 'documents' lists every image " +
           "currently open in this headless GIMP session by id. 'document' describes ONE open " +
-          'image (dims, base_type, precision, resolution, full layer tree, channels by id/name ' +
+          'image (dims, base_type, precision, color_profile, resolution, full layer tree, channels by id/name ' +
           "only — no coverage); 'layers' returns just the tree; 'channels' returns the channels " +
           "WITH coverage (selected_pixels/fraction), the cost 'document' skips, and can stop " +
           'early on a document with many named channels (`truncated: true`, `channels_skipped`). ' +
@@ -249,6 +258,7 @@ export function createGimpInspectTools(gimp: GimpBackend): ToolDefinition[] {
             height: { type: 'number' },
             base_type: { type: 'string' },
             precision: { type: 'string' },
+            color_profile: GIMP_COLOR_PROFILE_SCHEMA,
             resolution: {
               type: 'object',
               properties: {
