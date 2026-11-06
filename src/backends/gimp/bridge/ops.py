@@ -128,8 +128,73 @@ def _describe(img):
         'height': img.get_height(),
         'base_type': img.get_base_type().value_nick,
         'precision': img.get_precision().value_nick,
+        'color_profile': _color_profile_info(img),
         'layers': [l.get_name() for l in img.get_layers()],
     }
+
+
+def _profile_texts(profile):
+    """[description, manufacturer, model, copyright], each None when unreadable: positions are
+    fixed, since `lib.classify_color_profile` ignores the copyright by position."""
+    texts = []
+    for getter in ('get_description', 'get_manufacturer', 'get_model', 'get_copyright'):
+        try:
+            texts.append(getattr(profile, getter)())
+        except Exception:
+            texts.append(None)
+    return texts
+
+
+def _color_profile_info(img):
+    """The image's color space as results report it: `space` (lib.classify_color_profile),
+    `name` (the profile's own description, None for the built-in sRGB or a profile the editor
+    made, whose internal name says nothing useful), and `wide_gamut` (True when the space holds
+    colors sRGB cannot show, so it must travel with the file)."""
+    profile = img.get_color_profile()
+    texts = None if profile is None else _profile_texts(profile)
+    space = lib.classify_color_profile(texts, grayscale=img.get_base_type() == Gimp.ImageBaseType.GRAY)
+    name = None
+    if texts is not None and not lib.profile_is_editors_own(texts):
+        name = next((t for t in texts[:3] if t), None)
+    return {'space': space, 'name': name, 'wide_gamut': space in lib.WIDE_GAMUT_SPACES}
+
+
+def _builtin_profile_for(img):
+    if img.get_base_type() == Gimp.ImageBaseType.GRAY:
+        return Gimp.ColorProfile.new_d65_gray_srgb_trc()
+    return Gimp.ColorProfile.new_rgb_srgb()
+
+
+def _has_builtin_profile(img):
+    """Whether `img` is in the editor's built-in sRGB (or gray with the sRGB curve): no profile of
+    its own, or one identical to it. Such an image is written untagged, which every viewer reads
+    as sRGB. Anything else is written WITH its profile, or its colors would be read as sRGB."""
+    profile = img.get_color_profile()
+    return profile is None or profile.is_equal(_builtin_profile_for(img))
+
+
+def _apply_color_profile(dup, target):
+    """Convert `dup` in place for an export `color_profile` target (lib.COLOR_PROFILE_TARGETS).
+    Returns the space it was converted FROM, or None when nothing changed ('keep', or already in
+    the target space)."""
+    if target == 'keep':
+        return None
+    gray = dup.get_base_type() == Gimp.ImageBaseType.GRAY
+    if target == 'srgb':
+        dest = _builtin_profile_for(dup)
+    elif gray:
+        raise ValueError("color_profile %r needs an RGB image; this one is grayscale" % target)
+    else:
+        dest = Gimp.ColorProfile.new_rgb_adobe()
+    current = dup.get_color_profile() or _builtin_profile_for(dup)
+    if current.is_equal(dest):
+        return None
+    before = _color_profile_info(dup)['space']
+    if not dup.convert_color_profile(dest, Gimp.ColorRenderingIntent.RELATIVE_COLORIMETRIC, True):
+        raise lib.OpError('gimp_op_failed', 'could not convert the image to %s' % target)
+    # A file's own sRGB (or gray) profile converted to the built-in one is a re-tag, not a change
+    # of space worth reporting.
+    return None if before == _color_profile_info(dup)['space'] else before
 
 
 def _existing_filter(img, args, operation):
@@ -1869,6 +1934,7 @@ def op_describe(args):
         'height': img.get_height(),
         'base_type': img.get_base_type().value_nick,
         'precision': img.get_precision().value_nick,
+        'color_profile': _color_profile_info(img),
         'resolution': {'x': xres, 'y': yres} if ok else {'x': None, 'y': None},
         'layers': layers,
         'truncated': truncated,
@@ -2536,7 +2602,7 @@ def _strip_metadata(cfg, fmt):
         cfg.set_property(name, False)
 
 
-def _export_stripped(dup, path, options=None):
+def _export_stripped(dup, path, options=None, color_profile='srgb'):
     """The ONE place any flattened raster copy leaves the bridge -- `export`'s own flat branch,
     every `preview` (whole-image or region), and `compare`'s before/after outputs all go through
     this, so there is exactly one spot that decides how metadata is handled and what formats are
@@ -2558,7 +2624,14 @@ def _export_stripped(dup, path, options=None):
     Bit depth: png/tiff accept `bit_depth: 8 | 16` (default 8); jpeg/webp are always 8-bit. Either
     way `dup`'s precision is converted to match BEFORE saving -- after a 16/32-bit `precision`
     promotion at open time, the flattened duplicate would otherwise still carry that higher bit
-    depth into an export that never asked for it."""
+    depth into an export that never asked for it.
+
+    Color profile: `color_profile` (lib.COLOR_PROFILE_TARGETS) converts `dup` first; previews and
+    compare images pass 'srgb', since they are looked at by viewers and models that may not color
+    manage. The profile is then written unless it is the built-in sRGB. Every export procedure's
+    `include-color-profile` defaults to False when run non-interactively (verified live, GIMP
+    3.2.6), so it is always set explicitly: left alone, a Display P3 photo is written untagged and
+    its colors read as sRGB, visibly duller. Returns the written profile, as results report it."""
     options = options or {}
     ext = os.path.splitext(path)[1].lower()
     fmt = lib.EXPORT_FORMATS.get(ext)
@@ -2566,6 +2639,7 @@ def _export_stripped(dup, path, options=None):
         raise ValueError(
             'export path must end in .jpg, .jpeg, .png, .webp, .tif, or .tiff (got %r)' % ext
         )
+    converted_from = _apply_color_profile(dup, color_profile)
     _export_precision(dup, options if fmt in ('png', 'tiff') else {})
     try:
         dup.set_metadata(Gimp.Metadata.new())
@@ -2598,24 +2672,17 @@ def _export_stripped(dup, path, options=None):
     cfg.set_property('image', dup)
     cfg.set_property('file', Gio.File.new_for_path(path))
     _strip_metadata(cfg, fmt)
-    if _has_editors_profile(dup):
-        cfg.set_property('include-color-profile', False)
+    embedded = not _has_builtin_profile(dup)
+    cfg.set_property('include-color-profile', embedded)
     _run_export(proc, cfg, path)
+    return _written_profile(dup, embedded, converted_from)
 
 
-def _has_editors_profile(img):
-    """Whether `img` carries the editor's built-in color profile (or none of its own), which
-    exports leave out: see `lib.profile_is_editors_own`."""
-    profile = img.get_color_profile()
-    if profile is None:
-        return lib.profile_is_editors_own(None)
-    texts = []
-    for getter in ('get_description', 'get_manufacturer', 'get_model', 'get_copyright'):
-        try:
-            texts.append(getattr(profile, getter)())
-        except Exception:
-            pass
-    return lib.profile_is_editors_own(texts)
+def _written_profile(dup, embedded, converted_from):
+    info = _color_profile_info(dup)
+    info['embedded'] = embedded
+    info['converted_from'] = converted_from
+    return info
 
 
 def _drop_psd_resource(path, resource_id):
@@ -2715,6 +2782,7 @@ def _export_layered(img, path, options):
             group = Gimp.Layer.get_by_id(group_id)
             merged_groups.append(group.get_name())
             group.merge()
+        converted_from = _apply_color_profile(dup, options.get('color_profile', 'keep'))
         _export_precision(dup, options)
         try:
             dup.set_metadata(Gimp.Metadata.new())
@@ -2728,8 +2796,10 @@ def _export_layered(img, path, options):
         _strip_metadata(cfg, 'psd')
         _run_export(proc, cfg, path)
         # file-psd-export writes the profile whatever include-color-profile says (verified live,
-        # GIMP 3.2.6), so the editor's own is taken out of the written file instead.
-        if _has_editors_profile(dup):
+        # GIMP 3.2.6), so the built-in sRGB is taken out of the written file instead: an untagged
+        # file reads as sRGB anyway.
+        embedded = not _has_builtin_profile(dup)
+        if not embedded:
             _drop_psd_resource(path, lib.PSD_ICC_RESOURCE)
 
         final = _all_layers(dup)
@@ -2742,6 +2812,7 @@ def _export_layered(img, path, options):
             'merged_groups': merged_groups,
             'rasterized_text': rasterized_text,
             'may_blend_differently': may_blend_differently,
+            'color_profile': _written_profile(dup, embedded, converted_from),
         }
     finally:
         dup.delete()
@@ -2764,6 +2835,14 @@ def op_export(args):
     img = _image(args)
     path = lib.require(args, 'path')
     keep_alpha = lib.validate_keep_alpha(args, path)
+    color_profile = lib.validate_choice(
+        'color_profile', args.get('color_profile', 'keep'), lib.COLOR_PROFILE_TARGETS
+    )
+    # Refused before the full-resolution render, not after it.
+    if color_profile == 'adobe-rgb' and img.get_base_type() == Gimp.ImageBaseType.GRAY:
+        raise ValueError("color_profile 'adobe-rgb' needs an RGB image; this one is grayscale")
+    if path.lower().endswith('.xcf') and color_profile != 'keep':
+        raise ValueError(".xcf saves the working document as it is; color_profile must be 'keep'")
     if path.lower().endswith('.xcf'):
         # file_save reports a failed write by returning False, not by raising (verified live).
         if not Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, img, Gio.File.new_for_path(path), None):
@@ -2773,7 +2852,7 @@ def op_export(args):
                 % os.path.basename(path),
             )
     elif os.path.splitext(path)[1].lower() in lib.LAYERED_EXPORT_FORMATS:
-        report = _export_layered(img, path, args)
+        report = _export_layered(img, path, dict(args, color_profile=color_profile))
         return dict({'path': path, 'bytes': os.path.getsize(path)}, **report)
     else:
         if keep_alpha:
@@ -2786,9 +2865,10 @@ def op_export(args):
         else:
             dup, _flat = _composite(img)
         try:
-            _export_stripped(dup, path, args)
+            written = _export_stripped(dup, path, args, color_profile)
         finally:
             dup.delete()
+        return {'path': path, 'bytes': os.path.getsize(path), 'color_profile': written}
     return {'path': path, 'bytes': os.path.getsize(path)}
 
 

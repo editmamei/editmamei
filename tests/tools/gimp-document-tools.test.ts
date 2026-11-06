@@ -87,6 +87,31 @@ describe('createGimpDocumentTools', () => {
       expect(result.structuredContent).toMatchObject({ image: 7, width: 800, height: 600 });
     });
 
+    it("names the photo's color space in the summary, flagging a wide gamut", async () => {
+      const gimp = makeGimpBackend({
+        result: {
+          image: 3,
+          width: 4032,
+          height: 3024,
+          base_type: 'rgb',
+          precision: 'u8-non-linear',
+          color_profile: { space: 'display-p3', name: 'Display P3', wide_gamut: true },
+          layers: ['Background'],
+        },
+      });
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_open_document', {
+        file_path: absPath('photos/iphone.jpg'),
+      });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toMatch(/u8-non-linear, Display P3 \(wider than sRGB\)\)/);
+      expect(result.structuredContent?.color_profile).toEqual({
+        space: 'display-p3',
+        name: 'Display P3',
+        wide_gamut: true,
+      });
+    });
+
     it('maps a gimp_unsupported_file bridge error through toolGimpErrorResult', async () => {
       const gimp = makeGimpBackend({
         throwFor: () =>
@@ -264,7 +289,7 @@ describe('createGimpDocumentTools', () => {
       });
       expect(gimp.lastCall()).toEqual({
         op: 'export',
-        args: { image: 1, path: absPath('out.jpg'), quality: 80 },
+        args: { image: 1, path: absPath('out.jpg'), color_profile: 'keep', quality: 80 },
       });
     });
 
@@ -280,7 +305,13 @@ describe('createGimpDocumentTools', () => {
       });
       expect(gimp.lastCall()).toEqual({
         op: 'export',
-        args: { image: 1, path: absPath('out.png'), compression: 5, bit_depth: 16 },
+        args: {
+          image: 1,
+          path: absPath('out.png'),
+          color_profile: 'keep',
+          compression: 5,
+          bit_depth: 16,
+        },
       });
     });
 
@@ -332,7 +363,13 @@ describe('createGimpDocumentTools', () => {
       });
       expect(gimp.lastCall()).toEqual({
         op: 'export',
-        args: { image: 1, path: absPath('out.tif'), compression: 'lzw', bit_depth: 8 },
+        args: {
+          image: 1,
+          path: absPath('out.tif'),
+          color_profile: 'keep',
+          compression: 'lzw',
+          bit_depth: 8,
+        },
       });
     });
 
@@ -347,7 +384,13 @@ describe('createGimpDocumentTools', () => {
       });
       expect(gimp.lastCall()).toEqual({
         op: 'export',
-        args: { image: 1, path: absPath('out.webp'), quality: 70, lossless: true },
+        args: {
+          image: 1,
+          path: absPath('out.webp'),
+          color_profile: 'keep',
+          quality: 70,
+          lossless: true,
+        },
       });
     });
 
@@ -372,7 +415,7 @@ describe('createGimpDocumentTools', () => {
       });
       expect(gimp.lastCall()).toEqual({
         op: 'export',
-        args: { image: 1, path: absPath('out.psd'), bit_depth: 16 },
+        args: { image: 1, path: absPath('out.psd'), color_profile: 'keep', bit_depth: 16 },
       });
     });
 
@@ -454,6 +497,135 @@ describe('createGimpDocumentTools', () => {
       expect(gimp.calls).toHaveLength(0);
     });
 
+    it('forwards color_profile for every format, flat and layered', async () => {
+      for (const name of ['out.jpg', 'out.png', 'out.webp', 'out.tif', 'out.psd']) {
+        const gimp = makeGimpBackend({ result: { path: absPath(name), bytes: 1 } });
+        const tools = createGimpDocumentTools(gimp.asBackend());
+        await callTool(tools, 'gimp_export', {
+          image: 1,
+          file_path: absPath(name),
+          color_profile: 'srgb',
+        });
+        expect(gimp.lastCall().args.color_profile, name).toBe('srgb');
+      }
+    });
+
+    it('refuses an unknown color_profile before reaching the bridge', async () => {
+      const gimp = makeGimpBackend();
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('out.jpg'),
+        color_profile: 'display-p3',
+      });
+      expect(result.isError).toBe(true);
+      expect(gimp.calls).toHaveLength(0);
+    });
+
+    it('reports an embedded wide-gamut profile in the text and structuredContent', async () => {
+      const color_profile = {
+        space: 'display-p3',
+        name: 'Display P3',
+        wide_gamut: true,
+        embedded: true,
+        converted_from: null,
+      };
+      const gimp = makeGimpBackend({
+        result: { path: absPath('out.jpg'), bytes: 500, color_profile },
+      });
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('out.jpg'),
+      });
+      expect(result.structuredContent).toEqual({
+        path: absPath('out.jpg'),
+        bytes: 500,
+        format: 'jpg',
+        color_profile,
+      });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toMatch(/Color: Display P3 \(wider than sRGB\); the profile is embedded/);
+    });
+
+    it('reports a conversion to plain sRGB', async () => {
+      const gimp = makeGimpBackend({
+        result: {
+          path: absPath('out.jpg'),
+          bytes: 500,
+          color_profile: {
+            space: 'srgb',
+            name: null,
+            wide_gamut: false,
+            embedded: false,
+            converted_from: 'display-p3',
+          },
+        },
+      });
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('out.jpg'),
+        color_profile: 'srgb',
+      });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toMatch(
+        /Converted from Display P3 to sRGB; written as plain sRGB with no profile/
+      );
+    });
+
+    it('reports the color sentence for a layered PSD too, and gray as plain gray', async () => {
+      const gimp = makeGimpBackend({
+        result: {
+          path: absPath('out.psd'),
+          bytes: 10,
+          layers: 1,
+          merged_groups: [],
+          rasterized_text: [],
+          may_blend_differently: [],
+          color_profile: {
+            space: 'gray',
+            name: null,
+            wide_gamut: false,
+            embedded: false,
+            converted_from: null,
+          },
+        },
+      });
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('out.psd'),
+      });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toMatch(
+        /Color: grayscale; written with no profile, which viewers read as standard gray/
+      );
+    });
+
+    it('names an unrecognised profile by its own name', async () => {
+      const gimp = makeGimpBackend({
+        result: {
+          path: absPath('out.tif'),
+          bytes: 10,
+          color_profile: {
+            space: 'other',
+            name: 'Studio Monitor',
+            wide_gamut: false,
+            embedded: true,
+            converted_from: null,
+          },
+        },
+      });
+      const tools = createGimpDocumentTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_export', {
+        image: 1,
+        file_path: absPath('out.tif'),
+      });
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toMatch(/Color: "Studio Monitor"; the profile is embedded/);
+    });
+
     it('reports format in structuredContent, derived from the extension (not the bridge)', async () => {
       const gimp = makeGimpBackend({ result: { path: absPath('out.png'), bytes: 500 } });
       const tools = createGimpDocumentTools(gimp.asBackend());
@@ -486,6 +658,28 @@ describe('gimp_export schema matches the bridge export options exactly', () => {
     join(REPO_ROOT, 'src', 'backends', 'gimp', 'bridge', 'ops.py'),
     'utf8'
   );
+
+  it('previews, compare images and mask renders are written as sRGB: only op_export passes a color_profile', () => {
+    expect(OPS_PY).toMatch(
+      /def _export_stripped\(dup, path, options=None, color_profile='srgb'\):/
+    );
+    const calls = [...OPS_PY.matchAll(/(?<!def )_export_stripped\(([^)]*)\)/g)].map((m) => m[1]);
+    expect(calls.length).toBeGreaterThan(5);
+    const withProfile = calls.filter((a) => a.split(',').length > 2);
+    expect(withProfile).toEqual(['dup, path, args, color_profile']);
+  });
+
+  it('flat exports set include-color-profile explicitly (GIMP defaults it to False)', () => {
+    expect(OPS_PY).toMatch(
+      /embedded = not _has_builtin_profile\(dup\)\n\s+cfg\.set_property\('include-color-profile', embedded\)/
+    );
+  });
+
+  it('a layered PSD drops its ICC resource only when the image is in the built-in sRGB', () => {
+    expect(OPS_PY).toMatch(
+      /embedded = not _has_builtin_profile\(dup\)\n\s+if not embedded:\n\s+_drop_psd_resource\(path, lib\.PSD_ICC_RESOURCE\)/
+    );
+  });
 
   it("EXPORT_FORMAT_EXTENSIONS matches lib.py EXPORT_FORMATS' + LAYERED_EXPORT_FORMATS' keys exactly (both directions)", () => {
     const extensions = ['EXPORT_FORMATS', 'LAYERED_EXPORT_FORMATS'].flatMap((table) => {
@@ -528,6 +722,15 @@ describe('gimp_export schema matches the bridge export options exactly', () => {
     );
     expect(EXPORT_SCHEMA_FOR_TESTS.properties?.quality?.minimum).toBe(1);
     expect(EXPORT_SCHEMA_FOR_TESTS.properties?.quality?.maximum).toBe(100);
+  });
+
+  it('color_profile schema enum matches lib.py COLOR_PROFILE_TARGETS exactly, default keep', () => {
+    const match = LIB_PY.match(/COLOR_PROFILE_TARGETS = \(([^)]+)\)/);
+    expect(match, 'COLOR_PROFILE_TARGETS not found in lib.py').toBeTruthy();
+    const values = match![1].match(/'([a-z0-9-]+)'/g)!.map((s) => s.slice(1, -1));
+    expect(EXPORT_SCHEMA_FOR_TESTS.properties?.color_profile?.enum).toEqual(values);
+    expect(EXPORT_SCHEMA_FOR_TESTS.properties?.color_profile?.default).toBe('keep');
+    expect(OPS_PY).toMatch(/args\.get\('color_profile', 'keep'\)/);
   });
 
   it('lossless is a boolean schema field (webp-only; bridge reads it via a bare bool())', () => {
