@@ -175,8 +175,8 @@ reports a new image id to use from then on. `gimp_checkpoint` op=list shows the 
 might want to take back. Each image keeps up to 5 checkpoints (20 in all); they're deleted when
 Editmamei exits, so save a `.xcf` for anything you want to keep.
 
-Adjustments are the opposite: reversible any time. `gimp_filter` (op=delete) removes one, and passing
-its `filter_id` back to `gimp_add_adjustment` re-edits it in place rather than stacking a second
+Adjustments are the opposite: reversible any time. `gimp_filter` (op=delete) removes one, or several
+at once with `filter_ids`, and passing its `filter_id` back to `gimp_add_adjustment` re-edits it in place rather than stacking a second
 correction on top.
 
 One ordering rule ties the two together: straighten, flip, and resize the canvas **before** adding any

@@ -119,7 +119,10 @@ const effectSchema: JsonSchemaObject = {
         'with center_x/center_y below). SMALLER is STRONGER. Default (when creating): 2.0, a ' +
         'subtle vignette (corners about a quarter darker, centre untouched). At the default ' +
         'softness and gamma, 1.5 is strong (corners more than half darker) and 1.2 or less ' +
-        'turns the corners black. ' +
+        'turns the corners black. A lower gamma blackens them sooner: measured on 4:5 and square frames, ' +
+        'radius 1.4 at gamma 1.6 and radius 1.6 at gamma 1.5 both reach pure black before the ' +
+        'corner, and where the darkening reaches black it shows as a hard edge (a ring) on any ' +
+        'frame shape. For a falloff with no edge, keep the corners above black. ' +
         'lens_blur: blur radius in pixels at full resolution, 0..150 ' +
         '(default 25 when creating) — capped much lower than the other two effects here (measured ' +
         'live: expensive at full resolution). drop_shadow: blur radius in pixels at full ' +
@@ -227,7 +230,8 @@ const effectSchema: JsonSchemaObject = {
       maximum: 1,
       description:
         'add_noise only. THE amount control — sets red/green/blue uniformly (grayscale-leaning ' +
-        'noise, not a color-tinted one). Default (when creating): 0.2.',
+        'noise, not a color-tinted one). Default (when creating): 0.02, a fine film grain; 0.04 is ' +
+        'already a heavy, visible grain on a photo.',
     },
     alpha: {
       type: 'number',
