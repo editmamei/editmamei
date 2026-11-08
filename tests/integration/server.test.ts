@@ -1767,7 +1767,7 @@ describe('client_connected and the session end, on either protocol revision', ()
     });
 
     // Once-latch: nothing in the MCP spec stops a non-conforming client sending a second
-    // `notifications/initialized`, and recordClientConnected no longer force-flushes, so a
+    // `notifications/initialized`, and recordClientConnected doesn't force a flush, so a
     // repeat would silently queue a duplicate event rather than visibly re-send.
     it('sends client_connected at most once even if oninitialized fires twice', () => {
       const { server, recordClientConnected } = make();
@@ -1823,7 +1823,52 @@ describe('client_connected and the session end, on either protocol revision', ()
         })
       );
       expect(server.clientInfo()).toEqual({ name: 'claude-code', version: '2.1.170' });
+      const result = await client.callTool({ name: 'ps_list_capabilities', arguments: {} });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toBeTypeOf('object');
       await client.close();
+    });
+
+    // On a 2025 connection the SDK passes reserved `_meta` keys through unchecked: they are not
+    // the client's identity, which is what `initialize` stated.
+    it('ignores identity keys in a request _meta, even before notifications/initialized', async () => {
+      const { server, recordClientConnected } = make();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const answers: Array<{ id?: unknown; result?: Record<string, unknown>; error?: unknown }> =
+        [];
+      clientTransport.onmessage = (m) => void answers.push(m as (typeof answers)[number]);
+      await clientTransport.start();
+      server.serve(serverTransport);
+
+      await clientTransport.send({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'real', version: '1' },
+        },
+      });
+      await vi.waitFor(() => expect(answers.some((a) => a.id === 1 && a.result)).toBe(true));
+      await clientTransport.send({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/list',
+        params: { _meta: { 'io.modelcontextprotocol/clientInfo': { name: 5 } } },
+      });
+      await vi.waitFor(() => expect(answers.some((a) => a.id === 2)).toBe(true));
+
+      expect(answers.find((a) => a.id === 2)?.result).toBeDefined();
+      expect(recordClientConnected).not.toHaveBeenCalled();
+      expect(server.clientInfo()).toEqual({ name: 'real', version: '1' });
+
+      await clientTransport.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      await vi.waitFor(() => expect(recordClientConnected).toHaveBeenCalledTimes(1));
+      expect(recordClientConnected).toHaveBeenCalledWith(
+        expect.objectContaining({ clientName: 'real' })
+      );
+      await clientTransport.close();
     });
   });
 

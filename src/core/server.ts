@@ -996,10 +996,8 @@ export class EditmameiServer {
     const server = new Server(
       {
         name: 'editmamei',
-        // Sourced from src/version.ts (hand-synced with package.json). The
-        // hardcoded '0.2.0' that lived here pre-2026-06-07 was never
-        // refreshed during release work and MCP clients logged a stale
-        // identifier for support cases.
+        // Sourced from src/version.ts (hand-synced with package.json), so clients log the
+        // version actually running.
         version: VERSION,
       },
       { capabilities: { tools: {} } }
@@ -1016,13 +1014,13 @@ export class EditmameiServer {
     }
 
     server.setRequestHandler('tools/list', async (_request, ctx) => {
-      this.noteModernClient(ctx.mcpReq.envelope);
+      if (era === 'modern') this.noteModernClient(ctx.mcpReq.envelope);
       this.logger.debug('Reporting the registered tool surface');
       return { tools: this.toolRegistry.list() };
     });
 
     server.setRequestHandler('tools/call', async (request, ctx) => {
-      this.noteModernClient(ctx.mcpReq.envelope);
+      if (era === 'modern') this.noteModernClient(ctx.mcpReq.envelope);
       this.logger.debug(`Received a call for ${request.params.name}`);
       const args = (request.params.arguments as Record<string, unknown>) || {};
       const result = await this.handleToolCall(request.params.name, args);
@@ -1040,7 +1038,9 @@ export class EditmameiServer {
   /**
    * A 2026-07-28 client has no `initialize`: it states its name, version and capabilities in
    * every request's `_meta`. The first request that carries them stands in for the handshake
-   * (client identity for the session log, and client_connected). A 2025 request has no envelope.
+   * (client identity for the session log, and client_connected). Called on 2026-07-28 connections
+   * only: the SDK validates the envelope there, while on a 2025 connection reserved `_meta` keys are
+   * passed through unchecked, and the client's identity is the one `initialize` stated.
    */
   private noteModernClient(envelope: Record<string, unknown> | undefined): void {
     if (envelope === undefined || this.clientConnectedSent) return;
@@ -1759,10 +1759,14 @@ export class EditmameiServer {
     const entryOnClose = wire.onclose;
     let gone = false;
     wire.onclose = () => {
-      entryOnClose?.();
-      if (gone) return;
-      gone = true;
-      this.onClientGone();
+      try {
+        entryOnClose?.();
+      } finally {
+        if (!gone) {
+          gone = true;
+          this.onClientGone();
+        }
+      }
     };
   }
 
