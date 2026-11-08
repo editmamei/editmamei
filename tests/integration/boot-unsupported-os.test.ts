@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { platform } from 'os';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import {
+  Client,
+  InMemoryTransport,
+  type VersionNegotiationMode,
+} from '@modelcontextprotocol/client';
+import type { Transport } from '@modelcontextprotocol/server';
 import { EditmameiServer } from '@editmamei/core/server.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
 
@@ -46,20 +49,30 @@ describe('boot on an unsupported OS', () => {
     expect(onLinux.count()).toBe(onWindows.count());
   });
 
-  it('completes the MCP handshake and answers tools/list', async () => {
+  // A scanner may speak either protocol revision: a 2025 client opens with `initialize`, a
+  // 2026-07-28 one sends per-request `_meta` (`auto` probes with server/discover first).
+  const modes: Array<[string, VersionNegotiationMode]> = [
+    ['2025 (initialize)', 'legacy'],
+    ['a probing client (server/discover, then whichever the server offers)', 'auto'],
+    ['2026-07-28 (per-request _meta)', { pin: '2026-07-28' }],
+  ];
+  it.each(modes)('completes the MCP handshake and answers tools/list: %s', async (_label, mode) => {
     // The assertion that matches what a scanner actually does. Constructing
     // the server is not the bar — the bar is a client connecting and getting
     // an inventory back. start() binds stdio, so this drives the same
-    // sequence (loadModules, then connect) over a linked in-memory pair.
+    // sequence (loadModules, then serve) over a linked in-memory pair.
     vi.mocked(platform).mockReturnValue('linux');
     const editmamei = new EditmameiServer();
     await editmamei.loadModules();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const internal = (editmamei as unknown as { server: Server }).server;
-    const client = new Client({ name: 'scanner', version: '0.0.0' });
+    (editmamei as unknown as { serve(wire: Transport): void }).serve(serverTransport);
+    const client = new Client(
+      { name: 'scanner', version: '0.0.0' },
+      { versionNegotiation: { mode } }
+    );
 
-    await Promise.all([internal.connect(serverTransport), client.connect(clientTransport)]);
+    await client.connect(clientTransport);
     const listed = await client.listTools();
 
     expect(listed.tools.length).toBeGreaterThan(0);

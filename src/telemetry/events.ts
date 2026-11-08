@@ -433,8 +433,8 @@ export function buildSessionStart(
 }
 
 /**
- * Sent once per session from `Server.oninitialized` (see server.ts's comment on WHY that
- * hook, not connect(), is the right point) — no ps_version dimension exists here (unlike
+ * Sent once per session: at the handshake on a 2025 connection, at the first tool request on a
+ * 2026-07-28 one (see recordClientConnected in server.ts) — no ps_version dimension exists here (unlike
  * usage/session_summary/session_start/diagnostic), and `restampPsVersion` in client.ts
  * tolerates that the same way it already tolerates `module_status`: via `'ps_version' in
  * event`, which is simply false for this type.
