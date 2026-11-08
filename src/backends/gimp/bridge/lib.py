@@ -1531,7 +1531,8 @@ EFFECT_CREATE_DEFAULTS = {
     'black_white': {'red': 0.333, 'green': 0.333, 'blue': 0.333, 'preserve-luminosity': False},
     'motion_blur': {'length': 10.0, 'angle': 0.0},
     'lens_blur': {'blur-radius': 25.0, 'highlight-factor': 0.0},
-    'add_noise': {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 0},
+    # 0.2 (GEGL's own) is a heavy, visible grain on a photo; 0.02 reads as film grain at full size.
+    'add_noise': {'red': 0.02, 'green': 0.02, 'blue': 0.02, 'alpha': 0.0, 'seed': 0},
     'drop_shadow': {'x': 20.0, 'y': 20.0, 'radius': 10.0, 'opacity': 0.5},
     'outline': {'grow-radius': 4.0, 'color': '#000000'},
     'outer_glow': {'radius': 20.0, 'grow-radius': 4.0, 'opacity': 0.75, 'color': '#ffffff'},

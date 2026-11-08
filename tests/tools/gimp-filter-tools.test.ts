@@ -106,6 +106,58 @@ describe('createGimpFilterTools', () => {
     expect((result.content?.[0] as { text: string }).text).toContain('Deleted filter 3');
   });
 
+  it("op='delete' takes several ids at once with filter_ids", async () => {
+    const gimp = makeGimpBackend({
+      result: {
+        filter_ids: [3, 4],
+        filters: [
+          { filter_id: 3, name: 'Curves' },
+          { filter_id: 4, name: 'Grain' },
+        ],
+        deleted: true,
+      },
+    });
+    const tools = createGimpFilterTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_filter', {
+      image: 5,
+      op: 'delete',
+      filter_ids: [3, 4],
+    });
+    expect(gimp.lastCall()).toEqual({
+      op: 'filter',
+      args: { image: 5, op: 'delete', filter_ids: [3, 4] },
+    });
+    expect((result.content?.[0] as { text: string }).text).toBe(
+      'Deleted 2 filter(s): 3 ("Curves"), 4 ("Grain").'
+    );
+  });
+
+  it('refuses filter_ids outside delete, together with filter_id, or empty, without dispatching', async () => {
+    const gimp = makeGimpBackend();
+    const tools = createGimpFilterTools(gimp.asBackend());
+    for (const args of [
+      { image: 5, op: 'set_visibility', filter_ids: [3], visible: true },
+      { image: 5, op: 'delete', filter_id: 3, filter_ids: [4] },
+      { image: 5, op: 'delete', filter_ids: [] },
+      { image: 5, op: 'delete', filter_ids: ['x'] },
+      { image: 5, op: 'delete', filter_ids: [3.5] },
+      { image: 5, op: 'delete', filter_ids: Array.from({ length: 101 }, (_, i) => i + 1) },
+    ]) {
+      expect((await callTool(tools, 'gimp_filter', args)).isError, JSON.stringify(args)).toBe(true);
+    }
+    expect(gimp.calls).toHaveLength(0);
+  });
+
+  it('passes numeric-string ids in filter_ids on as numbers, as for filter_id', async () => {
+    const gimp = makeGimpBackend({ result: { filter_ids: [3, 4], filters: [], deleted: true } });
+    const tools = createGimpFilterTools(gimp.asBackend());
+    await callTool(tools, 'gimp_filter', { image: 5, op: 'delete', filter_ids: ['3', 4] });
+    expect(gimp.lastCall()).toEqual({
+      op: 'filter',
+      args: { image: 5, op: 'delete', filter_ids: [3, 4] },
+    });
+  });
+
   it("'reorder' is not a valid op (GIMP has no API for it)", async () => {
     const gimp = makeGimpBackend();
     const tools = createGimpFilterTools(gimp.asBackend());
