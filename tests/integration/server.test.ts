@@ -17,6 +17,8 @@ import type { GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import type { Transport } from '@modelcontextprotocol/server';
 
 // Every `new EditmameiServer()` below builds its own SessionLog with no `dir`
 // override — redirect it to a per-test temp dir so this file's many
@@ -1688,101 +1690,265 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
   });
 });
 
-describe('client_connected: wired from Server.oninitialized', () => {
-  type OninitializedServer = {
-    server: {
-      oninitialized?: () => void;
-      getClientVersion(): { name: string; version: string } | undefined;
-      getClientCapabilities(): Record<string, unknown> | undefined;
-    };
-    telemetry: {
-      recordClientConnected(info: {
-        clientName: string | undefined;
-        clientVersion: string | undefined;
-        capSampling: boolean;
-        capElicitation: boolean;
-        capRoots: boolean;
-      }): void;
-    };
+describe('client_connected and the session end, on either protocol revision', () => {
+  type ClientConnected = {
+    clientName: string | undefined;
+    clientVersion: string | undefined;
+    capSampling: boolean;
+    capElicitation: boolean;
+    capRoots: boolean;
+  };
+  type LegacyServer = {
+    oninitialized?: () => void;
+    getClientVersion(): { name: string; version: string } | undefined;
+    getClientCapabilities(): Record<string, unknown> | undefined;
+  };
+  type Internals = {
+    buildServer(era: 'legacy' | 'modern'): LegacyServer;
+    serve(wire: Transport): void;
+    clientInfo(): { name: string; version: string } | undefined;
+    telemetry: { recordClientConnected(info: ClientConnected): void; shutdown(): Promise<void> };
   };
 
-  it('maps the client name/major and capability presence into recordClientConnected', () => {
-    const server = new EditmameiServer() as unknown as OninitializedServer;
-    server.server.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
-    server.server.getClientCapabilities = () => ({ sampling: {}, roots: { listChanged: true } });
+  function make() {
+    const server = new EditmameiServer() as unknown as Internals;
     const recordClientConnected = vi.fn();
     server.telemetry.recordClientConnected = recordClientConnected;
+    const shutdown = vi.fn(async () => undefined);
+    server.telemetry.shutdown = shutdown;
+    return { server, recordClientConnected, shutdown };
+  }
 
-    // The callback is wired in the constructor (see server.ts's comment on WHY — the SDK's
-    // Server wires its own `notifications/initialized` handler there too, not at connect()
-    // time), so it already exists before this test ever touches the transport.
-    expect(server.server.oninitialized).toBeTypeOf('function');
-    server.server.oninitialized!();
+  /** A 2026-07-28 request's `_meta` envelope. */
+  const envelope = (clientInfo?: object, clientCapabilities?: object) => ({
+    'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+    ...(clientInfo ? { 'io.modelcontextprotocol/clientInfo': clientInfo } : {}),
+    'io.modelcontextprotocol/clientCapabilities': clientCapabilities ?? {},
+  });
 
-    expect(recordClientConnected).toHaveBeenCalledTimes(1);
-    expect(recordClientConnected).toHaveBeenCalledWith({
-      clientName: 'claude-code',
-      clientVersion: '2.1.170',
-      capSampling: true,
-      capElicitation: false,
-      capRoots: true,
+  describe('a 2025 client (initialize)', () => {
+    it('maps the client name/major and capability presence into recordClientConnected', () => {
+      const { server, recordClientConnected } = make();
+      const legacy = server.buildServer('legacy');
+      legacy.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
+      legacy.getClientCapabilities = () => ({ sampling: {}, roots: { listChanged: true } });
+
+      // Wired when the instance is made: the SDK's Server wires its own
+      // `notifications/initialized` handler in its constructor, before any message can arrive.
+      expect(legacy.oninitialized).toBeTypeOf('function');
+      legacy.oninitialized!();
+
+      expect(recordClientConnected).toHaveBeenCalledTimes(1);
+      expect(recordClientConnected).toHaveBeenCalledWith({
+        clientName: 'claude-code',
+        clientVersion: '2.1.170',
+        capSampling: true,
+        capElicitation: false,
+        capRoots: true,
+      });
+      expect(server.clientInfo()).toEqual({ name: 'claude-code', version: '2.1.170' });
+    });
+
+    it('passes undefined name/version through when the client never reports them', () => {
+      const { server, recordClientConnected } = make();
+      const legacy = server.buildServer('legacy');
+      legacy.getClientVersion = () => undefined;
+      legacy.getClientCapabilities = () => undefined;
+
+      legacy.oninitialized!();
+
+      expect(recordClientConnected).toHaveBeenCalledWith({
+        clientName: undefined,
+        clientVersion: undefined,
+        capSampling: false,
+        capElicitation: false,
+        capRoots: false,
+      });
+    });
+
+    // Once-latch: nothing in the MCP spec stops a non-conforming client sending a second
+    // `notifications/initialized`, and recordClientConnected no longer force-flushes, so a
+    // repeat would silently queue a duplicate event rather than visibly re-send.
+    it('sends client_connected at most once even if oninitialized fires twice', () => {
+      const { server, recordClientConnected } = make();
+      const legacy = server.buildServer('legacy');
+      legacy.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
+      legacy.getClientCapabilities = () => ({ sampling: {} });
+
+      legacy.oninitialized!();
+      legacy.oninitialized!();
+      legacy.oninitialized!();
+
+      expect(recordClientConnected).toHaveBeenCalledTimes(1);
+    });
+
+    // An explicit `null` capability is a client saying "I don't have this," the same as
+    // omitting it — not a declaration. `!== undefined` would have wrongly counted it as one.
+    it('treats an explicit null capability as NOT declared (!= null, not !== undefined)', () => {
+      const { server, recordClientConnected } = make();
+      const legacy = server.buildServer('legacy');
+      legacy.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
+      legacy.getClientCapabilities = () =>
+        ({ sampling: null, elicitation: {}, roots: undefined }) as Record<string, unknown>;
+
+      legacy.oninitialized!();
+
+      expect(recordClientConnected).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capSampling: false, // explicit null — not declared
+          capElicitation: true, // a real object — declared
+          capRoots: false, // undefined — not declared
+        })
+      );
+    });
+
+    it('over a real connection: recorded once, at the handshake', async () => {
+      const { server, recordClientConnected } = make();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      server.serve(serverTransport);
+      const client = new Client(
+        { name: 'claude-code', version: '2.1.170' },
+        { capabilities: { roots: {} } }
+      );
+      await client.connect(clientTransport);
+      await client.listTools();
+      await client.listTools();
+
+      await vi.waitFor(() => expect(recordClientConnected).toHaveBeenCalledTimes(1));
+      expect(recordClientConnected).toHaveBeenCalledWith(
+        expect.objectContaining({
+          clientName: 'claude-code',
+          clientVersion: '2.1.170',
+          capRoots: true,
+        })
+      );
+      expect(server.clientInfo()).toEqual({ name: 'claude-code', version: '2.1.170' });
+      await client.close();
     });
   });
 
-  it('passes undefined name/version through when the client never reports them', () => {
-    const server = new EditmameiServer() as unknown as OninitializedServer;
-    server.server.getClientVersion = () => undefined;
-    server.server.getClientCapabilities = () => undefined;
-    const recordClientConnected = vi.fn();
-    server.telemetry.recordClientConnected = recordClientConnected;
+  describe('a 2026-07-28 client (no initialize; identity in every request)', () => {
+    it('takes the identity from the first request that states it, once', async () => {
+      const { server, recordClientConnected } = make();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      server.serve(serverTransport);
+      const client = new Client(
+        { name: 'some-client', version: '3.0.0' },
+        { capabilities: { elicitation: {} }, versionNegotiation: { mode: { pin: '2026-07-28' } } }
+      );
+      await client.connect(clientTransport);
+      await client.listTools();
+      await client.listTools();
 
-    server.server.oninitialized!();
+      expect(recordClientConnected).toHaveBeenCalledTimes(1);
+      expect(recordClientConnected).toHaveBeenCalledWith({
+        clientName: 'some-client',
+        clientVersion: '3.0.0',
+        capSampling: false,
+        capElicitation: true,
+        capRoots: false,
+      });
+      expect(server.clientInfo()).toEqual({ name: 'some-client', version: '3.0.0' });
+      await client.close();
+    });
 
-    expect(recordClientConnected).toHaveBeenCalledWith({
-      clientName: undefined,
-      clientVersion: undefined,
-      capSampling: false,
-      capElicitation: false,
-      capRoots: false,
+    it('a probing client lands on 2026-07-28 and is recorded once', async () => {
+      const { server, recordClientConnected } = make();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      server.serve(serverTransport);
+      const client = new Client(
+        { name: 'prober', version: '1.0.0' },
+        { versionNegotiation: { mode: 'auto' } }
+      );
+      await client.connect(clientTransport);
+      await client.listTools();
+
+      expect(client.getNegotiatedProtocolVersion()).toBe('2026-07-28');
+      expect(recordClientConnected).toHaveBeenCalledTimes(1);
+      expect(recordClientConnected).toHaveBeenCalledWith(
+        expect.objectContaining({ clientName: 'prober' })
+      );
+      await client.close();
+    });
+
+    it('a call answers with its structuredContent as an object', async () => {
+      const { server } = make();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      server.serve(serverTransport);
+      const client = new Client(
+        { name: 'some-client', version: '3.0.0' },
+        { versionNegotiation: { mode: { pin: '2026-07-28' } } }
+      );
+      await client.connect(clientTransport);
+      const result = await client.callTool({ name: 'ps_list_capabilities', arguments: {} });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toBeTypeOf('object');
+      await client.close();
     });
   });
 
-  // Once-latch: nothing in the MCP spec stops a non-conforming client sending a second
-  // `notifications/initialized`, and recordClientConnected no longer force-flushes, so a
-  // repeat would silently queue a duplicate event rather than visibly re-send.
-  it('sends client_connected at most once even if oninitialized fires twice', () => {
-    const server = new EditmameiServer() as unknown as OninitializedServer;
-    server.server.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
-    server.server.getClientCapabilities = () => ({ sampling: {} });
-    const recordClientConnected = vi.fn();
-    server.telemetry.recordClientConnected = recordClientConnected;
+  describe('the session end', () => {
+    it('ends the session once when the client closes the connection', async () => {
+      const { server, shutdown } = make();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      server.serve(serverTransport);
+      const client = new Client({ name: 'c', version: '1' });
+      await client.connect(clientTransport);
+      expect(shutdown).not.toHaveBeenCalled();
 
-    server.server.oninitialized!();
-    server.server.oninitialized!();
-    server.server.oninitialized!();
+      await client.close();
+      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+    });
 
-    expect(recordClientConnected).toHaveBeenCalledTimes(1);
-  });
+    it('ends the session when the wire closes before any message', async () => {
+      const { server, shutdown } = make();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      server.serve(serverTransport);
+      await clientTransport.close();
+      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+    });
 
-  // An explicit `null` capability is a client saying "I don't have this," the same as
-  // omitting it — not a declaration. `!== undefined` would have wrongly counted it as one.
-  it('treats an explicit null capability as NOT declared (!= null, not !== undefined)', () => {
-    const server = new EditmameiServer() as unknown as OninitializedServer;
-    server.server.getClientVersion = () => ({ name: 'claude-code', version: '2.1.170' });
-    server.server.getClientCapabilities = () =>
-      ({ sampling: null, elicitation: {}, roots: undefined }) as Record<string, unknown>;
-    const recordClientConnected = vi.fn();
-    server.telemetry.recordClientConnected = recordClientConnected;
+    // A client that probes with server/discover and then opens with initialize gets a second
+    // instance; the probe's is closed. That close is not the client leaving.
+    it('does not end the session when a discarded probe instance closes', async () => {
+      const { server, shutdown, recordClientConnected } = make();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const answers: Array<{ id?: unknown; result?: Record<string, unknown>; error?: unknown }> =
+        [];
+      clientTransport.onmessage = (m) => void answers.push(m as (typeof answers)[number]);
+      await clientTransport.start();
+      server.serve(serverTransport);
 
-    server.server.oninitialized!();
+      await clientTransport.send({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'server/discover',
+        params: { _meta: envelope({ name: 'fallback', version: '1' }) },
+      });
+      await vi.waitFor(() => expect(answers.some((a) => a.id === 1)).toBe(true));
+      await clientTransport.send({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'fallback', version: '1' },
+        },
+      });
+      await vi.waitFor(() => expect(answers.some((a) => a.id === 2 && a.result)).toBe(true));
+      await clientTransport.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      await clientTransport.send({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} });
+      await vi.waitFor(() => expect(answers.some((a) => a.id === 3 && a.result)).toBe(true));
 
-    expect(recordClientConnected).toHaveBeenCalledWith(
-      expect.objectContaining({
-        capSampling: false, // explicit null — not declared
-        capElicitation: true, // a real object — declared
-        capRoots: false, // undefined — not declared
-      })
-    );
+      expect(shutdown).not.toHaveBeenCalled();
+      expect(recordClientConnected).toHaveBeenCalledTimes(1);
+      expect(server.clientInfo()).toEqual({ name: 'fallback', version: '1' });
+
+      await clientTransport.close();
+      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+    });
   });
 });
 
@@ -2122,9 +2288,9 @@ describe('EditmameiServer.start() boot ordering', () => {
     expect(startMatch, 'start() body not found in server.ts').toBeTruthy();
     const startBody = startMatch![0];
 
-    const connectIdx = startBody.indexOf('this.server.connect(');
+    const connectIdx = startBody.indexOf('this.serve(');
     const initIdx = startBody.indexOf('this.session.initialize(');
-    expect(connectIdx, 'server.connect not found in start()').toBeGreaterThan(-1);
+    expect(connectIdx, 'this.serve not found in start()').toBeGreaterThan(-1);
     expect(initIdx, 'session.initialize not found in start()').toBeGreaterThan(-1);
     // Transport connects first…
     expect(connectIdx).toBeLessThan(initIdx);
@@ -2149,8 +2315,8 @@ describe('EditmameiServer.start() boot ordering', () => {
     // await ahead of the handshake") otherwise reads as a second await occurrence.
     const startBody = startMatch![0].replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
 
-    const connectIdx = startBody.indexOf('await this.server.connect(');
-    expect(connectIdx, 'await this.server.connect not found in start()').toBeGreaterThan(-1);
+    const connectIdx = startBody.indexOf('this.serve(');
+    expect(connectIdx, 'this.serve not found in start()').toBeGreaterThan(-1);
     const beforeConnect = startBody.slice(0, connectIdx);
     const awaitsBeforeConnect = beforeConnect.match(/\bawait\s+/g) ?? [];
     expect(
@@ -2190,13 +2356,10 @@ describe('EditmameiServer.start() boot ordering', () => {
 });
 
 // ===========================================================================
-// GIMP session shutdown wiring — stop() and the transport's onclose must
-// both shut down a registered GimpBackend. `stop()` is directly testable
-// (no real stdio transport needed); `onclose`'s assignment only happens
-// inside start(), which — per the boot-ordering block above — this suite
-// deliberately never invokes (booting the real stdio transport in a unit
-// test is undesirable), so that half is pinned at the source level instead,
-// the same technique the boot-ordering pin above uses.
+// GIMP session shutdown wiring — stop() and the client disconnecting must
+// both shut down a registered GimpBackend. Both are directly testable: the
+// disconnect half through serve() over an in-memory pair, the same path
+// start() takes over stdio.
 // ===========================================================================
 describe('GIMP session shutdown wiring', () => {
   it('stop() shuts down a registered GimpBackend — a later gimp_* call rejects with session closed', async () => {
@@ -2237,12 +2400,20 @@ describe('GIMP session shutdown wiring', () => {
     await expect(server.stop()).resolves.toBeUndefined();
   });
 
-  it("onclose shuts down a registered GimpBackend too (source-level pin — see this block's own doc comment for why)", () => {
-    const serverSrc = readFileSync(join(REPO_ROOT, 'src', 'core', 'server.ts'), 'utf8');
-    const oncloseMatch = serverSrc.match(/this\.server\.onclose = \(\) => \{[\s\S]*?\n    \};/);
-    expect(oncloseMatch, 'onclose assignment not found in server.ts').toBeTruthy();
-    expect(oncloseMatch![0]).toMatch(/this\.gimpBackend/);
-    expect(oncloseMatch![0]).toMatch(/\.shutdown\(\)/);
+  it('the client disconnecting shuts down a registered GimpBackend too', async () => {
+    const server = new EditmameiServer() as unknown as {
+      gimpBackend: { shutdown(): Promise<void> } | undefined;
+      telemetry: { shutdown(): Promise<void> };
+      serve(wire: Transport): void;
+    };
+    const gimpShutdown = vi.fn(async () => undefined);
+    server.gimpBackend = { shutdown: gimpShutdown };
+    server.telemetry.shutdown = vi.fn(async () => undefined);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    server.serve(serverTransport);
+
+    await clientTransport.close();
+    await vi.waitFor(() => expect(gimpShutdown).toHaveBeenCalledTimes(1));
   });
 });
 

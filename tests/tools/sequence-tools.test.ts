@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi } from 'vitest';
-import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { createSequenceTools, HISTORY_UNSAFE_TOOLS } from '@editmamei/tools/sequence-tools.ts';
 import { tierOf, TOOL_TIERS } from '@editmamei/core/tool-tiers.ts';
 import { groupOf } from '@editmamei/core/tool-groups.ts';
@@ -1030,8 +1030,8 @@ describe('createSequenceTools', () => {
 /**
  * A tool's outputSchema is not documentation-only: an MCP client validates
  * every structuredContent it gets back against it (Ajv, via
- * AjvJsonSchemaValidator — @modelcontextprotocol/sdk/client/index.js
- * callTool()). A schema that no real call output can satisfy — the `oneOf`
+ * AjvJsonSchemaValidator — @modelcontextprotocol/client callTool()). A schema
+ * that no real call output can satisfy — the `oneOf`
  * that caused HIGH 2 — fails every call at the CLIENT, not in this repo's own
  * tests, so this exercises the exact validator a real client uses against the
  * exact shapes runSequence produces.
