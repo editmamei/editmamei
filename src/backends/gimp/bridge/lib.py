@@ -2966,17 +2966,53 @@ def metadata_strip_settings(fmt, prop_names):
     return settings
 
 
+# Export `color_profile` choices. 'keep' writes the image's own profile (a phone's Display P3,
+# say); the others convert the flattened copy to that standard space first. Untagged sRGB is
+# what every viewer assumes, so a file in the built-in sRGB is written without a profile.
+COLOR_PROFILE_TARGETS = ('keep', 'srgb', 'adobe-rgb')
+
+# Spaces wider than sRGB: their colors are wrong if a viewer reads the numbers as sRGB, which is
+# what an untagged file invites.
+WIDE_GAMUT_SPACES = ('display-p3', 'dci-p3', 'adobe-rgb', 'prophoto-rgb', 'rec2020')
+
+_REC2020_TOKENS = ('bt.2020', 'bt2020', 'bt 2020', 'rec. 2020', 'rec.2020', 'rec2020', 'rec 2020',
+                   'bt.2100', 'bt2100', 'rec. 2100', 'rec2100')
+
+
 def profile_is_editors_own(texts):
-    """Whether a color profile is the editor's built-in one, from its description, manufacturer,
-    model and copyright strings (None for an image that has no profile of its own, i.e. the
-    built-in one). Exports leave such a profile out: the file is then plain untagged sRGB, which
-    every viewer assumes anyway, and the profile's name ("GIMP built-in sRGB") would otherwise ride
-    along in every file. A camera's or phone's own profile is kept, unless the editor itself
-    rewrote it (a precision or mode conversion marks the variant it makes with its own name);
-    such a file is exported untagged too."""
+    """Whether a color profile is one the editor itself made, from its description, manufacturer,
+    model and copyright strings (None for an image with no profile of its own, i.e. the built-in
+    sRGB). Used only to keep the editor's internal profile name out of reported results: whether
+    a profile is WRITTEN depends on whether it is the built-in sRGB, not on its name."""
     if texts is None:
         return True
     return any('gimp' in (t or '').lower() for t in texts)
+
+
+def classify_color_profile(texts, grayscale=False):
+    """The color space a profile describes (None: no profile of its own, i.e. the built-in sRGB):
+    'srgb', 'display-p3', 'dci-p3', 'adobe-rgb', 'prophoto-rgb', 'rec2020', 'gray', or 'other'
+    for anything unrecognised. `texts` is [description, manufacturer, model, copyright]; the
+    copyright is ignored, since it routinely carries a year ("Copyright Apple Inc., 2020")."""
+    if grayscale:
+        return 'gray'
+    if texts is None:
+        return 'srgb'
+    text = ' '.join(t for t in texts[:3] if t).lower()
+    if 'display p3' in text or 'displayp3' in text or 'p3-d65' in text or 'p3 d65' in text:
+        return 'display-p3'
+    if 'dci-p3' in text or 'dci p3' in text:
+        return 'dci-p3'
+    if 'adobe rgb' in text or 'adobergb' in text:
+        return 'adobe-rgb'
+    if 'prophoto' in text or 'romm rgb' in text or 'romm-rgb' in text:
+        return 'prophoto-rgb'
+    # Before 'srgb': a Rec. 2020 profile can name its tone curve "srgbtrc".
+    if any(token in text for token in _REC2020_TOKENS):
+        return 'rec2020'
+    if 'srgb' in text:
+        return 'srgb'
+    return 'other'
 
 
 PSD_ICC_RESOURCE = 1039

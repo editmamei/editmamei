@@ -73,6 +73,27 @@ describe('createGimpInspectTools', () => {
     expect(result.structuredContent).toEqual({ what: 'document', ...documentResult });
   });
 
+  it("what='document' names a wide-gamut color space in the summary", async () => {
+    const gimp = makeGimpBackend({
+      result: {
+        image: 5,
+        width: 100,
+        height: 50,
+        base_type: 'rgb',
+        precision: 'u8-non-linear',
+        color_profile: { space: 'display-p3', name: 'Display P3', wide_gamut: true },
+        layers: [],
+        top_level_count: 0,
+        channels: [],
+      },
+    });
+    const tools = createGimpInspectTools(gimp.asBackend());
+    const result = await callTool(tools, 'gimp_inspect', { what: 'document', image: 5 });
+    expect((result.content?.[0] as { text: string }).text).toMatch(
+      /^Document 5: 100x50 rgb u8-non-linear, Display P3 \(wider than sRGB\), 0 top-level layer/
+    );
+  });
+
   it("what='document' notes truncation in the summary when the bridge reports it", async () => {
     const gimp = makeGimpBackend({
       result: {

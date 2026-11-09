@@ -1696,9 +1696,56 @@ class TestEditorsProfile(unittest.TestCase):
         self.assertTrue(lib.profile_is_editors_own(['GIMP built-in sRGB', 'GIMP', 'sRGB', 'Public Domain']))
         self.assertTrue(lib.profile_is_editors_own([None, 'gimp', None, None]))
 
-    def test_a_camera_or_phone_profile_is_kept(self):
+    def test_a_camera_or_phone_profile_is_not_the_editors(self):
         self.assertFalse(lib.profile_is_editors_own(['Display P3', 'Apple Inc.', None, 'Copyright Apple Inc., 2017']))
         self.assertFalse(lib.profile_is_editors_own([]))
+
+
+class TestClassifyColorProfile(unittest.TestCase):
+    def test_no_profile_of_its_own_is_srgb(self):
+        self.assertEqual(lib.classify_color_profile(None), 'srgb')
+
+    def test_grayscale_wins_over_any_profile(self):
+        self.assertEqual(lib.classify_color_profile(['Display P3'], grayscale=True), 'gray')
+
+    def test_known_spaces(self):
+        cases = {
+            ('Display P3', None, None, 'Copyright Apple Inc., 2022'): 'display-p3',
+            ('Compatible with Adobe RGB (1998)', 'GIMP', None, 'Public Domain'): 'adobe-rgb',
+            ('Adobe RGB (1998)',): 'adobe-rgb',
+            ('ProPhoto RGB',): 'prophoto-rgb',
+            ('ITU-R BT.2020',): 'rec2020',
+            ('Rec. 2020 PQ',): 'rec2020',
+            ('Rec2020-elle-V4-srgbtrc.icc',): 'rec2020',
+            ('sRGB IEC61966-2.1',): 'srgb',
+            ('GIMP built-in sRGB', 'GIMP', 'sRGB', 'Public Domain'): 'srgb',
+        }
+        for texts, space in cases.items():
+            self.assertEqual(lib.classify_color_profile(list(texts)), space, texts)
+
+    def test_a_year_in_the_copyright_or_model_is_not_rec2020(self):
+        self.assertEqual(
+            lib.classify_color_profile(['sRGB IEC61966-2.1', 'Apple Inc.', None, 'Copyright Apple Inc., 2020']),
+            'srgb',
+        )
+        self.assertEqual(lib.classify_color_profile(['Monitor', None, 'Model 2020', None]), 'other')
+        self.assertEqual(lib.classify_color_profile([None, None, None, 'Rec2020 Copyright']), 'other')
+
+    def test_p3_name_variants(self):
+        self.assertEqual(lib.classify_color_profile(['P3-D65']), 'display-p3')
+        self.assertEqual(lib.classify_color_profile(['DCI-P3']), 'dci-p3')
+        self.assertIn('dci-p3', lib.WIDE_GAMUT_SPACES)
+
+    def test_unrecognised_is_other(self):
+        self.assertEqual(lib.classify_color_profile(['Some Monitor Calibration']), 'other')
+        self.assertEqual(lib.classify_color_profile([]), 'other')
+
+    def test_wide_gamut_spaces_exclude_srgb(self):
+        self.assertIn('display-p3', lib.WIDE_GAMUT_SPACES)
+        self.assertNotIn('srgb', lib.WIDE_GAMUT_SPACES)
+
+    def test_export_targets(self):
+        self.assertEqual(lib.COLOR_PROFILE_TARGETS, ('keep', 'srgb', 'adobe-rgb'))
 
 
 def _psd_block(rid, data, name=b''):

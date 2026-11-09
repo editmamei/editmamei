@@ -57,6 +57,75 @@ export const GIMP_REGION_PROP: JsonSchemaProperty = {
   required: ['x', 'y', 'width', 'height'],
 };
 
+/** An image's color space, as gimp_open_document, gimp_inspect and gimp_export report it. */
+export interface GimpColorProfile {
+  space: string;
+  name: string | null;
+  wide_gamut: boolean;
+  /** gimp_export only: whether the written file carries the profile. */
+  embedded?: boolean;
+  /** gimp_export only: the space the copy was converted from, or null when it was not converted. */
+  converted_from?: string | null;
+}
+
+/** An outputSchema fragment (not an input property: it uses nullable types). */
+export const GIMP_COLOR_PROFILE_SCHEMA = {
+  type: 'object',
+  description:
+    "The image's color space: space is srgb, display-p3, dci-p3, adobe-rgb, prophoto-rgb, rec2020, " +
+    "gray or other; name is the profile's own name (null for plain sRGB); wide_gamut is true " +
+    'when the space holds colors sRGB cannot show.',
+  properties: {
+    space: { type: 'string' },
+    name: { type: ['string', 'null'] },
+    wide_gamut: { type: 'boolean' },
+    embedded: { type: 'boolean' },
+    converted_from: { type: ['string', 'null'] },
+  },
+};
+
+const SPACE_LABELS: Record<string, string> = {
+  srgb: 'sRGB',
+  'display-p3': 'Display P3',
+  'dci-p3': 'DCI-P3',
+  'adobe-rgb': 'Adobe RGB',
+  'prophoto-rgb': 'ProPhoto RGB',
+  rec2020: 'Rec. 2020',
+  gray: 'grayscale',
+  other: 'a custom color profile',
+};
+
+export function colorSpaceLabel(space: string): string {
+  return SPACE_LABELS[space] ?? space;
+}
+
+/** "Display P3 (wider than sRGB)" — the open/inspect summary's color clause. */
+export function colorProfileText(profile: GimpColorProfile | undefined): string {
+  if (!profile) return '';
+  const label =
+    profile.space === 'other' && profile.name
+      ? `"${profile.name}"`
+      : colorSpaceLabel(profile.space);
+  return profile.wide_gamut ? `${label} (wider than sRGB)` : label;
+}
+
+/** The export result's color sentence. */
+export function exportedProfileText(profile: GimpColorProfile | undefined): string {
+  if (!profile) return '';
+  const label = colorProfileText(profile);
+  const from = profile.converted_from
+    ? `Converted from ${colorSpaceLabel(profile.converted_from)} to ${label}; `
+    : `Color: ${label}; `;
+  return (
+    from +
+    (profile.embedded
+      ? 'the profile is embedded so viewers show the colors as edited.'
+      : profile.space === 'gray'
+        ? 'written with no profile, which viewers read as standard gray.'
+        : 'written as plain sRGB with no profile, which every viewer assumes.')
+  );
+}
+
 /** `gimp_get_preview` / `gimp_compare`'s proxy render size — bounded so the in-GIMP proxy cache stays small. */
 export const GIMP_MAX_PX_PROP: JsonSchemaProperty = {
   type: 'integer',
