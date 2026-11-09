@@ -1,6 +1,6 @@
 # FAQ
 
-Common questions about Editmamei, the MCP server that drives Adobe Photoshop from your AI assistant.
+Common questions about Editmamei, the MCP server that lets your AI app edit photos in desktop Photoshop or GIMP.
 
 ---
 
@@ -8,7 +8,7 @@ Common questions about Editmamei, the MCP server that drives Adobe Photoshop fro
 
 ### What is Editmamei?
 
-Editmamei is a Model Context Protocol (MCP) server for Adobe Photoshop. It runs locally, your AI client (Claude Desktop, Claude Code, Cursor, or any MCP-compatible client) connects to it, and it drives desktop Photoshop. You describe the edit in plain language; the AI plans the steps; Photoshop carries them out with its own standard tools.
+Editmamei is a Model Context Protocol (MCP) server for AI photo editing in Adobe Photoshop and GIMP. It runs on your computer, your AI app (Claude Desktop, Claude Code, Cursor, or another MCP-compatible app) connects to it, and it drives the desktop editor. You describe the edit in plain language, the AI plans the steps, and Photoshop or GIMP carries them out with its own tools, layer by layer. Let AI do the parts of the edit you don't want to, and keep the final touches for yourself.
 
 ### Is Editmamei affiliated with Adobe?
 
@@ -16,7 +16,7 @@ No. Editmamei is an independent product. It is not affiliated with, endorsed by,
 
 ### Does Editmamei generate pixels with AI?
 
-No. Editmamei is an *orchestration* layer, not a *generation* layer. The AI assistant plans the steps (which adjustments, which selections, in what order), and Photoshop carries them out using its own standard non-generative tools (adjustment layers, masks, selections, filters). Your pixels are only ever changed by Photoshop itself; no generative model touches them. "AI orchestration, not generation" is the short version.
+No. Your AI app plans the steps (which adjustments, which selections, in what order), and Photoshop or GIMP carries them out with its own standard tools: adjustment layers, masks, selections, filters. No tool calls Generative Fill or any other generative feature, so your photo is edited, not regenerated, and you get back a layered file you can keep working on.
 
 ### Is Editmamei open source?
 
@@ -159,7 +159,7 @@ Yes. The monthly Pro plan has a 7-day free trial, which turns into the monthly p
 
 ### Where do I file bugs?
 
-[github.com/editmamei/editmamei/issues](https://github.com/editmamei/editmamei/issues). Pick the appropriate template (bug report or feature request) and fill it in.
+[github.com/editmamei/editmamei/issues](https://github.com/editmamei/editmamei/issues). Pick the appropriate template (bug report or feature request) and fill it in. Feature ideas also work well in [Discussions → Ideas](https://github.com/editmamei/editmamei/discussions/categories/ideas), where others can upvote them.
 
 ### Where do I ask account or billing questions?
 
@@ -171,4 +171,4 @@ See [SECURITY.md](../SECURITY.md) for the responsible disclosure process. Do not
 
 ### Is there a community?
 
-Not a dedicated one yet. The [issue tracker](https://github.com/editmamei/editmamei/issues) is the primary public forum, and [@editmamei on Instagram](https://www.instagram.com/editmamei/) is where demos and announcements land.
+Yes: [GitHub Discussions](https://github.com/editmamei/editmamei/discussions) is the place for questions, ideas and edits you want to share, and each release is announced there. Bugs go in the [issue tracker](https://github.com/editmamei/editmamei/issues), and [@editmamei on Instagram](https://www.instagram.com/editmamei/) is where demos land.
