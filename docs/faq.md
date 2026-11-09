@@ -16,7 +16,7 @@ No. Editmamei is an independent product. It is not affiliated with, endorsed by,
 
 ### Does Editmamei generate pixels with AI?
 
-No. Your AI app plans the steps (which adjustments, which selections, in what order), and Photoshop or GIMP carries them out with its own standard tools: adjustment layers, masks, selections, filters. No tool calls Generative Fill or any other generative feature, so your photo is edited, not regenerated, and you get back a layered file you can keep working on.
+Editmamei itself doesn't. It ships no image model and never generates a picture. Your AI app plans the steps (which adjustments, which selections, in what order), and Photoshop or GIMP carries them out on the photo you have, with the editor's own tools: adjustment layers, masks, selections, filters. Some of those tools have AI built in, like Photoshop's Select Subject, Select Sky and Sky Replacement, and Editmamei can use them when an edit calls for it. Either way, you get back a layered file you can keep working on.
 
 ### Is Editmamei open source?
 
@@ -70,7 +70,7 @@ Your AI assistant is separate. Editmamei runs as a stdio subprocess of your AI a
 
 ### Does it need Generative Fill / Adobe cloud features?
 
-No generative feature is required or invoked: Editmamei runs against the standard ExtendScript automation surface, which has been in every Photoshop install since the early 2010s, and no tool in the current build touches Generative Fill or any other Adobe generative feature. One nuance on cloud: Photoshop's own Select Subject and Select Sky (included in Community) are Sensei-backed, and whether they run in Adobe's cloud or on-device depends on your **Preferences → Image Processing** setting; see [getting-started.md](getting-started.md#troubleshooting) if they error.
+No. Editmamei runs against the standard ExtendScript automation surface, which has been in every Photoshop install since the early 2010s, and it doesn't use Generative Fill or Generative Expand today. Some Photoshop features it can use do rely on Adobe's AI, such as Select Subject, Select Sky and Sky Replacement. One nuance on cloud: Photoshop's own Select Subject and Select Sky (included in Community) are Sensei-backed, and whether they run in Adobe's cloud or on-device depends on your **Preferences → Image Processing** setting; see [getting-started.md](getting-started.md#troubleshooting) if they error.
 
 ### Does Editmamei work with Photoshop Elements?
 

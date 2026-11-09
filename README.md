@@ -130,7 +130,7 @@ Connect is a separate product, and its source isn't in this repository. It edits
 
 Your AI app decides each step and calls Editmamei's tools. Editmamei carries the step out in your editor and reports back with structured results and, when your AI needs to look, a preview. Your AI reads those and decides what to do next. Editmamei also sends content-free usage telemetry and checks npm for updates; see [Privacy](#privacy).
 
-- **Real edits.** Photoshop or GIMP does the pixel work with its own engine, and no generative model changes your pixels.
+- **Real edits.** Photoshop or GIMP does the pixel work with its own engine. Editmamei generates nothing itself; when an edit uses an AI feature built into the editor, like Sky Replacement, that's the editor's own tool at work.
 - **Reversible.** In Photoshop, adjustments land as adjustment layers and destructive pixel operations run on an automatic duplicate. In GIMP, adjustments stay live filters, and checkpoints stand in for undo.
 - **Checked, not assumed.** Histograms, region comparisons, and selection previews let your AI measure its own work.
 - **On-device vision.** In Photoshop, face, object, and scene detection run locally on bundled ONNX models, so your AI can target "the person on the left" without a cloud vision call.
