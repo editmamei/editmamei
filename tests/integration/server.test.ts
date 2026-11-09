@@ -1941,6 +1941,94 @@ describe('client_connected and the session end, on either protocol revision', ()
     });
   });
 
+  describe('the Feature details question (elicitation)', () => {
+    /** A server whose telemetry is live and whose settings have no answer yet, so the question is due. */
+    function due() {
+      const made = make();
+      const internals = made.server as unknown as {
+        telemetry: {
+          isActive(): boolean;
+          recordConsentResult(info: Record<string, unknown>): void;
+        };
+        consent: {
+          settings: Record<string, unknown> & { telemetry: Record<string, unknown> };
+          degraded: boolean;
+        };
+      };
+      internals.telemetry.isActive = () => true;
+      const recordConsentResult = vi.fn();
+      internals.telemetry.recordConsentResult = recordConsentResult;
+      const base = internals.consent.settings;
+      internals.consent = {
+        settings: {
+          ...base,
+          telemetry: { ...base.telemetry, usage: true, features: undefined },
+          consent: undefined,
+          consent_dismissals: undefined,
+          desktop_toggles: undefined,
+        },
+        degraded: false,
+      };
+      return { ...made, recordConsentResult };
+    }
+
+    it('asks once on a 2025 connection whose client supports form elicitation', async () => {
+      const { server, recordConsentResult } = due();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      server.serve(serverTransport);
+      const client = new Client(
+        { name: 'claude-desktop', version: '1.0.0' },
+        { capabilities: { elicitation: { form: {} } }, versionNegotiation: { mode: 'legacy' } }
+      );
+      const asked: unknown[] = [];
+      // Answering with an error is reported as `failed` and stores nothing, so no settings file is written.
+      client.setRequestHandler('elicitation/create', async (request) => {
+        asked.push(request.params);
+        throw new Error('no one to ask');
+      });
+      await client.connect(clientTransport);
+      await client.listTools();
+      await client.listTools();
+
+      await vi.waitFor(() => expect(recordConsentResult).toHaveBeenCalledTimes(1));
+      expect(asked).toHaveLength(1);
+      expect(recordConsentResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          clientName: 'claude-desktop',
+          result: 'failed',
+          via: 'elicitation',
+        })
+      );
+      await client.close();
+    });
+
+    it('does not ask on a 2026-07-28 connection, even from a client that can answer', async () => {
+      const { server, recordClientConnected, recordConsentResult } = due();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      server.serve(serverTransport);
+      const client = new Client(
+        { name: 'modern-client', version: '1.0.0' },
+        {
+          capabilities: { elicitation: { form: {} } },
+          versionNegotiation: { mode: { pin: '2026-07-28' } },
+        }
+      );
+      const asked: unknown[] = [];
+      client.setRequestHandler('elicitation/create', async (request) => {
+        asked.push(request.params);
+        return { action: 'cancel' };
+      });
+      await client.connect(clientTransport);
+      await client.listTools();
+      await vi.waitFor(() => expect(recordClientConnected).toHaveBeenCalledTimes(1));
+      await new Promise((done) => setTimeout(done, 50));
+
+      expect(asked).toEqual([]);
+      expect(recordConsentResult).not.toHaveBeenCalled();
+      await client.close();
+    });
+  });
+
   describe('a 2026-07-28 client (no initialize; identity in every request)', () => {
     it('takes the identity from the first request that states it, once', async () => {
       const { server, recordClientConnected } = make();

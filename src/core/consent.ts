@@ -14,7 +14,7 @@
  * what the setting unlocks stays narrow.
  */
 
-import { ErrorCode, type ElicitResult } from '@modelcontextprotocol/sdk/types.js';
+import { SdkErrorCode, type ElicitResult } from '@modelcontextprotocol/server';
 import { Logger } from '../utils/logger.js';
 import { FEATURES_QUESTION } from './consent-questions.js';
 import {
@@ -134,7 +134,7 @@ async function ask(deps: ConsentDeps): Promise<PromptOutcome> {
     if (answer.action === 'accept') return answer.content?.share === true ? 'accepted' : 'declined';
     return answer.action === 'decline' ? 'declined' : 'dismissed';
   } catch (err) {
-    return (err as { code?: unknown } | null)?.code === ErrorCode.RequestTimeout
+    return (err as { code?: unknown } | null)?.code === SdkErrorCode.RequestTimeout
       ? 'timed_out'
       : 'failed';
   }
