@@ -1,19 +1,50 @@
-import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool, CallToolResult } from '@modelcontextprotocol/server';
 import { Logger } from '../utils/logger.js';
 import { getToolTimeoutMs } from '../utils/operation-timeouts.js';
 import { budgetContextFor, runWithToolBudget } from '../utils/tool-budget-context.js';
 import { missingRequiredArg } from '../utils/validate.js';
 
-/** Runs one tool call. Owns its own input validation and error shaping. */
-export interface ToolHandler {
-  (args: Record<string, unknown>): Promise<CallToolResult>;
+/** A JSON Schema for an object, as the engine writes one (validate.ts's JsonSchemaObject is one). */
+export interface ObjectSchema {
+  [k: string]: unknown;
+  type: 'object';
+  properties?: Record<string, unknown>;
+  required?: string[];
 }
 
-export type ToolResult = CallToolResult;
+/**
+ * A tool as the engine declares it: the protocol's Tool, with its schemas typed the way the
+ * engine writes them. The SDK types a schema as a JSON value, which the engine's interface-typed
+ * schemas (readonly enums, `unknown` defaults) don't match structurally, though they serialize
+ * to exactly that; `list()` hands them over as the protocol's type.
+ */
+export type ToolSpec = NamedFieldsWithout<Tool, 'inputSchema' | 'outputSchema'> & {
+  inputSchema: ObjectSchema;
+  outputSchema?: ObjectSchema;
+};
+
+/**
+ * `Omit` for the SDK's schema-inferred types: they carry a string index signature, which a plain
+ * `Omit` turns every named field into. This keeps the named fields and drops the signature.
+ */
+type NamedFieldsWithout<T, K extends PropertyKey> = {
+  [P in keyof T as string extends P ? never : P extends K ? never : P]: T[P];
+};
+
+/**
+ * A tool call's result: the protocol's, with an object `structuredContent`. Every engine tool
+ * returns one; the 2026-07-28 revision also allows other values there, which the engine never sends.
+ */
+export type ToolResult = CallToolResult & { structuredContent?: Record<string, unknown> };
+
+/** Runs one tool call. Owns its own input validation and error shaping. */
+export interface ToolHandler {
+  (args: Record<string, unknown>): Promise<ToolResult>;
+}
 
 /** A tool's advertised schema paired with the handler that answers for it. */
 export interface ToolDefinition {
-  tool: Tool;
+  tool: ToolSpec;
   handler: ToolHandler;
   /**
    * This call's budget in ms, shared by every script it runs. Takes precedence
@@ -102,8 +133,9 @@ export class ToolRegistry {
     return this.tools.get(name);
   }
 
+  /** The tools as the protocol lists them (see ToolSpec for why the schemas need the cast). */
   list(): Tool[] {
-    return Array.from(this.tools.values()).map((def) => def.tool);
+    return Array.from(this.tools.values()).map((def) => def.tool as Tool);
   }
 
   /**

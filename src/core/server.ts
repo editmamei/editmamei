@@ -1,6 +1,13 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  Server,
+  CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
+  type ClientCapabilities,
+  type Implementation,
+  type ProtocolEra,
+  type Transport,
+} from '@modelcontextprotocol/server';
+import { serveStdio, StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { Logger } from '../utils/logger.js';
 import { ToolRegistry, type ToolResult } from './tool-registry.js';
 import { tierOf } from './tool-tiers.js';
@@ -190,7 +197,13 @@ export interface EditmameiServerOptions {
 }
 
 export class EditmameiServer {
-  private server: Server;
+  /**
+   * The connected client's name and version: read from `initialize` on a 2025 connection,
+   * taken from the first request's `_meta` on a 2026-07-28 one (see buildServer).
+   */
+  private clientInfo: () => Implementation | undefined = () => undefined;
+  /** client_connected is a once-per-session event, whichever revision the client speaks. */
+  private clientConnectedSent = false;
   private logger: Logger;
   private toolRegistry: ToolRegistry;
   private session: Session;
@@ -616,63 +629,10 @@ export class EditmameiServer {
       },
     });
 
-    this.server = new Server(
-      {
-        name: 'editmamei',
-        // Sourced from src/version.ts (hand-synced with package.json). The
-        // hardcoded '0.2.0' that lived here pre-2026-06-07 was never
-        // refreshed during release work and MCP clients logged a stale
-        // identifier for support cases.
-        version: VERSION,
-      },
-      {
-        capabilities: {
-          tools: {},
-        },
-      }
-    );
-
-    // Register a lazy getter for the MCP client identity. The initialize
-    // handshake populates _clientVersion before any tool calls fire, so
-    // by the time the first `append` triggers meta-line emission the
-    // client name + version are available.
-    const srv = this.server as unknown as {
-      getClientVersion?(): { name: string; version: string } | undefined;
-    };
-    this.sessionLog.setMcpClientGetter(() => srv.getClientVersion?.() ?? null);
-
-    // client_connected (Category A telemetry): `oninitialized` fires from a notification
-    // handler the SDK's Server constructor wires up FOR ITSELF —
-    // `setNotificationHandler(InitializedNotificationSchema, () => this.oninitialized?.())`,
-    // read straight out of @modelcontextprotocol/sdk's server/index.js — not something
-    // `connect()` sets up. The callback can therefore be assigned any time after `this.server`
-    // exists; doing it here, before `connect()` even runs (in start()), is deliberate: connect()
-    // is the earliest a client's messages can arrive at all, so wiring the callback strictly
-    // before it removes any need to reason about a race between a very fast
-    // initialize -> initialized round trip and our own synchronous code. If the client never
-    // completes the handshake, this simply never fires — no event is the intended behavior.
-    //
-    // Once-latch: nothing in the MCP spec stops a client from sending a second
-    // `notifications/initialized` (a buggy or non-conforming one might), and
-    // recordClientConnected does not force its own flush, so a repeat would
-    // silently queue a duplicate event rather than visibly double-send. `client_connected`
-    // is a once-per-session signal — send it at most once no matter how many times this fires.
-    let clientConnectedSent = false;
-    this.server.oninitialized = () => {
-      if (clientConnectedSent) return;
-      clientConnectedSent = true;
-      const clientInfo = this.server.getClientVersion();
-      const caps = this.server.getClientCapabilities();
-      this.telemetry.recordClientConnected({
-        clientName: clientInfo?.name,
-        clientVersion: clientInfo?.version,
-        // `!= null`, not `!== undefined`: an explicit `null` capability is a client saying
-        // "I don't have this," the same as omitting it entirely — not a declaration.
-        capSampling: caps?.sampling != null,
-        capElicitation: caps?.elicitation != null,
-        capRoots: caps?.roots != null,
-      });
-    };
+    // A lazy getter for the MCP client identity: it is known before any tool call fires
+    // (`initialize` on a 2025 connection, the call's own `_meta` on 2026-07-28), so by the
+    // time the first `append` triggers meta-line emission the client name + version are there.
+    this.sessionLog.setMcpClientGetter(() => this.clientInfo() ?? null);
 
     // Inert under the test runner unless a test injects one — the real advisory
     // reads ~/.editmamei, and a suite whose ping output depended on the developer's
@@ -686,7 +646,6 @@ export class EditmameiServer {
       });
 
     this.registerTools();
-    this.setupHandlers();
   }
 
   /**
@@ -1026,20 +985,91 @@ export class EditmameiServer {
     };
   }
 
-  private setupHandlers() {
-    // List available tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+  /**
+   * The MCP server for one connection, made by serveStdio once the client's first message
+   * names its protocol revision: `legacy` for a 2025 `initialize`, `modern` for 2026-07-28's
+   * per-request `_meta`. A client that probes with `server/discover` and then falls back to
+   * `initialize` gets a second one, and the probe's is closed; so nothing here ends the
+   * session (that is serve()'s, on the transport). @internal — exercised directly by tests.
+   */
+  private buildServer(era: ProtocolEra): Server {
+    const server = new Server(
+      {
+        name: 'editmamei',
+        // Sourced from src/version.ts (hand-synced with package.json), so clients log the
+        // version actually running.
+        version: VERSION,
+      },
+      { capabilities: { tools: {} } }
+    );
+
+    if (era === 'legacy') {
+      this.clientInfo = () => server.getClientVersion();
+      // client_connected (Category A telemetry) on a 2025 connection: `oninitialized` fires
+      // from the `notifications/initialized` handler the SDK's Server constructor wires up for
+      // itself, so it is in place before any message can arrive. If the client never completes
+      // the handshake, this never fires: no event is the intended behavior.
+      server.oninitialized = () =>
+        this.recordClientConnected(server.getClientVersion(), server.getClientCapabilities());
+    }
+
+    server.setRequestHandler('tools/list', async (_request, ctx) => {
+      if (era === 'modern') this.noteModernClient(ctx.mcpReq.envelope);
       this.logger.debug('Reporting the registered tool surface');
-      return {
-        tools: this.toolRegistry.list(),
-      };
+      return { tools: this.toolRegistry.list() };
     });
 
-    // Handle tool calls
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler('tools/call', async (request, ctx) => {
+      if (era === 'modern') this.noteModernClient(ctx.mcpReq.envelope);
       this.logger.debug(`Received a call for ${request.params.name}`);
       const args = (request.params.arguments as Record<string, unknown>) || {};
-      return this.handleToolCall(request.params.name, args);
+      const result = await this.handleToolCall(request.params.name, args);
+      // Through the connection's protocol codec, as the SDK asks of a low-level handler.
+      const outputSchema = this.toolRegistry.get(request.params.name)?.tool.outputSchema;
+      return server.projectCallToolResult(
+        result,
+        outputSchema as Record<string, unknown> | undefined
+      );
+    });
+
+    return server;
+  }
+
+  /**
+   * A 2026-07-28 client has no `initialize`: it states its name, version and capabilities in
+   * every request's `_meta`. The first request that carries them stands in for the handshake
+   * (client identity for the session log, and client_connected). Called on 2026-07-28 connections
+   * only: the SDK validates the envelope there, while on a 2025 connection reserved `_meta` keys are
+   * passed through unchecked, and the client's identity is the one `initialize` stated.
+   */
+  private noteModernClient(envelope: Record<string, unknown> | undefined): void {
+    if (envelope === undefined || this.clientConnectedSent) return;
+    const info = envelope[CLIENT_INFO_META_KEY] as Implementation | undefined;
+    const caps = envelope[CLIENT_CAPABILITIES_META_KEY] as ClientCapabilities | undefined;
+    if (info === undefined && caps === undefined) return;
+    this.clientInfo = () => info;
+    this.recordClientConnected(info, caps);
+  }
+
+  /**
+   * Once-latch: nothing stops a non-conforming client sending a second
+   * `notifications/initialized`, and recordClientConnected does not force its own flush, so a
+   * repeat would silently queue a duplicate event. client_connected is once per session.
+   */
+  private recordClientConnected(
+    info: Implementation | undefined,
+    caps: ClientCapabilities | undefined
+  ): void {
+    if (this.clientConnectedSent) return;
+    this.clientConnectedSent = true;
+    this.telemetry.recordClientConnected({
+      clientName: info?.name,
+      clientVersion: info?.version,
+      // `!= null`, not `!== undefined`: an explicit `null` capability is a client saying
+      // "I don't have this," the same as omitting it entirely — not a declaration.
+      capSampling: caps?.sampling != null,
+      capElicitation: caps?.elicitation != null,
+      capRoots: caps?.roots != null,
     });
   }
 
@@ -1669,8 +1699,7 @@ export class EditmameiServer {
     // Automation permission ungranted). Awaiting it here delayed the `initialize`
     // response by ~30s, which Claude Desktop surfaces as "Unable to connect to
     // extension server" (diagnosed 2026-06-27 from the client MCP logs).
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
+    this.serve(new StdioServerTransport());
 
     // Every job in this block is Photoshop/Pro-only — skipped entirely when
     // `registerPhotoshop` is false (pinned to 'gimp'). Without this gate,
@@ -1702,30 +1731,61 @@ export class EditmameiServer {
       void this.ensureEntitledModuleFresh();
     }
 
-    // Start the periodic telemetry flush, and flush a final batch + session summary when
-    // the client disconnects. Transport close (stdin EOF) is the session-end signal for
-    // clients that close the pipe instead of sending SIGTERM — e.g. Claude Desktop on
-    // macOS. We can't await inside onclose, but shutdown()'s in-flight POST (+ its 4s
-    // AbortController timer) is a ref'd handle that keeps the event loop alive until the
-    // flush completes, so the process exits naturally only AFTER the summary lands. If a
-    // SIGTERM also arrives, index.ts's handler awaits shutdown() too — memoized, so it
-    // waits on this same flush rather than racing process.exit ahead of it. Both no-ops
-    // when telemetry is inert.
+    // Start the periodic telemetry flush (the final batch + session summary go out when the
+    // client disconnects: see onClientGone).
     this.telemetry.start();
     // Deliver anything a previous run left in the durable outbox (final batches + a
     // session_summary from a session the host killed before a clean shutdown). Fire-and-
     // forget — runs once now, while the event loop is healthy.
     void this.telemetry.flushOutboxOnStartup();
-    this.server.onclose = () => {
-      void this.telemetry.shutdown();
-      // GIMP session shutdown is memoized (GimpSession.shutdown()'s own
-      // shutdownPromise latch), so calling it from both exit paths (here AND
-      // stop(), which SIGTERM/SIGINT in index.ts awaits) is safe — whichever
-      // runs first does the real work, the other just awaits the same promise.
-      if (this.gimpBackend) void this.gimpBackend.shutdown();
-    };
 
     this.logger.info('Editmamei is listening on stdio');
+  }
+
+  /**
+   * Serves MCP over `wire`: serveStdio picks the protocol revision from the client's first
+   * message (a 2025 `initialize`, or 2026-07-28's per-request `_meta`) and keeps one server
+   * from buildServer for the connection. The session ends when the wire closes, however it
+   * closes (stdin's end, a broken pipe, the connection torn down), even before any message;
+   * the server instances' own closes don't count, since a discarded probe closes one.
+   * @internal — start() passes stdio; tests pass an in-memory pair.
+   */
+  private serve(wire: Transport): void {
+    serveStdio(({ era }) => this.buildServer(era), {
+      transport: wire,
+      onerror: (error) => this.logger.debug(`MCP connection: ${error.message}`),
+    });
+    // serveStdio has set its own onclose by now (it does so before starting the wire): chain it.
+    const entryOnClose = wire.onclose;
+    let gone = false;
+    wire.onclose = () => {
+      try {
+        entryOnClose?.();
+      } finally {
+        if (!gone) {
+          gone = true;
+          this.onClientGone();
+        }
+      }
+    };
+  }
+
+  /**
+   * The client disconnected: flush a final telemetry batch + session summary. Transport close
+   * (stdin EOF) is the session-end signal for clients that close the pipe instead of sending
+   * SIGTERM — e.g. Claude Desktop on macOS. We can't await here, but shutdown()'s in-flight POST
+   * (+ its 4s AbortController timer) is a ref'd handle that keeps the event loop alive until the
+   * flush completes, so the process exits naturally only AFTER the summary lands. If a SIGTERM
+   * also arrives, index.ts's handler awaits shutdown() too — memoized, so it waits on this same
+   * flush rather than racing process.exit ahead of it. Both no-ops when telemetry is inert.
+   */
+  private onClientGone(): void {
+    void this.telemetry.shutdown();
+    // GIMP session shutdown is memoized (GimpSession.shutdown()'s own
+    // shutdownPromise latch), so calling it from both exit paths (here AND
+    // stop(), which SIGTERM/SIGINT in index.ts awaits) is safe — whichever
+    // runs first does the real work, the other just awaits the same promise.
+    if (this.gimpBackend) void this.gimpBackend.shutdown();
   }
 
   async stop() {

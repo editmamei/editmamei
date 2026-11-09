@@ -182,6 +182,90 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
 
   // ---- effect-specific pixel assertions ---------------------------------------------------------
 
+  it('filter op=delete with filter_ids deletes them all at once, and an unknown id deletes nothing', async () => {
+    const opened = await session.call<{ image: number }>('open', { path: swatchesPath });
+    try {
+      const made: number[] = [];
+      for (const [type, args] of [
+        ['vignette', {}],
+        ['add_noise', { seed: 1 }],
+        ['black_white', {}],
+      ] as const) {
+        made.push(
+          (
+            await session.call<{ filter_id: number }>('effect', {
+              image: opened.image,
+              type,
+              ...args,
+            })
+          ).filter_id
+        );
+      }
+      const listAll = async () =>
+        (
+          await session.call<{ filters: Array<{ filter_id: number; source: string }> }>('filter', {
+            image: opened.image,
+            op: 'list',
+          })
+        ).filters;
+      const ids = async () =>
+        (
+          await session.call<{ filters: Array<{ filter_id: number }> }>('filter', {
+            image: opened.image,
+            op: 'list',
+          })
+        ).filters
+          .map((f) => f.filter_id)
+          .sort((x, y) => x - y);
+      await expect(
+        session.call('filter', { image: opened.image, op: 'delete', filter_ids: [made[0], 999999] })
+      ).rejects.toThrow(/no filter with id 999999/);
+      await expect(
+        session.call('filter', {
+          image: opened.image,
+          op: 'delete',
+          filter_ids: [made[0], made[0]],
+        })
+      ).rejects.toThrow(/named twice/);
+      expect(await ids()).toEqual([...made].sort((x, y) => x - y));
+      const gone = await session.call<{
+        filter_ids: number[];
+        filters: Array<{ filter_id: number; name: string }>;
+      }>('filter', {
+        image: opened.image,
+        op: 'delete',
+        filter_ids: [made[0], made[2]],
+      });
+      expect(gone.filter_ids).toEqual([made[0], made[2]]);
+      expect(await ids()).toEqual([made[1]]);
+      // The one left keeps its own ledger record (re-editable), with the deleted ones' records gone.
+      expect((await listAll()).map((f) => f.source)).toEqual(['editmamei']);
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
+  it('add_noise: the default amount is a fine grain', async () => {
+    const flatPath = join(workDir, 'noise-default-flat.png');
+    writeCheckerboard(flatPath, 128, 128, 1, 128, 128);
+    const opened = await session.call<{ image: number }>('open', { path: flatPath });
+    try {
+      await session.call('effect', { image: opened.image, type: 'add_noise', seed: 3 });
+      const listed = await session.call<{ filters: Array<{ params: Record<string, unknown> }> }>(
+        'filter',
+        { image: opened.image, op: 'list' }
+      );
+      expect(listed.filters[0]!.params.noise_amount).toBe(0.02);
+      const outPath = join(workDir, 'noise-default-out.png');
+      await session.call('export', { image: opened.image, path: outPath });
+      const variance = patchVariance(readPng(outPath), 16, 16, 96, 96);
+      expect(variance).toBeGreaterThan(0);
+      expect(Math.sqrt(variance)).toBeLessThan(8); // a few levels, not the heavy grain the old 0.2 gave
+    } finally {
+      await session.call('close', { image: opened.image });
+    }
+  });
+
   it('vignette: darkens the corners relative to the centre', async () => {
     const flatPath = join(workDir, 'vignette-flat.png');
     writeCheckerboard(flatPath, 256, 256, 1, 200, 200); // a uniform 200-gray field

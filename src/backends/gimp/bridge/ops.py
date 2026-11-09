@@ -1742,6 +1742,8 @@ def op_filter(args):
         f.set_visible(visible)
         return {'filter_id': f.get_id(), 'visible': visible}
     if fop == 'delete':
+        if args.get('filter_ids') is not None:
+            return _delete_filters_by_id(img, args.get('filter_ids'))
         filter_id = int(lib.require(args, 'filter_id'))
         layer, f = _find_filter(img, filter_id)
         name = f.get_name()
@@ -1759,6 +1761,43 @@ def op_filter(args):
             'filters -- delete and re-create in the desired order instead'
         )
     raise ValueError('op must be one of list, set_visibility, delete (got %r)' % fop)
+
+
+FILTER_IDS_MAX = 100
+
+
+def _delete_filters_by_id(img, raw_ids):
+    """`filter` op=delete with `filter_ids`: several filters in one call. Every id is looked up
+    first, so an unknown id (or a repeat) refuses the whole call with nothing deleted; then each is
+    deleted and the ledger is rewritten once."""
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise ValueError('filter_ids must be a non-empty list of filter ids')
+    if len(raw_ids) > FILTER_IDS_MAX:
+        raise ValueError('filter_ids takes at most %d ids per call' % FILTER_IDS_MAX)
+    ids = []
+    for raw in raw_ids:
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ValueError('filter_ids must hold integer filter ids (got %r)' % (raw,))
+        if raw in ids:
+            raise ValueError('filter %s is named twice in filter_ids' % raw)
+        ids.append(raw)
+    found = [(fid,) + _find_filter(img, fid) for fid in ids]
+    names = set()
+    deleted = []
+    try:
+        for fid, _layer, f in found:
+            name = f.get_name()
+            f.delete()
+            names.add(name)
+            deleted.append({'filter_id': fid, 'name': name})
+    finally:
+        # Whatever was deleted leaves the ledger too, even when a later delete fails.
+        if names:
+            filters, unknown = _ledger_get(img)
+            for name in names:
+                filters.pop(name, None)
+            _ledger_put(img, filters, unknown, removed=names)
+    return {'filter_ids': ids, 'filters': deleted, 'deleted': True}
 
 
 DESCRIBE_TARGETS = ('document', 'layers', 'channels', 'filter')

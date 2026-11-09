@@ -854,7 +854,7 @@ class TestEffectParamBuilders(unittest.TestCase):
     def test_build_add_noise_params_defaults(self):
         params = lib.build_add_noise_params({}, _effect_create_defaults('add_noise'))
         self.assertEqual(
-            params, {'red': 0.2, 'green': 0.2, 'blue': 0.2, 'alpha': 0.0, 'seed': 0}
+            params, {'red': 0.02, 'green': 0.02, 'blue': 0.02, 'alpha': 0.0, 'seed': 0}
         )
 
     def test_build_add_noise_params_one_amount_drives_all_three_channels(self):

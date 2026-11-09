@@ -314,7 +314,7 @@ export class TelemetryClient {
 
   /**
    * Record the connected MCP client's identity + capabilities (Category A, opt-out), once
-   * per session from `Server.oninitialized` (see server.ts). Deliberately does NOT force its
+   * per session (see recordClientConnected in server.ts). Deliberately does NOT force its
    * own flush — it rides whichever of the boot flush, the periodic timer, the next batch-fill
    * flush, or (on a hard exit) the durable outbox gets to it first, the same as any other
    * enqueued event.
