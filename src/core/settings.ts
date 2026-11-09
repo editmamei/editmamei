@@ -1,8 +1,9 @@
 /**
  * Editmamei settings — the single hand-editable source of truth at
  * `~/.editmamei/settings.json` (LOCKED 2026-06-14).
- * Every control surface (direct edit, the `editmamei config` CLI, the Claude Desktop
- * extension config) reads and writes this one file.
+ * Every control surface (direct edit, the `editmamei config` CLI) reads and writes this one
+ * file; a change made in the Claude Desktop extension settings is written to it at the next
+ * launch (see `applyDesktopToggles`).
  *
  * Sync API on purpose: the file is tiny and is read once at server boot (a sync
  * constructor path) and by short-lived CLI subcommands. Atomic write via tmp+rename
@@ -41,6 +42,13 @@ export interface AutomationSettings {
   allow_execute_script: boolean;
 }
 
+/** The Claude Desktop toggle values seen at the last launch, so a moved toggle can be told from an unchanged one. Written only by `applyDesktopToggles`. */
+export interface DesktopTogglesSeen {
+  usage?: boolean;
+  diagnostics?: boolean;
+  update_check?: boolean;
+}
+
 /** Which editor(s) `detectEditors()` + boot registration should honor. `'auto'` (default) is the detection-driven matrix. */
 export type EditorPin = 'auto' | 'photoshop' | 'gimp';
 
@@ -59,12 +67,14 @@ export interface Settings {
   update_check: boolean;
   /**
    * Pin which editor(s) register at boot instead of trusting `detectEditors()`'s matrix.
-   * `EDITMAMEI_EDITOR` wins over this for the current process (same override precedent as
-   * `applyTelemetryEnvOverrides`); the file value stands on the npm/CLI path.
+   * `EDITMAMEI_EDITOR` wins over this for the current process; the file value stands on the
+   * npm/CLI path.
    */
   editor: EditorPin;
   /** Absolute path to the `gimp-console` binary; null = auto-detect. `EDITMAMEI_GIMP_PATH` wins over this for the current process — the same override `detectGimp()` reads directly. */
   gimp_path: string | null;
+  /** Absent until the first launch from Claude Desktop. */
+  desktop_toggles?: DesktopTogglesSeen;
 }
 
 export interface LoadSettingsOptions {
@@ -76,6 +86,8 @@ export interface LoadSettingsResult {
   settings: Settings;
   /** True when the file did not exist and was just created (drives first-run disclosure). */
   created: boolean;
+  /** True when a file exists but couldn't be read, so `settings` is defaults. Never save these over it. */
+  degraded?: boolean;
 }
 
 const SETTINGS_DIRNAME = '.editmamei';
@@ -121,6 +133,7 @@ function coerce(raw: unknown, installId: string): Settings {
   const t = (r.telemetry ?? {}) as Record<string, unknown>;
   const p = (r.privacy ?? {}) as Record<string, unknown>;
   const a = (r.automation ?? {}) as Record<string, unknown>;
+  const desktopToggles = coerceDesktopToggles(r.desktop_toggles);
   return {
     telemetry: {
       usage: typeof t.usage === 'boolean' ? t.usage : base.telemetry.usage,
@@ -150,7 +163,19 @@ function coerce(raw: unknown, installId: string): Settings {
         ? (r.editor as EditorPin)
         : base.editor,
     gimp_path: coerceGimpPath(r.gimp_path),
+    ...(desktopToggles ? { desktop_toggles: desktopToggles } : {}),
   };
+}
+
+/** Keep only well-formed booleans. Anything else reads as "not seen yet". */
+function coerceDesktopToggles(raw: unknown): DesktopTogglesSeen | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  const out: DesktopTogglesSeen = {};
+  if (typeof r.usage === 'boolean') out.usage = r.usage;
+  if (typeof r.diagnostics === 'boolean') out.diagnostics = r.diagnostics;
+  if (typeof r.update_check === 'boolean') out.update_check = r.update_check;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -205,7 +230,7 @@ export function loadSettings(opts: LoadSettingsOptions = {}): LoadSettingsResult
     return { settings, created: false };
   } catch (err) {
     logger.warn(`settings.json unreadable, using defaults: ${errMsg(err)}`);
-    return { settings: defaults(mintInstallId()), created: false };
+    return { settings: defaults(mintInstallId()), created: false, degraded: true };
   }
 }
 
@@ -221,52 +246,103 @@ function parseBoolEnv(v: string | undefined): boolean | undefined {
 }
 
 /**
- * Apply Claude-Desktop-injected telemetry overrides at boot. Claude Desktop has no terminal,
- * so the `.mcpb` manifest exposes the consent toggles as `user_config` booleans and passes
- * them as `EDITMAMEI_TELEMETRY_USAGE` / `EDITMAMEI_TELEMETRY_DIAGNOSTICS`. When a recognized
- * value is present it wins for THIS process (the extension settings are the Desktop control
- * surface); absent — the npm / CLI path — the settings.json value stands. **Non-mutating and
- * in-memory only**: never written back to disk, so the file remains the source of truth the
- * `editmamei config` CLI reads, and no manifest↔file feedback loop can form.
+ * Decide one Claude Desktop toggle against its stored setting. `stored` is what later launches
+ * read; `effective` applies to this process, where an off toggle always means off.
+ *
+ * A toggle's value can't be told apart from its manifest default, so only a CHANGE since the
+ * last launch counts as the user moving it. The first launch that sees a toggle has no such
+ * history: an on-by-default toggle can only turn the setting off, and an off-by-default one
+ * only on, because in each case the other value may just be the default.
  */
-export function applyTelemetryEnvOverrides(
+function resolveDesktopToggle(
+  stored: boolean,
+  toggle: boolean | undefined,
+  seen: boolean | undefined,
+  onByDefault: boolean
+): { stored: boolean; effective: boolean } {
+  if (toggle === undefined) return { stored, effective: stored };
+  let next = stored;
+  if (seen === undefined) next = onByDefault ? stored && toggle : stored || toggle;
+  else if (toggle !== seen) next = toggle;
+  return { stored: next, effective: toggle && next };
+}
+
+/**
+ * Apply the Claude Desktop extension's toggles at boot. Desktop has no terminal, so the `.mcpb`
+ * manifest exposes them as `user_config` booleans passed as `EDITMAMEI_TELEMETRY_USAGE`,
+ * `EDITMAMEI_TELEMETRY_DIAGNOSTICS` and `EDITMAMEI_UPDATE_CHECK`, a concrete value on every
+ * launch. A change made in Desktop is written to settings.json; an unchanged toggle leaves the
+ * stored setting alone, so a choice made another way survives. Off still wins for this process.
+ * With none of the variables set (the npm / CLI path), returns `settings` untouched. A failed
+ * write is logged and this launch still honors the result. Pass `persist: false` when `settings`
+ * didn't come from the file (see `LoadSettingsResult.degraded`).
+ */
+export function applyDesktopToggles(
   settings: Settings,
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  opts: LoadSettingsOptions & { persist?: boolean } = {}
 ): Settings {
-  const usage = parseBoolEnv(env.EDITMAMEI_TELEMETRY_USAGE);
-  const diagnostics = parseBoolEnv(env.EDITMAMEI_TELEMETRY_DIAGNOSTICS);
-  if (usage === undefined && diagnostics === undefined) return settings;
-  return {
+  const usageToggle = parseBoolEnv(env.EDITMAMEI_TELEMETRY_USAGE);
+  const diagnosticsToggle = parseBoolEnv(env.EDITMAMEI_TELEMETRY_DIAGNOSTICS);
+  const updateCheckToggle = parseBoolEnv(env.EDITMAMEI_UPDATE_CHECK);
+  if (
+    usageToggle === undefined &&
+    diagnosticsToggle === undefined &&
+    updateCheckToggle === undefined
+  ) {
+    return settings;
+  }
+
+  const seen = settings.desktop_toggles ?? {};
+  const usage = resolveDesktopToggle(settings.telemetry.usage, usageToggle, seen.usage, true);
+  const diagnostics = resolveDesktopToggle(
+    settings.telemetry.diagnostics,
+    diagnosticsToggle,
+    seen.diagnostics,
+    false
+  );
+  const updateCheck = resolveDesktopToggle(
+    settings.update_check,
+    updateCheckToggle,
+    seen.update_check,
+    true
+  );
+
+  const nextSeen: DesktopTogglesSeen = {
+    ...seen,
+    ...(usageToggle !== undefined ? { usage: usageToggle } : {}),
+    ...(diagnosticsToggle !== undefined ? { diagnostics: diagnosticsToggle } : {}),
+    ...(updateCheckToggle !== undefined ? { update_check: updateCheckToggle } : {}),
+  };
+  const stored: Settings = {
     ...settings,
-    telemetry: {
-      ...settings.telemetry,
-      usage: usage ?? settings.telemetry.usage,
-      diagnostics: diagnostics ?? settings.telemetry.diagnostics,
-    },
+    telemetry: { ...settings.telemetry, usage: usage.stored, diagnostics: diagnostics.stored },
+    update_check: updateCheck.stored,
+    desktop_toggles: nextSeen,
+  };
+  // A stored value only changes when its toggle's seen value does.
+  const seenChanged =
+    nextSeen.usage !== seen.usage ||
+    nextSeen.diagnostics !== seen.diagnostics ||
+    nextSeen.update_check !== seen.update_check;
+  if (seenChanged && opts.persist !== false) {
+    try {
+      saveSettings(stored, { dir: opts.dir });
+    } catch (err) {
+      logger.warn(`could not save Claude Desktop toggle state: ${errMsg(err)}`);
+    }
+  }
+  return {
+    ...stored,
+    telemetry: { ...stored.telemetry, usage: usage.effective, diagnostics: diagnostics.effective },
+    update_check: updateCheck.effective,
   };
 }
 
 /**
- * Apply a Claude-Desktop-injected `update_check` override at boot. Same rationale as
- * `applyTelemetryEnvOverrides`: Desktop has no terminal for `editmamei config`, so the
- * `.mcpb` manifest exposes the boot-update-check toggle as a `user_config` boolean passed
- * as `EDITMAMEI_UPDATE_CHECK`. In-memory only — never written back, so settings.json stays
- * the source of truth on the npm/CLI path and no manifest↔file feedback loop can form.
- */
-export function applyUpdateCheckEnvOverride(
-  settings: Settings,
-  env: Record<string, string | undefined> = process.env
-): Settings {
-  const v = parseBoolEnv(env.EDITMAMEI_UPDATE_CHECK);
-  if (v === undefined) return settings;
-  return { ...settings, update_check: v };
-}
-
-/**
- * Apply an `EDITMAMEI_EDITOR` env override of the `editor` pin at boot. Same
- * precedence as `applyUpdateCheckEnvOverride`: `EDITMAMEI_EDITOR` wins for THIS
- * process when it names a recognized pin; an unrecognized or absent value
- * leaves the settings.json value standing. In-memory only — never written
+ * Apply an `EDITMAMEI_EDITOR` env override of the `editor` pin at boot.
+ * `EDITMAMEI_EDITOR` wins for THIS process when it names a recognized pin; an
+ * unrecognized or absent value leaves the settings.json value standing. In-memory only — never written
  * back, so settings.json stays the source of truth on the npm/CLI path.
  */
 export function applyEditorEnvOverride(
