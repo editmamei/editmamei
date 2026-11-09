@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { SdkError, SdkErrorCode } from '@modelcontextprotocol/server';
 import {
   MAX_DISMISSALS,
   clientSupportsForm,
@@ -280,7 +280,7 @@ describe('no answer', () => {
   it('stays off after a timeout, and stops asking after the limit', async () => {
     let settings = await existingInstall();
     const elicit = vi.fn(async () => {
-      throw new McpError(ErrorCode.RequestTimeout, 'slow');
+      throw new SdkError(SdkErrorCode.RequestTimeout, 'slow');
     });
     for (let i = 0; i < MAX_DISMISSALS; i++) {
       const { all, report } = deps({ settings, elicit });

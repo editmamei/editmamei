@@ -204,7 +204,10 @@ export class EditmameiServer {
   /** client_connected is a once-per-session event, whichever revision the client speaks. */
   private clientConnectedSent = false;
   /** The settings the consent prompt reads and writes, set in the constructor. */
-  private consent: { settings: Settings; degraded: boolean } = { settings: {} as Settings, degraded: true };
+  private consent: { settings: Settings; degraded: boolean } = {
+    settings: {} as Settings,
+    degraded: true,
+  };
   private logger: Logger;
   private toolRegistry: ToolRegistry;
   private session: Session;
