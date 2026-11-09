@@ -5,11 +5,15 @@
 <h1 align="center">Editmamei</h1>
 
 <p align="center">
-  <strong>Give your AI assistant a real photo editor.</strong>
+  <strong>AI photo editing in Photoshop and GIMP.</strong>
 </p>
 
 <p align="center">
-  An MCP (Model Context Protocol) server that lets AI apps edit your photos in desktop Photoshop or GIMP. It edits the photo you have instead of generating a new one, and leaves you a layered file you can keep working on.
+  Let AI do the parts of the edit you don't want to, and keep your favorite parts for yourself. It works in Photoshop or GIMP with real tools, layer by layer, so every step stays editable and the final touches are yours. A desktop MCP server for Claude and other MCP-compatible AI apps.
+</p>
+
+<p align="center">
+  For photographers and retouchers who want AI to speed up the workflow, not take it over.
 </p>
 
 <p align="center">
@@ -32,7 +36,7 @@
 <p align="center">
   <a href="https://editmamei.com"><img src="https://raw.githubusercontent.com/editmamei/editmamei/dev/docs/media/batch-flip.webp" width="540" alt="Seventy-three travel photos graded in Photoshop from one sentence: the prompt, the grading calls three photos at a time, and the finished set."></a>
   <br>
-  <sub>A real run: 73 travel photos, one sentence, graded in Photoshop.</sub>
+  <sub>A real run: 73 travel photos graded in Photoshop from one sentence, with no generated pixels.</sub>
 </p>
 
 <p align="center">
@@ -109,6 +113,8 @@ Then restart your AI app and ask it: _"Is Photoshop connected?"_ For anything `e
 **What to expect**
 
 A first edit takes a while. The three requests above took 4 to 8 minutes, because your AI looks, plans, and checks at every step. Editmamei ships no chat model of its own, so every edit spends your AI app's tokens, and [we measured what an edit costs](https://editmamei.com/blog/what-an-edit-costs).
+
+If it works for you, a ⭐ helps other photographers find it.
 
 ## Editmamei Connect
 
