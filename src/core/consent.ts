@@ -184,9 +184,16 @@ function storeDismissal(deps: ConsentDeps): void {
  * usage stats are off, because a person who opted out sends nothing. Marked as sent only once it
  * is delivered or in the outbox, so a process killed first sends it again next session.
  */
+/** The server's ceiling for `question_version` (telemetry-server src/routes/telemetry.ts). */
+const MAX_QUESTION_VERSION = 1000;
+
 async function reportUnsentAnswer(deps: ConsentDeps): Promise<void> {
   const record = deps.settings.consent?.features;
   if (!record || record.reported || !deps.settings.telemetry.usage) return;
+  // The server takes question versions 1 to 1000 and refuses the whole batch otherwise, so a
+  // hand-edited record outside them is never sent: it would sit in the outbox and hold up every
+  // later batch. It still reads as an answer to that version (an older one is asked again).
+  if (record.version < 1 || record.version > MAX_QUESTION_VERSION) return;
   const settled = await deps.report({
     question: FEATURES_QUESTION.id,
     questionVersion: record.version,

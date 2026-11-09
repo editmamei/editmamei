@@ -111,8 +111,8 @@ export const FIRST_RUN_DISCLOSURE =
   'First run: Editmamei collects content-free usage telemetry (tool name, ' +
   'success, duration, bytes returned, version/edition/OS/PS-version, install channel, ' +
   'which AI client connected, Node/OS/architecture versions, and per-session counts like ' +
-  'edits made and retries) to find what breaks. It also sends the names of editing features ' +
-  'used, from a published list. It never sends image content, file paths, script text, or other ' +
+  'edits made and retries) to find what breaks. It also sends the names of editing features and ' +
+  'tool options used, from fixed lists. It never sends image content, file paths, script text, or other ' +
   'free-form text. The only identifier is a random install ID. Opt out anytime: ' +
   '`editmamei config set telemetry.usage false` (or edit ~/.editmamei/settings.json), or ' +
   '`editmamei config set telemetry.features false` for feature names alone. Opt in to ' +

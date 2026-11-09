@@ -67,7 +67,7 @@ run. These are the keys:
 | Key | Type | Default | What it does |
 |---|---|---|---|
 | `telemetry.usage` | boolean | `true` (on) | Content-free usage and reliability data. The opt-out tier. |
-| `telemetry.features` | boolean | `true` (on) for a new install | The names of editing features used, from a [published list](feature-names.md), with no install ID. Only sent while `telemetry.usage` is on. On an install from before this setting existed, it is absent, which means off, until you answer. |
+| `telemetry.features` | boolean | `true` (on) for a new install | The names of editing features and tool options used: values a tool's schema declares, and script operations from a [published list](feature-names.md), with no install ID. Only sent while `telemetry.usage` is on. On an install from before this setting existed, it is absent, which means off, until you answer. |
 | `telemetry.diagnostics` | boolean | `false` (off) | Extra sanitized error detail for bug-hunting. The opt-in tier. |
 | `telemetry.install_id` | string | random | A random ID, minted once, so installs can be counted without knowing who you are. It is not derived from anything about you, but it is stable, so it is still personal data and you have rights over it — see [Your rights, and the legal basis](#your-rights-and-the-legal-basis). **Read-only**: you can see it, but it isn't something you set. |
 | `privacy.send_previews_to_llm` | boolean | `true` | A control over sending images to your AI assistant. When `false`, no tool returns image bytes to the model: Photoshop previews (`ps_get_preview`, selection previews, annotated detection images) and GIMP previews (`gimp_get_preview`, `gimp_compare`, see [docs/gimp.md](gimp.md)) come back as text only, with dimensions, numbers and a note that the image was withheld. This includes an image inside another tool's result, such as the last step of `ps_sequence`. GIMP's `latest-preview.jpg`, written on your own disk, is unaffected. |
@@ -153,7 +153,7 @@ log so the default is never a surprise:
 > First run: Editmamei collects content-free usage telemetry (tool name, success,
 > duration, bytes returned, version/edition/OS/PS-version, install channel, which AI client
 > connected, Node/OS/architecture versions, and per-session counts like edits made and retries)
-> to find what breaks. It also sends the names of editing features used, from a published list.
+> to find what breaks. It also sends the names of editing features and tool options used, from fixed lists.
 > It never sends image content, file paths, script text, or other free-form text. The only
 > identifier is a random install ID. Opt out anytime: `editmamei config set telemetry.usage false`
 > (or edit `~/.editmamei/settings.json`), or `editmamei config set telemetry.features false` for
@@ -383,7 +383,7 @@ no platform, Photoshop version or edition:
   "v": 2,
   "type": "feature_usage",
   "ts_bucket": "2026-11-20",
-  "editmamei_version": "1.10.0",
+  "editmamei_version": "1.9.7",
   "kind": "option",
   "tool": "ps_filter",
   "name": "type",
@@ -405,8 +405,9 @@ script, the names are read on your machine and compared with the [published list
 A name on the list is sent. Any other name is sent as `unknown`, so it is a count and never the name.
 The script itself is never sent or stored by this feature.
 
-Each row is a day and a version, so on a day with very few users it could be matched to one
-install's activity.
+These events travel in the same request as your other usage events, and are stored apart from them
+with nothing that links them back. Each stored row is a day and a version, so on a day with very
+few users it could be matched to one install's activity.
 
 ### Consent result: when a question is answered or can't be asked (on by default)
 
@@ -418,7 +419,7 @@ Sent while `telemetry.usage` is on, whatever you answered, so that we can tell w
   "type": "consent_result",
   "install_id": "9f3c…",
   "ts_bucket": "2026-11-20",
-  "editmamei_version": "1.10.0",
+  "editmamei_version": "1.9.7",
   "edition": "community",
   "platform": "win32",
   "client": "claude_code",
@@ -479,8 +480,9 @@ other names are sent as written. Leave diagnostics off if you'd rather not share
 ### What is deliberately never in any event
 
 - Free-form input: no prompts, script text, file paths, layer names, on-image text or numbers. The
-  only argument values ever sent are fixed values a tool's schema declares
-  (see [Feature usage](#feature-usage-how-often-a-named-feature-was-used-on-by-default-for-new-installs)).
+  only argument values ever sent are fixed values a tool's schema declares, and names from the
+  [published list](feature-names.md) read out of a script (see
+  [Feature usage](#feature-usage-how-often-a-named-feature-was-used-on-by-default-for-new-installs)).
   The one other exception is an opt-in diagnostic message, which repeats a value when the error
   itself does (see above).
 - Any image, preview, thumbnail, or document content.

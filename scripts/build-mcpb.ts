@@ -150,7 +150,7 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
         type: 'boolean',
         title: 'Share feature names',
         description:
-          'The names of editing features used, from a published list, with no install ID. Never files, text or scripts. Needs usage stats on. Installs from before this setting stay off until you answer the prompt or move this toggle. Turn off to opt out.',
+          'The names of editing features and tool options used, from fixed lists, with no install ID. Never files, text or scripts. Needs usage stats on. Installs from before this setting stay off until you answer the prompt or move this toggle. Turn off to opt out.',
         required: false,
         default: true,
       },

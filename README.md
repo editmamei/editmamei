@@ -167,10 +167,11 @@ Editmamei runs on your computer and edits in your desktop editor. No image conte
 | Previews, 1024px on the long edge by default (your AI can ask for up to 8192px) | Your AI app's model provider, the same as dropping a photo into a chat | `privacy.send_previews_to_llm` (on) |
 | Tool results, such as file paths, layer names, measurements, and metadata like GPS if your AI asks for it | Your AI app's model provider | |
 | Content-free usage telemetry, with a random install ID | Editmamei | `telemetry.usage` (on) |
+| Names of editing features and tool options used, from fixed lists (tool schemas and a [published list](docs/feature-names.md)), with no install ID | Editmamei | `telemetry.features` (on for new installs; an earlier install is asked first) |
 | Sanitized error details | Editmamei, only if you opt in | `telemetry.diagnostics` (off) |
 | Update check, with no identifiers | The npm registry | `update_check` (on) |
 
-Change these with `editmamei config set <setting> false` (or `true`). The Claude Desktop extension has its own switches for telemetry, diagnostics, and the update check. Pro also sends your license key and a per-device activation ID to a third-party licensing service, and to Editmamei's delivery service to check for module updates, plus a hashed device ID at activation. These have no setting. Photoshop's own Select Subject and Select Sky can use Adobe's cloud, depending on Photoshop's Image Processing preference.
+Change these with `editmamei config set <setting> false` (or `true`). The Claude Desktop extension has its own switches for telemetry, feature names, diagnostics, and the update check. Pro also sends your license key and a per-device activation ID to a third-party licensing service, and to Editmamei's delivery service to check for module updates, plus a hashed device ID at activation. These have no setting. Photoshop's own Select Subject and Select Sky can use Adobe's cloud, depending on Photoshop's Image Processing preference.
 
 Every field is documented in [privacy.md](docs/privacy.md), including [your rights, and the legal basis](docs/privacy.md#your-rights-and-the-legal-basis). npm releases are published from this repository with signed provenance, so you can check the package against this source.
 

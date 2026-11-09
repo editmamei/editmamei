@@ -106,7 +106,7 @@ describe('TelemetryClient feature details', () => {
     };
   }
 
-  function makeClient(s: Settings, opts: { fail?: boolean } = {}) {
+  function makeClient(s: Settings, opts: { fail?: boolean; maxBatchSize?: number } = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'editmamei-features-'));
     dirs.push(dir);
     const sent: TelemetryEvent[] = [];
@@ -115,6 +115,7 @@ describe('TelemetryClient feature details', () => {
       getPsVersion: () => '27.0',
       active: true,
       outboxDir: dir,
+      ...(opts.maxBatchSize ? { maxBatchSize: opts.maxBatchSize } : {}),
       now: () => new Date('2026-11-20T10:00:00Z'),
       transport: async (_url, body) => {
         if (opts.fail) throw new Error('down');
@@ -184,6 +185,20 @@ describe('TelemetryClient feature details', () => {
     s.telemetry.features = false;
     await client.flush();
     expect(sent).toEqual([]);
+  });
+
+  it('never starts a send while draining at shutdown, so a full batch is not lost at exit', async () => {
+    const { client, sent, dir } = makeClient(settings({ features: true }), { maxBatchSize: 2 });
+    client.recordCall({ tool: 'ps_filter', success: true, duration_ms: 1, error_class: null });
+    client.recordFeatures(() => [
+      { kind: 'option', tool: 'ps_filter', name: 'type', value: 'median' },
+      { kind: 'option', tool: 'ps_filter', name: 'blend_mode', value: 'normal' },
+    ]);
+    await client.shutdown();
+    expect(sent).toEqual([]);
+    const stored = readOutbox({ dir });
+    expect(stored.filter((e) => e.type === 'feature_usage')).toHaveLength(2);
+    expect(stored.some((e) => e.type === 'usage')).toBe(true);
   });
 
   it('writes pending counts to the outbox at shutdown', async () => {

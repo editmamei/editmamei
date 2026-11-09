@@ -428,7 +428,11 @@ export class TelemetryClient {
     }
   }
 
-  /** Move the rolled-up feature counts onto the queue, or drop them if consent was withdrawn. */
+  /**
+   * Move the rolled-up feature counts onto the queue, or drop them if consent was withdrawn. Both
+   * callers (flush, shutdown) send or persist the queue right after, so this never starts a send:
+   * a flush started here at shutdown would take events off the queue that the outbox write then misses.
+   */
   private drainFeatureCounts(): void {
     if (this.featureCounts.size === 0) return;
     const entries = [...this.featureCounts.values()];
@@ -436,7 +440,7 @@ export class TelemetryClient {
     if (!featureDetailsEnabled(this.settings)) return;
     for (const { event } of entries) {
       for (let left = event.count; left > 0; left -= MAX_FEATURE_EVENT_COUNT) {
-        this.enqueue({ ...event, count: Math.min(left, MAX_FEATURE_EVENT_COUNT) });
+        this.enqueue({ ...event, count: Math.min(left, MAX_FEATURE_EVENT_COUNT) }, false);
       }
     }
   }
@@ -662,7 +666,8 @@ export class TelemetryClient {
     return events;
   }
 
-  private enqueue(event: TelemetryEvent): void {
+  /** `send`: start a flush once a batch is full (false when the caller sends or persists right after). */
+  private enqueue(event: TelemetryEvent, send = true): void {
     this.queue.push(event);
     if (this.queue.length > MAX_QUEUE_SIZE) {
       // Drop oldest — newer signal is more useful, and we must stay bounded.
@@ -670,7 +675,7 @@ export class TelemetryClient {
       this.queue.splice(0, excess);
       this.droppedEvents += excess;
     }
-    if (this.queue.length >= this.maxBatchSize) void this.flush();
+    if (send && this.queue.length >= this.maxBatchSize) void this.flush();
   }
 
   /**

@@ -348,6 +348,21 @@ describe('marking an answer as reported', () => {
     expect(loadSettings({ dir }).settings.consent?.features?.reported).toBe(true);
   });
 
+  it.each([0, 1001])(
+    'never sends an answer whose question version (%i) the server would refuse',
+    async (version) => {
+      const settings = await existingInstall({
+        telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+        consent: { features: { ...record, version } },
+      });
+      const d = deps({ settings, supportsForm: false });
+      await runConsentPrompt(d.all);
+      expect(d.report).not.toHaveBeenCalledWith(
+        expect.objectContaining({ questionVersion: version })
+      );
+    }
+  );
+
   it('stays unmarked when the send could not be delivered or stored', async () => {
     const settings = await existingInstall({
       telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
