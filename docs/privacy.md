@@ -1,6 +1,6 @@
 # Privacy & data handling
 
-Editmamei is an MCP server that drives Adobe Photoshop on your own machine. This page describes
+Editmamei is an MCP server that drives Adobe Photoshop or GIMP on your own machine. This page describes
 exactly what it does with your data: what stays on your machine, what you control, how to
 control it, and the precise shape of everything that leaves. It's about the npm package you
 install (the `editmamei` MCP server), not about the
