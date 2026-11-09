@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from '
 import { randomBytes } from 'node:crypto';
 import { Logger } from '../utils/logger.js';
 import { requireAbsoluteGimpPath } from '../utils/gimp-path.js';
+import { FEATURES_QUESTION, type ConsentQuestionId } from './consent-questions.js';
 
 const logger = new Logger('Settings');
 
@@ -28,6 +29,12 @@ export interface TelemetrySettings {
   usage: boolean;
   /** Category B (diagnostic detail) — opt-in: defaults false. */
   diagnostics: boolean;
+  /**
+   * Feature details — the names of features used, from fixed lists. Absent means not asked yet,
+   * and reads as off: only a new install or an answer turns it on, so upgrading never does. Sent
+   * only while `usage` is on too. Read it through `featureDetailsEnabled`.
+   */
+  features?: boolean;
   /** Salted random id, minted once on first run. Never derived from PII, but stable — pseudonymous, not anonymous. */
   install_id: string;
 }
@@ -47,6 +54,18 @@ export interface DesktopTogglesSeen {
   usage?: boolean;
   diagnostics?: boolean;
   update_check?: boolean;
+  features?: boolean;
+}
+
+/** How a consent answer was given, and when. Raising a question's version asks again. */
+export interface ConsentRecord {
+  version: number;
+  answer: 'accepted' | 'declined' | 'install_default';
+  via: 'elicitation' | 'install' | 'cli' | 'desktop';
+  /** `YYYY-MM-DD`. */
+  date: string;
+  /** The telemetry server has been told about this answer. */
+  reported?: boolean;
 }
 
 /** Which editor(s) `detectEditors()` + boot registration should honor. `'auto'` (default) is the detection-driven matrix. */
@@ -75,6 +94,10 @@ export interface Settings {
   gimp_path: string | null;
   /** Absent until the first launch from Claude Desktop. */
   desktop_toggles?: DesktopTogglesSeen;
+  /** Absent until a question has an answer. */
+  consent?: Partial<Record<ConsentQuestionId, ConsentRecord>>;
+  /** How many times the current version of a question was closed without an answer. */
+  consent_dismissals?: Partial<Record<ConsentQuestionId, { version: number; count: number }>>;
 }
 
 export interface LoadSettingsOptions {
@@ -107,6 +130,60 @@ export function mintInstallId(): string {
 }
 
 const EDITOR_PINS: readonly EditorPin[] = ['auto', 'photoshop', 'gimp'];
+const CONSENT_ANSWERS: readonly string[] = ['accepted', 'declined', 'install_default'];
+const CONSENT_VIAS: readonly string[] = ['elicitation', 'install', 'cli', 'desktop'];
+
+function todayBucket(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/**
+ * Whether Feature details may be sent. An answer given to an older version of the question
+ * doesn't cover what the setting means now, so it reads as off until it is asked again.
+ */
+export function featureDetailsEnabled(settings: Settings): boolean {
+  if (!settings.telemetry.usage || settings.telemetry.features !== true) return false;
+  const record = settings.consent?.features;
+  return record === undefined || record.version >= FEATURES_QUESTION.version;
+}
+
+/** Record a choice about Feature details. Mutates `settings`; the caller saves. */
+export function setFeatureDetails(
+  settings: Settings,
+  enabled: boolean,
+  via: ConsentRecord['via'],
+  now: Date = new Date()
+): void {
+  settings.telemetry.features = enabled;
+  settings.consent = {
+    ...settings.consent,
+    features: {
+      version: FEATURES_QUESTION.version,
+      answer: enabled ? 'accepted' : 'declined',
+      via,
+      date: todayBucket(now),
+    },
+  };
+}
+
+/**
+ * A brand-new install's settings. The policy is available before installing, so nothing is asked
+ * and Feature details starts on. Only this path sets that default: `defaults` also backs existing
+ * and unreadable files, where a missing key must stay missing.
+ */
+function newInstallSettings(installId: string): Settings {
+  const settings = defaults(installId);
+  settings.telemetry.features = true;
+  settings.consent = {
+    features: {
+      version: FEATURES_QUESTION.version,
+      answer: 'install_default',
+      via: 'install',
+      date: todayBucket(),
+    },
+  };
+  return settings;
+}
 
 function defaults(installId: string): Settings {
   return {
@@ -134,10 +211,14 @@ function coerce(raw: unknown, installId: string): Settings {
   const p = (r.privacy ?? {}) as Record<string, unknown>;
   const a = (r.automation ?? {}) as Record<string, unknown>;
   const desktopToggles = coerceDesktopToggles(r.desktop_toggles);
+  const consent = coerceConsent(r.consent);
+  const dismissals = coerceDismissals(r.consent_dismissals);
   return {
     telemetry: {
       usage: typeof t.usage === 'boolean' ? t.usage : base.telemetry.usage,
       diagnostics: typeof t.diagnostics === 'boolean' ? t.diagnostics : base.telemetry.diagnostics,
+      // No fallback on purpose: a file from an older version must not gain this setting.
+      ...(typeof t.features === 'boolean' ? { features: t.features } : {}),
       // Preserve an existing id; mint only when absent/blank.
       install_id:
         typeof t.install_id === 'string' && t.install_id.length > 0
@@ -164,6 +245,44 @@ function coerce(raw: unknown, installId: string): Settings {
         : base.editor,
     gimp_path: coerceGimpPath(r.gimp_path),
     ...(desktopToggles ? { desktop_toggles: desktopToggles } : {}),
+    ...(consent ? { consent } : {}),
+    ...(dismissals ? { consent_dismissals: dismissals } : {}),
+  };
+}
+
+function coerceDismissals(raw: unknown): Settings['consent_dismissals'] {
+  const features = (raw as { features?: unknown } | null | undefined)?.features;
+  if (typeof features !== 'object' || features === null) return undefined;
+  const { version, count } = features as Record<string, unknown>;
+  if (!Number.isInteger(version) || !Number.isInteger(count)) return undefined;
+  return { features: { version: version as number, count: count as number } };
+}
+
+/** Keep only well-formed records. Anything else reads as not answered, so it is asked again. */
+function coerceConsent(raw: unknown): Settings['consent'] {
+  const features = (raw as { features?: unknown } | null | undefined)?.features;
+  if (typeof features !== 'object' || features === null) return undefined;
+  const { version, answer, via, date, reported } = features as Record<string, unknown>;
+  if (
+    typeof version !== 'number' ||
+    !Number.isInteger(version) ||
+    typeof answer !== 'string' ||
+    !CONSENT_ANSWERS.includes(answer) ||
+    typeof via !== 'string' ||
+    !CONSENT_VIAS.includes(via) ||
+    typeof date !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(date)
+  ) {
+    return undefined;
+  }
+  return {
+    features: {
+      version,
+      answer: answer as ConsentRecord['answer'],
+      via: via as ConsentRecord['via'],
+      date,
+      ...(reported === true ? { reported: true } : {}),
+    },
   };
 }
 
@@ -175,6 +294,7 @@ function coerceDesktopToggles(raw: unknown): DesktopTogglesSeen | undefined {
   if (typeof r.usage === 'boolean') out.usage = r.usage;
   if (typeof r.diagnostics === 'boolean') out.diagnostics = r.diagnostics;
   if (typeof r.update_check === 'boolean') out.update_check = r.update_check;
+  if (typeof r.features === 'boolean') out.features = r.features;
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -202,13 +322,14 @@ function coerceGimpPath(raw: unknown): string | null {
 export function loadSettings(opts: LoadSettingsOptions = {}): LoadSettingsResult {
   const path = settingsPath(opts);
   if (!existsSync(path)) {
-    const settings = defaults(mintInstallId());
+    const settings = newInstallSettings(mintInstallId());
     try {
       saveSettings(settings, opts);
       return { settings, created: true };
     } catch (err) {
+      // An unreachable file also reads as missing here, so this may not be a new install at all.
       logger.warn(`could not write initial settings.json: ${errMsg(err)}`);
-      return { settings, created: false };
+      return { settings: defaults(settings.telemetry.install_id), created: false, degraded: true };
     }
   }
   try {
@@ -270,8 +391,8 @@ function resolveDesktopToggle(
 /**
  * Apply the Claude Desktop extension's toggles at boot. Desktop has no terminal, so the `.mcpb`
  * manifest exposes them as `user_config` booleans passed as `EDITMAMEI_TELEMETRY_USAGE`,
- * `EDITMAMEI_TELEMETRY_DIAGNOSTICS` and `EDITMAMEI_UPDATE_CHECK`, a concrete value on every
- * launch. A change made in Desktop is written to settings.json; an unchanged toggle leaves the
+ * `EDITMAMEI_TELEMETRY_DIAGNOSTICS`, `EDITMAMEI_TELEMETRY_FEATURES` and `EDITMAMEI_UPDATE_CHECK`,
+ * a concrete value on every launch. A change made in Desktop is written to settings.json; an unchanged toggle leaves the
  * stored setting alone, so a choice made another way survives. Off still wins for this process.
  * With none of the variables set (the npm / CLI path), returns `settings` untouched. A failed
  * write is logged and this launch still honors the result. Pass `persist: false` when `settings`
@@ -285,10 +406,12 @@ export function applyDesktopToggles(
   const usageToggle = parseBoolEnv(env.EDITMAMEI_TELEMETRY_USAGE);
   const diagnosticsToggle = parseBoolEnv(env.EDITMAMEI_TELEMETRY_DIAGNOSTICS);
   const updateCheckToggle = parseBoolEnv(env.EDITMAMEI_UPDATE_CHECK);
+  const featuresToggle = parseBoolEnv(env.EDITMAMEI_TELEMETRY_FEATURES);
   if (
     usageToggle === undefined &&
     diagnosticsToggle === undefined &&
-    updateCheckToggle === undefined
+    updateCheckToggle === undefined &&
+    featuresToggle === undefined
   ) {
     return settings;
   }
@@ -313,6 +436,7 @@ export function applyDesktopToggles(
     ...(usageToggle !== undefined ? { usage: usageToggle } : {}),
     ...(diagnosticsToggle !== undefined ? { diagnostics: diagnosticsToggle } : {}),
     ...(updateCheckToggle !== undefined ? { update_check: updateCheckToggle } : {}),
+    ...(featuresToggle !== undefined ? { features: featuresToggle } : {}),
   };
   const stored: Settings = {
     ...settings,
@@ -320,11 +444,20 @@ export function applyDesktopToggles(
     update_check: updateCheck.stored,
     desktop_toggles: nextSeen,
   };
+  // Unlike the others this setting can be unanswered, and a toggle sitting at its on default is
+  // not an answer. Only an off at first sight or a move counts, and each is recorded as a choice.
+  if (featuresToggle !== undefined) {
+    const moved = seen.features !== undefined && featuresToggle !== seen.features;
+    const offAtFirstSight =
+      seen.features === undefined && !featuresToggle && settings.telemetry.features !== false;
+    if (moved || offAtFirstSight) setFeatureDetails(stored, featuresToggle, 'desktop');
+  }
   // A stored value only changes when its toggle's seen value does.
   const seenChanged =
     nextSeen.usage !== seen.usage ||
     nextSeen.diagnostics !== seen.diagnostics ||
-    nextSeen.update_check !== seen.update_check;
+    nextSeen.update_check !== seen.update_check ||
+    nextSeen.features !== seen.features;
   if (seenChanged && opts.persist !== false) {
     try {
       saveSettings(stored, { dir: opts.dir });
@@ -334,7 +467,13 @@ export function applyDesktopToggles(
   }
   return {
     ...stored,
-    telemetry: { ...stored.telemetry, usage: usage.effective, diagnostics: diagnostics.effective },
+    telemetry: {
+      ...stored.telemetry,
+      usage: usage.effective,
+      diagnostics: diagnostics.effective,
+      // An off toggle wins for this launch, as with the others. Otherwise leave it as stored.
+      ...(featuresToggle === false ? { features: false } : {}),
+    },
     update_check: updateCheck.effective,
   };
 }

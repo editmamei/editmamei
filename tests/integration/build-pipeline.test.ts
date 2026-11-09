@@ -240,6 +240,7 @@ describe('mcpb bundle packaging', () => {
       EDITMAMEI_LICENSE_KEY: '${user_config.license_key}',
       EDITMAMEI_TELEMETRY_USAGE: '${user_config.telemetry_usage}',
       EDITMAMEI_TELEMETRY_DIAGNOSTICS: '${user_config.telemetry_diagnostics}',
+      EDITMAMEI_TELEMETRY_FEATURES: '${user_config.telemetry_features}',
       EDITMAMEI_UPDATE_CHECK: '${user_config.update_check}',
       EDITMAMEI_VERBOSE_LOGGING: '${user_config.verbose_logging}',
       // Install-channel marker so the boot update check tells .mcpb users to download +

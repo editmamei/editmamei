@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runConfig } from '@editmamei/cli/config.ts';
-import { loadSettings } from '@editmamei/core/settings.ts';
+import { loadSettings, settingsPath } from '@editmamei/core/settings.ts';
 
 let dir: string;
 let out: string[];
@@ -58,6 +58,39 @@ describe('config get', () => {
   it('errors on an unknown key', () => {
     expect(() => runConfig(['get', 'telemetry.nope'], io())).toThrow();
     expect(err.join('')).toContain('Unknown or missing config key');
+  });
+});
+
+describe('telemetry.features', () => {
+  it('reads as not asked until there is a choice', async () => {
+    await writeFile(
+      settingsPath({ dir }),
+      JSON.stringify({ telemetry: { usage: true, install_id: 'x'.repeat(32) } })
+    );
+    const lines: string[] = [];
+    runConfig(['get', 'telemetry.features'], { ...io(), out: (s) => lines.push(s) });
+    expect(lines.join('')).toBe('not asked (off)\n');
+  });
+
+  it('records the choice as made through the CLI', async () => {
+    await writeFile(
+      settingsPath({ dir }),
+      JSON.stringify({ telemetry: { usage: true, install_id: 'x'.repeat(32) } })
+    );
+    runConfig(['set', 'telemetry.features', 'false'], io());
+    const { settings } = loadSettings({ dir });
+    expect(settings.telemetry.features).toBe(false);
+    expect(settings.consent?.features).toMatchObject({ answer: 'declined', via: 'cli' });
+    runConfig(['set', 'telemetry.features', 'true'], io());
+    expect(loadSettings({ dir }).settings.consent?.features).toMatchObject({
+      answer: 'accepted',
+      via: 'cli',
+    });
+  });
+
+  it('leaves usage stats alone', () => {
+    runConfig(['set', 'telemetry.features', 'false'], io());
+    expect(loadSettings({ dir }).settings.telemetry.usage).toBe(true);
   });
 });
 

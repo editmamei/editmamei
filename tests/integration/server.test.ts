@@ -1,3 +1,4 @@
+import { FEATURE_TOKEN_PATTERN, optionValues } from '@editmamei/telemetry/feature-details.ts';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1281,6 +1282,73 @@ describe('psVersion is resolved opportunistically, not only by ps_ping', () => {
   });
 });
 
+describe('telemetry: feature details', () => {
+  type FeatureServer = {
+    telemetry: { recordFeatures: (getNames: () => unknown[]) => void };
+    toolRegistry: {
+      list(): { name: string; inputSchema: { properties?: Record<string, { enum?: unknown }> } }[];
+      register(name: string, def: unknown): void;
+      execute(name: string, args: Record<string, unknown>): Promise<unknown>;
+    };
+  };
+
+  it('records a call through the registry, and what came before a script', async () => {
+    const server = new EditmameiServer() as unknown as FeatureServer;
+    const recordFeatures = vi.fn();
+    server.telemetry = {
+      recordCall: vi.fn(),
+      recordDiagnostic: vi.fn(),
+      recordFeatures,
+    } as unknown as FeatureServer['telemetry'];
+    const handler = async () => ({ content: [] });
+    server.toolRegistry.register('ps_fake_filter', {
+      tool: {
+        name: 'ps_fake_filter',
+        inputSchema: { type: 'object', properties: { type: { enum: ['median'] } } },
+      },
+      handler,
+    });
+    server.toolRegistry.register('ps_execute_script', {
+      tool: { name: 'ps_execute_script', inputSchema: { type: 'object', properties: {} } },
+      handler,
+    });
+
+    await server.toolRegistry.execute('ps_fake_filter', { type: 'median' });
+    await server.toolRegistry.execute('ps_execute_script', {
+      code: "app.activeDocument.resizeCanvas(10, 10); new File('C:/Users/someone/wedding.psd');",
+    });
+
+    const [first, second] = recordFeatures.mock.calls.map(([get]) => get());
+    expect(first).toEqual([
+      { kind: 'option', tool: 'ps_fake_filter', name: 'type', value: 'median' },
+    ]);
+    expect(second).toEqual([
+      { kind: 'script_operation', tool: 'ps_execute_script', name: 'resizeCanvas' },
+      { kind: 'script_capability', tool: 'ps_execute_script', name: 'File' },
+      { kind: 'script_before', tool: 'ps_fake_filter', name: 'success' },
+    ]);
+  });
+
+  it('only ever sends enum values the server token shape accepts', () => {
+    const server = new EditmameiServer() as unknown as FeatureServer;
+    const tools = server.toolRegistry.list();
+    let checked = 0;
+    for (const tool of tools) {
+      for (const [name, spec] of Object.entries(tool.inputSchema.properties ?? {})) {
+        if (!Array.isArray(spec.enum)) continue;
+        for (const value of spec.enum.filter((v) => typeof v === 'string')) {
+          const found = optionValues(tool.name, tool.inputSchema, { [name]: value });
+          expect(found).toHaveLength(1);
+          expect(found[0].name).toMatch(FEATURE_TOKEN_PATTERN);
+          expect(found[0].value).toMatch(FEATURE_TOKEN_PATTERN);
+          checked += 1;
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(100);
+  });
+});
+
 describe('telemetry: ps_ping success reflects whether Photoshop was actually reached', () => {
   type PingTelemetryServer = {
     session: { connection: unknown };
@@ -1313,6 +1381,7 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
   function spyTelemetry() {
     return {
       recordCall: vi.fn(),
+      recordFeatures: vi.fn(),
       recordDiagnostic: vi.fn(),
       onPsVersionResolved: vi.fn(),
       setInstallAssets: vi.fn(),
@@ -1872,6 +1941,94 @@ describe('client_connected and the session end, on either protocol revision', ()
     });
   });
 
+  describe('the Feature details question (elicitation)', () => {
+    /** A server whose telemetry is live and whose settings have no answer yet, so the question is due. */
+    function due() {
+      const made = make();
+      const internals = made.server as unknown as {
+        telemetry: {
+          isActive(): boolean;
+          recordConsentResult(info: Record<string, unknown>): void;
+        };
+        consent: {
+          settings: Record<string, unknown> & { telemetry: Record<string, unknown> };
+          degraded: boolean;
+        };
+      };
+      internals.telemetry.isActive = () => true;
+      const recordConsentResult = vi.fn();
+      internals.telemetry.recordConsentResult = recordConsentResult;
+      const base = internals.consent.settings;
+      internals.consent = {
+        settings: {
+          ...base,
+          telemetry: { ...base.telemetry, usage: true, features: undefined },
+          consent: undefined,
+          consent_dismissals: undefined,
+          desktop_toggles: undefined,
+        },
+        degraded: false,
+      };
+      return { ...made, recordConsentResult };
+    }
+
+    it('asks once on a 2025 connection whose client supports form elicitation', async () => {
+      const { server, recordConsentResult } = due();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      server.serve(serverTransport);
+      const client = new Client(
+        { name: 'claude-desktop', version: '1.0.0' },
+        { capabilities: { elicitation: { form: {} } }, versionNegotiation: { mode: 'legacy' } }
+      );
+      const asked: unknown[] = [];
+      // Answering with an error is reported as `failed` and stores nothing, so no settings file is written.
+      client.setRequestHandler('elicitation/create', async (request) => {
+        asked.push(request.params);
+        throw new Error('no one to ask');
+      });
+      await client.connect(clientTransport);
+      await client.listTools();
+      await client.listTools();
+
+      await vi.waitFor(() => expect(recordConsentResult).toHaveBeenCalledTimes(1));
+      expect(asked).toHaveLength(1);
+      expect(recordConsentResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          clientName: 'claude-desktop',
+          result: 'failed',
+          via: 'elicitation',
+        })
+      );
+      await client.close();
+    });
+
+    it('does not ask on a 2026-07-28 connection, even from a client that can answer', async () => {
+      const { server, recordClientConnected, recordConsentResult } = due();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      server.serve(serverTransport);
+      const client = new Client(
+        { name: 'modern-client', version: '1.0.0' },
+        {
+          capabilities: { elicitation: { form: {} } },
+          versionNegotiation: { mode: { pin: '2026-07-28' } },
+        }
+      );
+      const asked: unknown[] = [];
+      client.setRequestHandler('elicitation/create', async (request) => {
+        asked.push(request.params);
+        return { action: 'cancel' };
+      });
+      await client.connect(clientTransport);
+      await client.listTools();
+      await vi.waitFor(() => expect(recordClientConnected).toHaveBeenCalledTimes(1));
+      await new Promise((done) => setTimeout(done, 50));
+
+      expect(asked).toEqual([]);
+      expect(recordConsentResult).not.toHaveBeenCalled();
+      await client.close();
+    });
+  });
+
   describe('a 2026-07-28 client (no initialize; identity in every request)', () => {
     it('takes the identity from the first request that states it, once', async () => {
       const { server, recordClientConnected } = make();
@@ -2005,6 +2162,7 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
       telemetry: {
         recordCall: (call: unknown) => void;
         recordDiagnostic: (diag: Record<string, unknown>) => void;
+        recordFeatures: unknown;
         onPsVersionResolved: () => void;
         setInstallAssets: (a: unknown) => void;
       };
@@ -2033,6 +2191,7 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
     const recordDiagnostic = vi.fn();
     server.telemetry = {
       recordCall: vi.fn(),
+      recordFeatures: vi.fn(),
       recordDiagnostic,
       onPsVersionResolved: vi.fn(),
       setInstallAssets: vi.fn(),
@@ -2068,6 +2227,7 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
       telemetry: {
         recordCall: (call: unknown) => void;
         recordDiagnostic: (diag: Record<string, unknown>) => void;
+        recordFeatures: unknown;
       };
       toolRegistry: {
         register(
@@ -2081,7 +2241,7 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
       handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown>;
     };
     const recordDiagnostic = vi.fn();
-    server.telemetry = { recordCall: vi.fn(), recordDiagnostic };
+    server.telemetry = { recordCall: vi.fn(), recordFeatures: vi.fn(), recordDiagnostic };
     server.toolRegistry.register('ps_export', {
       tool: {
         name: 'ps_export',
@@ -2108,6 +2268,7 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
       telemetry: {
         recordCall: (call: unknown) => void;
         recordDiagnostic: (diag: Record<string, unknown>) => void;
+        recordFeatures: unknown;
         onPsVersionResolved: () => void;
         setInstallAssets: (a: unknown) => void;
       };
@@ -2144,6 +2305,7 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
     const recordDiagnostic = vi.fn();
     server.telemetry = {
       recordCall: vi.fn(),
+      recordFeatures: vi.fn(),
       recordDiagnostic,
       onPsVersionResolved: vi.fn(),
       setInstallAssets: vi.fn(),
@@ -2177,6 +2339,7 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
       telemetry: {
         recordCall: (call: unknown) => void;
         recordDiagnostic: (diag: Record<string, unknown>) => void;
+        recordFeatures: unknown;
         onPsVersionResolved: () => void;
         setInstallAssets: (a: unknown) => void;
       };
@@ -2210,6 +2373,7 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
     const recordDiagnostic = vi.fn();
     server.telemetry = {
       recordCall: vi.fn(),
+      recordFeatures: vi.fn(),
       recordDiagnostic,
       onPsVersionResolved: vi.fn(),
       setInstallAssets: vi.fn(),
@@ -2248,6 +2412,7 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
       telemetry: {
         recordCall: (call: unknown) => void;
         recordDiagnostic: (diag: Record<string, unknown>) => void;
+        recordFeatures: unknown;
         onPsVersionResolved: () => void;
         setInstallAssets: (a: unknown) => void;
       };
@@ -2276,6 +2441,7 @@ describe('diagnostic dimensions cached from ps_ping (ps_locale/doc_depth/doc_mod
     const recordDiagnostic = vi.fn();
     server.telemetry = {
       recordCall: vi.fn(),
+      recordFeatures: vi.fn(),
       recordDiagnostic,
       onPsVersionResolved: vi.fn(),
       setInstallAssets: vi.fn(),
@@ -2779,7 +2945,7 @@ describe('telemetry: retry signal (hashed key)', () => {
   }
 
   function spyTelemetry() {
-    return { recordCall: vi.fn(), recordDiagnostic: vi.fn() };
+    return { recordCall: vi.fn(), recordFeatures: vi.fn(), recordDiagnostic: vi.fn() };
   }
 
   const stub = (name: string) => ({
@@ -2927,7 +3093,7 @@ describe('telemetry: result_bytes is computed once and threaded to recordCall', 
       },
       handler: async () => result,
     });
-    const telemetry = { recordCall: vi.fn(), recordDiagnostic: vi.fn() };
+    const telemetry = { recordCall: vi.fn(), recordFeatures: vi.fn(), recordDiagnostic: vi.fn() };
     server.telemetry = telemetry;
 
     await server.handleToolCall('ps_export', {});
@@ -2959,6 +3125,7 @@ describe('telemetry: setInstallAssets carries only the fields this ping observed
   function spyTelemetry() {
     return {
       recordCall: vi.fn(),
+      recordFeatures: vi.fn(),
       recordDiagnostic: vi.fn(),
       onPsVersionResolved: vi.fn(),
       setInstallAssets: vi.fn(),

@@ -73,10 +73,10 @@ export interface McpbManifest {
  *     Desktop (sensitive → OS keychain) and injected as EDITMAMEI_LICENSE_KEY, which
  *     the server reads at boot to activate Pro (src/license/env-activation.ts). Blank
  *     by default → the bundle stays one-click Community.
- *   - **Telemetry toggles** — the same opt-out usage / opt-in diagnostics switches the
- *     CLI exposes, injected as EDITMAMEI_TELEMETRY_USAGE / _DIAGNOSTICS and reconciled with
- *     settings.json at boot (src/core/settings.ts applyDesktopToggles).
- *     Defaults match the privacy posture (usage on, diagnostics off).
+ *   - **Telemetry toggles** — the same opt-out usage and Feature details and opt-in diagnostics
+ *     switches the CLI exposes, injected as EDITMAMEI_TELEMETRY_USAGE / _FEATURES / _DIAGNOSTICS
+ *     and reconciled with settings.json at boot (src/core/settings.ts applyDesktopToggles).
+ *     Defaults match the privacy posture (usage and features on, diagnostics off).
  * Photoshop is still auto-detected (no PHOTOSHOP_PATH field); a blank license key is a
  * safe no-op, unlike a blank PHOTOSHOP_PATH which would fight auto-detection.
  */
@@ -93,6 +93,7 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
     // reconciles them with settings.json at boot (src/core/settings.ts applyDesktopToggles).
     EDITMAMEI_TELEMETRY_USAGE: '${user_config.telemetry_usage}',
     EDITMAMEI_TELEMETRY_DIAGNOSTICS: '${user_config.telemetry_diagnostics}',
+    EDITMAMEI_TELEMETRY_FEATURES: '${user_config.telemetry_features}',
     // Boot update-check opt-out — Desktop has no terminal for `editmamei config`, so expose
     // the same switch here (reconciled with settings.json via applyDesktopToggles).
     EDITMAMEI_UPDATE_CHECK: '${user_config.update_check}',
@@ -141,7 +142,15 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
         type: 'boolean',
         title: 'Share usage stats',
         description:
-          'Content-free counts (which tools run, success/duration) that help improve Editmamei, tied to a random install ID. No images, file paths, or tool arguments are ever sent. On by default — turn off to opt out.',
+          'Content-free counts (which tools run, success/duration) that help improve Editmamei, tied to a random install ID. No images, file paths, script text, or other free-form text is ever sent. On by default — turn off to opt out.',
+        required: false,
+        default: true,
+      },
+      telemetry_features: {
+        type: 'boolean',
+        title: 'Share feature names',
+        description:
+          'The names of editing features and tool options used, from fixed lists, with no install ID. Never files, text or scripts. Needs usage stats on. Installs from before this setting stay off until you answer the prompt or move this toggle. Turn off to opt out.',
         required: false,
         default: true,
       },

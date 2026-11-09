@@ -67,6 +67,7 @@ run. These are the keys:
 | Key | Type | Default | What it does |
 |---|---|---|---|
 | `telemetry.usage` | boolean | `true` (on) | Content-free usage and reliability data. The opt-out tier. |
+| `telemetry.features` | boolean | `true` (on) for a new install | The names of editing features and tool options used: values a tool's schema declares, and script operations from a [published list](feature-names.md), with no install ID. Only sent while `telemetry.usage` is on. On an install from before this setting existed, it is absent, which means off, until you answer. |
 | `telemetry.diagnostics` | boolean | `false` (off) | Extra sanitized error detail for bug-hunting. The opt-in tier. |
 | `telemetry.install_id` | string | random | A random ID, minted once, so installs can be counted without knowing who you are. It is not derived from anything about you, but it is stable, so it is still personal data and you have rights over it — see [Your rights, and the legal basis](#your-rights-and-the-legal-basis). **Read-only**: you can see it, but it isn't something you set. |
 | `privacy.send_previews_to_llm` | boolean | `true` | A control over sending images to your AI assistant. When `false`, no tool returns image bytes to the model: Photoshop previews (`ps_get_preview`, selection previews, annotated detection images) and GIMP previews (`gimp_get_preview`, `gimp_compare`, see [docs/gimp.md](gimp.md)) come back as text only, with dimensions, numbers and a note that the image was withheld. This includes an image inside another tool's result, such as the last step of `ps_sequence`. GIMP's `latest-preview.jpg`, written on your own disk, is unaffected. |
@@ -74,6 +75,8 @@ run. These are the keys:
 | `editor` | string | `"auto"` | Pin which editor(s) register at boot: `auto`, `photoshop`, or `gimp`. The `EDITMAMEI_EDITOR` env var still wins if set. See [docs/gimp.md](gimp.md#pinning-the-editor). |
 | `gimp_path` | string \| null | `null` | Pin a specific GIMP binary (an absolute path; `EDITMAMEI_GIMP_PATH=flatpak` is the way to use Flatpak). `null` = auto-detect (the `EDITMAMEI_GIMP_PATH` env var still wins if set). See [docs/gimp.md](gimp.md#pointing-at-a-custom-install). |
 | `desktop_toggles` | object | absent | The Claude Desktop extension's toggle values at its last launch, so Editmamei can tell when one was changed. Written by Editmamei, and never sent anywhere. |
+| `consent` | object | absent | Your answer to a question about a telemetry setting: the question's version, the answer, how it was given, and the day. Written by Editmamei. |
+| `consent_dismissals` | object | absent | How many times a question was closed without an answer. Written by Editmamei, and never sent anywhere. |
 
 `install_id` is a random value; it is **not** derived from your username, machine name, email,
 or any other identifier.
@@ -114,6 +117,7 @@ Three ways, all controlling the same settings in `~/.editmamei/settings.json`:
 editmamei config list                          # print all current settings as JSON
 editmamei config get telemetry.usage           # read one setting
 editmamei config set telemetry.usage false     # turn usage telemetry off
+editmamei config set telemetry.features false  # turn feature names off, keep usage telemetry
 editmamei config set telemetry.diagnostics true  # opt in to diagnostic detail
 ```
 
@@ -121,9 +125,9 @@ Boolean values accept `true`/`false`, `on`/`off`, `yes`/`no`, or `1`/`0`.
 
 `automation.allow_execute_script` (default `true`): set to `false` to make every tool that runs code refuse: arbitrary scripts (`ps_execute_script`) and recorded Actions (`ps_play_action`), since an Action can contain a script step.
 
-**In Claude Desktop.** The one-click extension has no terminal, so the same two switches appear in
+**In Claude Desktop.** The one-click extension has no terminal, so the same switches appear in
 the extension's own settings (Settings → Desktop app → Manage (next to Extensions) → Editmamei): **Share usage stats**
-(opt-out) and **Share error diagnostics** (opt-in). A change there is saved to the settings file
+(opt-out), **Share feature names** (opt-out) and **Share error diagnostics** (opt-in). A change there is saved to the settings file
 the next time Claude Desktop starts Editmamei. After that first start, a choice made in the file or
 the CLI stays in place unless you change the toggle. On that first start, an off **Share usage
 stats** toggle sets usage off in the file, and an on **Share error diagnostics** toggle sets
@@ -131,17 +135,30 @@ diagnostics on in the file. The other position of each toggle leaves the file as
 that is off keeps that switch off whenever Claude Desktop starts Editmamei, whatever the file says.
 **Check for updates** works the same way as **Share usage stats**.
 
+**Share feature names** shows as on before you have answered. On an install from before this
+setting existed, it stays off until you answer the question below or move the toggle. Off at
+Editmamei's first start, or moved either way later, counts as your answer.
+
+**When a setting's scope changes.** If a change to this policy widens what a setting covers, existing
+installs are asked about that change through their AI client's own prompt (MCP elicitation). The
+request goes to your AI client rather than into a tool result, and your client decides how to show
+it. If you decline, close it, or your client doesn't show it, the new data stays off and your other
+settings don't change. A prompt you close or leave unanswered is shown at most 3 times. A new
+install isn't asked, because this policy is available before you install. Anyone with
+`telemetry.usage` off, or with the Claude Desktop toggle for that setting off, isn't asked.
+
 **First-run notice.** The first time Editmamei creates the settings file, it prints this to its
 log so the default is never a surprise:
 
 > First run: Editmamei collects content-free usage telemetry (tool name, success,
 > duration, bytes returned, version/edition/OS/PS-version, install channel, which AI client
 > connected, Node/OS/architecture versions, and per-session counts like edits made and retries)
-> to find what breaks. Usage telemetry never sends image content, file paths, or tool
-> arguments. The only identifier is a random install ID. Opt out anytime:
-> `editmamei config set telemetry.usage false` (or edit `~/.editmamei/settings.json`). Opt in
-> to sanitized diagnostics (error messages, which can name a layer or repeat a value you
-> passed): `editmamei config set telemetry.diagnostics true`.
+> to find what breaks. It also sends the names of editing features and tool options used, from fixed lists.
+> It never sends image content, file paths, script text, or other free-form text. The only
+> identifier is a random install ID. Opt out anytime: `editmamei config set telemetry.usage false`
+> (or edit `~/.editmamei/settings.json`), or `editmamei config set telemetry.features false` for
+> feature names alone. Opt in to sanitized diagnostics (error messages, which can name a layer or
+> repeat a value you passed): `editmamei config set telemetry.diagnostics true`.
 
 > **Note:** Editmamei reads most settings once at startup, so after changing one, restart your AI
 > client. `privacy.send_previews_to_llm` and `automation.allow_execute_script` are read each time
@@ -356,6 +373,71 @@ a summary reconstructed after the program was killed outright. It carries only t
 that had been written to disk before the kill, so an older build's leftover state file can
 produce a summary with some of them missing.
 
+### Feature usage: how often a named feature was used (on by default for new installs)
+
+Sent only while both `telemetry.usage` and `telemetry.features` are on. It has **no install ID**, and
+no platform, Photoshop version or edition:
+
+```json
+{
+  "v": 2,
+  "type": "feature_usage",
+  "ts_bucket": "2026-11-20",
+  "editmamei_version": "1.9.7",
+  "kind": "option",
+  "tool": "ps_filter",
+  "name": "type",
+  "value": "gaussian_blur",
+  "count": 4
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `kind` | `option`, `script_operation`, `script_capability` or `script_before`. |
+| `tool` | The tool the name belongs to. For `script_before`, the tool called just before a script. |
+| `name` | `option`: the name of the tool's option. `script_operation` and `script_capability`: a name from the [published list](feature-names.md), or `unknown`. `script_before`: `success` or `failure`. |
+| `value` | `option`: the value, only if it exactly matches the fixed values that tool's schema declares. For `unknown`: `dom`, `action` or `dynamic`. Otherwise absent. |
+| `count` | How many times that day, within one send. |
+
+An option with a free-form value, like a file path, layer name or text, is never recorded. For a
+script, the names are read on your machine and compared with the [published list](feature-names.md).
+A name on the list is sent. Any other name is sent as `unknown`, so it is a count and never the name.
+The script itself is never sent or stored by this feature.
+
+These events travel in the same request as your other usage events, and are stored apart from them
+with nothing that links them back. Each stored row is a day and a version, so on a day with very
+few users it could be matched to one install's activity.
+
+### Consent result: when a question is answered or can't be asked (on by default)
+
+Sent while `telemetry.usage` is on, whatever you answered, so that we can tell who was asked:
+
+```json
+{
+  "v": 2,
+  "type": "consent_result",
+  "install_id": "9f3c…",
+  "ts_bucket": "2026-11-20",
+  "editmamei_version": "1.9.7",
+  "edition": "community",
+  "platform": "win32",
+  "client": "claude_code",
+  "question": "features",
+  "question_version": 1,
+  "result": "declined",
+  "via": "elicitation"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `client` | Your AI client, from the same fixed list as the client connected event. |
+| `question` | Which setting was asked about. |
+| `question_version` | Which version of the question. |
+| `result` | `accepted`, `declined`, `dismissed`, `unsupported` (the client can't show a prompt), `timed_out`, `failed`, or `install_default` (a new install, not asked). |
+| `via` | How it was set: `elicitation`, `install`, `cli` or `desktop`. |
+
 ### Diagnostic event: only if you opt in
 
 Sent **only** when you set `telemetry.diagnostics true`, and only when something fails:
@@ -397,9 +479,13 @@ other names are sent as written. Leave diagnostics off if you'd rather not share
 
 ### What is deliberately never in any event
 
-- The arguments you passed a tool (no prompts, no values, no text). The one exception is an
-  opt-in diagnostic message, which repeats a value when the error itself does (see above).
-- Any image, preview, thumbnail, or pixel data.
+- Free-form input: no prompts, script text, file paths, layer names, on-image text or numbers. The
+  only argument values ever sent are fixed values a tool's schema declares, and names from the
+  [published list](feature-names.md) read out of a script (see
+  [Feature usage](#feature-usage-how-often-a-named-feature-was-used-on-by-default-for-new-installs)).
+  The one other exception is an opt-in diagnostic message, which repeats a value when the error
+  itself does (see above).
+- Any image, preview, thumbnail, or document content.
 - Full file paths.
 - A precise timestamp (day-granularity only).
 - A session ID or anything that links events back to a specific editing session beyond the
@@ -523,24 +609,27 @@ to the rights below.
 
 **Lawful basis.**
 
-- **Usage and reliability data** (on by default): legitimate interests: identifying defects, and
-  establishing which features are used and on which Photoshop versions. You have the right to
-  object, and the setting is the mechanism.
+- **Usage and reliability data, and feature names** (on by default): legitimate interests:
+  identifying defects, and establishing which features are used and on which Photoshop versions.
+  You have the right to object, and the settings are the mechanism.
 - **Diagnostic detail** (off by default): consent, given by enabling it and withdrawn by
   disabling it.
 
-The two settings are independent. Disabling usage telemetry stops that stream entirely, including
-anything already queued on disk; it does not disable diagnostics.
+Usage and diagnostics are independent. Disabling usage telemetry stops that stream entirely,
+including feature names and anything already queued on disk; it does not disable diagnostics.
+Disabling `telemetry.features` stops feature names alone, including any queued on disk.
 
 ```sh
 editmamei config set telemetry.usage false
+editmamei config set telemetry.features false
 editmamei config set telemetry.diagnostics false
 ```
 
 **Retention.** Per-install daily counts: 24 months from the day they cover. The install record:
-24 months after the install was last seen. Opt-in diagnostic records: 90 days. All deleted
-automatically. Aggregate daily totals carry no install ID and are not subject to
-these windows.
+24 months after the install was last seen, and your latest answer to a consent question goes with
+it. Opt-in diagnostic records: 90 days. Daily feature names and consent counts carry no install ID:
+24 months. All deleted automatically. Other aggregate daily totals carry no install ID and are not
+subject to these windows.
 
 **Your rights.** Access, rectification, erasure, and objection. Your install ID is the reference
 for all of them:

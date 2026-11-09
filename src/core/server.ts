@@ -23,10 +23,12 @@ import {
   computeResultBytes,
   NO_ERROR_TEXT_CLASS,
 } from '../utils/session-log.js';
-import { loadSettings, applyDesktopToggles } from './settings.js';
+import { loadSettings, applyDesktopToggles, type Settings } from './settings.js';
 import { itemsFromResult } from '../telemetry/activity.js';
+import { clientSupportsForm, runConsentPrompt } from './consent.js';
 import { TelemetryClient } from '../telemetry/client.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
+import { callFeatures } from '../telemetry/script-operations.js';
 import { resolveInstallChannel } from '../install-channel.js';
 import {
   checkForUpdateWithStatus,
@@ -109,12 +111,13 @@ export const FIRST_RUN_DISCLOSURE =
   'First run: Editmamei collects content-free usage telemetry (tool name, ' +
   'success, duration, bytes returned, version/edition/OS/PS-version, install channel, ' +
   'which AI client connected, Node/OS/architecture versions, and per-session counts like ' +
-  'edits made and retries) to find what breaks. Usage telemetry never sends image content, ' +
-  'file paths, or tool arguments. The only identifier is a random install ID. Opt out ' +
-  'anytime: `editmamei config set telemetry.usage false` (or edit ' +
-  '~/.editmamei/settings.json). Opt in to sanitized diagnostics (error messages, which can ' +
-  'name a layer or repeat a value you passed): ' +
-  '`editmamei config set telemetry.diagnostics true`.';
+  'edits made and retries) to find what breaks. It also sends the names of editing features and ' +
+  'tool options used, from fixed lists. It never sends image content, file paths, script text, or other ' +
+  'free-form text. The only identifier is a random install ID. Opt out anytime: ' +
+  '`editmamei config set telemetry.usage false` (or edit ~/.editmamei/settings.json), or ' +
+  '`editmamei config set telemetry.features false` for feature names alone. Opt in to ' +
+  'sanitized diagnostics (error messages, which can name a layer or repeat a value you ' +
+  'passed): `editmamei config set telemetry.diagnostics true`.';
 
 /**
  * Timeout for the background ps_version probe (resolveLiveVersionInBackground) —
@@ -200,11 +203,18 @@ export class EditmameiServer {
   private clientInfo: () => Implementation | undefined = () => undefined;
   /** client_connected is a once-per-session event, whichever revision the client speaks. */
   private clientConnectedSent = false;
+  /** The settings the consent prompt reads and writes, set in the constructor. */
+  private consent: { settings: Settings; degraded: boolean } = {
+    settings: {} as Settings,
+    degraded: true,
+  };
   private logger: Logger;
   private toolRegistry: ToolRegistry;
   private session: Session;
   private sessionLog: SessionLog;
   private telemetry: TelemetryClient;
+  /** The call before this one, so Feature details can say what preceded a script. */
+  private lastFeatureCall: { tool: string; success: boolean } | null = null;
   /** Resolved once in the constructor; see `EditmameiServerOptions.editors`. */
   private readonly editorOpts: EditorRegistrationDecision;
   /** Set only when `editorOpts.registerGimp` — the GIMP surface's session-owning backend. */
@@ -621,6 +631,16 @@ export class EditmameiServer {
             ...(this.lastDocMode !== null ? { doc_mode: this.lastDocMode } : {}),
           });
         }
+        const previousCall = this.lastFeatureCall;
+        this.lastFeatureCall = { tool: entry.tool, success: telemetrySuccess };
+        this.telemetry.recordFeatures(() =>
+          callFeatures(
+            entry.tool,
+            this.toolRegistry.get(entry.tool)?.tool.inputSchema,
+            entry.args,
+            previousCall
+          )
+        );
       },
     });
 
@@ -628,6 +648,9 @@ export class EditmameiServer {
     // (`initialize` on a 2025 connection, the call's own `_meta` on 2026-07-28), so by the
     // time the first `append` triggers meta-line emission the client name + version are there.
     this.sessionLog.setMcpClientGetter(() => this.clientInfo() ?? null);
+    // What the consent prompt reads and writes, asked once a 2025 client completes its
+    // handshake (buildServer).
+    this.consent = { settings: effectiveSettings, degraded: degraded === true };
 
     // Inert under the test runner unless a test injects one — the real advisory
     // reads ~/.editmamei, and a suite whose ping output depended on the developer's
@@ -1004,8 +1027,23 @@ export class EditmameiServer {
       // from the `notifications/initialized` handler the SDK's Server constructor wires up for
       // itself, so it is in place before any message can arrive. If the client never completes
       // the handshake, this never fires: no event is the intended behavior.
-      server.oninitialized = () =>
-        this.recordClientConnected(server.getClientVersion(), server.getClientCapabilities());
+      server.oninitialized = () => {
+        const info = server.getClientVersion();
+        const caps = server.getClientCapabilities();
+        if (!this.recordClientConnected(info, caps)) return;
+        // The Feature details question, asked through elicitation. Only on a 2025 connection: in
+        // 2026-07-28 a server asks nothing outside a call, so such a session leaves it for a later
+        // one. Not awaited: no tool call waits on a person answering. Never rejects.
+        void runConsentPrompt({
+          settings: this.consent.settings,
+          degraded: this.consent.degraded,
+          telemetryActive: this.telemetry.isActive(),
+          supportsForm: clientSupportsForm(caps?.elicitation),
+          elicit: (params, options) => server.elicitInput(params, options),
+          report: (outcome) =>
+            this.telemetry.recordConsentResult({ clientName: info?.name, ...outcome }),
+        });
+      };
     }
 
     server.setRequestHandler('tools/list', async (_request, ctx) => {
@@ -1050,12 +1088,13 @@ export class EditmameiServer {
    * Once-latch: nothing stops a non-conforming client sending a second
    * `notifications/initialized`, and recordClientConnected does not force its own flush, so a
    * repeat would silently queue a duplicate event. client_connected is once per session.
+   * Returns whether this call was the one that recorded it.
    */
   private recordClientConnected(
     info: Implementation | undefined,
     caps: ClientCapabilities | undefined
-  ): void {
-    if (this.clientConnectedSent) return;
+  ): boolean {
+    if (this.clientConnectedSent) return false;
     this.clientConnectedSent = true;
     this.telemetry.recordClientConnected({
       clientName: info?.name,
@@ -1066,6 +1105,7 @@ export class EditmameiServer {
       capElicitation: caps?.elicitation != null,
       capRoots: caps?.roots != null,
     });
+    return true;
   }
 
   /**

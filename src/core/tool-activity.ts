@@ -24,6 +24,9 @@
  * the three.
  */
 
+/** The tool that runs a whole script, whose code Feature details reads names from. */
+export const SCRIPT_TOOL = 'ps_execute_script';
+
 /**
  * Tools that run a saved recipe (a template, batch, sequence, or recorded Action). An overlay,
  * not a fourth class: these also sit in READ_ONLY_TOOLS or MUTATING_TOOLS. The telemetry

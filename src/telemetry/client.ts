@@ -14,8 +14,9 @@
  *   - **active** — whether the client sends at all. False in the `dev` edition and under
  *     the test runner, so local dev / CI never phones home. (CE/Pro builds are active.)
  *   - **consent** — read live from settings on every record: `telemetry.usage` (Category
- *     A, opt-out) and `telemetry.diagnostics` (Category B, opt-in). When inactive the
- *     client is fully inert — it records nothing, so memory stays flat.
+ *     A, opt-out), `telemetry.features` on top of it (Feature details), and
+ *     `telemetry.diagnostics` (Category B, opt-in). When inactive the client is fully
+ *     inert — it records nothing, so memory stays flat.
  *
  * Nothing here ever throws into the caller: a send failure drops the in-flight batch and
  * is logged at debug. Telemetry must never break or block a tool call.
@@ -26,7 +27,7 @@ import { Logger } from '../utils/logger.js';
 import { EDITION } from '../edition.js';
 import { VERSION } from '../version.js';
 import { resolveInstallChannel } from '../install-channel.js';
-import type { Settings } from '../core/settings.js';
+import { featureDetailsEnabled, type Settings } from '../core/settings.js';
 import {
   READ_ONLY_TOOLS,
   KEPT_WORK_TOOLS,
@@ -36,8 +37,10 @@ import {
   osMajor,
   boundMajor,
 } from './activity.js';
+import type { FeatureName } from './feature-details.js';
 import {
   buildClientConnected,
+  buildConsentResult,
   buildDiagnosticEvent,
   buildModuleStatus,
   buildSessionStart,
@@ -48,6 +51,9 @@ import {
   isContentSafe,
   MAX_RESULT_BYTES,
   PS_VERSION_UNKNOWN,
+  TELEMETRY_SCHEMA_VERSION,
+  type ConsentResultEvent,
+  type FeatureUsageEvent,
   type ModuleStatusInfo,
   type SessionSummaryEvent,
   type TelemetryDimensions,
@@ -79,6 +85,8 @@ const MAX_SESSION_DURATION_S = 604_800;
 const MAX_INSTALL_ASSET_COUNT = 100_000;
 /** Cap for `session_summary.recipe_calls` — matches the server's field spec. */
 const MAX_SESSION_COUNT = 1_000_000;
+/** Matches the server's per-event `count` ceiling. A larger total splits across events. */
+const MAX_FEATURE_EVENT_COUNT = 1_000;
 
 export interface RecordedCall {
   tool: string;
@@ -178,6 +186,8 @@ export class TelemetryClient {
   private resolvedModuleStatus: { value: ModuleStatusInfo | null } | null = null;
 
   private queue: TelemetryEvent[] = [];
+  /** Feature counts since the last flush, rolled up into events only when one is sent. */
+  private readonly featureCounts = new Map<string, { event: FeatureUsageEvent }>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private shutdownPromise: Promise<void> | null = null;
 
@@ -353,6 +363,86 @@ export class TelemetryClient {
     this.lastCallAtMs = nowMs;
     this.enqueue(buildUsageEvent(this.dims, call, nowDate));
     this.persistSessionStateThrottled();
+  }
+
+  /**
+   * Count the feature names a call used (Feature details, on top of usage stats). Takes a getter
+   * so a call pays for reading its arguments only when this is on. Never throws into the caller.
+   */
+  recordFeatures(getNames: () => FeatureName[]): void {
+    if (!this.active || !featureDetailsEnabled(this.settings)) return;
+    try {
+      const ts_bucket = dayBucket(this.now());
+      for (const { kind, tool, name, value } of getNames()) {
+        const key = JSON.stringify([ts_bucket, kind, tool, name, value ?? '']);
+        const entry = this.featureCounts.get(key);
+        if (entry) {
+          entry.event.count += 1;
+        } else {
+          this.featureCounts.set(key, {
+            event: {
+              v: TELEMETRY_SCHEMA_VERSION,
+              type: 'feature_usage',
+              ts_bucket,
+              editmamei_version: this.dims.editmamei_version,
+              kind,
+              tool,
+              name,
+              ...(value !== undefined ? { value } : {}),
+              count: 1,
+            },
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.debug(`feature details skipped: ${errMsg(err)}`);
+    }
+  }
+
+  /**
+   * Record what came back from a consent question. Gated on usage stats alone, on purpose. Sent
+   * on its own rather than through the queue, so this can say what became of it: true once it's
+   * delivered or safely in the outbox, which is when an answer can be marked as reported.
+   */
+  async recordConsentResult(info: {
+    clientName: string | undefined;
+    question: string;
+    questionVersion: number;
+    result: ConsentResultEvent['result'];
+    via: ConsentResultEvent['via'];
+  }): Promise<boolean> {
+    if (!this.active || !this.settings.telemetry.usage) return false;
+    const event = buildConsentResult(this.dims, info, this.now());
+    if (!isContentSafe(event)) {
+      this.droppedUnsafe += 1;
+      return false;
+    }
+    try {
+      await this.transport(this.endpoint, JSON.stringify({ events: [event] }));
+      return true;
+    } catch (err) {
+      this.logger.debug(`consent result send failed, using the outbox: ${errMsg(err)}`);
+      const discarded = appendOutboxSync([event], this.outboxOpts);
+      this.droppedOutbox += discarded;
+      return discarded === 0;
+    }
+  }
+
+  /**
+   * Move the rolled-up feature counts onto the queue, or drop them if consent was withdrawn. Both
+   * callers (flush, shutdown) send or persist the queue right after, so this never starts a send:
+   * a flush started here at shutdown would take events off the queue that the outbox write then misses.
+   */
+  private drainFeatureCounts(): void {
+    if (this.featureCounts.size === 0) return;
+    const entries = [...this.featureCounts.values()];
+    this.featureCounts.clear();
+    if (!featureDetailsEnabled(this.settings)) return;
+    for (const { event } of entries) {
+      for (let left = event.count; left > 0; left -= MAX_FEATURE_EVENT_COUNT) {
+        this.enqueue({ ...event, count: Math.min(left, MAX_FEATURE_EVENT_COUNT) }, false);
+      }
+    }
   }
 
   /** Whether the boot-time update check found a strictly newer published version. */
@@ -576,7 +666,8 @@ export class TelemetryClient {
     return events;
   }
 
-  private enqueue(event: TelemetryEvent): void {
+  /** `send`: start a flush once a batch is full (false when the caller sends or persists right after). */
+  private enqueue(event: TelemetryEvent, send = true): void {
     this.queue.push(event);
     if (this.queue.length > MAX_QUEUE_SIZE) {
       // Drop oldest — newer signal is more useful, and we must stay bounded.
@@ -584,7 +675,7 @@ export class TelemetryClient {
       this.queue.splice(0, excess);
       this.droppedEvents += excess;
     }
-    if (this.queue.length >= this.maxBatchSize) void this.flush();
+    if (send && this.queue.length >= this.maxBatchSize) void this.flush();
   }
 
   /**
@@ -594,7 +685,9 @@ export class TelemetryClient {
    * Never throws.
    */
   async flush(): Promise<void> {
-    if (!this.active || this.queue.length === 0) return;
+    if (!this.active) return;
+    this.drainFeatureCounts();
+    if (this.queue.length === 0) return;
     const picked = this.restampPsVersion(this.queue.splice(0, this.maxBatchSize));
     const batch = picked.filter(isContentSafe);
     this.droppedUnsafe += picked.length - batch.length;
@@ -637,6 +730,7 @@ export class TelemetryClient {
       this.timer = null;
     }
     if (!this.active) return;
+    this.drainFeatureCounts();
     // Drain the pending events BEFORE building the summary. Their content-safety and outbox
     // discards belong to THIS session, and a summary built first would be stale by exactly
     // the numbers it exists to report — the ordering is the whole point, not a tidy-up.
@@ -742,8 +836,11 @@ export class TelemetryClient {
       // breaks early would silently discard the unsafe events beyond the break when it wrote
       // the remainder back, with nothing counting them. One filter, one count, and the
       // remainder is already safe by construction.
-      const sendable = pending.filter(isContentSafe);
-      this.droppedUnsafe += pending.length - sendable.length;
+      const allowed = featureDetailsEnabled(this.settings)
+        ? pending
+        : pending.filter((event) => event.type !== 'feature_usage');
+      const sendable = allowed.filter(isContentSafe);
+      this.droppedUnsafe += allowed.length - sendable.length;
       // How many of `sendable` are delivered. Used to hand back ONLY the undelivered
       // remainder on a partial drain.
       let settled = 0;
