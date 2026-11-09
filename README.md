@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  For photographers and retouchers who want AI to speed up the workflow, not take it over.
+  For photographers, retouchers and designers who want AI to speed up the workflow, not take it over.
 </p>
 
 <p align="center">
