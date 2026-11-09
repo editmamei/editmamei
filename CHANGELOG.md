@@ -10,6 +10,41 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.9.7] — 2026-11-09
+
+### Added
+
+- **Feature details: which editing features are used.** Daily counts of the fixed option values a
+  tool declares, such as which filter or blend mode was asked for, and of script operations from a
+  [published list](docs/feature-names.md). No install ID, and never a path, a layer name, text or a
+  script.
+  - On by default for a new install. An install from before this setting is asked once, in its AI
+    client, and stays off until it says yes.
+  - `editmamei config set telemetry.features false`, or **Share feature names** in Claude Desktop.
+    Turning off usage stats stops it too. See [privacy](docs/privacy.md).
+- **Delete several GIMP filters in one call.** `gimp_filter` op=delete takes `filter_ids`, up to
+  100. If any id is unknown, nothing is deleted.
+
+### Fixed
+
+- **GIMP exports keep the photo's colors.** A Display P3 photo no longer comes out dull: exports
+  embed the image's own color profile by default, and can convert to sRGB or Adobe RGB instead.
+  - `gimp_export` takes `color_profile` (`keep`, `srgb`, `adobe-rgb`). Previews are sRGB, and
+    open, inspect and export report the color space.
+- **Claude Desktop toggles no longer undo a choice made elsewhere.** A setting changed with
+  `editmamei config` or in the settings file stays put unless you move the toggle. An off toggle
+  still wins for that launch.
+
+### Changed
+
+- **Speaks MCP 2026-07-28.** Editmamei moves to the MCP SDK v2 and answers both the 2025 protocol
+  and 2026-07-28 over stdio. 2025 clients work exactly as before.
+- **A finer default grain.** `gimp_add_effect` add_noise defaults to 0.02 (was 0.2, a heavy grain
+  on a photo). An existing filter keeps its own amount.
+- **Clearer vignette guidance.** The description says which radius and gamma settings reach black
+  before the corner and show a hard edge.
+- **The registry listing has the Editmamei icon.**
+
 ## [1.9.6] — 2026-11-04
 
 ### Fixed
