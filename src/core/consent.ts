@@ -178,14 +178,15 @@ function storeDismissal(deps: ConsentDeps): void {
   });
 }
 
+/** The server's ceiling for `question_version` (telemetry-server src/routes/telemetry.ts). */
+const MAX_QUESTION_VERSION = 1000;
+
 /**
  * Send a stored answer the server hasn't seen. Choices made through the CLI or in Claude Desktop
  * happen where no telemetry runs, so this is the one path every answer leaves by. Waits while
  * usage stats are off, because a person who opted out sends nothing. Marked as sent only once it
  * is delivered or in the outbox, so a process killed first sends it again next session.
  */
-/** The server's ceiling for `question_version` (telemetry-server src/routes/telemetry.ts). */
-const MAX_QUESTION_VERSION = 1000;
 
 async function reportUnsentAnswer(deps: ConsentDeps): Promise<void> {
   const record = deps.settings.consent?.features;

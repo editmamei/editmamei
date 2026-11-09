@@ -167,7 +167,7 @@ Editmamei runs on your computer and edits in your desktop editor. No image conte
 | Previews, 1024px on the long edge by default (your AI can ask for up to 8192px) | Your AI app's model provider, the same as dropping a photo into a chat | `privacy.send_previews_to_llm` (on) |
 | Tool results, such as file paths, layer names, measurements, and metadata like GPS if your AI asks for it | Your AI app's model provider | |
 | Content-free usage telemetry, with a random install ID | Editmamei | `telemetry.usage` (on) |
-| Names of editing features and tool options used, from fixed lists (tool schemas and a [published list](docs/feature-names.md)), with no install ID | Editmamei | `telemetry.features` (on for new installs; an earlier install is asked first) |
+| Names of editing features and tool options used, from fixed lists (tool schemas and a [published list](docs/feature-names.md)), with no install ID | Editmamei | `telemetry.features` (on for new installs; off for an earlier install until it answers) |
 | Sanitized error details | Editmamei, only if you opt in | `telemetry.diagnostics` (off) |
 | Update check, with no identifiers | The npm registry | `update_check` (on) |
 
