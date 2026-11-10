@@ -24,7 +24,8 @@ describe('package description sync', () => {
 
   it('the .mcpb manifest carries the package.json description', () => {
     const src = readFileSync(join(ROOT, 'scripts', 'build-mcpb.ts'), 'utf8');
-    expect(src).toContain(`description: '${desc}'`);
+    // Prettier may break the line after `description:` when the string is long.
+    expect(src.replace(/description:\s+'/g, "description: '")).toContain(`description: '${desc}'`);
   });
 
   it('server.json leads with the package.json description', () => {
