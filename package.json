@@ -2,7 +2,7 @@
   "name": "editmamei",
   "version": "1.9.7",
   "private": true,
-  "description": "Photoshop MCP server: natural-language AI photo editing in desktop Photoshop",
+  "description": "Photoshop and GIMP MCP server for AI photo editing, layer by layer with real tools",
   "mcpName": "io.github.editmamei/editmamei-photoshop-mcp",
   "editmamei": {
     "fixesByVersion": {
@@ -66,7 +66,16 @@
     "image-editing",
     "batch-editing",
     "claude",
-    "editmamei"
+    "editmamei",
+    "gimp",
+    "gimp-mcp",
+    "photo-editing",
+    "photo-editor",
+    "image-editor",
+    "retouching",
+    "photo-retouching",
+    "ai-image-editing",
+    "color-grading"
   ],
   "author": "Editmamei (https://editmamei.com)",
   "license": "FSL-1.1-MIT",

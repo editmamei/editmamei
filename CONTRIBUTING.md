@@ -1,7 +1,7 @@
 # Contributing to Editmamei
 
 Thanks for considering a contribution. This repository is the Community Edition source of
-Editmamei, a Photoshop MCP server, and the source is published here. Bug reports, fixes, and
+Editmamei, a Photoshop and GIMP MCP server, and the source is published here. Bug reports, fixes, and
 well-scoped improvements are all welcome.
 
 ## Before you start
