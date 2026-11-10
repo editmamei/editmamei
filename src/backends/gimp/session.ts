@@ -478,7 +478,7 @@ export class GimpSession {
     return this.deadGeneration;
   }
 
-  /** The operation GIMP is still running for a caller that stopped waiting, if any. */
+  /** The request GIMP has not answered yet, if any: one a caller stopped waiting for, or the current call's own. */
   get stillRunning(): { op: string; ms: number } | undefined {
     const f = this.inFlight;
     return f ? { op: f.op, ms: this.monotonicClock() - f.sentAt } : undefined;
@@ -1078,15 +1078,27 @@ export class GimpSession {
         );
       }
       this.inFlight = undefined;
-      const late = await this.#readResponse(earlier.respPath, earlier.op);
-      this.#removeResponse(earlier.respPath);
-      if (earlier.op === 'open' && late.ok) this.restartNoticePending = false;
-      this.lateResults.push({
-        op: earlier.op,
-        ok: late.ok,
-        ...(late.ok ? {} : { error: this.#redact(late.error ?? `${earlier.op} failed`) }),
-        ms: this.monotonicClock() - earlier.sentAt,
-      });
+      const ms = this.monotonicClock() - earlier.sentAt;
+      try {
+        const late = await this.#readResponse(earlier.respPath, earlier.op);
+        if (earlier.op === 'open' && late.ok) this.restartNoticePending = false;
+        this.lateResults.push({
+          op: earlier.op,
+          ok: late.ok,
+          ...(late.ok ? {} : { error: this.#redact(late.error ?? `${earlier.op} failed`) }),
+          ms,
+        });
+      } catch (error) {
+        // An unreadable answer is that earlier operation's failure, not this call's.
+        this.lateResults.push({
+          op: earlier.op,
+          ok: false,
+          error: this.#redact(error instanceof Error ? error.message : String(error)),
+          ms,
+        });
+      } finally {
+        this.#removeResponse(earlier.respPath);
+      }
     }
 
     const id = this.nextId++;
@@ -1104,8 +1116,10 @@ export class GimpSession {
       // The wait is over, not the work: GIMP carries on and the next call waits for it.
       throw new GimpError(
         'gimp_still_working',
-        `${op} is taking longer than ${seconds(timeoutMs)} and is still running in GIMP. Nothing is lost. ` +
-          `Don't send it again: the next call waits for it to finish and then says how it ended.`
+        `${op} is taking longer than ${seconds(timeoutMs)} and is still running in GIMP; nothing it ` +
+          `changes is lost. Its answer won't come back to this call: the next call waits for it to finish ` +
+          `and says how it ended. Don't repeat an edit (it would be applied twice); a call that only reads ` +
+          `(a histogram, an inspect, a preview) can simply be asked again then.`
       );
     }
     this.inFlight = undefined;
@@ -1347,8 +1361,10 @@ export class GimpSession {
     if (this.sessionState === 'dead' || this.sessionState === 'closed') return;
     this.sessionState = 'dead';
     this.deadGeneration++;
-    // Whatever that process was still running died with it.
+    // Whatever that process was still running died with it, and what it finished late is gone too:
+    // "its change is in the image" would no longer be true.
     this.inFlight = undefined;
+    this.lateResults = [];
     this.lastFailure = err ?? new GimpError('gimp_session_restarted', RESTARTED_MESSAGE);
   }
 

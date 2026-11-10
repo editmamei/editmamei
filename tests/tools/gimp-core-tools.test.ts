@@ -89,6 +89,33 @@ describe('createGimpCoreTools', () => {
       );
     });
 
+    it('reports a GIMP still finishing an earlier op as connected and busy, never as cold with no images', async () => {
+      const gimp = makeGimpBackend({
+        gimpVersion: '3.2.6',
+        stillRunning: { op: 'resize', ms: 52_000 },
+        throwFor: () =>
+          new GimpError(
+            'gimp_still_working',
+            'GIMP is still finishing the earlier resize, so ping was not started.'
+          ),
+      });
+      const tools = createGimpCoreTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_ping');
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        connected: true,
+        busy: true,
+        still_running: 'resize',
+        gimp_version: '3.2.6',
+        session_state: 'warm',
+      });
+      expect(result.structuredContent).not.toHaveProperty('open_images');
+      const text = (result.content?.[0] as { text: string }).text;
+      expect(text).toMatch(
+        /still finishing resize \(running 52 s\).*every open image is still open/
+      );
+    });
+
     it('reports starting: true (still never isError) when the session is on a slow first launch', async () => {
       const gimp = makeGimpBackend({
         throwFor: () =>

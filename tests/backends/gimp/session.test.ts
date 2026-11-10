@@ -571,7 +571,7 @@ describe('GimpSession', () => {
       await expect(h.session.call('resize', {}, { timeoutMs: 20 })).rejects.toMatchObject({
         code: 'gimp_still_working',
         message: expect.stringMatching(
-          /resize is taking longer than 1 s and is still running in GIMP\. Nothing is lost\. Don't send it again/
+          /resize is taking longer than 1 s and is still running in GIMP; nothing it changes is lost\. Its answer won't come back to this call.*Don't repeat an edit \(it would be applied twice\); a call that only reads .* can simply be asked again/
         ),
       });
       expect(h.killTreeSpy).not.toHaveBeenCalled();
@@ -652,6 +652,44 @@ describe('GimpSession', () => {
       });
       expect(h.killTreeSpy).toHaveBeenCalledTimes(1);
       expect(h.session.stillRunning).toBeUndefined();
+    });
+
+    it('a late result is dropped when GIMP then dies: "its change is in the image" would no longer be true', async () => {
+      const h = harness({
+        delayOps: new Map([['resize', 60]]),
+        hangOps: new Set(['export']),
+        extra: { hungAfterMs: 250 },
+      });
+      await expect(h.session.call('resize', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+        code: 'gimp_still_working',
+      });
+      // export waits out the resize (a late result is recorded), then hangs past the hung limit and GIMP is stopped.
+      await expect(h.session.call('export', {}, { timeoutMs: 5_000 })).rejects.toMatchObject({
+        code: 'gimp_timeout',
+      });
+      expect(h.session.takeLateResults()).toEqual([]);
+    });
+
+    it("an earlier answer that can't be read is that operation's late failure, not the next call's", async () => {
+      // The resize's answer (the responder echoes the op) arrives garbled; every other answer reads fine.
+      const h = harness({
+        delayOps: new Map([['resize', 60]]),
+        extra: {
+          readRespFile: (path: string) => {
+            const real = readFileSync(path, 'utf8');
+            return real.includes('"op":"resize"') ? 'not json' : real;
+          },
+        },
+      });
+      await expect(h.session.call('resize', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+        code: 'gimp_still_working',
+      });
+      await expect(
+        h.session.call<{ op: string }>('export', {}, { timeoutMs: 5_000 })
+      ).resolves.toEqual({ op: 'export' });
+      expect(h.session.takeLateResults()).toEqual([
+        expect.objectContaining({ op: 'resize', ok: false }),
+      ]);
     });
 
     it('a crash while it runs forgets it, and the next call starts afresh', async () => {

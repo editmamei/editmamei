@@ -12,25 +12,28 @@
  */
 
 import { GimpSession, type GimpSessionOptions, type LateResult } from './session.js';
+import { detectGimp, type GimpInstall } from './detect.js';
+import { GimpError } from './errors.js';
+import { currentToolBudget } from '../../utils/tool-budget-context.js';
 
 /**
  * One sentence per operation that finished after its caller had stopped waiting, for the next
- * result: that caller was told it was still running, so the model needs to hear how it ended
- * (and not to send it again). Empty when there are none.
+ * result: that caller was told it was still running, so the model needs to hear how it ended.
+ * Its answer never reached anyone, so the sentence says where to look instead. Empty when there
+ * are none.
  */
 export function lateResultsNote(results: readonly LateResult[]): string {
   return results
     .map((r) => {
       const took = `${Math.max(1, Math.round(r.ms / 1000))} s`;
       return r.ok
-        ? `The earlier ${r.op} that was still running has finished (it took ${took}); its change is in the image.`
+        ? `The earlier ${r.op} that was still running has finished (it took ${took}), but its answer was ` +
+            'not returned: an edit it made is in the image; for an open or anything it read, check with ' +
+            "gimp_inspect (what='documents') or ask for the reading again."
         : `The earlier ${r.op} that was still running ended with an error after ${took}: ${r.error ?? 'no detail'}.`;
     })
     .join(' ');
 }
-import { detectGimp, type GimpInstall } from './detect.js';
-import { GimpError } from './errors.js';
-import { currentToolBudget } from '../../utils/tool-budget-context.js';
 
 export interface GimpBackendOptions {
   /** Injected for tests — constructs the session. Defaults to `new GimpSession(...)`. */

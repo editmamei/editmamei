@@ -68,7 +68,7 @@ describe('a slow op, then the next call, as the model sees them', () => {
     expect(saveResult.isError).toBe(true);
     const saveText = (saveResult.content?.[0] as { text: string }).text;
     expect(saveText).toMatch(
-      /gimp_still_working: export is taking longer than \d+ s and is still running in GIMP\. Nothing is lost/
+      /gimp_still_working: export is taking longer than \d+ s and is still running in GIMP; nothing it changes is lost/
     );
     expect(saveText).not.toContain(RECOVERY);
     expect(killTree).not.toHaveBeenCalled();
@@ -76,7 +76,7 @@ describe('a slow op, then the next call, as the model sees them', () => {
     const histogramResult = await registry.execute('gimp_get_histogram', { image: 1 });
     const histogramText = (histogramResult.content?.[0] as { text: string }).text;
     expect(histogramText).toMatch(
-      /^The earlier export that was still running has finished \(it took \d+ s\); its change is in the image\./
+      /^The earlier export that was still running has finished \(it took \d+ s\), but its answer was not returned: an edit it made is in the image; for an open or anything it read, check with gimp_inspect/
     );
     expect(fake.children).toHaveLength(1); // never restarted
   });
@@ -133,5 +133,29 @@ describe('an op stuck past the hung limit, then the next call, as the model sees
     );
     expect(histogramText).toContain(RECOVERY);
     expect(fake.children).toHaveLength(2); // the timeout killed GIMP; the histogram call restarted it
+  });
+});
+
+describe('withLateNote', () => {
+  it('puts the note first in the text and in structuredContent, and leaves a result with no note alone', () => {
+    const result = {
+      content: [{ type: 'text' as const, text: 'Histogram ready.' }],
+      structuredContent: { mean: 1 },
+    };
+    expect(withLateNote(result, '')).toBe(result);
+    const noted = withLateNote(result, 'The earlier resize finished.');
+    expect((noted.content[0] as { text: string }).text).toBe(
+      'The earlier resize finished.\nHistogram ready.'
+    );
+    expect(noted.structuredContent).toEqual({
+      mean: 1,
+      earlier_operations: 'The earlier resize finished.',
+    });
+  });
+
+  it('adds a text item when the result has none', () => {
+    const noted = withLateNote({ content: [] }, 'The earlier resize finished.');
+    expect(noted.content).toEqual([{ type: 'text', text: 'The earlier resize finished.' }]);
+    expect(noted.structuredContent).toBeUndefined();
   });
 });

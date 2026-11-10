@@ -165,7 +165,7 @@ const histogramSchema: JsonSchemaObject = {
         'small clipped highlights can be under-counted. true: full-resolution composite (~4s on ' +
         '24MP) — the trustworthy final clipping check before export. On a very large document ' +
         'true can take much longer; a call that runs past its time limit keeps running and the ' +
-        'next call waits for it, so nothing is lost.',
+        'next call waits for it; ask again then for the reading.',
     },
     region: {
       ...GIMP_REGION_PROP,
