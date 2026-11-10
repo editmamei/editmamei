@@ -112,7 +112,7 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
     name: 'editmamei',
     display_name: 'Editmamei',
     version,
-    description: 'Photoshop and GIMP MCP server for AI photo editing, layer by layer with real tools.',
+    description: 'Photoshop and GIMP MCP server for AI photo editing, layer by layer with real tools',
     author: { name: 'Editmamei' },
     homepage: 'https://editmamei.com',
     server: {
