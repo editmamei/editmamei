@@ -41,6 +41,7 @@
     "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.ts\"",
     "test": "vitest run",
+    "test:docs": "vitest run tests/integration/archived-docs-guard.test.ts tests/integration/feature-names-doc.test.ts tests/integration/macos-floor-sync.test.ts tests/integration/node-floor-sync.test.ts tests/integration/privacy-disclosure.test.ts tests/integration/pro-features-drift-guard.test.ts tests/integration/readme-leak-guard.test.ts tests/unit/tracked-files.test.ts",
     "test:gimp": "vitest run tests/gimp-live",
     "test:gimp:timing": "vitest run tests/gimp-live/large-image-timing.test.ts",
     "test:watch": "vitest",
