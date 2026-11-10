@@ -1,6 +1,6 @@
 # Roadmap
 
-Editmamei, the MCP server that drives Adobe Photoshop from your AI assistant, is in active development. This page lists what's being built but **not yet shipped**. For what's in each edition today, see [`pro-features.md`](pro-features.md); that's the canonical edition split.
+Editmamei, the MCP server that lets your AI app edit photos in desktop Photoshop or GIMP, is in active development. This page lists what's being built but **not yet shipped**. For what's in each edition today, see [`pro-features.md`](pro-features.md); that's the canonical edition split.
 
 If a tool or capability appears here but not in [`pro-features.md`](pro-features.md), it isn't available in any build yet.
 

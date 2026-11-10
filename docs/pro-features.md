@@ -1,8 +1,8 @@
 # Pro features
 
-Editmamei, the MCP server that drives Adobe Photoshop from your AI assistant, ships in two editions. Community installs free from the public npm registry. Pro is a **downloaded module**: you keep your Community install, activate a license, and Editmamei fetches the signed Pro module and loads it after a restart. Same CLI, same MCP server name; the Pro module is fetched and loaded automatically when your license entitles it, so there's no second package to install by hand.
+Editmamei, the MCP server that lets your AI app edit photos in desktop Photoshop or GIMP, ships in two editions. Community installs free from the public npm registry. Pro is a **downloaded module**: you keep your Community install, activate a license, and Editmamei fetches the signed Pro module and loads it after a restart. Same CLI, same MCP server name; the Pro module is fetched and loaded automatically when your license entitles it, so there's no second package to install by hand.
 
-Both editions follow the same rule: AI orchestration, not generation. Photoshop edits with its own real tools; Pro just gives the AI a deeper toolkit to orchestrate.
+Both editions follow the same rule: your photo is edited, not regenerated. Photoshop edits with its own real tools; Pro gives the AI a deeper Photoshop toolkit to work with.
 
 This page describes the line between Community and Pro as it stands today. The split may evolve; see [editmamei.com/desktop/pricing](https://editmamei.com/desktop/pricing) for the current state.
 
