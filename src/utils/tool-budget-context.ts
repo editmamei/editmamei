@@ -32,6 +32,13 @@ export interface ToolBudgetContext {
   budgetMs: number;
   /** Absolute epoch-ms instant every script started under this call must finish by. */
   deadline: number;
+  /**
+   * Optional, epoch ms: how long a GIMP operation under this call may keep it waiting, when a host
+   * lets the work outlast `deadline` (Connect answers the client by `deadline` and lets the job
+   * finish). `deadline` stays the reply's own, which handlers read to skip optional extras. Absent
+   * on hosts that don't do this; an optional field, so host and module still read each other.
+   */
+  waitDeadline?: number;
 }
 
 /**
@@ -67,7 +74,13 @@ export function budgetContextFor(
   const ownDeadline = now + budgetMs;
   const outer = storage.getStore();
   const deadline = outer ? Math.min(ownDeadline, outer.deadline) : ownDeadline;
-  return { toolName, budgetMs, deadline };
+  // An inner call inherits the outer call's longer wait: the job it runs inside may outlast both deadlines.
+  return {
+    toolName,
+    budgetMs,
+    deadline,
+    ...(outer?.waitDeadline !== undefined ? { waitDeadline: outer.waitDeadline } : {}),
+  };
 }
 
 /** Run `fn` with `context` visible to every `runScript()` call inside it. */

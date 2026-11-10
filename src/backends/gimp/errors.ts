@@ -18,6 +18,7 @@ export const GIMP_ERROR_CODES = [
   'gimp_version_unsupported',
   'gimp_session_restarted',
   'gimp_timeout',
+  'gimp_still_working',
   'gimp_unsupported_file',
   'gimp_op_failed',
   'invalid_argument',

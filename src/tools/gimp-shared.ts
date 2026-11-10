@@ -232,6 +232,28 @@ export function withWarning<T extends object>(
   return warning ? { ...structured, warning } : structured;
 }
 
+/**
+ * `result` with a sentence about earlier operations that finished late (`lateResultsNote`), in the
+ * text and, as `earlier_operations`, in `structuredContent` (a client may show only one of them).
+ */
+export function withLateNote(result: ToolResult, note: string): ToolResult {
+  if (!note) return result;
+  const content = [...(result.content ?? [])];
+  const i = content.findIndex((c) => c.type === 'text');
+  if (i >= 0 && 'text' in content[i]!) {
+    content[i] = { type: 'text' as const, text: `${note}\n${String(content[i]!.text)}` };
+  } else {
+    content.unshift({ type: 'text' as const, text: note });
+  }
+  return {
+    ...result,
+    content,
+    ...(result.structuredContent
+      ? { structuredContent: { ...result.structuredContent, earlier_operations: note } }
+      : {}),
+  };
+}
+
 export async function runGimpTool(spec: GimpToolSpec): Promise<ToolResult> {
   try {
     const args = validateArgs(spec.schema, spec.rawArgs);

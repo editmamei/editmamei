@@ -164,8 +164,8 @@ const histogramSchema: JsonSchemaObject = {
         'false (default): computed on the 1024px proxy render (~0.3s) — good for iterating, but ' +
         'small clipped highlights can be under-counted. true: full-resolution composite (~4s on ' +
         '24MP) — the trustworthy final clipping check before export. On a very large document ' +
-        'true can take much longer; if it times out the GIMP session restarts and unsaved work is ' +
-        'lost, so save (gimp_save_xcf) first.',
+        'true can take much longer; a call that runs past its time limit keeps running and the ' +
+        'next call waits for it, so nothing is lost.',
     },
     region: {
       ...GIMP_REGION_PROP,

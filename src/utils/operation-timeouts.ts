@@ -311,9 +311,9 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   //   cold start ~5.4s + rotate+expand (on the ~217MP result) ~11.3s ≈ 16.7s measured
   // Budgeted at roughly 3x the measured worst case, rounded up, to absorb a
   // slower machine and a higher `precision` (16/32-bit moves 2-4x the bytes
-  // per pixel that measurement was taken at 8-bit). A timeout on either tool
-  // tree-kills the GIMP process (`session.ts`'s own contract) — the tool
-  // descriptions say so, since any unsaved work is lost when that happens.
+  // per pixel that measurement was taken at 8-bit). A call past its budget
+  // stops waiting, not GIMP: the op keeps running and the next call waits
+  // for it (`session.ts`, HUNG_AFTER_MS); only a GIMP stuck that long is stopped.
   gimp_ping: 20_000,
   gimp_overview: 5_000, // pure static markdown, no bridge round trip — same as ps_overview
   gimp_open_document: 30_000,
@@ -346,9 +346,9 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   gimp_compare: 45_000,
   // op=create dispatches the same `export` op gimp_save_xcf does (to an
   // internal path instead of a caller-supplied one) — matched to
-  // gimp_save_xcf/gimp_export's own budget for the same reason: a timeout
-  // here tree-kills the very session the checkpoint exists to protect
-  // against. op=restore's open+close pair is comparatively cheap, and
+  // gimp_save_xcf/gimp_export's own budget for the same reason: a call that
+  // outlasts it reports gimp_still_working instead of the checkpoint it
+  // was asked for. op=restore's open+close pair is comparatively cheap, and
   // list/delete touch no bridge op at all, but the tool shares one timeout
   // across whichever op a call makes.
   gimp_checkpoint: 90_000,
@@ -411,8 +411,8 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   //     scale ~8.7s (8-bit) / ~7.6s (16-bit), rotate ~7.7s (8-bit) / ~5.4s (16-bit)
   // GitHub's hosted runners take far longer near the cap: Windows ~18-25s for all four, macOS
   // ~22-24s at 8-bit and 38s (rotate) / 49s (scale) at 16-bit, where a ~120MP 16-bit layer and
-  // its result pass 2GB on a 7GB machine. A timeout kills the session and every open image with
-  // it, so the budget keeps that slowest case near 55% of it, as gimp_layer and gimp_bake allow.
+  // its result pass 2GB on a 7GB machine. A call past its budget reports gimp_still_working and
+  // the op runs on, so the budget keeps that slowest case near 55% of it, as gimp_layer and gimp_bake allow.
   gimp_transform_layer: 90_000,
   // gimp_match_layer: two cropped throwaway renders plus the ring growth. Measured on a 24 MP
   // (6016x4000) document: 1.4 s for a 600x400 layer, 6.4 s for 2000x1500, 22 s for a 4000x3000

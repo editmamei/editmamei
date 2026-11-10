@@ -44,7 +44,7 @@ async function gimpPing(gimp: GimpBackend): Promise<ToolResult> {
   try {
     const result = await gimp.call<PingBridgeResult>('ping', {});
     // The bridge's own state was 'idle' (never started), 'dead' (crashed,
-    // timed-out-killed, or a first launch that failed), or 'starting' (a
+    // stopped as stuck, or a first launch that failed), or 'starting' (a
     // background start already under way, joined by this very call) the
     // instant BEFORE this call — #dispatch's lazy #startFresh/#joinOrStart is
     // what just took it to 'ready'. 'idle' -> cold start; 'dead'/'starting'

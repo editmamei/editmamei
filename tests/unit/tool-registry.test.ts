@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ToolRegistry, type ToolDefinition } from '@editmamei/core/tool-registry.ts';
+import {
+  budgetContextFor,
+  currentToolBudget,
+  runWithToolBudget,
+} from '@editmamei/utils/tool-budget-context.ts';
 
 function dummyTool(name: string, response = 'ok'): ToolDefinition {
   return {
@@ -85,6 +90,58 @@ describe('ToolRegistry', () => {
       },
     });
     await expect(registry.execute('boom', {})).rejects.toThrow(/handler failed/);
+  });
+});
+
+describe('ToolRegistry decorate', () => {
+  it('sees each result before it is returned', async () => {
+    const registry = new ToolRegistry({
+      decorate: (tool, result) => ({
+        ...result,
+        content: [{ type: 'text', text: `${tool}: noted` }],
+      }),
+    });
+    registry.register('alpha', dummyTool('alpha'));
+    const result = await registry.execute('alpha', {});
+    expect(result.content[0]).toMatchObject({ text: 'alpha: noted' });
+  });
+
+  it('a decorate that throws leaves the result as the handler made it', async () => {
+    const registry = new ToolRegistry({
+      decorate: () => {
+        throw new Error('no late results here');
+      },
+    });
+    registry.register('alpha', dummyTool('alpha', 'hello'));
+    const result = await registry.execute('alpha', {});
+    expect(result.content[0]).toMatchObject({ text: 'hello' });
+    expect(result.isError).toBeUndefined();
+  });
+});
+
+describe('budgetContextFor waitDeadline', () => {
+  it("an inner call inherits the outer call's longer wait, and keeps its own reply deadline", async () => {
+    const now = 1_000_000;
+    const outer = {
+      toolName: 'gimp_sequence',
+      budgetMs: 180_000,
+      deadline: now + 180_000,
+      waitDeadline: now + 900_000,
+    };
+    const inner = await runWithToolBudget(outer, async () =>
+      budgetContextFor('gimp_resize_image', 45_000, now)
+    );
+    expect(inner).toEqual({
+      toolName: 'gimp_resize_image',
+      budgetMs: 45_000,
+      deadline: now + 45_000,
+      waitDeadline: now + 900_000,
+    });
+  });
+
+  it('is absent when no outer call set one', () => {
+    expect(currentToolBudget()).toBeUndefined();
+    expect(budgetContextFor('gimp_resize_image', 45_000, 0)).not.toHaveProperty('waitDeadline');
   });
 });
 

@@ -22,6 +22,8 @@ export interface FakeGimpSpawnOptions {
   responder: (op: string, args: Record<string, unknown>) => unknown;
   /** Ops that are never answered (to force a timeout). */
   hangOps?: ReadonlySet<string>;
+  /** Ops answered only this many ms after they are first seen; nothing behind one is answered first, like the real bridge. */
+  delayOps?: ReadonlyMap<string, number>;
 }
 
 export interface FakeGimpSpawn {
@@ -57,6 +59,7 @@ export function fakeGimpSpawn(opts: FakeGimpSpawnOptions): FakeGimpSpawn {
   let stopped = false;
 
   async function serve(rpcDir: string, child: ChildProcess): Promise<void> {
+    const firstSeen = new Map<string, number>();
     while (!stopped) {
       if (existsSync(join(rpcDir, 'shutdown'))) {
         (child as unknown as { exitCode: number }).exitCode = 0;
@@ -66,7 +69,9 @@ export function fakeGimpSpawn(opts: FakeGimpSpawnOptions): FakeGimpSpawn {
       }
       let names: string[];
       try {
-        names = readdirSync(rpcDir).filter((n) => /^req-\d+\.json$/.test(n));
+        names = readdirSync(rpcDir)
+          .filter((n) => /^req-\d+\.json$/.test(n))
+          .sort((a, b) => Number(a.slice(4, -5)) - Number(b.slice(4, -5)));
       } catch {
         return; // session dir removed
       }
@@ -79,6 +84,9 @@ export function fakeGimpSpawn(opts: FakeGimpSpawnOptions): FakeGimpSpawn {
           continue;
         }
         if (opts.hangOps?.has(req.op)) continue;
+        if (!firstSeen.has(name)) firstSeen.set(name, Date.now());
+        const delay = opts.delayOps?.get(req.op);
+        if (delay !== undefined && Date.now() - firstSeen.get(name)! < delay) break;
         let resp: Record<string, unknown>;
         try {
           resp = { id: req.id, ok: true, result: opts.responder(req.op, req.args ?? {}) };

@@ -105,6 +105,8 @@ export interface GimpSessionOptions {
    * bridge and adds test-only ops.
    */
   opsPyPath?: string;
+  /** How long one request may go unanswered before GIMP counts as stuck and is stopped. Defaults to `HUNG_AFTER_MS`. */
+  hungAfterMs?: number;
 }
 
 interface PingResult {
@@ -143,6 +145,13 @@ export const READY_TIMEOUT_MS = 180_000;
 export const CALL_READY_WAIT_MS = 30_000;
 const PING_TIMEOUT_MS = 10_000;
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
+/**
+ * A call's timeout ends the WAIT, never GIMP: the request stays in flight, the caller gets
+ * `gimp_still_working`, and the next call waits for it before sending anything new (GIMP's bridge
+ * answers one request at a time, in id order). Only a request this long without an answer counts
+ * as stuck, and only then is GIMP stopped, which loses the open images.
+ */
+export const HUNG_AFTER_MS = 15 * 60_000;
 export const SHUTDOWN_GRACE_MS = 5_000;
 /**
  * After a tree-kill during shutdown, how much longer to wait for the actual
@@ -173,6 +182,27 @@ const KNOWN_ERROR_CODES = new Set<GimpErrorCode>(GIMP_ERROR_CODES);
 const LOST_WORK =
   'every open image and unsaved filter is gone — reopen the file with gimp_open_document';
 const RESTARTED_MESSAGE = `GIMP stopped; ${LOST_WORK}`;
+
+/** A request GIMP has not answered yet: the one a call stopped waiting for. */
+interface InFlight {
+  id: number;
+  op: string;
+  respPath: string;
+  /** Monotonic ms when the request was written. */
+  sentAt: number;
+}
+
+/** How a request that outlived its caller's wait ended, for the next caller to report. */
+export interface LateResult {
+  op: string;
+  ok: boolean;
+  /** The error text when it failed. */
+  error?: string;
+  /** How long it ran, ms. */
+  ms: number;
+}
+
+const seconds = (ms: number): string => `${Math.max(1, Math.round(ms / 1000))} s`;
 
 /**
  * True once `proc` has exited for any reason. Node leaves `exitCode` null when the child was
@@ -388,8 +418,14 @@ export class GimpSession {
    * ready and then died mid-flight (set with no argument to `#markDead`).
    */
   private lastFailure: GimpError = new GimpError('gimp_session_restarted', RESTARTED_MESSAGE);
+  private readonly hungAfterMs: number;
+  /** The request a call stopped waiting for, still running in GIMP (see `HUNG_AFTER_MS`). Belongs to the current process. */
+  private inFlight: InFlight | undefined;
+  /** Requests that finished after their caller stopped waiting, not yet reported (`takeLateResults`). */
+  private lateResults: LateResult[] = [];
 
   constructor(opts: GimpSessionOptions) {
+    this.hungAfterMs = opts.hungAfterMs ?? HUNG_AFTER_MS;
     this.install = opts.install;
     this.rootDir = opts.rootDir ?? defaultRootDir();
     this.spawnFn = opts.spawn ?? (nodeSpawn as SpawnFn);
@@ -440,6 +476,22 @@ export class GimpSession {
    */
   get generation(): number {
     return this.deadGeneration;
+  }
+
+  /** The operation GIMP is still running for a caller that stopped waiting, if any. */
+  get stillRunning(): { op: string; ms: number } | undefined {
+    const f = this.inFlight;
+    return f ? { op: f.op, ms: this.monotonicClock() - f.sentAt } : undefined;
+  }
+
+  /**
+   * Operations that finished after their caller had stopped waiting, oldest first, each reported
+   * once: the caller was told it was still running, so the next result should say how it ended.
+   */
+  takeLateResults(): LateResult[] {
+    const out = this.lateResults;
+    this.lateResults = [];
+    return out;
   }
 
   /** Where the human-follows-along preview lives; refreshed by `copyToLatestPreview`. */
@@ -1011,6 +1063,31 @@ export class GimpSession {
     if (!proc || !rpcDir) {
       throw new GimpError('gimp_start_failed', 'GIMP session has no active process');
     }
+    const deadline = this.monotonicClock() + timeoutMs;
+
+    // An earlier request this session stopped waiting for is still running: GIMP answers in order,
+    // so it finishes first. Nothing new is written until it has: a call that gives up here was never
+    // sent, so repeating it later is safe.
+    const earlier = this.inFlight;
+    if (earlier) {
+      if (!(await this.#waitForAnswer(proc, earlier, deadline))) {
+        throw new GimpError(
+          'gimp_still_working',
+          `GIMP is still finishing the earlier ${earlier.op} (running ${seconds(this.monotonicClock() - earlier.sentAt)}), ` +
+            `so ${op} was not started. Nothing is lost: send ${op} again in a moment.`
+        );
+      }
+      this.inFlight = undefined;
+      const late = await this.#readResponse(earlier.respPath, earlier.op);
+      this.#removeResponse(earlier.respPath);
+      if (earlier.op === 'open' && late.ok) this.restartNoticePending = false;
+      this.lateResults.push({
+        op: earlier.op,
+        ok: late.ok,
+        ...(late.ok ? {} : { error: this.#redact(late.error ?? `${earlier.op} failed`) }),
+        ms: this.monotonicClock() - earlier.sentAt,
+      });
+    }
 
     const id = this.nextId++;
     const reqPath = join(rpcDir, `req-${id}.json`);
@@ -1021,37 +1098,20 @@ export class GimpSession {
     writeFileSync(`${reqPath}.tmp`, JSON.stringify({ id, op, args }));
     renameSync(`${reqPath}.tmp`, reqPath);
 
-    const deadline = this.monotonicClock() + timeoutMs;
-    while (!existsSync(respPath)) {
-      // `sessionState === 'dead'` too, not just the process's own exit status: the 'error'
-      // listener marks the session dead on a process error that may never produce an exit
-      // (and a stub or future path may mark it dead before exitCode/signalCode are set).
-      if (hasExited(proc) || this.sessionState === 'dead') {
-        // A graceful shutdown() kills this same process, so this branch is
-        // also how an in-flight call notices one landing underneath it.
-        // #markDead is skipped in that case — shutdown() alone owns the
-        // 'closed' transition, and a call reaching here after it already
-        // ran must not resurrect a 'closed' session back to 'dead'.
-        if (!this.shuttingDown) this.#markDead();
-        throw new GimpError('gimp_session_restarted', RESTARTED_MESSAGE);
-      }
-      if (this.monotonicClock() > deadline) {
-        if (!this.shuttingDown) this.#markDead();
-        this.killTreeFn(proc);
-        throw new GimpError(
-          'gimp_timeout',
-          `${op} did not respond within ${timeoutMs}ms, so the GIMP session was stopped: ${LOST_WORK}`
-        );
-      }
-      await sleep(POLL_INTERVAL_MS);
+    const sent: InFlight = { id, op, respPath, sentAt: this.monotonicClock() };
+    this.inFlight = sent;
+    if (!(await this.#waitForAnswer(proc, sent, deadline))) {
+      // The wait is over, not the work: GIMP carries on and the next call waits for it.
+      throw new GimpError(
+        'gimp_still_working',
+        `${op} is taking longer than ${seconds(timeoutMs)} and is still running in GIMP. Nothing is lost. ` +
+          `Don't send it again: the next call waits for it to finish and then says how it ended.`
+      );
     }
+    this.inFlight = undefined;
 
     const raw = await this.#readResponse(respPath, op);
-    try {
-      unlinkSync(respPath);
-    } catch {
-      /* best effort */
-    }
+    this.#removeResponse(respPath);
 
     if (!raw.ok) {
       const code: GimpErrorCode =
@@ -1077,6 +1137,49 @@ export class GimpSession {
     // mistake, not the restart's.
     if (op === 'open') this.restartNoticePending = false;
     return raw.result as T;
+  }
+
+  /**
+   * Polls for `req`'s answer: true once it is there, false when `deadline` passes first (the request
+   * keeps running). Throws when the process is gone, and stops GIMP when the request has gone
+   * `hungAfterMs` unanswered, the one case where waiting longer would only hold the session forever.
+   */
+  async #waitForAnswer(proc: ChildProcess, req: InFlight, deadline: number): Promise<boolean> {
+    while (!existsSync(req.respPath)) {
+      // `sessionState === 'dead'` too, not just the process's own exit status: the 'error'
+      // listener marks the session dead on a process error that may never produce an exit
+      // (and a stub or future path may mark it dead before exitCode/signalCode are set).
+      if (hasExited(proc) || this.sessionState === 'dead') {
+        // A graceful shutdown() kills this same process, so this branch is
+        // also how an in-flight call notices one landing underneath it.
+        // #markDead is skipped in that case — shutdown() alone owns the
+        // 'closed' transition, and a call reaching here after it already
+        // ran must not resurrect a 'closed' session back to 'dead'.
+        if (!this.shuttingDown) this.#markDead();
+        throw new GimpError('gimp_session_restarted', RESTARTED_MESSAGE);
+      }
+      const now = this.monotonicClock();
+      if (now - req.sentAt > this.hungAfterMs) {
+        if (!this.shuttingDown) this.#markDead();
+        this.killTreeFn(proc);
+        throw new GimpError(
+          'gimp_timeout',
+          `${req.op} gave no answer for ${this.hungAfterMs >= 60_000 ? `${Math.round(this.hungAfterMs / 60_000)} minutes` : seconds(this.hungAfterMs)}, ` +
+            `so GIMP was treated as stuck and stopped: ${LOST_WORK}`
+        );
+      }
+      if (now > deadline) return false;
+      await sleep(POLL_INTERVAL_MS);
+    }
+    return true;
+  }
+
+  #removeResponse(respPath: string): void {
+    try {
+      unlinkSync(respPath);
+    } catch {
+      /* best effort */
+    }
   }
 
   /**
@@ -1244,6 +1347,8 @@ export class GimpSession {
     if (this.sessionState === 'dead' || this.sessionState === 'closed') return;
     this.sessionState = 'dead';
     this.deadGeneration++;
+    // Whatever that process was still running died with it.
+    this.inFlight = undefined;
     this.lastFailure = err ?? new GimpError('gimp_session_restarted', RESTARTED_MESSAGE);
   }
 

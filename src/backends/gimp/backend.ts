@@ -11,7 +11,23 @@
  * calls anything on this class besides handing it to tool factories).
  */
 
-import { GimpSession, type GimpSessionOptions } from './session.js';
+import { GimpSession, type GimpSessionOptions, type LateResult } from './session.js';
+
+/**
+ * One sentence per operation that finished after its caller had stopped waiting, for the next
+ * result: that caller was told it was still running, so the model needs to hear how it ended
+ * (and not to send it again). Empty when there are none.
+ */
+export function lateResultsNote(results: readonly LateResult[]): string {
+  return results
+    .map((r) => {
+      const took = `${Math.max(1, Math.round(r.ms / 1000))} s`;
+      return r.ok
+        ? `The earlier ${r.op} that was still running has finished (it took ${took}); its change is in the image.`
+        : `The earlier ${r.op} that was still running ended with an error after ${took}: ${r.error ?? 'no detail'}.`;
+    })
+    .join(' ');
+}
 import { detectGimp, type GimpInstall } from './detect.js';
 import { GimpError } from './errors.js';
 import { currentToolBudget } from '../../utils/tool-budget-context.js';
@@ -109,6 +125,16 @@ export class GimpBackend {
     return this.session?.generation;
   }
 
+  /** The operation GIMP is still running for a call that stopped waiting (`gimp_still_working`), if any. */
+  get stillRunning(): { op: string; ms: number } | undefined {
+    return this.session?.stillRunning;
+  }
+
+  /** Operations that finished after their caller stopped waiting, each reported once (`GimpSession.takeLateResults`). */
+  takeLateResults(): LateResult[] {
+    return this.session?.takeLateResults() ?? [];
+  }
+
   private ensureSession(): GimpSession {
     if (this.closed) {
       // Same code + wording GimpSession itself uses when a call reaches it
@@ -169,7 +195,8 @@ export class GimpBackend {
     if (effectiveTimeoutMs === undefined) {
       const budget = currentToolBudget();
       if (budget) {
-        const remaining = budget.deadline - Date.now();
+        // A host that lets the work outlast the reply (`waitDeadline`) lets the operation run that long.
+        const remaining = (budget.waitDeadline ?? budget.deadline) - Date.now();
         if (remaining <= 0) {
           throw new GimpError(
             'gimp_timeout',

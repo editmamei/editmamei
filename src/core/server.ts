@@ -54,7 +54,8 @@ import { hostDetectionRuntime } from '../detection/runtime.js';
 import { ModuleLifecycle, classifyModuleOutcome } from '../kernel/module-lifecycle.js';
 import { unsupportedHostReason } from '../platform/host-platform.js';
 import { gimpModule } from '../modules/gimp/index.js';
-import { GimpBackend } from '../backends/gimp/backend.js';
+import { GimpBackend, lateResultsNote } from '../backends/gimp/backend.js';
+import { withLateNote } from '../tools/gimp-shared.js';
 import type { EditorRegistrationDecision } from '../backends/detect-editors.js';
 import { createDiagnosticsTools } from '../tools/diagnostics-tools.js';
 import type { EditmameiModule } from '../kernel/host-api.js';
@@ -486,6 +487,11 @@ export class EditmameiServer {
     warnLogScriptOnErrorOnce(this.logger);
 
     this.toolRegistry = new ToolRegistry({
+      // A gimp_* call that waited out an earlier, still-running operation says how that one ended.
+      decorate: (tool, result) =>
+        tool.startsWith('gimp_') && this.gimpBackend
+          ? withLateNote(result, lateResultsNote(this.gimpBackend.takeLateResults()))
+          : result,
       onCall: (entry) => {
         // Opportunistic ps_version resolution (see the field doc above): once some
         // OTHER successful tool call has proven the connection genuinely reached
