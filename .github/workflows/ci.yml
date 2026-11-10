@@ -1,8 +1,16 @@
 # Continuous integration for Editmamei CE.
 #
-# Runs on every push and pull request. This is the check that pull requests are
-# gated on, so it deliberately runs exactly what CONTRIBUTING asks contributors
-# to run locally: format, lint, typecheck, and the full test suite. A separate,
+# Runs on every push and pull request. A pull request that changes only
+# documentation (`docs/`, or a `*.md` outside the code, plugin and .github
+# folders, other than LICENSE and NOTICES) takes a fast path: the two test jobs
+# still run under their required names, but run `npm run test:docs` (the tests
+# that read the docs) instead of the build and full suite. Pushes and manual
+# runs always run everything, so a docs change still gets the full suite once
+# it lands on `dev`.
+#
+# The full path is the check that pull requests are gated on, so it
+# deliberately runs exactly what CONTRIBUTING asks contributors to run
+# locally: format, lint, typecheck, and the full test suite. A separate,
 # NON-required `audit` job surfaces dependency advisories on every PR without
 # letting a newly published advisory in a transitive dep (or a registry outage)
 # block unrelated merges — the release workflow keeps the blocking audit gate.
@@ -36,9 +44,60 @@ permissions:
   contents: read
 
 jobs:
+  # Decides the fast path. The file list comes from the API, not from the PR's
+  # own content, and includes a rename's old path, so moving a code file into
+  # docs/ is not docs-only. If this job fails or the list looks incomplete, the
+  # output is not 'true' and the test jobs run in full.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+    steps:
+      - id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api "repos/$REPO/pulls/$PR/files" --paginate \
+            -q '.[] | .filename, (.previous_filename // empty)' > paths.txt
+          listed=$(gh api "repos/$REPO/pulls/$PR/files" --paginate -q '.[].filename' | wc -l)
+          expected=$(gh api "repos/$REPO/pulls/$PR" -q .changed_files)
+          # The files API reads the PR's current head; if it moved on since this
+          # event, the list may not describe the commit under test.
+          api_head=$(gh api "repos/$REPO/pulls/$PR" -q .head.sha)
+          echo "Changed paths:"
+          sed 's/^/  /' paths.txt
+          # Docs = anything under docs/, or a .md file outside the code folders.
+          # plugin/ ships (the skill), .github/ is config, and LICENSE / NOTICES
+          # have their own guard tests, so all of those take the full path.
+          if [ "$api_head" = "$HEAD_SHA" ] && [ "$listed" -eq "$expected" ] && [ -s paths.txt ] \
+            && ! grep -qvE '^docs/|\.md$' paths.txt \
+            && ! grep -qE '^(src|go-core|scripts|tests|models|plugin|\.github)/|^(LICENSE|NOTICES)\.md$' paths.txt; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     name: test (windows)
     runs-on: windows-latest
+    needs: changes
+    # Run even if `changes` failed: a skipped required check counts as passing,
+    # so this job must never be skipped. A failed `changes` means the full suite.
+    if: ${{ !cancelled() }}
+    env:
+      DOCS_ONLY: ${{ needs.changes.outputs.docs_only == 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -47,6 +106,7 @@ jobs:
       # rather than fails without Go, so installing it here is what makes the
       # binary actually get built and exercised.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: env.DOCS_ONLY != 'true'
         with:
           go-version-file: go-core/go.mod
 
@@ -55,18 +115,31 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - run: npm ci
+      - name: install (docs only)
+        if: env.DOCS_ONLY == 'true'
+        run: npm ci --ignore-scripts
+
+      - name: docs tests
+        if: env.DOCS_ONLY == 'true'
+        run: npm run test:docs
+
+      - if: env.DOCS_ONLY != 'true'
+        run: npm ci
 
       - name: format
+        if: env.DOCS_ONLY != 'true'
         run: npm run format:check
 
       - name: lint
+        if: env.DOCS_ONLY != 'true'
         run: npm run lint
 
       - name: typecheck
+        if: env.DOCS_ONLY != 'true'
         run: npm run typecheck
 
       - name: test
+        if: env.DOCS_ONLY != 'true'
         env:
           # bridge-python.test.ts runs the GIMP bridge's own Python unit tests; on a runner that is
           # supposed to have Python, a missing interpreter must fail the job, not skip the file.
@@ -74,6 +147,7 @@ jobs:
         run: npm test
 
       - name: go build + test
+        if: env.DOCS_ONLY != 'true'
         working-directory: go-core
         run: |
           go build ./...
@@ -128,10 +202,15 @@ jobs:
     # changes, update the ruleset in the same breath or gating silently lapses.
     name: test (macos)
     runs-on: macos-latest
+    needs: changes
+    if: ${{ !cancelled() }}
+    env:
+      DOCS_ONLY: ${{ needs.changes.outputs.docs_only == 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: env.DOCS_ONLY != 'true'
         with:
           go-version-file: go-core/go.mod
 
@@ -140,12 +219,23 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - run: npm ci
+      - name: install (docs only)
+        if: env.DOCS_ONLY == 'true'
+        run: npm ci --ignore-scripts
+
+      - name: docs tests
+        if: env.DOCS_ONLY == 'true'
+        run: npm run test:docs
+
+      - if: env.DOCS_ONLY != 'true'
+        run: npm ci
 
       - name: typecheck
+        if: env.DOCS_ONLY != 'true'
         run: npm run typecheck
 
       - name: test
+        if: env.DOCS_ONLY != 'true'
         env:
           # bridge-python.test.ts runs the GIMP bridge's own Python unit tests; on a runner that is
           # supposed to have Python, a missing interpreter must fail the job, not skip the file.
@@ -153,6 +243,7 @@ jobs:
         run: npm test
 
       - name: go build + test
+        if: env.DOCS_ONLY != 'true'
         working-directory: go-core
         run: |
           go build ./...
