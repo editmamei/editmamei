@@ -10,7 +10,7 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
-## [1.10.0] — 2026-11-11
+## [1.10.1] — 2026-11-11
 
 ### Added
 
@@ -21,6 +21,12 @@ earlier versions are preserved in the archived wiki repository's
     Photoshop 28.0). Editmamei asks you before every render, in your AI client's own prompt. A
     client that can't show the prompt asks you in the chat first.
   - Your assistant uses it only when you ask for Relight, or say yes after it's offered.
+  - **A free preview first.** Your assistant can open Photoshop's Relight panel with its lights,
+    show you Photoshop's own low-resolution preview, and close the panel without rendering. No
+    credits are used. Windows with Photoshop in English, for now.
+  - Relighting a Relight layer re-renders it in place instead of stacking a new layer. It costs the
+    same as the first render.
+  - Color temperatures use Photoshop's nine Relight presets, 1000K to 10000K.
 - **A switch for tools that spend Adobe credits.** Turn it off and those tools aren't offered at
   all.
   - `editmamei config set automation.allow_adobe_generative_credits false`, or **Allow Adobe
