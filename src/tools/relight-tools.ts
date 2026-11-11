@@ -4,7 +4,7 @@ import type { SnippetClient } from '../api/snippet-client.js';
 import { runSnippetTool, toolErrorResult } from '../utils/tool-helpers.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { RELIGHT_TIMEOUT_MS } from '../utils/operation-timeouts.js';
-import { requestApproval, APPROVAL_TIMEOUT_MS } from '../core/call-approval.js';
+import { requestApproval } from '../core/call-approval.js';
 
 /**
  * ps_relight: Photoshop 28's Relight (Layer > New Relight layer).
@@ -336,9 +336,6 @@ export function createRelightTools(
           openWorldHint: true,
         },
       },
-      // The approval wait and the render share one call: up to the prompt's own timeout, then
-      // the render's.
-      budgetMs: APPROVAL_TIMEOUT_MS + RELIGHT_TIMEOUT_MS,
       spendsAdobeCredits: true,
       handler: async (args) => relight(connection, snippetClient, args),
     },

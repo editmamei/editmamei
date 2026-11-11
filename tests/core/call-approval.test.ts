@@ -95,3 +95,12 @@ describe('requestApproval', () => {
     expect([first.result, second.result]).toEqual(['approved', 'approved']);
   });
 });
+
+describe('ps_relight call budget', () => {
+  it('covers the whole approval wait plus the render', async () => {
+    const { APPROVAL_TIMEOUT_MS } = await import('@editmamei/core/call-approval.ts');
+    const { RELIGHT_CALL_BUDGET_MS, RELIGHT_TIMEOUT_MS } =
+      await import('@editmamei/utils/operation-timeouts.ts');
+    expect(RELIGHT_CALL_BUDGET_MS).toBeGreaterThanOrEqual(APPROVAL_TIMEOUT_MS + RELIGHT_TIMEOUT_MS);
+  });
+});
