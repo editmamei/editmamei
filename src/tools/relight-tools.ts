@@ -77,7 +77,7 @@ const lightSchema: JsonSchemaObject = {
     color_kelvin: {
       type: 'number',
       description:
-        "Color temperature, matched to Photoshop's own Relight presets: 2000 candle, 3200 tungsten, 5500 daylight (neutral); higher is cooler and bluer (7500+ cool blue). Ignored when color is given.",
+        "Color temperature, using Photoshop's own Relight presets: 1000, 2000 (candle), 3200 (tungsten), 4300, 5500 (neutral daylight), 6500, 7500 (cool), 9000, 10000 (deep blue). A preset value gives exactly that preset; values between interpolate. Ignored when color is given.",
       default: 5500,
       minimum: 1000,
       maximum: 10000,
@@ -151,25 +151,30 @@ interface DescriptorLight {
 const round = (v: number): number => Math.round(v * 10000) / 10000;
 
 /**
- * The descriptor RGB Photoshop's Relight panel sends for its own color presets, captured with
- * ScriptListener on Photoshop 28.0 (2026-11-11). With exactly these values the panel's Color menu
- * shows the preset's name rather than "Custom color". The swatch hex the panel draws (#e9bd69 for
+ * Photoshop's own Relight color presets (the panel's Color menu): the descriptor RGB it sends for
+ * each, from Photoshop 28.0's built-in table. 2000K, 3200K and 5500K were also confirmed with
+ * ScriptListener captures, and with exactly these values the panel names the preset rather than
+ * showing "Custom color" (verified 2026-11-11). The swatch hex the panel draws (#e9bd69 for
  * 3200K) is color-managed display output, not these values.
  */
 export const ADOBE_RELIGHT_PRESETS: ReadonlyArray<
   readonly [number, readonly [number, number, number]]
 > = [
+  [1000, [0.91, 0.52, 0.04]],
   [2000, [0.94, 0.66, 0.21]],
   [3200, [0.96, 0.78, 0.47]],
+  [4300, [0.98, 0.88, 0.69]],
   [5500, [0.96, 0.94, 0.91]],
+  [6500, [0.91, 0.93, 0.97]],
+  [7500, [0.85, 0.89, 0.96]],
+  [9000, [0.69, 0.82, 0.97]],
+  [10000, [0.48, 0.71, 0.97]],
 ];
 
 /**
- * RGB (0-1) for a color temperature, through Adobe's presets: an exact preset gives exactly that
- * preset, and temperatures between two presets interpolate linearly in RGB. Below the warmest
- * preset the warmest is used. Above the coolest (5500K) the light keeps getting bluer: the
- * black-body curve's change from 5500K is added to Adobe's 5500K, so 7500K still reads cool rather
- * than stopping at daylight.
+ * RGB (0-1) for a color temperature, through Photoshop's presets: an exact preset gives exactly
+ * that preset, a temperature between two presets interpolates linearly in RGB, and anything
+ * outside 1000-10000K takes the nearest end.
  */
 export function kelvinToRgb(kelvin: number): [number, number, number] {
   const presets = ADOBE_RELIGHT_PRESETS;
@@ -188,29 +193,8 @@ export function kelvinToRgb(kelvin: number): [number, number, number] {
       ];
     }
   }
-  const [topK, topRgb] = presets[presets.length - 1];
-  const curve = blackBodyRgb(k);
-  const anchor = blackBodyRgb(topK);
-  const clamp01 = (v: number) => round(Math.min(1, Math.max(0, v)));
-  return [
-    clamp01(topRgb[0] + curve[0] - anchor[0]),
-    clamp01(topRgb[1] + curve[1] - anchor[1]),
-    clamp01(topRgb[2] + curve[2] - anchor[2]),
-  ];
-}
-
-/** A black-body color (Tanner Helland's fit), eased toward white like Adobe's presets. */
-function blackBodyRgb(kelvin: number): [number, number, number] {
-  const t = Math.min(40000, Math.max(1000, kelvin)) / 100;
-  const clamp = (v: number) => Math.min(255, Math.max(0, v)) / 255;
-  const r = t <= 66 ? 1 : clamp(329.698727446 * Math.pow(t - 60, -0.1332047592));
-  const g =
-    t <= 66
-      ? clamp(99.4708025861 * Math.log(t) - 161.1195681661)
-      : clamp(288.1221695283 * Math.pow(t - 60, -0.0755148492));
-  const b = t >= 66 ? 1 : t <= 19 ? 0 : clamp(138.5177312231 * Math.log(t - 10) - 305.0447927307);
-  const ease = (c: number) => round(0.96 * (0.7 * c + 0.3));
-  return [ease(r), ease(g), ease(b)];
+  const [, topRgb] = presets[presets.length - 1];
+  return [topRgb[0], topRgb[1], topRgb[2]];
 }
 
 function hexToRgb(hex: string): [number, number, number] {

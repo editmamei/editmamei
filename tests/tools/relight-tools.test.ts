@@ -111,25 +111,35 @@ describe('createRelightTools', () => {
     expect(kelvinToRgb(2000)).toEqual([0.94, 0.66, 0.21]);
     expect(kelvinToRgb(3200)).toEqual([0.96, 0.78, 0.47]);
     expect(kelvinToRgb(5500)).toEqual([0.96, 0.94, 0.91]);
+    // The panel's nine presets, 1000K to 10000K.
+    expect(ADOBE_RELIGHT_PRESETS.map(([k]) => k)).toEqual([
+      1000, 2000, 3200, 4300, 5500, 6500, 7500, 9000, 10000,
+    ]);
+    expect(kelvinToRgb(1000)).toEqual([0.91, 0.52, 0.04]);
+    expect(kelvinToRgb(10000)).toEqual([0.48, 0.71, 0.97]);
     for (const [k, rgb] of ADOBE_RELIGHT_PRESETS) expect(kelvinToRgb(k)).toEqual([...rgb]);
   });
 
-  it('runs warm to cool through the presets, and keeps cooling past daylight', () => {
-    const ks = [2000, 2400, 2800, 3200, 4000, 4800, 5500];
-    for (let i = 1; i < ks.length; i++) {
-      const [, g0, b0] = kelvinToRgb(ks[i - 1]);
-      const [, g1, b1] = kelvinToRgb(ks[i]);
-      expect(g1).toBeGreaterThanOrEqual(g0);
-      expect(b1).toBeGreaterThan(b0);
+  it('runs warm to cool through the presets', () => {
+    // Blue rises from 1000K to 6500K (Photoshop's own table then holds it near 0.97);
+    // red falls from daylight on, so the cool presets turn bluer.
+    const ks = [1000, 1500, 2000, 2600, 3200, 4300, 5000, 5500, 6500, 7500, 9000, 10000];
+    for (let i = 1; i <= ks.indexOf(6500); i++) {
+      const [, , b0] = kelvinToRgb(ks[i - 1]);
+      const [, , b1] = kelvinToRgb(ks[i]);
+      expect(b1).toBeGreaterThanOrEqual(b0);
+    }
+    for (let i = ks.indexOf(5500) + 1; i < ks.length; i++) {
+      expect(kelvinToRgb(ks[i])[0]).toBeLessThan(kelvinToRgb(ks[i - 1])[0]);
     }
     // Between presets: straight-line RGB.
     expect(kelvinToRgb(2600)).toEqual([0.95, 0.72, 0.34]);
-    // Warmer than the warmest preset stays at it.
-    expect(kelvinToRgb(1000)).toEqual(kelvinToRgb(2000));
-    // 7500K is a cool light, not daylight: blue now leads red.
+    // Outside the presets, the nearest end.
+    expect(kelvinToRgb(500)).toEqual(kelvinToRgb(1000));
+    expect(kelvinToRgb(20000)).toEqual(kelvinToRgb(10000));
+    // 7500K is a cool light: blue leads red.
     const [r, , b] = kelvinToRgb(7500);
     expect(b).toBeGreaterThan(r);
-    expect(b).toBeLessThanOrEqual(1);
   });
 
   it('renders after the person approves, with the converted lights and layer', async () => {
