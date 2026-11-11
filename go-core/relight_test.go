@@ -38,6 +38,9 @@ func TestBuildRelightEmitsClampedLights(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build(relight) failed: %v", err)
 	}
+	if strings.Contains(jsx, "%!") {
+		t.Fatal("relight has a slot-arity mismatch (a %! verb in the output)")
+	}
 	if !strings.Contains(jsx, "var lights = [[0.5, -0.25, 2, 1, 0.5, 0.25, 0.3, 0.7]];") {
 		t.Fatal("relight did not emit the clamped lights literal")
 	}

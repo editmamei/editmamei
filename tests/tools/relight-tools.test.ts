@@ -17,9 +17,16 @@ import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connec
 import { assertToolShape, callTool } from '../fixtures/tool-helpers.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
 
-const LIGHT = { left_right: 25, low_high: 60, close_far: 40, intensity: 47, diffusion: 42 };
+const LIGHT = {
+  left_right: 25,
+  low_high: 60,
+  close_far: 40,
+  intensity: 47,
+  diffusion: 42,
+  color_kelvin: 5500,
+};
 
-function approveWith(action: 'accept' | 'decline' | 'cancel', approve = true): CallApprovalChannel {
+function answering(action: 'accept' | 'decline' | 'cancel', approve = true): CallApprovalChannel {
   return {
     supportsForm: true,
     elicit: async () => ({ action, content: action === 'accept' ? { approve } : undefined }),
@@ -38,6 +45,7 @@ describe('createRelightTools', () => {
         layer_name: 'Relight Layer 1',
         source_layer: 'Layer 0',
         source_hidden: true,
+        source_found: true,
         light_count: 1,
         original_lighting: 0.8,
       },
@@ -45,13 +53,18 @@ describe('createRelightTools', () => {
     snippetClient = makeSnippetClient();
   });
 
-  const call = (args: Record<string, unknown>, channel?: CallApprovalChannel) => {
+  /** Call ps_relight as its own tools/call (or as `boundTo`, to model a nested call). */
+  const call = async (
+    args: Record<string, unknown>,
+    channel?: CallApprovalChannel,
+    boundTo = 'ps_relight'
+  ) => {
     const tools = createRelightTools(conn.asConnection(), snippetClient);
-    return channel
-      ? runWithCallApproval(channel, () => callTool(tools, 'ps_relight', args)).then(
-          (r) => r.result
-        )
-      : callTool(tools, 'ps_relight', args);
+    if (!channel) return callTool(tools, 'ps_relight', args);
+    const { result } = await runWithCallApproval(channel, boundTo, () =>
+      callTool(tools, 'ps_relight', args)
+    );
+    return result;
   };
 
   it('exposes one well-formed, open-world tool named ps_relight', () => {
@@ -81,7 +94,7 @@ describe('createRelightTools', () => {
   });
 
   it('takes a hex color over the Kelvin value', () => {
-    const d = toDescriptorLight({ ...LIGHT, color_kelvin: 5500, color: '#ff8000' });
+    const d = toDescriptorLight({ ...LIGHT, color: '#ff8000' });
     expect([d.r, d.g, d.b]).toEqual([1, 0.502, 0]);
   });
 
@@ -95,13 +108,17 @@ describe('createRelightTools', () => {
     expect(warm[1]).toBeGreaterThan(warm[2]);
   });
 
-  it('renders after the person approves, and reports the credits used', async () => {
-    const result = await call({ lights: [LIGHT], original_lighting: 60 }, approveWith('accept'));
+  it('renders after the person approves, with the converted lights and layer', async () => {
+    const result = await call(
+      { lights: [LIGHT], original_lighting: 60, layer: 'Model' },
+      answering('accept')
+    );
     expect(result.isError).toBeFalsy();
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('relight');
     expect(build.params.ambient).toBe(0.6);
-    expect((build.params.lights as unknown[]).length).toBe(1);
+    expect(build.params.layerName).toBe('Model');
+    expect(build.params.lights).toEqual([toDescriptorLight(LIGHT)]);
     expect(result.structuredContent?.adobe_credits_used).toBe(30);
   });
 
@@ -129,10 +146,60 @@ describe('createRelightTools', () => {
     ['cancel', true],
     ['accept', false],
   ] as const)('does not render on %s (box ticked: %s)', async (action, approve) => {
-    const result = await call({ lights: [LIGHT] }, approveWith(action, approve));
+    const result = await call({ lights: [LIGHT] }, answering(action, approve));
     expect(snippetClient.allBuilds()).toHaveLength(0);
     expect(result.structuredContent?.relit).toBe(false);
     expect(result.structuredContent?.adobe_credits_used).toBe(0);
+  });
+
+  it('does not render when the prompt fails', async () => {
+    const result = await call(
+      { lights: [LIGHT] },
+      {
+        supportsForm: true,
+        elicit: async () => {
+          throw new Error('client error');
+        },
+      }
+    );
+    expect(result.structuredContent?.reason).toBe('prompt_failed');
+    expect(snippetClient.allBuilds()).toHaveLength(0);
+  });
+
+  it('does not render a late yes after the client cancelled the call', async () => {
+    const cancel = new AbortController();
+    const result = await call(
+      { lights: [LIGHT] },
+      {
+        supportsForm: true,
+        signal: cancel.signal,
+        elicit: async () => {
+          cancel.abort();
+          return { action: 'accept', content: { approve: true } };
+        },
+      }
+    );
+    expect(result.structuredContent?.reason).toBe('declined');
+    expect(snippetClient.allBuilds()).toHaveLength(0);
+  });
+
+  it('refuses inside another tool, without asking and even with confirm_adobe_credits', async () => {
+    let asked = false;
+    const channel: CallApprovalChannel = {
+      supportsForm: false,
+      elicit: async () => {
+        asked = true;
+        return { action: 'accept', content: { approve: true } };
+      },
+    };
+    const result = await call(
+      { lights: [LIGHT], confirm_adobe_credits: true },
+      channel,
+      'ps_sequence'
+    );
+    expect(result.structuredContent?.reason).toBe('nested');
+    expect(asked).toBe(false);
+    expect(snippetClient.allBuilds()).toHaveLength(0);
   });
 
   it('without a prompt, waits for confirm_adobe_credits from a chat yes', async () => {
@@ -151,30 +218,41 @@ describe('createRelightTools', () => {
   it('ignores confirm_adobe_credits when the app can show the prompt', async () => {
     const result = await call(
       { lights: [LIGHT], confirm_adobe_credits: true },
-      approveWith('decline')
+      answering('decline')
     );
     expect(result.structuredContent?.reason).toBe('declined');
     expect(snippetClient.allBuilds()).toHaveLength(0);
   });
 
-  it('on 2026-07-28, sends the question back and renders on the retry with a yes', async () => {
-    const tools = createRelightTools(conn.asConnection(), snippetClient);
-    const first = await runWithCallApproval({ supportsForm: true, multiRoundTrip: true }, () =>
-      callTool(tools, 'ps_relight', { lights: [LIGHT] })
-    );
-    expect(first.inputRequired).toBeDefined();
-    expect(snippetClient.allBuilds()).toHaveLength(0);
+  describe('on 2026-07-28', () => {
+    const modern = (inputResponses?: Record<string, unknown>) =>
+      runWithCallApproval(
+        { supportsForm: true, multiRoundTrip: true, inputResponses },
+        'ps_relight',
+        () =>
+          callTool(createRelightTools(conn.asConnection(), snippetClient), 'ps_relight', {
+            lights: [LIGHT],
+          })
+      );
 
-    const retry = await runWithCallApproval(
-      {
-        supportsForm: true,
-        multiRoundTrip: true,
-        inputResponses: { adobe_credits: { action: 'accept', content: { approve: true } } },
-      },
-      () => callTool(tools, 'ps_relight', { lights: [LIGHT] })
-    );
-    expect(retry.inputRequired).toBeUndefined();
-    expect(snippetClient.lastBuild().name).toBe('relight');
+    it('sends the question back, then renders on the retry with a yes', async () => {
+      const first = await modern();
+      expect(first.inputRequired).toBeDefined();
+      expect(snippetClient.allBuilds()).toHaveLength(0);
+
+      const retry = await modern({
+        adobe_credits: { action: 'accept', content: { approve: true } },
+      });
+      expect(retry.inputRequired).toBeUndefined();
+      expect(snippetClient.lastBuild().name).toBe('relight');
+    });
+
+    it('renders nothing on a retry that carries a no', async () => {
+      const retry = await modern({ adobe_credits: { action: 'decline' } });
+      expect(retry.inputRequired).toBeUndefined();
+      expect(retry.result.structuredContent?.reason).toBe('declined');
+      expect(snippetClient.allBuilds()).toHaveLength(0);
+    });
   });
 
   it('refuses a bad request before asking anyone', async () => {

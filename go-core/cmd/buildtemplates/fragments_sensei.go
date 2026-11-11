@@ -700,7 +700,8 @@ func init() {
       strategy_used: 'executeAction:lightshop',
       layer_name: made.name,
       source_layer: sourceName,
-      source_hidden: source ? !source.visible : null,
+      source_hidden: source ? !source.visible : false,
+      source_found: !!source,
       light_count: lights.length,
       original_lighting: ambient,
       context: getContextInfo()

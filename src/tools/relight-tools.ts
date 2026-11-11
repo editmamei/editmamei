@@ -22,6 +22,8 @@ import { requestApproval, APPROVAL_TIMEOUT_MS } from '../core/call-approval.js';
 /** Adobe's published price of one Relight render, in Adobe Firefly generative credits. */
 export const RELIGHT_ADOBE_CREDITS = 30;
 
+export const RELIGHT_TOOL_NAME = 'ps_relight';
+
 const lightSchema: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -217,6 +219,7 @@ async function relight(
 
   // Validation first, then the person: nobody is asked about a render that would be refused.
   const outcome = await requestApproval({
+    tool: RELIGHT_TOOL_NAME,
     key: 'adobe_credits',
     message: approvalMessage(lights.length, layer),
     checkboxTitle: `Use ${RELIGHT_ADOBE_CREDITS} Adobe Firefly credits`,
@@ -230,6 +233,12 @@ async function relight(
     return notRendered(
       `Not relit: the person did not approve spending ${RELIGHT_ADOBE_CREDITS} Adobe Firefly generative credits. Nothing changed and no credits were used. Ask before trying again.`,
       'declined'
+    );
+  }
+  if (outcome === 'nested') {
+    return notRendered(
+      `Not relit: ${RELIGHT_TOOL_NAME} has to be called on its own, not from inside another tool such as ps_sequence, because each render needs the person's own approval. Nothing was rendered and no credits were used.`,
+      'nested'
     );
   }
   if (outcome === 'failed') {
@@ -282,7 +291,7 @@ export function createRelightTools(
   return [
     {
       tool: {
-        name: 'ps_relight',
+        name: RELIGHT_TOOL_NAME,
         description:
           "Run Photoshop's Relight (Photoshop 2027 / 28.0+): add one to three lights to a photo, such as a warm key from the left, a rim light behind the subject or a colored gel, and render it as a new Relight layer above the original, which stays hidden underneath. Generative: each call is ONE cloud render that spends 30 Adobe Firefly generative credits from the person's Adobe account, so the person approves every call, and you should plan the lights before calling rather than iterating renders to explore. Lower original_lighting for a moody studio look. It adds and shapes light; it does not remove a hard shadow cast by another object. Needs Photoshop signed in and online.",
         inputSchema: relightInputSchema,
@@ -293,7 +302,7 @@ export function createRelightTools(
             reason: {
               type: 'string',
               description:
-                "Why nothing rendered: 'declined', 'needs_confirmation', 'prompt_failed' or 'pending'.",
+                "Why nothing rendered: 'declined', 'needs_confirmation', 'nested', 'prompt_failed' or 'pending'.",
             },
             adobe_credits_used: {
               type: 'number',
@@ -305,6 +314,10 @@ export function createRelightTools(
             source_hidden: {
               type: 'boolean',
               description: 'Whether Photoshop hid the source layer, as it does by default.',
+            },
+            source_found: {
+              type: 'boolean',
+              description: 'Whether the source layer was still there after the render.',
             },
             light_count: { type: 'number' },
             original_lighting: {
