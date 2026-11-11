@@ -147,7 +147,9 @@ function previewError(message: string, extra: Record<string, unknown> = {}): Too
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 const CLOSE_PANEL_BY_HAND =
-  "Photoshop's Relight panel may still be open. Ask the person to click Cancel in it (not Done, which renders and costs Adobe Firefly credits) before anything else runs in Photoshop.";
+  "Photoshop's Relight panel may still be open. Ask the person to click Cancel in it until it closes (never Done, which renders and costs Adobe Firefly credits) before anything else runs in Photoshop.";
+/** A restore normally takes well under a second; longer means Photoshop is still held. */
+const RESTORE_TIMEOUT_MS = 10_000;
 
 /**
  * Runs one free preview. `lights` is echoed back as the person's slider values,
@@ -267,10 +269,11 @@ export async function runRelightPreview(
       failure = `the Relight panel script failed: ${errorText(outcome.reason)}`;
     } else {
       failure = `the Relight panel script failed: ${errorText(outcome.reason)}`;
-      // A script timeout leaves the panel open in Photoshop: close it from outside.
+      // A script timeout is evidence the panel did NOT close, even for an edit
+      // preview, so only a clicked Discard counts here.
       try {
         const closed = await deps.window('cancel-relight', [], WINDOW_CANCEL_TIMEOUT_MS);
-        panelClosed = closedBy(closed.closed);
+        panelClosed = closed.closed === 'discarded';
       } catch {
         panelClosed = false;
       }
@@ -283,12 +286,14 @@ export async function runRelightPreview(
     // count, to tell whether Done rendered.
     if (panelClosed && (hiddenIds.length > 0 || (panelStarted && !panelResult))) {
       try {
-        const restored = await deps.script('preview_restore', { hiddenIds });
+        const restored = await deps.script('preview_restore', { hiddenIds }, RESTORE_TIMEOUT_MS);
         if (typeof restored.layer_count === 'number') layersAfter = restored.layer_count;
         if (typeof restored.restored === 'number' && restored.restored < hiddenIds.length) {
           restoreNote = ` ${hiddenIds.length - restored.restored} of the ${hiddenIds.length} layer(s) hidden for the preview couldn't be shown again; show them with ps_set_layer.`;
         }
       } catch (e) {
+        // A restore stuck behind the panel means it's still open.
+        if (isTimeout(e)) panelClosed = false;
         restoreNote = ` Couldn't show the ${hiddenIds.length} layer(s) hidden for the preview again (${errorText(e)}); show them with ps_set_layer.`;
       }
     }

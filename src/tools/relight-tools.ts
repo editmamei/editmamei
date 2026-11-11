@@ -329,7 +329,7 @@ async function relight(
   // Read the target before asking, so the question says whether this edits an existing Relight
   // layer, and nobody is asked about a render that would fail (no document, an old Photoshop, a
   // missing layer).
-  let probe: { edit?: boolean; target_layer?: string; target_id?: number };
+  let probe: { edit?: boolean; target_layer?: string; target_id?: number; target_doc_id?: number };
   try {
     const script = await snippetClient.build('relight', { ...base, mode: 'probe' });
     probe = (await runScript(connection, script)) as typeof probe;
@@ -388,6 +388,7 @@ async function relight(
       mode: 'render',
       expect: edit ? 'edit' : 'new',
       expectLayerId: typeof probe?.target_id === 'number' ? probe.target_id : 0,
+      expectDocId: typeof probe?.target_doc_id === 'number' ? probe.target_doc_id : 0,
     }),
     successText: (result) => {
       const r = result as {

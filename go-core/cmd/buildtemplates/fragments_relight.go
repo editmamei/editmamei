@@ -30,13 +30,13 @@ import "editmamei-core/internal/vault"
 //	preview_restore  show the layers preview_prepare hid.
 //
 // render also takes what the person approved: expect ("edit", "new" or empty for
-// no check) and expectLayerId (0 for no check), from the probe. If the target
+// no check), expectLayerId and expectDocId (0 for no check), from the probe. If the target
 // changed in between (another layer clicked while the question was up), it
 // refuses rather than render something other than what was approved.
 //
-// Slot order (12): getContextInfo, normNameHelper, notFoundMessageHelper,
+// Slot order (13): getContextInfo, normNameHelper, notFoundMessageHelper,
 // layerName, lights, ambient, mode, newLayer, hiddenIds, expect, expectLayerId,
-// layerName (for the not-found message). lights is a JS array of [x, y, z, r,
+// expectDocId, layerName (for the not-found message). lights is a JS array of [x, y, z, r,
 // g, b, intensity, radius] rows.
 func init() {
 	fragments[vault.Relight] = `
@@ -63,6 +63,7 @@ func init() {
     var hiddenIds = %s;
     var expect = %s;
     var expectLayerId = %s;
+    var expectDocId = %s;
 
     function __collectIds(layers, into) {
       for (var i = 0; i < layers.length; i++) {
@@ -170,6 +171,7 @@ func init() {
         probe: true,
         target_layer: sourceName,
         target_id: sourceId,
+        target_doc_id: doc.id,
         is_relight_layer: isRelight,
         edit: edit,
         layer_count: __layerCount(),
@@ -284,13 +286,16 @@ func init() {
       };
     }
 
+    // Layer ids are per document, so the document is checked too.
     if ((expect === 'edit' && !edit) || (expect === 'new' && edit) ||
-        (expectLayerId > 0 && sourceId !== expectLayerId)) {
+        (expectLayerId > 0 && sourceId !== expectLayerId) ||
+        (expectDocId > 0 && doc.id !== expectDocId)) {
       throw new Error(
-        'The layer to relight changed after the person approved this render (now "' + sourceName +
-        '", ' + (edit ? 'an existing Relight layer that would be re-rendered in place' :
+        'The photo or layer to relight changed after the person approved this render (now "' +
+        sourceName + '" in ' + doc.name + ', ' +
+        (edit ? 'an existing Relight layer that would be re-rendered in place' :
         'which would get a new Relight layer') + '). Nothing was rendered and no Adobe Firefly ' +
-        'credits were used. Ask the person again about the layer that is selected now.'
+        'credits were used. Ask the person again about the photo and layer selected now.'
       );
     }
 

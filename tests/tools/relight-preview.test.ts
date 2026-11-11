@@ -189,7 +189,7 @@ describe('runRelightPreview', () => {
     expect(result.isError).toBe(true);
     const words = (result.content[0] as { text: string }).text;
     expect(words).toMatch(/click Cancel/);
-    expect(words).toMatch(/not Done/);
+    expect(words).toMatch(/never Done/);
     expect(words).toMatch(/ps_set_layer/);
     // A restore would queue behind the open panel; it waits for the person.
     expect(h.scripts.some((s) => s.mode === 'preview_restore')).toBe(false);
@@ -320,6 +320,36 @@ describe('runRelightPreview', () => {
     expect(result.isError).toBeFalsy();
     expect(result.content[0]).toMatchObject({ type: 'image' });
     expect((result.content[1] as { text: string }).text).toMatch(/1 of the 2 layer/);
+  });
+
+  // A script timeout means the panel didn't close, even for an edit preview (whose panel can
+  // close with no dialog): a cancel that finds no dialog proves nothing then.
+  it('after a timeout, an edit preview needs a clicked Discard to count as closed', async () => {
+    const h = harness({
+      prepare: {
+        prepared: true,
+        edit: true,
+        hidden_ids: [4],
+        context: { document: { width: 1, height: 1 } },
+      },
+      open: new Error('Script execution timeout after 90000ms'),
+      helper: { closed: 'no_dialog' },
+      cancel: { closed: 'no_dialog' },
+    });
+    const result = await runRelightPreview(h.deps, LIGHTS, 30);
+    expect((result.content[0] as { text: string }).text).toMatch(/click Cancel/);
+    expect(h.scripts.some((s) => s.mode === 'preview_restore')).toBe(false);
+  });
+
+  it('a restore stuck behind the panel means the panel is still open', async () => {
+    const h = harness({
+      prepare: { prepared: true, hidden_ids: [4], context: { document: { width: 1, height: 1 } } },
+      restore: new Error('Script execution timeout after 10000ms'),
+    });
+    const result = await runRelightPreview(h.deps, LIGHTS, 30);
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toMatch(/click Cancel/);
+    expect(h.scripts.find((s) => s.mode === 'preview_restore')?.timeoutMs).toBe(10_000);
   });
 
   it('marks an unsettled preview as rough', async () => {

@@ -161,6 +161,7 @@ func TestBuildRelightExpectGuard(t *testing.T) {
 	p := relightParams(map[string]any{"x": 0})
 	p["expect"] = "new"
 	p["expectLayerId"] = 42.0
+	p["expectDocId"] = 9.0
 	jsx, err := build("relight", p)
 	if err != nil {
 		t.Fatal(err)
@@ -168,6 +169,8 @@ func TestBuildRelightExpectGuard(t *testing.T) {
 	for _, want := range []string{
 		`var expect = "new";`,
 		"var expectLayerId = 42;",
+		"var expectDocId = 9;",
+		"(expectDocId > 0 && doc.id !== expectDocId)",
 		"(expect === 'edit' && !edit) || (expect === 'new' && edit)",
 		"sourceId !== expectLayerId",
 	} {

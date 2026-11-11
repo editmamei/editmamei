@@ -29,8 +29,8 @@ var relightModes = map[string]bool{
 // jsNum/jsLit/jsBool literal, so nothing caller-supplied reaches the JSX
 // unescaped. Slot order: getContextInfo, normNameHelper, notFoundMessageHelper,
 // layerName, lights, ambient, mode, newLayer, hiddenIds, expect, expectLayerId,
-// layerName.
-func relight(layerName string, lights []relightLight, ambient float64, mode string, newLayer bool, hiddenIDs []int, expect string, expectLayerID int) string {
+// expectDocId, layerName.
+func relight(layerName string, lights []relightLight, ambient float64, mode string, newLayer bool, hiddenIDs []int, expect string, expectLayerID, expectDocID int) string {
 	rows := make([]string, 0, len(lights))
 	for _, l := range lights {
 		rows = append(rows, "["+strings.Join([]string{
@@ -56,6 +56,7 @@ func relight(layerName string, lights []relightLight, ambient float64, mode stri
 		"["+strings.Join(ids, ", ")+"]",
 		jsLit(expect),
 		jsInt(expectLayerID),
+		jsInt(expectDocID),
 		jsLit(layerName),
 	)
 }
@@ -126,10 +127,8 @@ func buildRelight(params map[string]any) (string, error) {
 	if expect != "" && expect != "edit" && expect != "new" {
 		return "", fmt.Errorf("relight: expect must be edit, new or empty, got %q", expect)
 	}
-	expectLayerID := 0
-	if f := numParam(params, "expectLayerId", 0); f >= 1 && f == float64(int(f)) {
-		expectLayerID = int(f)
-	}
+	expectLayerID := positiveIntParam(params, "expectLayerId")
+	expectDocID := positiveIntParam(params, "expectDocId")
 	lights := relightLightsParam(params)
 	if mode != "preview_restore" && len(lights) == 0 {
 		return "", fmt.Errorf("relight: at least one light is required")
@@ -146,5 +145,15 @@ func buildRelight(params map[string]any) (string, error) {
 		relightHiddenIDsParam(params),
 		expect,
 		expectLayerID,
+		expectDocID,
 	), nil
+}
+
+// positiveIntParam reads a Photoshop id; anything but a whole number >= 1 is 0
+// (no check).
+func positiveIntParam(p map[string]any, key string) int {
+	if f := numParam(p, key, 0); f >= 1 && f <= 1<<31-1 && f == float64(int(f)) {
+		return int(f)
+	}
+	return 0
 }

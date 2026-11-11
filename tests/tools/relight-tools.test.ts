@@ -327,7 +327,7 @@ describe('createRelightTools', () => {
     conn = makeConnection({
       resultFor: (script) =>
         script.includes('"mode":"probe"')
-          ? { probe: true, target_layer: 'Background', target_id: 7, edit: false }
+          ? { probe: true, target_layer: 'Background', target_id: 7, target_doc_id: 3, edit: false }
           : { relit: true, layer_name: 'Relight Layer 1', source_layer: 'Background' },
     });
     await call({ lights: [LIGHT] }, answering('accept'));
@@ -335,6 +335,7 @@ describe('createRelightTools', () => {
       mode: 'render',
       expect: 'new',
       expectLayerId: 7,
+      expectDocId: 3,
     });
   });
 
