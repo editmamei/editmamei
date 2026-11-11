@@ -339,6 +339,7 @@ export function createRelightTools(
       // The approval wait and the render share one call: up to the prompt's own timeout, then
       // the render's.
       budgetMs: APPROVAL_TIMEOUT_MS + RELIGHT_TIMEOUT_MS,
+      spendsAdobeCredits: true,
       handler: async (args) => relight(connection, snippetClient, args),
     },
   ];

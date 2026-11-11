@@ -60,6 +60,10 @@ import type { EditorRegistrationDecision } from '../backends/detect-editors.js';
 import { createDiagnosticsTools } from '../tools/diagnostics-tools.js';
 import type { EditmameiModule } from '../kernel/host-api.js';
 
+/** What ps_list_capabilities says while tools that spend Adobe generative credits are off. */
+export const ADOBE_CREDIT_TOOLS_OFF_NOTE =
+  "Turned off by the person: tools that run Photoshop features costing Adobe generative AI credits (such as Relight). If they ask for one, say it's off and how to turn it on: in Claude Desktop, Settings > Desktop app > Manage (next to Extensions) > Editmamei > 'Allow Adobe generative AI tools'; anywhere else, run `editmamei config set automation.allow_adobe_generative_credits true`. Then restart the AI app.";
+
 // Re-exported for tests + call sites that import the taxonomy from server.ts
 // (its historical home) rather than reaching into kernel/module-lifecycle.ts.
 export { classifyModuleOutcome };
@@ -211,6 +215,8 @@ export class EditmameiServer {
   };
   private logger: Logger;
   private toolRegistry: ToolRegistry;
+  /** The person turned off tools that spend Adobe generative credits; they aren't registered. */
+  private adobeCreditToolsOff = false;
   private session: Session;
   private sessionLog: SessionLog;
   private telemetry: TelemetryClient;
@@ -486,7 +492,11 @@ export class EditmameiServer {
     // who enabled the flag.
     warnLogScriptOnErrorOnce(this.logger);
 
+    this.adobeCreditToolsOff = !effectiveSettings.automation.allow_adobe_generative_credits;
     this.toolRegistry = new ToolRegistry({
+      // Tools that spend Adobe generative credits aren't offered at all while the person has
+      // them turned off (automation.allow_adobe_generative_credits).
+      exclude: (def) => this.adobeCreditToolsOff && def.spendsAdobeCredits === true,
       onCall: (entry) => {
         // Opportunistic ps_version resolution (see the field doc above): once some
         // OTHER successful tool call has proven the connection genuinely reached
@@ -785,6 +795,11 @@ export class EditmameiServer {
                 },
               },
             },
+            adobe_credit_tools_off: {
+              type: 'string',
+              description:
+                'Present when the person turned off tools that spend Adobe generative credits (such as Relight): what to tell them and how to turn them back on.',
+            },
           },
         },
         annotations: {
@@ -993,13 +1008,17 @@ export class EditmameiServer {
       `tools/list has the full schema for any one tool.\n\n` +
       groups
         .map((g) => `${g.label} (${g.tools.length}) — ${g.purpose}\n  ${g.tools.join(', ')}`)
-        .join('\n');
+        .join('\n') +
+      (this.adobeCreditToolsOff ? `\n\n${ADOBE_CREDIT_TOOLS_OFF_NOTE}` : '');
     return {
       content: [{ type: 'text' as const, text }],
       structuredContent: {
         tool_count: registered.length,
         group_count: groups.length,
         groups,
+        ...(this.adobeCreditToolsOff
+          ? { adobe_credit_tools_off: ADOBE_CREDIT_TOOLS_OFF_NOTE }
+          : {}),
       },
     };
   }

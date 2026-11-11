@@ -109,6 +109,13 @@ const KEYS: Record<string, KeySpec> = {
     },
     coerce: coerceBool,
   },
+  'automation.allow_adobe_generative_credits': {
+    get: (s) => s.automation.allow_adobe_generative_credits,
+    set: (s, v) => {
+      s.automation.allow_adobe_generative_credits = v as boolean;
+    },
+    coerce: coerceBool,
+  },
   ps_path: {
     get: (s) => s.ps_path,
     set: (s, v) => {
