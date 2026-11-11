@@ -28,8 +28,9 @@ var relightModes = map[string]bool{
 // relight builds Photoshop 28's Relight (AM lightshop). Every value goes in as a
 // jsNum/jsLit/jsBool literal, so nothing caller-supplied reaches the JSX
 // unescaped. Slot order: getContextInfo, normNameHelper, notFoundMessageHelper,
-// layerName, lights, ambient, mode, newLayer, hiddenIds, layerName.
-func relight(layerName string, lights []relightLight, ambient float64, mode string, newLayer bool, hiddenIDs []int) string {
+// layerName, lights, ambient, mode, newLayer, hiddenIds, expect, expectLayerId,
+// layerName.
+func relight(layerName string, lights []relightLight, ambient float64, mode string, newLayer bool, hiddenIDs []int, expect string, expectLayerID int) string {
 	rows := make([]string, 0, len(lights))
 	for _, l := range lights {
 		rows = append(rows, "["+strings.Join([]string{
@@ -53,6 +54,8 @@ func relight(layerName string, lights []relightLight, ambient float64, mode stri
 		jsLit(mode),
 		jsBool(newLayer),
 		"["+strings.Join(ids, ", ")+"]",
+		jsLit(expect),
+		jsInt(expectLayerID),
 		jsLit(layerName),
 	)
 }
@@ -119,6 +122,14 @@ func buildRelight(params map[string]any) (string, error) {
 	if !relightModes[mode] {
 		return "", fmt.Errorf("relight: unknown mode %q", mode)
 	}
+	expect := strParam(params, "expect", "")
+	if expect != "" && expect != "edit" && expect != "new" {
+		return "", fmt.Errorf("relight: expect must be edit, new or empty, got %q", expect)
+	}
+	expectLayerID := 0
+	if f := numParam(params, "expectLayerId", 0); f >= 1 && f == float64(int(f)) {
+		expectLayerID = int(f)
+	}
 	lights := relightLightsParam(params)
 	if mode != "preview_restore" && len(lights) == 0 {
 		return "", fmt.Errorf("relight: at least one light is required")
@@ -133,5 +144,7 @@ func buildRelight(params map[string]any) (string, error) {
 		mode,
 		boolParam(params, "newLayer", false),
 		relightHiddenIDsParam(params),
+		expect,
+		expectLayerID,
 	), nil
 }

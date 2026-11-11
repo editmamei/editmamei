@@ -4,7 +4,7 @@ import type { SnippetClient } from '../api/snippet-client.js';
 import { runSnippetTool, toolErrorResult } from '../utils/tool-helpers.js';
 import { validateArgs, type JsonSchemaObject } from '../utils/validate.js';
 import { RELIGHT_TIMEOUT_MS } from '../utils/operation-timeouts.js';
-import { requestApproval } from '../core/call-approval.js';
+import { isNestedCall, requestApproval } from '../core/call-approval.js';
 import { runScript } from '../utils/run-script.js';
 import {
   coreWindowRunner,
@@ -308,7 +308,14 @@ async function relight(
 
   if (args.preview === true) {
     // Free: no approval. The panel only renders if someone clicks Done in it, and the result
-    // reports that honestly.
+    // reports that honestly. It brings Photoshop to the front and sends it keys, so it runs only
+    // as the client's own call, never from inside another tool.
+    if (isNestedCall(RELIGHT_TOOL_NAME)) {
+      return notRendered(
+        `Not previewed: ${RELIGHT_TOOL_NAME} has to be called on its own, not from inside another tool such as ps_sequence. Nothing was rendered and no credits were used.`,
+        'nested'
+      );
+    }
     const previewDeps = deps.preview
       ? deps.preview(base)
       : {
@@ -322,7 +329,7 @@ async function relight(
   // Read the target before asking, so the question says whether this edits an existing Relight
   // layer, and nobody is asked about a render that would fail (no document, an old Photoshop, a
   // missing layer).
-  let probe: { edit?: boolean; target_layer?: string };
+  let probe: { edit?: boolean; target_layer?: string; target_id?: number };
   try {
     const script = await snippetClient.build('relight', { ...base, mode: 'probe' });
     probe = (await runScript(connection, script)) as typeof probe;
@@ -375,9 +382,23 @@ async function relight(
     snippet: 'relight',
     errorPrefix: 'Error running Relight',
     timeoutMs: RELIGHT_TIMEOUT_MS,
-    params: () => ({ ...base, mode: 'render' }),
+    // What the person approved rides along: the render refuses if the target changed since.
+    params: () => ({
+      ...base,
+      mode: 'render',
+      expect: edit ? 'edit' : 'new',
+      expectLayerId: typeof probe?.target_id === 'number' ? probe.target_id : 0,
+    }),
     successText: (result) => {
-      const r = result as { layer_name?: string; source_layer?: string; edited?: boolean };
+      const r = result as {
+        layer_name?: string;
+        source_layer?: string;
+        edited?: boolean;
+        history_changed?: boolean;
+      };
+      if (r.edited && r.history_changed === false) {
+        return `Photoshop accepted the re-render of "${r.layer_name ?? 'the Relight layer'}" but recorded no change in its History, so it may not have rendered. Check the layer with ps_get_preview before trying again: each try is another paid render (${RELIGHT_ADOBE_CREDITS} Adobe Firefly generative credits).`;
+      }
       if (r.edited) {
         return `Re-rendered the Relight layer "${r.layer_name ?? 'Relight Layer'}" in place with the new lights (${RELIGHT_ADOBE_CREDITS} Adobe Firefly generative credits used). No new layer was added; check the result with ps_get_preview.`;
       }

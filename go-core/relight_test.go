@@ -154,3 +154,53 @@ func TestBuildRelightEscapesLayerName(t *testing.T) {
 		t.Fatal("relight interpolated a layer name without escaping it")
 	}
 }
+
+// The render refuses when the target changed after the person approved it: the
+// probe's answer rides along as expect / expectLayerId.
+func TestBuildRelightExpectGuard(t *testing.T) {
+	p := relightParams(map[string]any{"x": 0})
+	p["expect"] = "new"
+	p["expectLayerId"] = 42.0
+	jsx, err := build("relight", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`var expect = "new";`,
+		"var expectLayerId = 42;",
+		"(expect === 'edit' && !edit) || (expect === 'new' && edit)",
+		"sourceId !== expectLayerId",
+	} {
+		if !strings.Contains(jsx, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+	// The check sits before the paid render.
+	if strings.Index(jsx, "sourceId !== expectLayerId") > strings.Index(jsx, "desc, DialogModes.NO)") {
+		t.Fatal("the expect check must run before the render")
+	}
+	p["expect"] = "maybe"
+	if _, err := build("relight", p); err == nil {
+		t.Fatal("an unknown expect value was accepted")
+	}
+	p["expect"] = ""
+	p["expectLayerId"] = -3.0
+	jsx, _ = build("relight", p)
+	if !strings.Contains(jsx, "var expectLayerId = 0;") {
+		t.Fatal("a bad layer id must turn the id check off, not pass through")
+	}
+}
+
+// The preview closes the panel by clicking the English Discard button, so it
+// refuses in other UI languages before opening anything.
+func TestBuildRelightPreviewNeedsEnglishUI(t *testing.T) {
+	jsx, err := build("relight", relightParams(map[string]any{"x": 0}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	locale := strings.Index(jsx, "String(app.locale).indexOf('en_') !== 0")
+	hide := strings.Index(jsx, "__setShown(__visibleAbove(")
+	if locale < 0 || hide < 0 || locale > hide {
+		t.Fatal("preview_prepare must check the UI language before touching layers")
+	}
+}

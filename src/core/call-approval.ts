@@ -173,6 +173,15 @@ function readAnswer(action: string, content: Record<string, unknown> | undefined
   return action === 'accept' && content?.approve === true ? 'approved' : 'declined';
 }
 
+/**
+ * True when this code runs inside a tools/call for a DIFFERENT tool (ps_sequence, a kernel
+ * invokeTool) than `tool`. Outside any tools/call (unit tests, direct use) it's false.
+ */
+export function isNestedCall(tool: string): boolean {
+  const state = storage.getStore();
+  return state !== undefined && state.tool !== tool;
+}
+
 /** Ask the person in this call's client. Never throws. */
 export async function requestApproval(req: ApprovalRequest): Promise<ApprovalOutcome> {
   const state = storage.getStore();

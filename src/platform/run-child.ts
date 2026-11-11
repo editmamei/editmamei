@@ -161,6 +161,7 @@ export async function runChildWithTimeout(
       if (settled) return;
       settled = true;
       clearTimers();
+      removeAbort();
       fn();
     };
 
@@ -190,12 +191,17 @@ export async function runChildWithTimeout(
       if (!settled) killNow('timeout');
     }, timeout);
 
+    let removeAbort = (): void => undefined;
     if (options.signal) {
+      const signal = options.signal;
       const onAbort = (): void => {
         if (!settled && !timedOut && !overflowed) killNow('abort');
       };
-      if (options.signal.aborted) onAbort();
-      else options.signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+      else {
+        signal.addEventListener('abort', onAbort, { once: true });
+        removeAbort = () => signal.removeEventListener('abort', onAbort);
+      }
     }
 
     const handleChunk = (chunk: Buffer | string, target: 'stdout' | 'stderr'): void => {

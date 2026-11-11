@@ -237,6 +237,91 @@ describe('runRelightPreview', () => {
     expect(h.log).toEqual([]);
   });
 
+  // On non-English Photoshop (or with keys blocked) the Discard dialog isn't recognized and the
+  // helper reports no_dialog while the panel is still open. That must not count as closed.
+  it('treats no_dialog on a new-layer preview as still open, and says so promptly', async () => {
+    const h = harness({
+      prepare: { prepared: true, hidden_ids: [4], context: { document: { width: 1, height: 1 } } },
+      helper: { settled: true, png_base64: PNG, closed: 'no_dialog' },
+      cancel: { closed: 'no_dialog' },
+    });
+    h.deps.panelGraceMs = 20;
+    const script = h.deps.script;
+    h.deps.script = (mode, extra, t) =>
+      mode === 'preview_open' ? new Promise(() => undefined) : script(mode, extra, t);
+    const started = Date.now();
+    const result = await runRelightPreview(h.deps, LIGHTS, 30);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toMatch(/click Cancel/);
+    expect(h.scripts.some((s) => s.mode === 'preview_restore')).toBe(false);
+  });
+
+  it('accepts no_dialog as closed for an edit preview, whose panel closes on Escape', async () => {
+    const h = harness({
+      prepare: {
+        prepared: true,
+        edit: true,
+        hidden_ids: [],
+        context: { document: { width: 1, height: 1 } },
+      },
+      helper: { settled: true, png_base64: PNG, closed: 'no_dialog' },
+    });
+    const result = await runRelightPreview(h.deps, LIGHTS, 30);
+    expect(result.isError).toBeFalsy();
+    expect(h.log).not.toContain('window:cancel-relight');
+  });
+
+  it('after a timeout, a cancel that finds no dialog leaves a new-layer panel counted open', async () => {
+    const h = harness({
+      prepare: { prepared: true, hidden_ids: [4], context: { document: { width: 1, height: 1 } } },
+      open: new Error('Script execution timeout after 90000ms'),
+      helper: { closed: 'failed' },
+      cancel: { closed: 'no_dialog' },
+    });
+    const result = await runRelightPreview(h.deps, LIGHTS, 30);
+    expect((result.content[0] as { text: string }).text).toMatch(/click Cancel/);
+    expect(h.scripts.some((s) => s.mode === 'preview_restore')).toBe(false);
+  });
+
+  it("doesn't send keys to close a panel when the script itself failed (it isn't holding Photoshop)", async () => {
+    const h = harness({ open: new Error('Relight did not open: no layer') });
+    const result = await runRelightPreview(h.deps, LIGHTS, 30);
+    expect(result.isError).toBe(true);
+    expect(h.log).not.toContain('window:cancel-relight');
+  });
+
+  it('notices a render by the layer count when the panel script timed out', async () => {
+    const h = harness({
+      prepare: {
+        prepared: true,
+        hidden_ids: [],
+        layer_count: 2,
+        context: { document: { width: 1, height: 1 } },
+      },
+      open: new Error('Script execution timeout after 90000ms'),
+      helper: { closed: 'failed' },
+      restore: { restored: 0, layer_count: 3 },
+    });
+    const result = await runRelightPreview(h.deps, LIGHTS, 30);
+    expect(result.structuredContent).toMatchObject({ rendered: true, adobe_credits_used: 30 });
+  });
+
+  it('says so when not every hidden layer came back', async () => {
+    const h = harness({
+      prepare: {
+        prepared: true,
+        hidden_ids: [4, 5],
+        context: { document: { width: 1, height: 1 } },
+      },
+      restore: { restored: 1, layer_count: 3 },
+    });
+    const result = await runRelightPreview(h.deps, LIGHTS, 30);
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0]).toMatchObject({ type: 'image' });
+    expect((result.content[1] as { text: string }).text).toMatch(/1 of the 2 layer/);
+  });
+
   it('marks an unsettled preview as rough', async () => {
     const h = harness({ helper: { settled: false, png_base64: PNG, closed: 'no_dialog' } });
     const result = await runRelightPreview(h.deps, LIGHTS, 30);

@@ -29,10 +29,15 @@ import "editmamei-core/internal/vault"
 //	                 so layer count and history tell whether Done rendered.
 //	preview_restore  show the layers preview_prepare hid.
 //
-// Slot order (10): getContextInfo, normNameHelper, notFoundMessageHelper,
-// layerName, lights, ambient, mode, newLayer, hiddenIds, layerName (for the
-// not-found message). lights is a JS array of [x, y, z, r, g, b, intensity,
-// radius] rows.
+// render also takes what the person approved: expect ("edit", "new" or empty for
+// no check) and expectLayerId (0 for no check), from the probe. If the target
+// changed in between (another layer clicked while the question was up), it
+// refuses rather than render something other than what was approved.
+//
+// Slot order (12): getContextInfo, normNameHelper, notFoundMessageHelper,
+// layerName, lights, ambient, mode, newLayer, hiddenIds, expect, expectLayerId,
+// layerName (for the not-found message). lights is a JS array of [x, y, z, r,
+// g, b, intensity, radius] rows.
 func init() {
 	fragments[vault.Relight] = `
     %s
@@ -56,6 +61,8 @@ func init() {
     var mode = %s;
     var newLayer = %s;
     var hiddenIds = %s;
+    var expect = %s;
+    var expectLayerId = %s;
 
     function __collectIds(layers, into) {
       for (var i = 0; i < layers.length; i++) {
@@ -162,6 +169,7 @@ func init() {
       return {
         probe: true,
         target_layer: sourceName,
+        target_id: sourceId,
         is_relight_layer: isRelight,
         edit: edit,
         layer_count: __layerCount(),
@@ -170,6 +178,14 @@ func init() {
     }
 
     if (mode === 'preview_prepare') {
+      // The preview is closed from outside by clicking Photoshop's English
+      // "Discard" button; in another UI language it couldn't be closed safely.
+      if (String(app.locale).indexOf('en_') !== 0) {
+        throw new Error(
+          'The free Relight preview works only with Photoshop in English for now (this one is ' +
+          app.locale + '). Plan the lights and render once with the person\'s approval instead.'
+        );
+      }
       try { runMenuItem(charIDToTypeID('FtOn')); } catch (eFit) {}
       var hid = __setShown(__visibleAbove(doc.layers, [], { done: false }, true), false);
       return {
@@ -207,10 +223,16 @@ func init() {
     }
     var before = __collectIds(doc.layers, {});
     var countBefore = __countIds(before);
-    var histBefore = doc.historyStates.length;
-    var histNameBefore = doc.activeHistoryState.name;
+    // Every state's name, so a new state still shows when a full history drops
+    // its oldest one and the length stays the same.
+    function __historySig() {
+      var names = [];
+      for (var hi = 0; hi < doc.historyStates.length; hi++) names.push(doc.historyStates[hi].name);
+      return names.length + '|' + names.join('\u0001') + '|' + doc.activeHistoryState.name;
+    }
+    var histBefore = __historySig();
     function __historyChanged() {
-      return doc.historyStates.length !== histBefore || doc.activeHistoryState.name !== histNameBefore;
+      return __historySig() !== histBefore;
     }
 
     var desc = new ActionDescriptor();
@@ -260,6 +282,16 @@ func init() {
         open_error: openError,
         context: getContextInfo()
       };
+    }
+
+    if ((expect === 'edit' && !edit) || (expect === 'new' && edit) ||
+        (expectLayerId > 0 && sourceId !== expectLayerId)) {
+      throw new Error(
+        'The layer to relight changed after the person approved this render (now "' + sourceName +
+        '", ' + (edit ? 'an existing Relight layer that would be re-rendered in place' :
+        'which would get a new Relight layer') + '). Nothing was rendered and no Adobe Firefly ' +
+        'credits were used. Ask the person again about the layer that is selected now.'
+      );
     }
 
     try {

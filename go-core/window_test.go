@@ -302,3 +302,23 @@ func TestOnlyNAndEscapeExist(t *testing.T) {
 		t.Fatalf("runWindow accepted an unknown action: %s", buf.String())
 	}
 }
+
+// The preview is a low-resolution look, capped on its long edge.
+func TestCropPNGDownscales(t *testing.T) {
+	canvas := rect{X: 100, Y: 50, W: 1800, H: 1200}
+	f := newFrame(2000, 1400, rect{X: 50, Y: 20, W: 1900, H: 1360}, canvas)
+	data, err := cropPNG(f, canvas, maxPreviewSide)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Width != 1024 || cfg.Height != 682 {
+		t.Fatalf("got %dx%d, want 1024x682", cfg.Width, cfg.Height)
+	}
+	if _, err := cropPNG(f, rect{X: 1900, Y: 0, W: 400, H: 400}, 0); err == nil {
+		t.Fatal("a crop outside the frame must fail, not panic")
+	}
+}

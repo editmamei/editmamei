@@ -37,7 +37,7 @@ var (
 	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
 	procGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
 	procSendInput                = user32.NewProc("SendInput")
-	procSendMessageW             = user32.NewProc("SendMessageW")
+	procSendMessageTimeoutW      = user32.NewProc("SendMessageTimeoutW")
 	procSetDpiAwarenessContext   = user32.NewProc("SetProcessDpiAwarenessContext")
 
 	procCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
@@ -54,9 +54,12 @@ var (
 const (
 	pwRenderFullContent       = 2
 	bmClick                   = 0x00F5
+	inputMouse                = 0
 	inputKeyboard             = 1
 	keyeventfKeyUp            = 0x0002
-	vkF24                     = 0x87
+	mouseeventfMove           = 0x0001
+	smtoAbortIfHung           = 0x0002
+	discardClickTimeoutMs     = 2000
 	vkN                       = 0x4E
 	vkEscape                  = 0x1B
 	processQueryLimitedInfo   = 0x1000
@@ -69,7 +72,8 @@ const (
 )
 
 // keyInput is Win32 INPUT with a KEYBDINPUT, laid out for 64-bit Windows
-// (40 bytes: type, padding, then the union at offset 8).
+// (40 bytes: type, padding, then the union at offset 8). sendInputs refuses to
+// run where the size differs (32-bit Windows), rather than send garbage.
 type keyInput struct {
 	typ   uint32
 	_     uint32
@@ -81,6 +85,20 @@ type keyInput struct {
 	extra uintptr
 	_     [8]byte
 }
+
+// mouseInput is Win32 INPUT with a MOUSEINPUT, same 40-byte layout.
+type mouseInput struct {
+	typ       uint32
+	_         uint32
+	dx, dy    int32
+	mouseData uint32
+	flags     uint32
+	time      uint32
+	_         uint32
+	extra     uintptr
+}
+
+const inputSize = 40
 
 type winRect struct{ left, top, right, bottom int32 }
 
@@ -253,15 +271,33 @@ func (w *winPhotoshop) capture() (*frame, error) {
 	return &frame{w: width, h: height, pix: pix}, nil
 }
 
-func sendKeys(vks ...uint16) {
-	inputs := make([]keyInput, 0, len(vks)*2)
-	for _, vk := range vks {
-		inputs = append(inputs,
-			keyInput{typ: inputKeyboard, vk: vk},
-			keyInput{typ: inputKeyboard, vk: vk, flags: keyeventfKeyUp},
-		)
+// sendKey sends one key press and release. It fails, sending nothing, when the
+// INPUT layout doesn't match this platform, and reports when Windows blocked the
+// input (another app's foreground, or Photoshop running elevated).
+func sendKey(vk uint16) error {
+	if unsafe.Sizeof(keyInput{}) != inputSize {
+		return errors.New("key input isn't supported on this Windows build")
 	}
-	procSendInput.Call(uintptr(len(inputs)), uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(inputs[0]))
+	inputs := []keyInput{
+		{typ: inputKeyboard, vk: vk},
+		{typ: inputKeyboard, vk: vk, flags: keyeventfKeyUp},
+	}
+	n, _, _ := procSendInput.Call(uintptr(len(inputs)), uintptr(unsafe.Pointer(&inputs[0])), inputSize)
+	if int(n) != len(inputs) {
+		return errors.New("Windows blocked the key (is Photoshop running as administrator?)")
+	}
+	return nil
+}
+
+// nudgeInput sends a zero-distance mouse move: real input that lets this
+// process hand the foreground to Photoshop, without a keystroke reaching
+// whatever app is in front.
+func nudgeInput() {
+	if unsafe.Sizeof(mouseInput{}) != inputSize {
+		return
+	}
+	in := mouseInput{typ: inputMouse, flags: mouseeventfMove}
+	procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), inputSize)
 }
 
 func foregroundPID() uint32 {
@@ -273,8 +309,8 @@ func foregroundPID() uint32 {
 }
 
 // focus brings Photoshop to the foreground. Windows only lets the process that
-// received the last input take the foreground, so F24 (a key no app binds) is
-// tapped first. Alt would open menus.
+// sent the last input take the foreground, so a zero-distance mouse move goes
+// first. (Alt would open menus; a key could trigger another app's shortcut.)
 func (w *winPhotoshop) focus() error {
 	if !w.focused {
 		w.prevFront, _, _ = procGetForegroundWindow.Call()
@@ -284,7 +320,7 @@ func (w *winPhotoshop) focus() error {
 		if foregroundPID() == w.pid {
 			return nil
 		}
-		sendKeys(vkF24)
+		nudgeInput()
 		procSetForegroundWindow.Call(w.hwnd)
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -311,8 +347,7 @@ func (w *winPhotoshop) pressKey(k psKey) error {
 	if foregroundPID() != w.pid {
 		return errors.New("Photoshop lost the foreground, so no key was sent")
 	}
-	sendKeys(vk)
-	return nil
+	return sendKey(vk)
 }
 
 func (w *winPhotoshop) clickRelightDiscard() (bool, error) {
@@ -341,7 +376,12 @@ func (w *winPhotoshop) clickRelightDiscard() (bool, error) {
 		if discard == 0 {
 			return true, errors.New("found Photoshop's discard dialog but not its Discard button")
 		}
-		procSendMessageW.Call(discard, bmClick, 0, 0)
+		// With a timeout, so a hung Photoshop can't hang this helper too.
+		var result uintptr
+		r, _, _ := procSendMessageTimeoutW.Call(discard, bmClick, 0, 0, smtoAbortIfHung, discardClickTimeoutMs, uintptr(unsafe.Pointer(&result)))
+		if r == 0 {
+			return true, errors.New("Photoshop didn't respond to the Discard click")
+		}
 		return true, nil
 	}
 	return false, nil
@@ -352,7 +392,7 @@ func (w *winPhotoshop) restoreFocus() {
 		return
 	}
 	for i := 0; i < 5; i++ {
-		sendKeys(vkF24)
+		nudgeInput()
 		procSetForegroundWindow.Call(w.prevFront)
 		time.Sleep(50 * time.Millisecond)
 		if h, _, _ := procGetForegroundWindow.Call(); h == w.prevFront {

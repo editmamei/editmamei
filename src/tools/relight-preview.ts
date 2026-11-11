@@ -37,6 +37,11 @@ const WINDOW_CAPTURE_TIMEOUT_MS = 15_000;
 // Settle wait plus the N press, the capture, Escape and the dialog search.
 const WINDOW_PREVIEW_CHILD_TIMEOUT_MS = PREVIEW_SETTLE_TIMEOUT_MS + 20_000;
 const WINDOW_CANCEL_TIMEOUT_MS = 15_000;
+/**
+ * How long to wait for the panel script after the helper could NOT confirm the panel
+ * closed. A closed panel returns its script at once; past this, it's still open.
+ */
+export const PANEL_CLOSE_GRACE_MS = 5_000;
 
 export type WindowAction = 'capture' | 'relight-preview' | 'cancel-relight';
 
@@ -59,6 +64,37 @@ export interface PreviewDeps {
   platform: typeof process.platform;
   script: RelightScriptRunner;
   window: WindowRunner;
+  /** Tests shorten PANEL_CLOSE_GRACE_MS. */
+  panelGraceMs?: number;
+}
+
+type Settled<T> =
+  | { status: 'fulfilled'; value: T }
+  | { status: 'rejected'; reason: unknown }
+  | { status: 'pending' };
+
+/** Wait for a promise, but no longer than ms. */
+async function settleWithin<T>(p: Promise<T>, ms: number): Promise<Settled<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const pending = new Promise<Settled<T>>((resolve) => {
+    timer = setTimeout(() => resolve({ status: 'pending' }), ms);
+  });
+  try {
+    return await Promise.race([
+      p.then(
+        (value): Settled<T> => ({ status: 'fulfilled', value }),
+        (reason: unknown): Settled<T> => ({ status: 'rejected', reason })
+      ),
+      pending,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A script runner timeout: Photoshop may still be holding the panel open. */
+function isTimeout(e: unknown): boolean {
+  return /time(d)? ?out/i.test(errorText(e));
 }
 
 export function coreWindowRunner(binaryPath: string = resolveCoreBinaryPath()): WindowRunner {
@@ -142,11 +178,22 @@ export async function runRelightPreview(
   );
   const aspect = docWidth > 0 && docHeight > 0 ? docWidth / docHeight : 0;
 
+  // Did closing work? A new-layer preview closes only through the Discard dialog,
+  // so for it only 'discarded' counts: 'no_dialog' there means the dialog wasn't
+  // recognized (another UI language, blocked keys) and the panel may still be
+  // open. An edit preview's panel closes on Escape with no dialog.
+  const closedBy = (closed: unknown): boolean =>
+    closed === 'discarded' || (edit && closed === 'no_dialog');
+  const graceMs = deps.panelGraceMs ?? PANEL_CLOSE_GRACE_MS;
+
   let panelStarted = false;
   let panelClosed = true;
   let panelResult: Record<string, unknown> | null = null;
   let shot: Record<string, unknown> | null = null;
   let failure: string | null = null;
+  let layersAfter: number | null = null;
+  // A layer that couldn't be shown again is worth saying, but doesn't spoil the preview.
+  let restoreNote = '';
 
   try {
     const base = await deps.window(
@@ -182,34 +229,48 @@ export async function runRelightPreview(
         stopHelper.abort();
         throw e;
       });
-    const helper = deps
-      .window('relight-preview', helperArgs, WINDOW_PREVIEW_CHILD_TIMEOUT_MS, stopHelper.signal)
-      .catch((e: unknown) => ({ closed: 'failed', error: errorText(e) }) as Record<string, unknown>)
-      .then(async (r) => {
-        // The helper couldn't close the panel (Photoshop wouldn't come to the
-        // front, say): try once more rather than wait out the panel timeout.
-        if (r.closed === 'failed' && !panelClosed && !stopHelper.signal.aborted) {
-          try {
-            r.closed_retry = (
-              await deps.window('cancel-relight', [], WINDOW_CANCEL_TIMEOUT_MS)
-            ).closed;
-          } catch {
-            // The panel script's timeout and the cleanup below handle it.
-          }
-        }
-        return r;
-      });
+    // Settled below; this only keeps an early rejection from going unhandled.
+    panel.catch(() => undefined);
 
-    const [panelOutcome, helperOutcome] = await Promise.allSettled([panel, helper]);
-    shot = helperOutcome.status === 'fulfilled' ? helperOutcome.value : null;
-    if (panelOutcome.status === 'fulfilled') {
-      panelResult = panelOutcome.value;
+    let helperResult = await deps
+      .window('relight-preview', helperArgs, WINDOW_PREVIEW_CHILD_TIMEOUT_MS, stopHelper.signal)
+      .catch(
+        (e: unknown) => ({ closed: 'failed', error: errorText(e) }) as Record<string, unknown>
+      );
+    if (!closedBy(helperResult.closed) && !panelClosed && !stopHelper.signal.aborted) {
+      // The helper couldn't close the panel: try once more before giving up.
+      try {
+        const retry = await deps.window('cancel-relight', [], WINDOW_CANCEL_TIMEOUT_MS);
+        helperResult = { ...helperResult, closed_retry: retry.closed };
+      } catch {
+        // Handled below: the panel is treated as possibly open.
+      }
+    }
+    shot = helperResult;
+    const helperClosed = closedBy(helperResult.closed) || closedBy(helperResult.closed_retry);
+
+    // When the helper closed the panel, the script returns at once; give it the
+    // full timeout in case Photoshop is slow. When it didn't, wait only briefly:
+    // a panel that's still open won't close by itself, and the person should be
+    // told now rather than after the script times out.
+    const outcome = await settleWithin(
+      panel,
+      helperClosed || stopHelper.signal.aborted ? PREVIEW_PANEL_TIMEOUT_MS + 5_000 : graceMs
+    );
+    if (outcome.status === 'fulfilled') {
+      panelResult = outcome.value;
+    } else if (outcome.status === 'pending') {
+      failure = "the Relight panel didn't close";
+    } else if (!isTimeout(outcome.reason)) {
+      // The script itself threw, so it finished and Photoshop isn't held.
+      panelClosed = true;
+      failure = `the Relight panel script failed: ${errorText(outcome.reason)}`;
     } else {
-      failure = `the Relight panel script failed: ${errorText(panelOutcome.reason)}`;
+      failure = `the Relight panel script failed: ${errorText(outcome.reason)}`;
       // A script timeout leaves the panel open in Photoshop: close it from outside.
       try {
         const closed = await deps.window('cancel-relight', [], WINDOW_CANCEL_TIMEOUT_MS);
-        panelClosed = closed.closed === 'discarded' || closed.closed === 'no_dialog';
+        panelClosed = closedBy(closed.closed);
       } catch {
         panelClosed = false;
       }
@@ -217,23 +278,33 @@ export async function runRelightPreview(
   } catch (e) {
     failure = errorText(e);
   } finally {
-    if (hiddenIds.length > 0 && panelClosed) {
+    // A restore queues behind an open panel and would hang, so it runs only once
+    // the panel is known closed. Without a script result it also reads the layer
+    // count, to tell whether Done rendered.
+    if (panelClosed && (hiddenIds.length > 0 || (panelStarted && !panelResult))) {
       try {
-        await deps.script('preview_restore', { hiddenIds });
+        const restored = await deps.script('preview_restore', { hiddenIds });
+        if (typeof restored.layer_count === 'number') layersAfter = restored.layer_count;
+        if (typeof restored.restored === 'number' && restored.restored < hiddenIds.length) {
+          restoreNote = ` ${hiddenIds.length - restored.restored} of the ${hiddenIds.length} layer(s) hidden for the preview couldn't be shown again; show them with ps_set_layer.`;
+        }
       } catch (e) {
-        failure = `${failure ? failure + '; ' : ''}couldn't show the ${hiddenIds.length} layer(s) hidden for the preview again (${errorText(e)}); show them with ps_set_layer`;
+        restoreNote = ` Couldn't show the ${hiddenIds.length} layer(s) hidden for the preview again (${errorText(e)}); show them with ps_set_layer.`;
       }
     }
   }
 
-  const rendered = panelResult?.rendered === true;
+  const layersBefore = typeof prepared.layer_count === 'number' ? prepared.layer_count : null;
+  const rendered =
+    panelResult?.rendered === true ||
+    (!panelResult && layersAfter !== null && layersBefore !== null && layersAfter > layersBefore);
   if (rendered) {
     // Someone clicked Done in the panel: Photoshop rendered and charged for it.
     const layer = String(panelResult?.layer_name ?? '') || 'a Relight layer';
     return {
       content: [
         text(
-          `Photoshop rendered this relight: Done was clicked in the Relight panel, so ${renderedCredits} Adobe Firefly generative credits were used and the result is "${layer}". Check it with ps_get_preview.`
+          `Photoshop rendered this relight: Done was clicked in the Relight panel, so ${renderedCredits} Adobe Firefly generative credits were used and the result is "${layer}". Check it with ps_get_preview.${restoreNote}`
         ),
       ],
       structuredContent: {
@@ -264,9 +335,15 @@ export async function runRelightPreview(
   }
   if (!png || failure || !panelStarted) {
     const why = failure ?? (typeof shot?.error === 'string' ? shot.error : 'no image came back');
-    return previewError(
-      `No preview image: ${why}. Nothing was rendered and no Adobe Firefly credits were used.`
-    );
+    // Without the panel script's own answer, a render can only be ruled out by
+    // the layer count, and an edit adds no layer.
+    const outcome =
+      panelResult || !panelStarted
+        ? 'Nothing was rendered and no Adobe Firefly credits were used.'
+        : edit
+          ? "Photoshop's panel was closed from outside, so whether anything rendered can't be confirmed: check the Relight layer and the History panel before trying again."
+          : 'No new Relight layer appeared, so nothing was rendered.';
+    return previewError(`No preview image: ${why}. ${outcome}${restoreNote}`);
   }
 
   const settled = shot?.settled === true;
@@ -281,7 +358,7 @@ export async function runRelightPreview(
         mimeType: 'image/png',
       },
       text(
-        `Free preview from Photoshop's Relight panel${edit ? ' (editing the existing Relight layer)' : ''}: low resolution, nothing rendered, no Adobe Firefly credits used. Judge the light's direction, color and mood from it, not fine detail.${note} To keep this look, call ps_relight again with the same lights and without preview: that render costs ${renderedCredits} Adobe Firefly credits and needs the person's approval.`
+        `Free preview from Photoshop's Relight panel${edit ? ' (editing the existing Relight layer)' : ''}: low resolution, nothing rendered, no Adobe Firefly credits used. Judge the light's direction, color and mood from it, not fine detail.${note} To keep this look, call ps_relight again with the same lights and without preview: that render costs ${renderedCredits} Adobe Firefly credits and needs the person's approval.${restoreNote}`
       ),
     ],
     structuredContent: {

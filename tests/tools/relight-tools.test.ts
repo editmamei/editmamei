@@ -323,6 +323,38 @@ describe('createRelightTools', () => {
     expect(approvalMessage(1, 'Model', false)).toMatch(/new Relight layer/);
   });
 
+  it('renders only what was approved: the probe answer rides along to the render', async () => {
+    conn = makeConnection({
+      resultFor: (script) =>
+        script.includes('"mode":"probe"')
+          ? { probe: true, target_layer: 'Background', target_id: 7, edit: false }
+          : { relit: true, layer_name: 'Relight Layer 1', source_layer: 'Background' },
+    });
+    await call({ lights: [LIGHT] }, answering('accept'));
+    expect(snippetClient.lastBuild().params).toMatchObject({
+      mode: 'render',
+      expect: 'new',
+      expectLayerId: 7,
+    });
+  });
+
+  it('refuses a preview from inside another tool (it sends Photoshop keys)', async () => {
+    let previewRan = false;
+    const result = await call(
+      { lights: [LIGHT], preview: true },
+      { supportsForm: true },
+      'ps_sequence',
+      {
+        preview: () => {
+          previewRan = true;
+          throw new Error('should not run');
+        },
+      }
+    );
+    expect(result.structuredContent?.reason).toBe('nested');
+    expect(previewRan).toBe(false);
+  });
+
   it('passes new_layer through so a Relight layer can be stacked instead of edited', async () => {
     await call({ lights: [LIGHT], new_layer: true }, answering('accept'));
     expect(snippetClient.lastBuild().params.newLayer).toBe(true);

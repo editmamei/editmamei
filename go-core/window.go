@@ -373,12 +373,37 @@ func sigDiff(a, b []byte) float64 {
 	return float64(total) / float64(len(a))
 }
 
-func cropPNG(f *frame, c rect) ([]byte, error) {
-	img := image.NewNRGBA(image.Rect(0, 0, c.W, c.H))
-	for y := 0; y < c.H; y++ {
-		for x := 0; x < c.W; x++ {
-			r, g, b := f.rgb(c.X+x, c.Y+y)
-			img.SetNRGBA(x, y, color.NRGBA{uint8(r), uint8(g), uint8(b), 255})
+// maxPreviewSide caps the preview's long edge: it's a low-resolution look at
+// light and color, and smaller is cheaper to send.
+const maxPreviewSide = 1024
+
+// cropPNG encodes the crop, box-averaged down so its long edge is at most
+// maxSide (0 = full size).
+func cropPNG(f *frame, c rect, maxSide int) ([]byte, error) {
+	if c.W <= 0 || c.H <= 0 || c.X < 0 || c.Y < 0 || c.X+c.W > f.w || c.Y+c.H > f.h {
+		return nil, errors.New("the canvas crop is outside the captured window")
+	}
+	w, h := c.W, c.H
+	if maxSide > 0 && max(w, h) > maxSide {
+		if w >= h {
+			w, h = maxSide, max(1, c.H*maxSide/c.W)
+		} else {
+			w, h = max(1, c.W*maxSide/c.H), maxSide
+		}
+	}
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		y0, y1 := c.Y+y*c.H/h, c.Y+(y+1)*c.H/h
+		for x := 0; x < w; x++ {
+			x0, x1 := c.X+x*c.W/w, c.X+(x+1)*c.W/w
+			sr, sg, sb, n := 0, 0, 0, 0
+			for yy := y0; yy < max(y1, y0+1); yy++ {
+				for xx := x0; xx < max(x1, x0+1); xx++ {
+					r, g, b := f.rgb(xx, yy)
+					sr, sg, sb, n = sr+r, sg+g, sb+b, n+1
+				}
+			}
+			img.SetNRGBA(x, y, color.NRGBA{uint8(sr / n), uint8(sg / n), uint8(sb / n), 255})
 		}
 	}
 	var buf bytes.Buffer
@@ -482,17 +507,22 @@ func runRelightPreview(w psWindow, o previewOpts, clk clock) previewResult {
 	if res.Settled {
 		res.Error = ""
 		// Hide the light markers for a clean image. If the key can't be sent,
-		// keep the frame already captured (markers and all).
+		// or the window changed size, keep the frame already captured (markers
+		// and all).
 		if err := w.pressKey(keyN); err == nil {
 			clk.sleep(400 * time.Millisecond)
 			if f, err := w.capture(); err == nil {
-				last = f
+				if _, serr := signature(f, o.crop); serr == nil {
+					last = f
+				}
 			}
 		}
 	}
 	if last != nil {
-		if data, err := cropPNG(last, o.crop); err == nil {
-			res.Width, res.Height = o.crop.W, o.crop.H
+		if data, err := cropPNG(last, o.crop, maxPreviewSide); err == nil {
+			if cfg, err := png.DecodeConfig(bytes.NewReader(data)); err == nil {
+				res.Width, res.Height = cfg.Width, cfg.Height
+			}
 			res.PNG = base64.StdEncoding.EncodeToString(data)
 		}
 	}
