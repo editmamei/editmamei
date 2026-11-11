@@ -262,12 +262,12 @@ content-free fields as above, with **no tool name, no counts, no free text**. `p
 
 Sent once the MCP handshake with your AI client completes, so we can tell which clients people
 actually connect Editmamei to (and prioritize testing against the popular ones). Content-free: the
-client's self-reported name is mapped to a fixed short list, never sent as free text, and its
+client's self-reported name is mapped to a fixed list, never sent as free text, and its
 version is reduced to a bare major number.
 
 | Field | Meaning |
 |---|---|
-| `client` | Which AI client connected, one of: `claude_desktop`, `claude_code`, `cursor`, `windsurf`, `vscode`, or `other`. Never the raw client name string. |
+| `client` | Which AI client connected, one of: `claude_desktop`, `claude_code`, `cursor`, `windsurf`, `vscode`, `visual_studio`, `jetbrains`, `xcode_copilot`, `copilot_cli`, `codex`, `gemini_cli`, `cline`, `roo_code`, `kilo_code`, `continue`, `zed`, `goose`, `opencode`, `crush`, `amp`, `factory`, `amazon_q`, `kiro`, `antigravity`, `warp`, `lm_studio`, `cherry_studio`, `raycast`, `librechat`, `jan`, `lobehub`, `chatgpt`, or `other`. Never the raw client name string. |
 | `client_major` | The client's major version number, or `null` if it didn't report one or the version doesn't parse. Among the fields added after this event type shipped, it is the only one sent as `null` rather than omitted — a connected client with an unreadable version is still a known fact. (`error_class` is also sent as `null`, on a successful call.) |
 | `cap_sampling` / `cap_elicitation` / `cap_roots` | Whether the client declared support for these MCP capabilities. Booleans only. |
 
