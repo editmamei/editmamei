@@ -98,7 +98,7 @@ describe('TelemetryClient feature details', () => {
     return {
       telemetry: { usage: true, diagnostics: false, install_id: 'a'.repeat(32), ...telemetry },
       privacy: { send_previews_to_llm: true },
-      automation: { allow_execute_script: true },
+      automation: { allow_execute_script: true, allow_adobe_generative_credits: true },
       ps_path: null,
       update_check: true,
       editor: 'auto',

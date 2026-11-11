@@ -558,4 +558,153 @@ func init() {
       context: getContextInfo()
     };
   `
+
+	// relight: Photoshop 28's Relight layer (AM 'lightshop'). Rendered in
+	// Adobe's cloud and charged to the user's Adobe Firefly generative credits;
+	// the TS tool asks the person before this ever runs. Creates a Relight
+	// smart-object layer above the source and hides the source.
+	// Descriptor axes (verified against the panel's sliders, 2026-11-11):
+	// X = left/right, Y = close/far (depth, NOT height), z = low/high.
+	// 'ambient' is the panel's single Original lighting value, so every light
+	// carries the same one. 'seed' and 'steps' are omitted (the replay worked
+	// without them).
+	// Slot order (7): getContextInfo, normNameHelper, notFoundMessageHelper,
+	// layerName, lights, ambient, layerName (for the not-found message).
+	// lights is a JS array of [x, y, z, r, g, b, intensity, radius] rows.
+	fragments[vault.Relight] = `
+    %s
+    %s
+    %s
+
+    if (app.documents.length === 0) {
+      throw new Error('No document is open in Photoshop');
+    }
+    var psMajor = parseInt(String(app.version).split('.')[0], 10);
+    if (!(psMajor >= 28)) {
+      throw new Error(
+        'Relight needs Photoshop 2027 (version 28) or later, and this Photoshop is ' + app.version +
+        '. Update Photoshop in the Creative Cloud app.'
+      );
+    }
+    var doc = app.activeDocument;
+    var wanted = %s;
+    var lights = %s;
+    var ambient = %s;
+
+    function __findArtLayer(layers, depth) {
+      if (depth > 32) return null;
+      for (var i = 0; i < layers.length; i++) {
+        var l = layers[i];
+        if (l.typename === 'LayerSet') {
+          var nested = __findArtLayer(l.layers, depth + 1);
+          if (nested) return nested;
+        } else if (normName(l.name) === normName(wanted)) {
+          return l;
+        }
+      }
+      return null;
+    }
+    var target;
+    if (wanted !== '') {
+      target = __findArtLayer(doc.layers, 0);
+      if (!target) throw new Error(__notFoundMessage('Layer', %s, false));
+      doc.activeLayer = target;
+    } else {
+      target = doc.activeLayer;
+    }
+    if (target.typename === 'LayerSet') {
+      throw new Error(
+        'Relight works on a single layer, not a group (' + target.name + '). ' +
+        'Pass layer with the name of a pixel or smart object layer.'
+      );
+    }
+    var sourceName = target.name;
+    var sourceId = target.id;
+
+    function __collectIds(layers, into) {
+      for (var i = 0; i < layers.length; i++) {
+        into[layers[i].id] = true;
+        if (layers[i].typename === 'LayerSet') __collectIds(layers[i].layers, into);
+      }
+      return into;
+    }
+    function __findNew(layers, known) {
+      for (var i = 0; i < layers.length; i++) {
+        var l = layers[i];
+        if (!known[l.id]) return l;
+        if (l.typename === 'LayerSet') {
+          var nested = __findNew(l.layers, known);
+          if (nested) return nested;
+        }
+      }
+      return null;
+    }
+    function __findById(layers, id) {
+      for (var i = 0; i < layers.length; i++) {
+        var l = layers[i];
+        if (l.id === id) return l;
+        if (l.typename === 'LayerSet') {
+          var nested = __findById(l.layers, id);
+          if (nested) return nested;
+        }
+      }
+      return null;
+    }
+    var before = __collectIds(doc.layers, {});
+
+    var desc = new ActionDescriptor();
+    var list = new ActionList();
+    for (var li = 0; li < lights.length; li++) {
+      var row = lights[li];
+      var ld = new ActionDescriptor();
+      ld.putDouble(charIDToTypeID('X   '), row[0]);
+      ld.putDouble(charIDToTypeID('Y   '), row[1]);
+      ld.putDouble(stringIDToTypeID('z'), row[2]);
+      ld.putDouble(charIDToTypeID('Rd  '), row[3]);
+      ld.putDouble(charIDToTypeID('Grn '), row[4]);
+      ld.putDouble(charIDToTypeID('Bl  '), row[5]);
+      ld.putDouble(charIDToTypeID('Intn'), row[6]);
+      ld.putDouble(charIDToTypeID('Rds '), row[7]);
+      ld.putDouble(stringIDToTypeID('ambient'), ambient);
+      ld.putDouble(stringIDToTypeID('transition'), 1.0);
+      ld.putBoolean(charIDToTypeID('Vsbl'), true);
+      list.putObject(stringIDToTypeID('lightshop_light'), ld);
+    }
+    desc.putList(stringIDToTypeID('lights_list'), list);
+    var docRef = new ActionReference();
+    docRef.putEnumerated(charIDToTypeID('Dcmn'), charIDToTypeID('Ordn'), charIDToTypeID('Trgt'));
+    desc.putReference(charIDToTypeID('null'), docRef);
+
+    try {
+      executeAction(stringIDToTypeID('lightshop'), desc, DialogModes.NO);
+    } catch (eAm) {
+      throw new Error(
+        'Relight did not render: ' + String(eAm.message || eAm) + '\n' +
+        'Relight runs in Adobe\'s cloud: Photoshop must be online and signed in to an Adobe ' +
+        'account with Adobe Firefly generative credits left. Check Photoshop for a sign-in or ' +
+        'credits message before trying again.'
+      );
+    }
+
+    var made = __findNew(doc.layers, before);
+    if (!made) {
+      throw new Error(
+        'Relight reported success but no new layer appeared. Check the layer stack ' +
+        '(ps_inspect what=layer_tree) before retrying: each retry is another render.'
+      );
+    }
+    var source = __findById(doc.layers, sourceId);
+
+    return {
+      relit: true,
+      strategy_used: 'executeAction:lightshop',
+      layer_name: made.name,
+      source_layer: sourceName,
+      source_hidden: source ? !source.visible : false,
+      source_found: !!source,
+      light_count: lights.length,
+      original_lighting: ambient,
+      context: getContextInfo()
+    };
+  `
 }

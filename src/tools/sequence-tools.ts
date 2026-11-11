@@ -23,6 +23,13 @@ type InvokeTool = (name: string, args: Record<string, unknown>) => Promise<ToolR
 type HasTool = (name: string) => boolean;
 
 const SEQUENCE_TOOL_NAME = 'ps_sequence';
+
+/**
+ * Tools that ask the person for approval inside their own call (call-approval.ts). A step is
+ * not its own call, so one answer could cover several steps or a retried sequence; refused up
+ * front instead.
+ */
+const APPROVAL_TOOLS = new Set<string>(['ps_relight']);
 const MIN_STEPS = 1;
 const MAX_STEPS = 25;
 
@@ -219,6 +226,11 @@ function validateSequenceArgs(
     }
     if (tool === SEQUENCE_TOOL_NAME) {
       throw new Error(`step ${i + 1}: cannot nest ${SEQUENCE_TOOL_NAME} inside itself`);
+    }
+    if (APPROVAL_TOOLS.has(tool)) {
+      throw new Error(
+        `step ${i + 1}: "${tool}" asks the person to approve spending credits, so call it on its own rather than inside ${SEQUENCE_TOOL_NAME}`
+      );
     }
     if (!hasTool(tool)) {
       throw new Error(`step ${i + 1}: "${tool}" is not a tool registered right now`);

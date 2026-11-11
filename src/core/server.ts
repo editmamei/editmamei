@@ -26,6 +26,7 @@ import {
 import { loadSettings, applyDesktopToggles, type Settings } from './settings.js';
 import { itemsFromResult } from '../telemetry/activity.js';
 import { clientSupportsForm, runConsentPrompt } from './consent.js';
+import { approvalChannelFor, runWithCallApproval } from './call-approval.js';
 import { TelemetryClient } from '../telemetry/client.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
 import { callFeatures } from '../telemetry/script-operations.js';
@@ -58,7 +59,12 @@ import { GimpBackend, lateResultsNote } from '../backends/gimp/backend.js';
 import { withLateNote } from '../tools/gimp-shared.js';
 import type { EditorRegistrationDecision } from '../backends/detect-editors.js';
 import { createDiagnosticsTools } from '../tools/diagnostics-tools.js';
+import { RELIGHT_TOOL_NAME } from '../tools/relight-tools.js';
 import type { EditmameiModule } from '../kernel/host-api.js';
+
+/** What ps_list_capabilities says while tools that spend Adobe generative credits are off. */
+export const ADOBE_CREDIT_TOOLS_OFF_NOTE =
+  "Turned off by the person: tools that run Photoshop features costing Adobe generative AI credits (such as Relight). If they ask for one, say it's off and how to turn it on: in Claude Desktop, turn on 'Allow Adobe generative AI tools' in Editmamei's extension settings (if it's already on, switch it off and back on); anywhere else, run `editmamei config set automation.allow_adobe_generative_credits true`. Then restart the AI app.";
 
 // Re-exported for tests + call sites that import the taxonomy from server.ts
 // (its historical home) rather than reaching into kernel/module-lifecycle.ts.
@@ -211,6 +217,8 @@ export class EditmameiServer {
   };
   private logger: Logger;
   private toolRegistry: ToolRegistry;
+  /** The person turned off tools that spend Adobe generative credits; they aren't registered. */
+  private adobeCreditToolsOff = false;
   private session: Session;
   private sessionLog: SessionLog;
   private telemetry: TelemetryClient;
@@ -486,12 +494,18 @@ export class EditmameiServer {
     // who enabled the flag.
     warnLogScriptOnErrorOnce(this.logger);
 
+    this.adobeCreditToolsOff = !effectiveSettings.automation.allow_adobe_generative_credits;
     this.toolRegistry = new ToolRegistry({
       // A gimp_* call that waited out an earlier, still-running operation says how that one ended.
       decorate: (tool, result) =>
         tool.startsWith('gimp_') && this.gimpBackend
           ? withLateNote(result, lateResultsNote(this.gimpBackend.takeLateResults()))
           : result,
+      // Tools that spend Adobe generative credits aren't offered at all while the person has
+      // them turned off (automation.allow_adobe_generative_credits).
+      exclude: (def) =>
+        this.adobeCreditToolsOff &&
+        (def.spendsAdobeCredits === true || def.tool.name === RELIGHT_TOOL_NAME),
       onCall: (entry) => {
         // Opportunistic ps_version resolution (see the field doc above): once some
         // OTHER successful tool call has proven the connection genuinely reached
@@ -790,6 +804,11 @@ export class EditmameiServer {
                 },
               },
             },
+            adobe_credit_tools_off: {
+              type: 'string',
+              description:
+                'Present when the person turned off tools that spend Adobe generative credits (such as Relight): what to tell them and how to turn them back on.',
+            },
           },
         },
         annotations: {
@@ -998,13 +1017,17 @@ export class EditmameiServer {
       `tools/list has the full schema for any one tool.\n\n` +
       groups
         .map((g) => `${g.label} (${g.tools.length}) — ${g.purpose}\n  ${g.tools.join(', ')}`)
-        .join('\n');
+        .join('\n') +
+      (this.adobeCreditToolsOff ? `\n\n${ADOBE_CREDIT_TOOLS_OFF_NOTE}` : '');
     return {
       content: [{ type: 'text' as const, text }],
       structuredContent: {
         tool_count: registered.length,
         group_count: groups.length,
         groups,
+        ...(this.adobeCreditToolsOff
+          ? { adobe_credit_tools_off: ADOBE_CREDIT_TOOLS_OFF_NOTE }
+          : {}),
       },
     };
   }
@@ -1062,7 +1085,22 @@ export class EditmameiServer {
       if (era === 'modern') this.noteModernClient(ctx.mcpReq.envelope);
       this.logger.debug(`Received a call for ${request.params.name}`);
       const args = (request.params.arguments as Record<string, unknown>) || {};
-      const result = await this.handleToolCall(request.params.name, args);
+      // A tool that spends something outside Editmamei asks the person first (call-approval.ts).
+      // 2025 asks while the call is open; 2026-07-28 sends the question back as input_required.
+      const channel = approvalChannelFor(era, {
+        envelope: ctx.mcpReq.envelope as Record<string, unknown> | undefined,
+        inputResponses: ctx.mcpReq.inputResponses,
+        clientCapabilities: era === 'legacy' ? server.getClientCapabilities() : undefined,
+        elicitInput: (params, options) => server.elicitInput(params, options),
+        requestId: ctx.mcpReq.id,
+        signal: ctx.mcpReq.signal,
+      });
+      const { result, inputRequired } = await runWithCallApproval(
+        channel,
+        request.params.name,
+        () => this.handleToolCall(request.params.name, args)
+      );
+      if (inputRequired) return inputRequired;
       // Through the connection's protocol codec, as the SDK asks of a low-level handler.
       const outputSchema = this.toolRegistry.get(request.params.name)?.tool.outputSchema;
       return server.projectCallToolResult(

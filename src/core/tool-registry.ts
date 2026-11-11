@@ -51,6 +51,12 @@ export interface ToolDefinition {
    * over the budget table, for a tool that doesn't have an entry there.
    */
   budgetMs?: number;
+  /**
+   * The tool runs a Photoshop feature that spends Adobe generative (Firefly) credits from the
+   * person's Adobe account. Such tools ask before each use, and are left out entirely while
+   * `automation.allow_adobe_generative_credits` is off.
+   */
+  spendsAdobeCredits?: boolean;
 }
 
 /**
@@ -78,25 +84,35 @@ export class ToolRegistry {
   private tools: Map<string, ToolDefinition>;
   private onCall?: ToolCallObserver;
   private decorate?: (tool: string, result: ToolResult) => ToolResult;
+  private exclude?: (definition: ToolDefinition) => boolean;
 
   /**
    * `decorate`, when given, sees every handler's result before it is returned (and before
    * `onCall`), to add what the host knows and the handler doesn't, e.g. that an earlier GIMP
    * operation finished after its own caller stopped waiting.
+   *
+   * `exclude` leaves out every tool it matches, whenever it registers (a setting the person
+   * turned off), so a module loaded later can't bring one back.
    */
   constructor(
     options: {
       onCall?: ToolCallObserver;
       decorate?: (tool: string, result: ToolResult) => ToolResult;
+      exclude?: (definition: ToolDefinition) => boolean;
     } = {}
   ) {
     this.logger = new Logger('ToolRegistry');
     this.tools = new Map();
     this.onCall = options.onCall;
     this.decorate = options.decorate;
+    this.exclude = options.exclude;
   }
 
   register(name: string, definition: ToolDefinition): void {
+    if (this.exclude?.(definition)) {
+      this.logger.debug(`Left out ${name}: turned off in settings`);
+      return;
+    }
     if (this.tools.has(name)) {
       // Last registration wins. Warned rather than refused because a module
       // deliberately superseding a built-in is legitimate, but doing it by

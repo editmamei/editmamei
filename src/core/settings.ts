@@ -47,6 +47,12 @@ export interface PrivacySettings {
 export interface AutomationSettings {
   /** When false, tools that run arbitrary script code refuse. Only the user can change it (CLI or settings.json), never a tool. Defaults true. */
   allow_execute_script: boolean;
+  /**
+   * When false, tools that run Photoshop features costing Adobe generative (Firefly) credits
+   * aren't offered at all. When true, each use still asks the person first. Only the user can
+   * change it (CLI, settings.json or the Claude Desktop extension settings). Defaults true.
+   */
+  allow_adobe_generative_credits: boolean;
 }
 
 /** The Claude Desktop toggle values seen at the last launch, so a moved toggle can be told from an unchanged one. Written only by `applyDesktopToggles`. */
@@ -55,6 +61,7 @@ export interface DesktopTogglesSeen {
   diagnostics?: boolean;
   update_check?: boolean;
   features?: boolean;
+  adobe_generative_credits?: boolean;
 }
 
 /** How a consent answer was given, and when. Raising a question's version asks again. */
@@ -189,7 +196,7 @@ function defaults(installId: string): Settings {
   return {
     telemetry: { usage: true, diagnostics: false, install_id: installId },
     privacy: { send_previews_to_llm: true },
-    automation: { allow_execute_script: true },
+    automation: { allow_execute_script: true, allow_adobe_generative_credits: true },
     ps_path: null,
     update_check: true,
     editor: 'auto',
@@ -236,6 +243,10 @@ function coerce(raw: unknown, installId: string): Settings {
         typeof a.allow_execute_script === 'boolean'
           ? a.allow_execute_script
           : base.automation.allow_execute_script,
+      allow_adobe_generative_credits:
+        typeof a.allow_adobe_generative_credits === 'boolean'
+          ? a.allow_adobe_generative_credits
+          : base.automation.allow_adobe_generative_credits,
     },
     ps_path: typeof r.ps_path === 'string' ? r.ps_path : null,
     update_check: typeof r.update_check === 'boolean' ? r.update_check : base.update_check,
@@ -295,6 +306,8 @@ function coerceDesktopToggles(raw: unknown): DesktopTogglesSeen | undefined {
   if (typeof r.diagnostics === 'boolean') out.diagnostics = r.diagnostics;
   if (typeof r.update_check === 'boolean') out.update_check = r.update_check;
   if (typeof r.features === 'boolean') out.features = r.features;
+  if (typeof r.adobe_generative_credits === 'boolean')
+    out.adobe_generative_credits = r.adobe_generative_credits;
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -391,7 +404,8 @@ function resolveDesktopToggle(
 /**
  * Apply the Claude Desktop extension's toggles at boot. Desktop has no terminal, so the `.mcpb`
  * manifest exposes them as `user_config` booleans passed as `EDITMAMEI_TELEMETRY_USAGE`,
- * `EDITMAMEI_TELEMETRY_DIAGNOSTICS`, `EDITMAMEI_TELEMETRY_FEATURES` and `EDITMAMEI_UPDATE_CHECK`,
+ * `EDITMAMEI_TELEMETRY_DIAGNOSTICS`, `EDITMAMEI_TELEMETRY_FEATURES`, `EDITMAMEI_UPDATE_CHECK` and
+ * `EDITMAMEI_ADOBE_GENERATIVE_CREDITS`,
  * a concrete value on every launch. A change made in Desktop is written to settings.json; an unchanged toggle leaves the
  * stored setting alone, so a choice made another way survives. Off still wins for this process.
  * With none of the variables set (the npm / CLI path), returns `settings` untouched. A failed
@@ -407,11 +421,13 @@ export function applyDesktopToggles(
   const diagnosticsToggle = parseBoolEnv(env.EDITMAMEI_TELEMETRY_DIAGNOSTICS);
   const updateCheckToggle = parseBoolEnv(env.EDITMAMEI_UPDATE_CHECK);
   const featuresToggle = parseBoolEnv(env.EDITMAMEI_TELEMETRY_FEATURES);
+  const adobeCreditsToggle = parseBoolEnv(env.EDITMAMEI_ADOBE_GENERATIVE_CREDITS);
   if (
     usageToggle === undefined &&
     diagnosticsToggle === undefined &&
     updateCheckToggle === undefined &&
-    featuresToggle === undefined
+    featuresToggle === undefined &&
+    adobeCreditsToggle === undefined
   ) {
     return settings;
   }
@@ -430,6 +446,12 @@ export function applyDesktopToggles(
     seen.update_check,
     true
   );
+  const adobeCredits = resolveDesktopToggle(
+    settings.automation.allow_adobe_generative_credits,
+    adobeCreditsToggle,
+    seen.adobe_generative_credits,
+    true
+  );
 
   const nextSeen: DesktopTogglesSeen = {
     ...seen,
@@ -437,10 +459,12 @@ export function applyDesktopToggles(
     ...(diagnosticsToggle !== undefined ? { diagnostics: diagnosticsToggle } : {}),
     ...(updateCheckToggle !== undefined ? { update_check: updateCheckToggle } : {}),
     ...(featuresToggle !== undefined ? { features: featuresToggle } : {}),
+    ...(adobeCreditsToggle !== undefined ? { adobe_generative_credits: adobeCreditsToggle } : {}),
   };
   const stored: Settings = {
     ...settings,
     telemetry: { ...settings.telemetry, usage: usage.stored, diagnostics: diagnostics.stored },
+    automation: { ...settings.automation, allow_adobe_generative_credits: adobeCredits.stored },
     update_check: updateCheck.stored,
     desktop_toggles: nextSeen,
   };
@@ -457,7 +481,8 @@ export function applyDesktopToggles(
     nextSeen.usage !== seen.usage ||
     nextSeen.diagnostics !== seen.diagnostics ||
     nextSeen.update_check !== seen.update_check ||
-    nextSeen.features !== seen.features;
+    nextSeen.features !== seen.features ||
+    nextSeen.adobe_generative_credits !== seen.adobe_generative_credits;
   if (seenChanged && opts.persist !== false) {
     try {
       saveSettings(stored, { dir: opts.dir });
@@ -474,6 +499,7 @@ export function applyDesktopToggles(
       // An off toggle wins for this launch, as with the others. Otherwise leave it as stored.
       ...(featuresToggle === false ? { features: false } : {}),
     },
+    automation: { ...stored.automation, allow_adobe_generative_credits: adobeCredits.effective },
     update_check: updateCheck.effective,
   };
 }

@@ -83,6 +83,7 @@ editmamei config set editor photoshop
 | `editor` | `auto` | `photoshop` or `gimp` registers one editor's tools only |
 | `gimp_path` | detected | Absolute path to the `gimp-console` binary (for Photoshop, use `PHOTOSHOP_PATH` below) |
 | `automation.allow_execute_script` | `true` | Pro: `false` makes `ps_execute_script` and `ps_play_action` refuse |
+| `automation.allow_adobe_generative_credits` | `true` | `false` leaves out tools that spend Adobe generative AI credits, such as Relight |
 
 ## Environment variables
 

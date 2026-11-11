@@ -41,6 +41,7 @@ import { createVectorMaskTools } from '../../tools/vector-mask-tools.js';
 import { createChannelComposeTools } from '../../tools/channel-compose-tools.js';
 import { createShapeTools } from '../../tools/shape-tools.js';
 import { createSkyTools } from '../../tools/sky-tools.js';
+import { createRelightTools } from '../../tools/relight-tools.js';
 import { createSequenceTools } from '../../tools/sequence-tools.js';
 
 // CE-tier factories; each takes (connection, snippetClient). Exported so the
@@ -100,6 +101,9 @@ export const ceFactories = [
   // not a selection). Takes no coordinates, which is why it ships while the
   // point-prompt selector waits on the coordinate work.
   createSkyTools,
+  // Relight — ps_relight (Photoshop 28's Relight layer, a cloud render that spends
+  // the person's Adobe Firefly credits; asks for approval through elicitation).
+  createRelightTools,
   // Smart filters (2026-08-08) — reading and managing the re-editable filter
   // stack on a Smart Object merged into ps_filter
   // (op=list/set_visibility/set_blend/remove, 2026-08-09) rather than
