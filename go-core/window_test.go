@@ -112,8 +112,19 @@ func TestFindCanvasFillingTheWidth(t *testing.T) {
 func TestFindCanvasRefusesWithoutPasteboard(t *testing.T) {
 	// Zoomed in: the photo covers the whole document area.
 	f := newFrame(1000, 800, rect{}, rect{X: 0, Y: 0, W: 1000, H: 800})
-	if _, err := findCanvas(f, 0); err == nil || !strings.Contains(err.Error(), "Fit on Screen") {
-		t.Fatalf("err = %v, want a Fit on Screen hint", err)
+	_, err := findCanvas(f, 0)
+	if err == nil {
+		t.Fatal("a capture with no pasteboard must fail")
+	}
+	// The model can't change Photoshop's view: the message must not send it off to
+	// try (it reached for screen control once).
+	for _, want := range []string{"No Editmamei tool changes Photoshop's view", "don't try to control the screen"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "Fit on Screen") {
+		t.Fatal("the message still suggests a manual zoom step")
 	}
 }
 
@@ -321,4 +332,74 @@ func TestCropPNGDownscales(t *testing.T) {
 	if _, err := cropPNG(f, rect{X: 1900, Y: 0, W: 400, H: 400}, 0); err == nil {
 		t.Fatal("a crop outside the frame must fail, not panic")
 	}
+}
+
+// --- regression fixtures: photos whose own flat areas sit between the center and
+// the pasteboard (live, 2026-11-11: three Unsplash portraits failed) ---
+
+// portraitOn paints a canvas with a flat backdrop and a textured subject in the
+// middle, inside a #282828 pasteboard and a 0x53 UI around it.
+func portraitOn(backdrop int, canvas rect) *frame {
+	f := newFrame(1200, 900, rect{X: 60, Y: 40, W: 1080, H: 820}, canvas)
+	paint(f, canvas, backdrop, backdrop, backdrop)
+	subject := rect{X: canvas.X + canvas.W/3, Y: canvas.Y + canvas.H/5, W: canvas.W / 3, H: canvas.H * 4 / 5}
+	for y := subject.Y; y < subject.Y+subject.H; y++ {
+		for x := subject.X; x < subject.X+subject.W; x++ {
+			paint(f, rect{X: x, Y: y, W: 1, H: 1}, 150+(x*7+y*3)%60, 110+(x*5)%40, 90+(y*11)%30)
+		}
+	}
+	return f
+}
+
+func wantCanvas(t *testing.T, f *frame, canvas rect) {
+	t.Helper()
+	got, err := findCanvas(f, float64(canvas.W)/float64(canvas.H))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := rect{X: canvas.X + canvasInset, Y: canvas.Y + canvasInset, W: canvas.W - 2*canvasInset, H: canvas.H - 2*canvasInset}
+	// A photo pixel within one level of the pasteboard gray, right at the canvas
+	// edge, reads as pasteboard: allow 1 px per edge (the crop is inset anyway).
+	off := func(a, b int) bool { return a-b > 1 || b-a > 1 }
+	if off(got.X, want.X) || off(got.Y, want.Y) || off(got.X+got.W, want.X+want.W) || off(got.Y+got.H, want.Y+want.H) {
+		t.Fatalf("crop = %+v, want %+v (1 px per edge allowed)", got, want)
+	}
+}
+
+// A square photo on a flat neutral-gray studio backdrop: every ray from the
+// center crosses the backdrop gray before the pasteboard.
+func TestFindCanvasFlatGrayBackdrop(t *testing.T) {
+	canvas := rect{X: 300, Y: 150, W: 600, H: 600}
+	f := portraitOn(0x80, canvas)
+	// Backdrop below the subject too, so no ray reaches the pasteboard first.
+	paint(f, rect{X: canvas.X, Y: canvas.Y + canvas.H - 80, W: canvas.W, H: 80}, 0x80, 0x80, 0x80)
+	wantCanvas(t, f, canvas)
+}
+
+// A white backdrop, with a white tee between the face and the edge.
+func TestFindCanvasWhiteBackdrop(t *testing.T) {
+	canvas := rect{X: 360, Y: 90, W: 480, H: 720}
+	f := portraitOn(0xff, canvas)
+	paint(f, rect{X: canvas.X + 140, Y: canvas.Y + 560, W: 200, H: 160}, 0xfa, 0xfa, 0xfa)
+	wantCanvas(t, f, canvas)
+}
+
+// A pale sky above and dark hair down both sides, touching the canvas edges. The
+// hair is noisy dark gray within a few levels of the #282828 pasteboard; it must
+// not pass for it.
+func TestFindCanvasPaleSkyDarkHair(t *testing.T) {
+	canvas := rect{X: 360, Y: 90, W: 480, H: 720}
+	f := portraitOn(0xe6, canvas)
+	for _, side := range []rect{
+		{X: canvas.X, Y: canvas.Y + 150, W: 120, H: 500},
+		{X: canvas.X + canvas.W - 120, Y: canvas.Y + 150, W: 120, H: 500},
+	} {
+		for y := side.Y; y < side.Y+side.H; y++ {
+			for x := side.X; x < side.X+side.W; x++ {
+				v := 0x26 + (x*3+y)%5 // 0x26-0x2a: neutral and near the pasteboard, never flat
+				paint(f, rect{X: x, Y: y, W: 1, H: 1}, v, v, v)
+			}
+		}
+	}
+	wantCanvas(t, f, canvas)
 }

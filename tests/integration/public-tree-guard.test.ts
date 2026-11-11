@@ -122,24 +122,33 @@ describe('public-tree guard', () => {
     // The Go edition split is `//go:build pro`. `!pro` is the CE stub and must
     // stay. Matching the constraint text rather than the filename is what
     // catches a Pro file that was renamed without its tag changing.
-    const offenders: string[] = [];
-    for (const f of trackedFiles(publicTree).filter((f) => f.endsWith('.go'))) {
-      const head = execFileSync('git', ['show', `HEAD:${f}`], {
+    // One `git grep` over HEAD: a `git show` per Go file outgrew the test timeout.
+    let out = '';
+    try {
+      out = execFileSync('git', ['grep', '-n', '-E', '^//go:build', 'HEAD', '--', '*.go'], {
         cwd: publicTree,
         encoding: 'utf8',
         maxBuffer: 8 * 1024 * 1024,
-      })
-        .split(/\r?\n/)
-        .slice(0, 15)
-        .join('\n');
-      const m = head.match(/^\/\/go:build\s+(.+)$/m);
-      if (m && /(^|[\s(|,])pro([\s)|,]|$)/.test(m[1]) && !/!pro/.test(m[1])) offenders.push(f);
+      });
+    } catch (e) {
+      // git grep exits 1 when nothing matches.
+      if ((e as { status?: number }).status !== 1) throw e;
     }
+    const firstConstraint = new Map<string, string>();
+    for (const line of out.split(/\r?\n/)) {
+      // HEAD:<path>:<line>://go:build <expr>. A constraint must sit above the
+      // package clause, so only the top of the file counts.
+      const m = line.match(/^HEAD:(.+?):(\d+):\/\/go:build\s+(.+)$/);
+      if (!m || Number(m[2]) > 15 || firstConstraint.has(m[1])) continue;
+      firstConstraint.set(m[1], m[3]);
+    }
+    const offenders = [...firstConstraint]
+      .filter(([, expr]) => /(^|[\s(|,])pro([\s)|,]|$)/.test(expr) && !/!pro/.test(expr))
+      .map(([f]) => f);
     expect(offenders, `pro-tagged Go files in the public tree: ${offenders.join(', ')}`).toEqual(
       []
     );
-    // One `git show` per Go file: past vitest's 5 s default under a full parallel run.
-  }, 30_000);
+  });
 
   it('contains no private build or release script', () => {
     if (!publicTree) return;

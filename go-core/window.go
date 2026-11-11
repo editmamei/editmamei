@@ -91,9 +91,14 @@ var errWindowUnsupported = errors.New("the Relight preview is only available on 
 
 const (
 	pasteboardMinRun = 10 // identical neutral pixels that make a pasteboard run
-	colorTolerance   = 3  // per channel, when matching the pasteboard color
-	minCanvasSide    = 48
-	canvasInset      = 2
+	// pasteboardEdgeRun: pixels of the pasteboard color in a row that mark the
+	// canvas edge (the pasteboard is always far wider than this).
+	pasteboardEdgeRun = 8
+	// maxCandidates bounds the grays tried as the pasteboard.
+	maxCandidates  = 24
+	colorTolerance = 3 // per channel, when matching the pasteboard color
+	minCanvasSide  = 48
+	canvasInset    = 2
 	// aspectTolerance: how far the found rectangle's shape may be from the
 	// document's (screen pixels round the canvas size).
 	aspectTolerance = 0.03
@@ -122,44 +127,70 @@ func abs(v int) int {
 
 type rgbColor struct{ r, g, b int }
 
-// firstRun walks from (x, y) in steps (dx, dy) and returns the start of the first
-// run of pasteboardMinRun identical neutral pixels, with its color.
-func firstRun(f *frame, x, y, dx, dy int) (int, int, rgbColor, bool) {
-	runX, runY, n := x, y, 0
+// neutralRuns walks from (x, y) in steps (dx, dy) to the window edge and returns
+// the color of every run of pasteboardMinRun identical neutral pixels, each color
+// once, nearest first. A photo's own flat gray or white backdrop comes before
+// the pasteboard on the way out, so every run is a candidate, not just the first.
+func neutralRuns(f *frame, x, y, dx, dy int) []rgbColor {
+	var out []rgbColor
+	n := 0
 	var c rgbColor
+	add := func(c rgbColor) {
+		for _, k := range out {
+			if near(k.r, k.g, k.b, c.r, c.g, c.b, 1) {
+				return
+			}
+		}
+		out = append(out, c)
+	}
 	for x >= 0 && y >= 0 && x < f.w && y < f.h {
 		r, g, b := f.rgb(x, y)
 		if neutral(r, g, b) && n > 0 && near(r, g, b, c.r, c.g, c.b, 1) {
 			n++
-			if n >= pasteboardMinRun {
-				return runX, runY, c, true
+			if n == pasteboardMinRun {
+				add(c)
 			}
 		} else if neutral(r, g, b) {
-			runX, runY, n, c = x, y, 1, rgbColor{r, g, b}
+			n, c = 1, rgbColor{r, g, b}
 		} else {
 			n = 0
 		}
 		x += dx
 		y += dy
 	}
-	return 0, 0, rgbColor{}, false
+	return out
 }
 
 // edgeToward walks from (x, y) in steps (dx, dy) and returns the last pixel
-// before the pasteboard color begins. ok is false when the window edge comes
-// first: the canvas fills that direction, or something that isn't pasteboard
-// (a scrollbar, a panel) sits there.
+// before the pasteboard begins: the first run of pasteboardEdgeRun pixels of the
+// pasteboard color. A run, not a single pixel, so a few photo pixels that happen
+// to share the color (dark hair against a #282828 pasteboard) don't end the
+// canvas early. ok is false when the window edge comes first: the canvas fills
+// that direction, or something that isn't pasteboard (a scrollbar, a panel) sits
+// there.
 func edgeToward(f *frame, x, y, dx, dy int, pb rgbColor) (int, bool) {
-	px, py := x, y
+	before := func(x, y int) int {
+		if dx != 0 {
+			return x - dx
+		}
+		return y - dy
+	}
+	startX, startY, n := x, y, 0
 	for x >= 0 && y >= 0 && x < f.w && y < f.h {
 		r, g, b := f.rgb(x, y)
-		if near(r, g, b, pb.r, pb.g, pb.b, colorTolerance) {
-			if dx != 0 {
-				return px, true
+		// The pasteboard is perfectly flat, so match it within 1, not colorTolerance:
+		// noisy dark hair near the same gray then never passes for it.
+		if near(r, g, b, pb.r, pb.g, pb.b, 1) {
+			if n == 0 {
+				startX, startY = x, y
 			}
-			return py, true
+			n++
+			if n >= pasteboardEdgeRun {
+				return before(startX, startY), true
+			}
+		} else {
+			n = 0
 		}
-		px, py = x, y
 		x += dx
 		y += dy
 	}
@@ -208,34 +239,32 @@ func findCanvas(f *frame, aspect float64) (rect, error) {
 	cx, cy := f.w/2, f.h/2
 	type probe struct{ dx, dy int }
 	dirs := []probe{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}
-	colors := make([]*rgbColor, 4)
-	var candidates []rgbColor
+	runs := make([][]rgbColor, 4)
 	for i, d := range dirs {
-		if _, _, c, ok := firstRun(f, cx, cy, d.dx, d.dy); ok {
-			cc := c
-			colors[i] = &cc
-			seen := false
-			for _, k := range candidates {
-				if near(k.r, k.g, k.b, c.r, c.g, c.b, 1) {
-					seen = true
-				}
-			}
-			if !seen {
-				candidates = append(candidates, c)
+		runs[i] = neutralRuns(f, cx, cy, d.dx, d.dy)
+	}
+	in := func(list []rgbColor, c rgbColor) bool {
+		for _, k := range list {
+			if near(k.r, k.g, k.b, c.r, c.g, c.b, 1) {
+				return true
 			}
 		}
+		return false
 	}
-	same := func(a, b *rgbColor) bool {
-		return a != nil && b != nil && near(a.r, a.g, a.b, b.r, b.g, b.b, 1)
+	var candidates []rgbColor
+	addCandidate := func(c rgbColor) {
+		if len(candidates) < maxCandidates && !in(candidates, c) {
+			candidates = append(candidates, c)
+		}
 	}
-	if aspect <= 0 {
-		switch {
-		case same(colors[0], colors[1]):
-			candidates = []rgbColor{*colors[0]}
-		case same(colors[2], colors[3]):
-			candidates = []rgbColor{*colors[2]}
-		default:
-			candidates = nil
+	for i, list := range runs {
+		for _, c := range list {
+			// Without the document's shape to check against, only a gray found on
+			// two opposite sides can be the pasteboard.
+			opposite := runs[i^1]
+			if aspect > 0 || in(opposite, c) {
+				addCandidate(c)
+			}
 		}
 	}
 	best, bestErr := rect{}, math.MaxFloat64
@@ -257,12 +286,12 @@ func findCanvas(f *frame, aspect float64) (rect, error) {
 		}
 	}
 	if !found {
-		return rect{}, errors.New("couldn't find the photo in Photoshop's window: fit the photo on screen so it shows whole with gray around it (View > Fit on Screen)")
+		return rect{}, errors.New("couldn't find the photo in Photoshop's window, so there's no preview. It needs the whole photo showing in Photoshop's main window with nothing over it (a floating document window or an open dialog gets in the way). No Editmamei tool changes Photoshop's view, so don't try to control the screen another way: ask the person to check Photoshop, or go ahead without a preview")
 	}
 	// Photoshop draws a thin border line around the canvas; inset past it.
 	out := rect{X: best.X + canvasInset, Y: best.Y + canvasInset, W: best.W - 2*canvasInset, H: best.H - 2*canvasInset}
 	if out.W < minCanvasSide || out.H < minCanvasSide {
-		return rect{}, errors.New("the photo is too small in Photoshop's window to preview: fit it on screen (View > Fit on Screen)")
+		return rect{}, errors.New("the photo shows too small in Photoshop's window for a preview (is Photoshop's window very small?). No Editmamei tool changes Photoshop's view or window, so don't try to control the screen another way: ask the person to enlarge Photoshop's window, or go ahead without a preview")
 	}
 	return out, nil
 }
