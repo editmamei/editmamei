@@ -46,8 +46,8 @@ import { capLines, channelsText, filterLine, layerTreeLines } from './gimp-resul
  * a full pixel buffer per channel), so the bridge stops after its own internal time budget
  * (`CHANNELS_DESCRIBE_DEADLINE_S`, ops.py) and returns the channels already read, `truncated:
  * true`, and `channels_skipped` (how many named channels were never reached) — rather than risk
- * gimp_inspect's own dispatch timeout, which would tree-kill the GIMP session and lose every open
- * image's unsaved work.
+ * gimp_inspect's own dispatch timeout, which would leave the call reporting gimp_still_working
+ * instead of the channels it could have returned.
  */
 
 const INSPECT_WHATS = ['documents', 'document', 'layers', 'channels', 'filter', 'fonts'] as const;
@@ -70,8 +70,8 @@ const inspectSchema: JsonSchemaObject = {
         '(op=list) reports it in. Layer tree nodes are addressed by `layer_id` (canonical — GIMP ' +
         "allows duplicate layer names) and flag `is_text_layer`. 'document'/'layers' cap the tree " +
         'at 2000 nodes total and report `truncated: true` if the cap was hit, alongside ' +
-        '`top_level_count` and `total_nodes`; if it times out the GIMP session restarts and ' +
-        "unsaved work is lost, so save (gimp_save_xcf) first. A text layer's node also reports " +
+        '`top_level_count` and `total_nodes`; a call that runs past its time limit keeps running ' +
+        "and the next call waits for it; ask again then for the listing. A text layer's node also reports " +
         "its text, font, font_size (points), color and alignment. 'fonts' lists the installed " +
         'font names (no image needed), optionally narrowed by `filter`.',
     },
@@ -238,8 +238,8 @@ export function createGimpInspectTools(gimp: GimpBackend): ToolDefinition[] {
           "flag `is_text_layer`; a text layer's node also reports its text, font, font_size " +
           "(points), color and alignment. 'document'/'layers' cap the tree at " +
           '2000 nodes total and report `truncated: true` if the cap was hit, alongside ' +
-          '`top_level_count` and `total_nodes`; if it times out the GIMP session restarts and ' +
-          'unsaved work is lost, so save (gimp_save_xcf) first.',
+          '`top_level_count` and `total_nodes`; a call that runs past its time limit keeps running ' +
+          'and the next call waits for it; ask again then for the listing.',
         inputSchema: inspectSchema,
         outputSchema: {
           type: 'object',

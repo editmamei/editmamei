@@ -83,21 +83,28 @@ export class ToolRegistry {
   private logger: Logger;
   private tools: Map<string, ToolDefinition>;
   private onCall?: ToolCallObserver;
+  private decorate?: (tool: string, result: ToolResult) => ToolResult;
   private exclude?: (definition: ToolDefinition) => boolean;
 
   /**
+   * `decorate`, when given, sees every handler's result before it is returned (and before
+   * `onCall`), to add what the host knows and the handler doesn't, e.g. that an earlier GIMP
+   * operation finished after its own caller stopped waiting.
+   *
    * `exclude` leaves out every tool it matches, whenever it registers (a setting the person
    * turned off), so a module loaded later can't bring one back.
    */
   constructor(
     options: {
       onCall?: ToolCallObserver;
+      decorate?: (tool: string, result: ToolResult) => ToolResult;
       exclude?: (definition: ToolDefinition) => boolean;
     } = {}
   ) {
     this.logger = new Logger('ToolRegistry');
     this.tools = new Map();
     this.onCall = options.onCall;
+    this.decorate = options.decorate;
     this.exclude = options.exclude;
   }
 
@@ -199,6 +206,14 @@ export class ToolRegistry {
             budgetContextFor(name, getToolTimeoutMs(name, definition.budgetMs)),
             () => definition.handler(args)
           );
+      if (this.decorate && result) {
+        // Like onCall, a note the host adds must never fail the call it decorates.
+        try {
+          result = this.decorate(name, result);
+        } catch (e) {
+          this.logger.warn(`decorate failed for ${name}: ${e}`);
+        }
+      }
       // Handlers signal failure via { isError: true } rather than throwing.
       if (result?.isError) {
         success = false;

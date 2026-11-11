@@ -290,24 +290,34 @@ describe('geometry is irreversible; adjustments are not', () => {
   });
 });
 
-describe('long full-resolution work warns that a timeout loses unsaved work', () => {
-  it('gimp_get_histogram exact says to save first', () => {
-    expect(field('gimp_get_histogram', 'exact').replace(/\s+/g, ' ')).toMatch(
-      /if it times out the GIMP session restarts and unsaved work is lost, so save \(gimp_save_xcf\) first/
-    );
+describe('long full-resolution work says a slow call keeps running and nothing is lost', () => {
+  const KEEPS_RUNNING =
+    /a call that runs past its time limit keeps running and the next call waits for it/;
+  it('gimp_get_histogram exact says so', () => {
+    expect(field('gimp_get_histogram', 'exact').replace(/\s+/g, ' ')).toMatch(KEEPS_RUNNING);
   });
-  it('gimp_save_xcf says to save early', () => {
-    expect(description('gimp_save_xcf').replace(/\s+/g, ' ')).toMatch(
-      /if any call times out the GIMP session restarts and every unsaved open image and filter is lost/
+  it('gimp_save_xcf says so, and that only a GIMP stuck for 15 minutes is restarted', () => {
+    const text = description('gimp_save_xcf').replace(/\s+/g, ' ');
+    expect(text).toMatch(
+      /A call that runs past its time limit keeps running and the next call waits for it, so nothing is lost/
     );
+    expect(text).toMatch(/only a GIMP that stops answering for 15 minutes is restarted/);
   });
-  it('gimp_inspect says it too (its channels target can itself run long)', () => {
-    const whatText = field('gimp_inspect', 'what').replace(/\s+/g, ' ');
-    const descText = description('gimp_inspect').replace(/\s+/g, ' ');
-    for (const text of [whatText, descText]) {
-      expect(text).toMatch(
-        /if it times out the GIMP session restarts and unsaved work is lost, so save \(gimp_save_xcf\) first/
+  it('gimp_inspect says so in its description and its what field', () => {
+    for (const text of [field('gimp_inspect', 'what'), description('gimp_inspect')]) {
+      expect(text.replace(/\s+/g, ' ')).toMatch(KEEPS_RUNNING);
+    }
+  });
+  it('resize and canvas rotation say so, and not to repeat the call', () => {
+    for (const name of ['gimp_resize_image', 'gimp_transform_canvas']) {
+      expect(description(name).replace(/\s+/g, ' ')).toMatch(
+        /keeps running and the next call waits for it \(do not repeat it\)/
       );
+    }
+  });
+  it('no GIMP tool still says a timeout restarts the session', () => {
+    for (const t of tools) {
+      expect(JSON.stringify(t.tool)).not.toMatch(/times out,? the GIMP session restarts/);
     }
   });
 });

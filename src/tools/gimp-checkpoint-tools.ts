@@ -29,8 +29,8 @@ import { capLines, quoted } from './gimp-result-text.js';
  * `export` itself.
  *
  * Disk-backed on purpose, not an in-memory duplicate: an in-memory copy dies
- * in the exact event checkpoints exist for — a timeout or crash tree-kills
- * the whole GIMP process (`session.ts`'s `gimp_session_restarted`), which
+ * in the exact event checkpoints exist for — a crash, or a GIMP stuck past
+ * HUNG_AFTER_MS, ends the whole GIMP process (`session.ts`'s `gimp_session_restarted`), which
  * would take an in-memory checkpoint down with it. A file on disk survives
  * that, so `restore` still works right after the model sees
  * `gimp_session_restarted` — it just reopens the file; a fresh GIMP session

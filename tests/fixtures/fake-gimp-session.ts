@@ -24,6 +24,8 @@ export interface FakeGimpBackendOptions {
    * degraded path some tests exercise deliberately (see gimp-checkpoint-tools.ts's own handling
    * of an undefined generation). */
   generation?: number;
+  /** `GimpBackend.stillRunning`'s stand-in: the operation GIMP is still finishing, if any. */
+  stillRunning?: { op: string; ms: number };
 }
 
 const DEFAULT_INSTALL: GimpInstall = {
@@ -52,8 +54,10 @@ export class FakeGimpBackend {
    * to it directly (`gimp.generation = 1`) between two calls, since there's no fake process to
    * actually kill. */
   public generation?: number;
+  public stillRunning?: { op: string; ms: number };
 
   constructor(opts: FakeGimpBackendOptions = {}) {
+    this.stillRunning = opts.stillRunning;
     this.installInfo = opts.install === undefined ? DEFAULT_INSTALL : opts.install;
     this.staticResult = opts.result ?? {};
     this.resultForFn = opts.resultFor;

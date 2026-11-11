@@ -249,6 +249,7 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
   { errorClass: 'gimp_version_unsupported', pattern: /\bgimp_version_unsupported\b/ },
   { errorClass: 'gimp_session_restarted', pattern: /\bgimp_session_restarted\b/ },
   { errorClass: 'gimp_timeout', pattern: /\bgimp_timeout\b/ },
+  { errorClass: 'gimp_still_working', pattern: /\bgimp_still_working\b/ },
   { errorClass: 'gimp_unsupported_file', pattern: /\bgimp_unsupported_file\b/ },
   { errorClass: 'gimp_op_failed', pattern: /\bgimp_op_failed\b/ },
   { errorClass: 'file_not_found', pattern: /\bfile_not_found\b/ },

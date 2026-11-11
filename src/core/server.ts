@@ -55,7 +55,8 @@ import { hostDetectionRuntime } from '../detection/runtime.js';
 import { ModuleLifecycle, classifyModuleOutcome } from '../kernel/module-lifecycle.js';
 import { unsupportedHostReason } from '../platform/host-platform.js';
 import { gimpModule } from '../modules/gimp/index.js';
-import { GimpBackend } from '../backends/gimp/backend.js';
+import { GimpBackend, lateResultsNote } from '../backends/gimp/backend.js';
+import { withLateNote } from '../tools/gimp-shared.js';
 import type { EditorRegistrationDecision } from '../backends/detect-editors.js';
 import { createDiagnosticsTools } from '../tools/diagnostics-tools.js';
 import { RELIGHT_TOOL_NAME } from '../tools/relight-tools.js';
@@ -495,6 +496,11 @@ export class EditmameiServer {
 
     this.adobeCreditToolsOff = !effectiveSettings.automation.allow_adobe_generative_credits;
     this.toolRegistry = new ToolRegistry({
+      // A gimp_* call that waited out an earlier, still-running operation says how that one ended.
+      decorate: (tool, result) =>
+        tool.startsWith('gimp_') && this.gimpBackend
+          ? withLateNote(result, lateResultsNote(this.gimpBackend.takeLateResults()))
+          : result,
       // Tools that spend Adobe generative credits aren't offered at all while the person has
       // them turned off (automation.allow_adobe_generative_credits).
       exclude: (def) =>

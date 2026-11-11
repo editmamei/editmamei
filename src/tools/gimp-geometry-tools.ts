@@ -207,9 +207,10 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
           'is no undo, so gimp_checkpoint (or gimp_save_xcf) first when in doubt. REFUSES outright when the image has a ' +
           'masked filter, or any filter not created by Editmamei (for example one added ' +
           'in the GIMP GUI) — resize before adding any masked filter, not after. A large target (the ' +
-          'bridge allows up to 250 megapixels / 30000px per side) can take tens of seconds; if it ' +
-          'times out, the GIMP session restarts and any unsaved work — filters, masks, and any ' +
-          'other open image — is lost, so make a checkpoint (gimp_checkpoint) before an aggressive resize.',
+          'bridge allows up to 250 megapixels / 30000px per side) can take tens of seconds; a call that ' +
+          'runs past its time limit keeps running and the next call waits for it (do not repeat it). ' +
+          'Only a GIMP that stops answering for 15 minutes is restarted, losing unsaved work, so a ' +
+          'checkpoint (gimp_checkpoint) before an aggressive resize is still wise.',
         inputSchema: resizeSchema,
         outputSchema: {
           type: 'object',
@@ -260,9 +261,10 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
           'exact 0/90/180/270 degrees is also refused while a position/direction-dependent ' +
           'filter is present, since only a right angle keeps such a filter locked to the content ' +
           '— rotate at a right angle instead, or delete it (gimp_filter op=delete) and re-add it ' +
-          'afterwards. Rotating a very large image can take tens of seconds; ' +
-          'if it times out, the GIMP session restarts and any unsaved work — filters, masks, and ' +
-          'any other open image — is lost, so make a checkpoint (gimp_checkpoint) before rotating a large canvas.',
+          'afterwards. Rotating a very large image can take tens of seconds; a call that runs past ' +
+          'its time limit keeps running and the next call waits for it (do not repeat it). Only a ' +
+          'GIMP that stops answering for 15 minutes is restarted, losing unsaved work, so a ' +
+          'checkpoint (gimp_checkpoint) before rotating a large canvas is still wise.',
         inputSchema: transformCanvasSchema,
         outputSchema: {
           type: 'object',

@@ -230,6 +230,22 @@ describe('GimpBackend', () => {
       expect(seenTimeout).toBeLessThanOrEqual(10_000);
     });
 
+    it('a waitDeadline lets the op run past the reply deadline (a host that answers early and lets the work finish)', async () => {
+      const fake = makeFakeSession();
+      const { backend } = backendWithFakeSession(SAMPLE_INSTALL, fake);
+      const now = Date.now();
+      await runWithToolBudget(
+        {
+          toolName: 'gimp_resize_image',
+          budgetMs: 45_000,
+          deadline: now - 1,
+          waitDeadline: now + 600_000,
+        },
+        () => backend.call('resize', {})
+      );
+      expect(fake.calls[0]!.timeoutMs!).toBeGreaterThan(500_000);
+    });
+
     it('an explicit timeoutMs always wins over the enclosing budget', async () => {
       const fake = makeFakeSession();
       const { backend } = backendWithFakeSession(SAMPLE_INSTALL, fake);

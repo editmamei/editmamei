@@ -44,7 +44,7 @@ async function gimpPing(gimp: GimpBackend): Promise<ToolResult> {
   try {
     const result = await gimp.call<PingBridgeResult>('ping', {});
     // The bridge's own state was 'idle' (never started), 'dead' (crashed,
-    // timed-out-killed, or a first launch that failed), or 'starting' (a
+    // stopped as stuck, or a first launch that failed), or 'starting' (a
     // background start already under way, joined by this very call) the
     // instant BEFORE this call — #dispatch's lazy #startFresh/#joinOrStart is
     // what just took it to 'ready'. 'idle' -> cold start; 'dead'/'starting'
@@ -83,6 +83,29 @@ async function gimpPing(gimp: GimpBackend): Promise<ToolResult> {
       error instanceof Error ? error.message : String(error),
       gimp
     );
+    // `gimp_still_working`: GIMP is up and busy finishing an earlier operation the ping queued
+    // behind. Connected, with its images still open: only their list is unknown until it is done.
+    if (error instanceof GimpError && error.code === 'gimp_still_working') {
+      const running = gimp.stillRunning;
+      const version = gimp.gimpVersion ?? null;
+      const doing = running
+        ? `still finishing ${running.op} (running ${Math.max(1, Math.round(running.ms / 1000))} s)`
+        : 'still finishing an earlier operation';
+      const text =
+        `Connected to GIMP${version ? ` ${version}` : ''}, ${doing}, so the open images could not be ` +
+        'listed now. Nothing is lost and every open image is still open; call gimp_ping again in a moment.';
+      return {
+        content: [{ type: 'text' as const, text }],
+        structuredContent: {
+          connected: true,
+          busy: true,
+          ...(running ? { still_running: running.op } : {}),
+          gimp_version: version,
+          session_state: 'warm',
+          install_path_basename: installBasename,
+        },
+      };
+    }
     // `gimp_starting` is not a failed connection — it's still starting, and
     // the caller should just ask again shortly. Reported distinctly (but
     // still never isError, and still connected: false — nothing is ready to
@@ -329,6 +352,16 @@ export function createGimpCoreTools(gimp: GimpBackend): ToolDefinition[] {
               description:
                 'Present and true only when the session is still on its very first launch — ' +
                 'call gimp_ping again in about 30 seconds.',
+            },
+            busy: {
+              type: 'boolean',
+              description:
+                'Present and true when GIMP is up but still finishing an earlier operation: every ' +
+                'open image is still open (open_images is left out). Call gimp_ping again shortly.',
+            },
+            still_running: {
+              type: 'string',
+              description: 'With busy: the operation GIMP is finishing.',
             },
           },
         },

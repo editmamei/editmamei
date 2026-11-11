@@ -151,15 +151,21 @@ function writeReady(rpcDir: string, pid = 999): void {
 class FakeGimpServer {
   private stopped = false;
   readonly calls: Array<{ op: string; args: unknown }> = [];
+  /** Every op whose request file this loop has read, answered or not. */
+  readonly seen: string[] = [];
   /** Highest number of req-*.json files this loop ever saw at once — the serial-queue proof. */
   maxConcurrentRequests = 0;
+  /** When each delayed request (by file name) was first seen. */
+  private readonly firstSeen = new Map<string, number>();
 
   constructor(
     private readonly rpcDir: string,
     private readonly responder: (op: string, args: unknown) => unknown,
     private readonly hangOps: ReadonlySet<string> = new Set(),
     /** Mirrors real GIMP exiting once it sees rpc/shutdown, so shutdown() doesn't have to wait out its grace window in every test. */
-    private readonly onShutdown?: () => void
+    private readonly onShutdown?: () => void,
+    /** Ops answered only this many ms after they are first seen; like the real bridge, nothing behind one is answered first. */
+    private readonly delayOps: ReadonlyMap<string, number> = new Map()
   ) {
     void this.loop();
   }
@@ -176,7 +182,9 @@ class FakeGimpServer {
       }
       let names: string[] = [];
       try {
-        names = readdirSync(this.rpcDir).filter((n) => n.startsWith('req-') && n.endsWith('.json'));
+        names = readdirSync(this.rpcDir)
+          .filter((n) => n.startsWith('req-') && n.endsWith('.json'))
+          .sort((a, b) => Number(a.slice(4, -5)) - Number(b.slice(4, -5)));
       } catch {
         /* rpc dir removed — stop quietly */
         return;
@@ -190,7 +198,13 @@ class FakeGimpServer {
         } catch {
           continue;
         }
+        if (!this.firstSeen.has(name)) {
+          this.firstSeen.set(name, Date.now());
+          this.seen.push(req.op);
+        }
         if (this.hangOps.has(req.op)) continue; // deliberately never answered
+        const delay = this.delayOps.get(req.op);
+        if (delay !== undefined && Date.now() - this.firstSeen.get(name)! < delay) break; // still "running"
         this.calls.push({ op: req.op, args: req.args });
         let resp: Record<string, unknown>;
         try {
@@ -248,6 +262,8 @@ function harness(
   opts: {
     responder?: (op: string, args: unknown) => unknown;
     hangOps?: ReadonlySet<string>;
+    /** Ops the fake GIMP answers only after this many ms (see FakeGimpServer). */
+    delayOps?: ReadonlyMap<string, number>;
     autoReady?: boolean;
     respondToShutdown?: boolean;
     /** Extra GimpSessionOptions merged into the constructor call (e.g. `readRespFile`). Never overrides `killTree` unless it sets one itself. */
@@ -277,7 +293,8 @@ function harness(
           rpcDir,
           responder,
           opts.hangOps,
-          respondToShutdown ? () => emitExit(0, null) : undefined
+          respondToShutdown ? () => emitExit(0, null) : undefined,
+          opts.delayOps
         )
       );
     }
@@ -536,13 +553,158 @@ describe('GimpSession', () => {
     }
   );
 
-  it('a gimp_timeout says the session was stopped and how to recover, since the kill loses the open images', async () => {
-    const h = harness({ hangOps: new Set(['slow']) });
-    await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({
+  it('a request unanswered past the hung limit stops GIMP, and the gimp_timeout says so and how to recover', async () => {
+    const h = harness({ hangOps: new Set(['slow']), extra: { hungAfterMs: 30 } });
+    await expect(h.session.call('slow', {}, { timeoutMs: 60_000 })).rejects.toMatchObject({
       code: 'gimp_timeout',
       message: expect.stringMatching(
-        /slow did not respond within 30ms, so the GIMP session was stopped: every open image and unsaved filter is gone — reopen the file with gimp_open_document/
+        /slow gave no answer for 1 s, so GIMP was treated as stuck and stopped: every open image and unsaved filter is gone — reopen the file with gimp_open_document/
       ),
+    });
+    expect(h.killTreeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  describe('a call that outlasts its own timeout (the work is never thrown away)', () => {
+    it('ends the wait with gimp_still_working and leaves GIMP running', async () => {
+      const h = harness({ delayOps: new Map([['resize', 150]]) });
+      await h.session.call('open', {});
+      await expect(h.session.call('resize', {}, { timeoutMs: 20 })).rejects.toMatchObject({
+        code: 'gimp_still_working',
+        message: expect.stringMatching(
+          /resize is taking longer than 1 s and is still running in GIMP; nothing it changes is lost\. Its answer won't come back to this call.*Don't repeat an edit \(it would be applied twice\); a call that only reads .* can simply be asked again/
+        ),
+      });
+      expect(h.killTreeSpy).not.toHaveBeenCalled();
+      expect(h.session.state).toBe('ready');
+      expect(h.session.generation).toBe(0);
+      expect(h.session.stillRunning).toMatchObject({ op: 'resize' });
+    });
+
+    it('the next call waits for it, runs after it, and its late result is reported once', async () => {
+      const h = harness({ delayOps: new Map([['resize', 80]]) });
+      await h.session.call('open', {});
+      await expect(h.session.call('resize', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+        code: 'gimp_still_working',
+      });
+      await expect(
+        h.session.call<{ op: string }>('export', {}, { timeoutMs: 5_000 })
+      ).resolves.toEqual({ op: 'export' });
+      expect(h.servers[0]!.calls.map((c) => c.op)).toEqual(['ping', 'open', 'resize', 'export']);
+      const late = h.session.takeLateResults();
+      expect(late).toHaveLength(1);
+      expect(late[0]).toMatchObject({ op: 'resize', ok: true });
+      expect(h.session.takeLateResults()).toEqual([]);
+      expect(h.session.stillRunning).toBeUndefined();
+      expect(h.spawnCalls).toHaveLength(1); // never restarted
+    });
+
+    it('reports a late failure with its error text', async () => {
+      const responder = (op: string): unknown => {
+        if (op === 'ping') return { major: 3, minor: 2, micro: 6 };
+        if (op === 'resize')
+          throw Object.assign(new Error('out of memory'), { code: 'gimp_op_failed' });
+        return { op };
+      };
+      const h = harness({ responder, delayOps: new Map([['resize', 60]]) });
+      await expect(h.session.call('resize', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+        code: 'gimp_still_working',
+      });
+      await h.session.call('export', {}, { timeoutMs: 5_000 });
+      expect(h.session.takeLateResults()).toEqual([
+        expect.objectContaining({
+          op: 'resize',
+          ok: false,
+          error: expect.stringContaining('out of memory'),
+        }),
+      ]);
+    });
+
+    it('a next call that gives up while the earlier one still runs was never sent, so repeating it is safe', async () => {
+      const h = harness({ delayOps: new Map([['resize', 200]]) });
+      await expect(h.session.call('resize', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+        code: 'gimp_still_working',
+      });
+      await expect(h.session.call('export', {}, { timeoutMs: 20 })).rejects.toMatchObject({
+        code: 'gimp_still_working',
+        message: expect.stringMatching(
+          /GIMP is still finishing the earlier resize \(running \d+ s\), so export was not started\. Nothing is lost/
+        ),
+      });
+      // The export request never reached GIMP.
+      expect(h.servers[0]!.seen).not.toContain('export');
+      await expect(h.session.call('export', {}, { timeoutMs: 5_000 })).resolves.toEqual({
+        op: 'export',
+      });
+      expect(h.servers[0]!.calls.filter((c) => c.op === 'export')).toHaveLength(1);
+    });
+
+    it('a still-running request that passes the hung limit is stopped by the next call', async () => {
+      const h = harness({ hangOps: new Set(['resize']), extra: { hungAfterMs: 60 } });
+      await expect(h.session.call('resize', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+        code: 'gimp_still_working',
+      });
+      expect(h.killTreeSpy).not.toHaveBeenCalled();
+      await expect(h.session.call('export', {}, { timeoutMs: 5_000 })).rejects.toMatchObject({
+        code: 'gimp_timeout',
+        message: expect.stringContaining(
+          'resize gave no answer for 1 s, so GIMP was treated as stuck and stopped'
+        ),
+      });
+      expect(h.killTreeSpy).toHaveBeenCalledTimes(1);
+      expect(h.session.stillRunning).toBeUndefined();
+    });
+
+    it('a late result is dropped when GIMP then dies: "its change is in the image" would no longer be true', async () => {
+      const h = harness({
+        delayOps: new Map([['resize', 60]]),
+        hangOps: new Set(['export']),
+        extra: { hungAfterMs: 250 },
+      });
+      await expect(h.session.call('resize', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+        code: 'gimp_still_working',
+      });
+      // export waits out the resize (a late result is recorded), then hangs past the hung limit and GIMP is stopped.
+      await expect(h.session.call('export', {}, { timeoutMs: 5_000 })).rejects.toMatchObject({
+        code: 'gimp_timeout',
+      });
+      expect(h.session.takeLateResults()).toEqual([]);
+    });
+
+    it("an earlier answer that can't be read is that operation's late failure, not the next call's", async () => {
+      // The resize's answer (the responder echoes the op) arrives garbled; every other answer reads fine.
+      const h = harness({
+        delayOps: new Map([['resize', 60]]),
+        extra: {
+          readRespFile: (path: string) => {
+            const real = readFileSync(path, 'utf8');
+            return real.includes('"op":"resize"') ? 'not json' : real;
+          },
+        },
+      });
+      await expect(h.session.call('resize', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+        code: 'gimp_still_working',
+      });
+      await expect(
+        h.session.call<{ op: string }>('export', {}, { timeoutMs: 5_000 })
+      ).resolves.toEqual({ op: 'export' });
+      expect(h.session.takeLateResults()).toEqual([
+        expect.objectContaining({ op: 'resize', ok: false }),
+      ]);
+    });
+
+    it('a crash while it runs forgets it, and the next call starts afresh', async () => {
+      const h = harness({ hangOps: new Set(['resize']) });
+      await expect(h.session.call('resize', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+        code: 'gimp_still_working',
+      });
+      const proc = (h.session as unknown as { proc: ChildProcess }).proc;
+      (proc as unknown as { exitCode: number | null }).exitCode = 1;
+      proc.emit('exit', 1, null);
+      expect(h.session.stillRunning).toBeUndefined();
+      await expect(
+        h.session.call<{ op: string }>('open', {}, { timeoutMs: 5_000 })
+      ).resolves.toEqual({ op: 'open' });
+      expect(h.spawnCalls).toHaveLength(2);
     });
   });
 
@@ -559,9 +721,9 @@ describe('GimpSession', () => {
     };
 
     it('is reported as gimp_session_restarted with the reopen instruction, once', async () => {
-      const h = harness({ hangOps: new Set(['slow']), responder });
+      const h = harness({ hangOps: new Set(['slow']), responder, extra: { hungAfterMs: 30 } });
       await h.session.call('open', {});
-      await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({
+      await expect(h.session.call('slow', {}, { timeoutMs: 60_000 })).rejects.toMatchObject({
         code: 'gimp_timeout',
       });
       // The next call restarts GIMP; the image id the caller holds died with the old process.
@@ -586,9 +748,9 @@ describe('GimpSession', () => {
     });
 
     it('is left alone once the caller has opened an image again', async () => {
-      const h = harness({ hangOps: new Set(['slow']), responder });
+      const h = harness({ hangOps: new Set(['slow']), responder, extra: { hungAfterMs: 30 } });
       await h.session.call('open', {});
-      await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({
+      await expect(h.session.call('slow', {}, { timeoutMs: 60_000 })).rejects.toMatchObject({
         code: 'gimp_timeout',
       });
       await h.session.call('open', {}); // restarts GIMP, and the caller holds a fresh id
@@ -632,10 +794,10 @@ describe('GimpSession', () => {
   });
 
   it('on timeout: tree-kills, rejects with gimp_timeout, and the NEXT call starts a fresh session dir', async () => {
-    const h = harness({ hangOps: new Set(['slow']) });
+    const h = harness({ hangOps: new Set(['slow']), extra: { hungAfterMs: 30 } });
 
     expect(h.session.generation).toBe(0); // the very first process — never yet marked dead
-    await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({
+    await expect(h.session.call('slow', {}, { timeoutMs: 60_000 })).rejects.toMatchObject({
       code: 'gimp_timeout',
     });
     expect(h.killTreeSpy).toHaveBeenCalledTimes(1);
@@ -701,10 +863,10 @@ describe('GimpSession', () => {
         proc.emit('exit', 1, null);
       }, 30);
     });
-    const { session } = buildSession({ rootDir, spawn, killTree: killTreeSpy });
+    const { session } = buildSession({ rootDir, spawn, killTree: killTreeSpy, hungAfterMs: 10 });
     registerCleanup(rootDir, servers);
 
-    await expect(session.call('slow', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+    await expect(session.call('slow', {}, { timeoutMs: 60_000 })).rejects.toMatchObject({
       code: 'gimp_timeout',
     });
     await session.call('ping', {}); // fresh session -- stub #2
@@ -1141,11 +1303,11 @@ describe('GimpSession', () => {
     });
 
     it('becomes "restarted" once a session that reached ready dies and restarts', async () => {
-      const h = harness({ hangOps: new Set(['slow']) });
+      const h = harness({ hangOps: new Set(['slow']), extra: { hungAfterMs: 30 } });
       await h.session.call('ping', {}); // reaches ready
       expect(h.session.lastStartOrigin).toBe('cold');
 
-      await expect(h.session.call('slow', {}, { timeoutMs: 30 })).rejects.toMatchObject({
+      await expect(h.session.call('slow', {}, { timeoutMs: 60_000 })).rejects.toMatchObject({
         code: 'gimp_timeout',
       });
       expect(h.session.state).toBe('dead');
@@ -1443,8 +1605,8 @@ describe('GimpSession', () => {
   });
 
   it('a fresh start after a crash/timeout removes the stale session dir', async () => {
-    const h = harness({ hangOps: new Set(['a']) });
-    await expect(h.session.call('a', {}, { timeoutMs: 20 })).rejects.toMatchObject({
+    const h = harness({ hangOps: new Set(['a']), extra: { hungAfterMs: 20 } });
+    await expect(h.session.call('a', {}, { timeoutMs: 60_000 })).rejects.toMatchObject({
       code: 'gimp_timeout',
     });
     const firstSessionDir = h.spawnCalls[0]!.env.EM_GIMP_SESSION!;
@@ -1490,10 +1652,10 @@ describe('GimpSession', () => {
       }
       signalSecondKill();
     });
-    const { session } = buildSession({ rootDir, spawn, killTree: killTreeSpy });
+    const { session } = buildSession({ rootDir, spawn, killTree: killTreeSpy, hungAfterMs: 10 });
     registerCleanup(rootDir, servers);
 
-    await expect(session.call('a', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+    await expect(session.call('a', {}, { timeoutMs: 60_000 })).rejects.toMatchObject({
       code: 'gimp_timeout',
     });
     const staleSessionDir = (session as unknown as { sessionDir: string }).sessionDir;
@@ -1754,11 +1916,17 @@ describe('GimpSession', () => {
     });
     const logger = new Logger('test');
     const warnSpy = vi.spyOn(logger, 'warn');
-    const { session } = buildSession({ rootDir, spawn, killTree: killTreeSpy, logger });
+    const { session } = buildSession({
+      rootDir,
+      spawn,
+      killTree: killTreeSpy,
+      logger,
+      hungAfterMs: 10,
+    });
     registerCleanup(rootDir, servers);
     await session.call('ping', {});
 
-    await expect(session.call('slow', {}, { timeoutMs: 10 })).rejects.toMatchObject({
+    await expect(session.call('slow', {}, { timeoutMs: 60_000 })).rejects.toMatchObject({
       code: 'gimp_timeout',
     });
     expect(session.state).toBe('dead');

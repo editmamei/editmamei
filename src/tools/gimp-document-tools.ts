@@ -456,9 +456,9 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
           'EXIF/XMP/IPTC (including GPS) carries into the .xcf exactly as it was on open, since ' +
           'this saves the working document itself rather than exporting a flattened copy. Refuses ' +
           'to overwrite an existing file unless overwrite: true. Save early: on a very large ' +
-          'document a save can take tens of seconds, and if any call times out the GIMP session ' +
-          'restarts and every unsaved open image and filter is lost — save before long operations, ' +
-          'not after. For a shippable copy with metadata stripped (flattened, or a layered .psd), ' +
+          'document a save can take tens of seconds. A call that runs past its time limit keeps running ' +
+          'and the next call waits for it, so nothing is lost; only a GIMP that stops answering for ' +
+          '15 minutes is restarted, which loses every unsaved open image and filter. For a shippable copy with metadata stripped (flattened, or a layered .psd), ' +
           'use gimp_export instead.',
         inputSchema: saveXcfSchema,
         outputSchema: {
