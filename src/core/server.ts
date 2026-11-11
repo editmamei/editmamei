@@ -58,11 +58,12 @@ import { gimpModule } from '../modules/gimp/index.js';
 import { GimpBackend } from '../backends/gimp/backend.js';
 import type { EditorRegistrationDecision } from '../backends/detect-editors.js';
 import { createDiagnosticsTools } from '../tools/diagnostics-tools.js';
+import { RELIGHT_TOOL_NAME } from '../tools/relight-tools.js';
 import type { EditmameiModule } from '../kernel/host-api.js';
 
 /** What ps_list_capabilities says while tools that spend Adobe generative credits are off. */
 export const ADOBE_CREDIT_TOOLS_OFF_NOTE =
-  "Turned off by the person: tools that run Photoshop features costing Adobe generative AI credits (such as Relight). If they ask for one, say it's off and how to turn it on: in Claude Desktop, Settings > Desktop app > Manage (next to Extensions) > Editmamei > 'Allow Adobe generative AI tools'; anywhere else, run `editmamei config set automation.allow_adobe_generative_credits true`. Then restart the AI app.";
+  "Turned off by the person: tools that run Photoshop features costing Adobe generative AI credits (such as Relight). If they ask for one, say it's off and how to turn it on: in Claude Desktop, turn on 'Allow Adobe generative AI tools' in Editmamei's extension settings (if it's already on, switch it off and back on); anywhere else, run `editmamei config set automation.allow_adobe_generative_credits true`. Then restart the AI app.";
 
 // Re-exported for tests + call sites that import the taxonomy from server.ts
 // (its historical home) rather than reaching into kernel/module-lifecycle.ts.
@@ -496,7 +497,9 @@ export class EditmameiServer {
     this.toolRegistry = new ToolRegistry({
       // Tools that spend Adobe generative credits aren't offered at all while the person has
       // them turned off (automation.allow_adobe_generative_credits).
-      exclude: (def) => this.adobeCreditToolsOff && def.spendsAdobeCredits === true,
+      exclude: (def) =>
+        this.adobeCreditToolsOff &&
+        (def.spendsAdobeCredits === true || def.tool.name === RELIGHT_TOOL_NAME),
       onCall: (entry) => {
         // Opportunistic ps_version resolution (see the field doc above): once some
         // OTHER successful tool call has proven the connection genuinely reached
