@@ -67,6 +67,11 @@ describe('scriptFeatures: Action Manager calls', () => {
     ["app.executeAction(app.stringIDToTypeID('gaussianBlur'), d);", 'gaussianBlur'],
     ["executeAction(charIDToTypeID('Mk  '), d);", 'Mk'],
     ["var idMk = charIDToTypeID('Mk  '); executeAction(idMk, d, DialogModes.NO);", 'Mk'],
+    // Event ids recorded by ScriptListener on Photoshop 28.
+    ["executeAction(stringIDToTypeID('lightshop'), d, DialogModes.NO);", 'lightshop'],
+    ["executeAction(stringIDToTypeID('removeButton'), undefined, DialogModes.NO);", 'removeButton'],
+    ["executeAction(charIDToTypeID('Exps'), d, DialogModes.NO);", 'Exps'],
+    ["executeAction(charIDToTypeID('Ply '), d, DialogModes.NO);", 'Ply'],
   ])('reads %s', (code, name) => {
     expect(scriptFeatures(code)).toEqual([op(name)]);
   });
