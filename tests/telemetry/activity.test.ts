@@ -9,6 +9,7 @@ import {
   MAX_CALL_ITEMS,
   itemsFromResult,
   mapClientName,
+  CLIENTS,
   parseMajor,
   boundMajor,
   nodeMajor,
@@ -290,6 +291,135 @@ describe('mapClientName', () => {
     expect(mapClientName('vscode')).toBe('vscode');
     expect(mapClientName('Visual Studio Code')).toBe('vscode');
     expect(mapClientName('code-oss')).toBe('vscode');
+  });
+
+  // The names clients send in `initialize`, from their source or captured handshakes (2026-11-10).
+  it.each([
+    ['claude-ai', 'claude_desktop'],
+    ['claude-code', 'claude_code'],
+    ['cursor-vscode', 'cursor'],
+    ['Visual Studio Code', 'vscode'],
+    ['Visual-Studio-Code', 'vscode'],
+    ['Windsurf', 'windsurf'],
+    ['windsurf-client', 'windsurf'],
+    ['codex-mcp-client', 'codex'],
+    ['Codex', 'codex'],
+    ['gemini-cli-mcp-client', 'gemini_cli'],
+    ['Cline', 'cline'],
+    ['@cline/core', 'cline'],
+    ['Roo-Code', 'roo_code'],
+    ['Kilo-Code', 'kilo_code'],
+    ['Zed', 'zed'],
+    ['JetBrains-IU-copilot-intellij', 'jetbrains'],
+    ['JetBrains-JBC-copilot-intellij', 'jetbrains'],
+    ['Xcode-copilot-xcode', 'xcode_copilot'],
+    ['github-copilot-developer', 'copilot_cli'],
+    ['goose', 'goose'],
+    ['opencode', 'opencode'],
+    ['crush', 'crush'],
+    ['amp-mcp-client', 'amp'],
+    ['factory-cli', 'factory'],
+    ['Q-DEV-CLI', 'amazon_q'],
+    ['continue-cli-client', 'continue'],
+    ['antigravity-client', 'antigravity'],
+    ['Cherry Studio', 'cherry_studio'],
+    ['com.raycast.macos', 'raycast'],
+    ['@librechat/api-client', 'librechat'],
+    ['Jan-Streamable-Client', 'jan'],
+    ['lobehub-mcp-client', 'lobehub'],
+    ['ChatGPT', 'chatgpt'],
+  ])('maps %s to %s', (name, client) => {
+    expect(mapClientName(name)).toBe(client);
+  });
+
+  it('maps the clients whose exact name is unverified by their own name', () => {
+    expect(mapClientName('Kiro')).toBe('kiro');
+    expect(mapClientName('Warp')).toBe('warp');
+    expect(mapClientName('LM Studio')).toBe('lm_studio');
+    expect(mapClientName('lmstudio-mcp')).toBe('lm_studio');
+    expect(mapClientName('Visual Studio')).toBe('visual_studio');
+    expect(mapClientName('Junie')).toBe('jetbrains');
+  });
+
+  it('keeps names that contain another client inside the right one', () => {
+    expect(mapClientName('claude-code')).toBe('claude_code');
+    expect(mapClientName('cursor-vscode')).toBe('cursor');
+    expect(mapClientName('roo-cline')).toBe('roo_code');
+    expect(mapClientName('Kilo-Code')).toBe('kilo_code');
+    expect(mapClientName('opencode')).toBe('opencode');
+    expect(mapClientName('Xcode-copilot-xcode')).toBe('xcode_copilot');
+    expect(mapClientName('JetBrains-JBC-copilot-intellij')).toBe('jetbrains');
+  });
+
+  it('matches short names as whole words only', () => {
+    expect(mapClientName('blazed-client')).toBe('other');
+    expect(mapClientName('mongoose-mcp')).toBe('other');
+    expect(mapClientName('example-client')).toBe('other');
+    expect(mapClientName('janitor')).toBe('other');
+    expect(mapClientName('warpspeed')).toBe('other');
+    expect(mapClientName('my-factory-client')).toBe('other');
+    expect(mapClientName('copilot-client-kit')).toBe('other');
+    expect(mapClientName('stamp-tool')).toBe('other');
+  });
+
+  it("never matches on a bare 'code' or 'cli'", () => {
+    expect(mapClientName('code')).toBe('other');
+    expect(mapClientName('mcp-cli')).toBe('other');
+    expect(mapClientName('editmamei-live-smoke')).toBe('other');
+  });
+
+  it('maps other spellings of VS Code to vscode, not Visual Studio', () => {
+    expect(mapClientName('visualstudiocode')).toBe('vscode');
+    expect(mapClientName('visual_studio_code')).toBe('vscode');
+    expect(mapClientName('VS Code')).toBe('vscode');
+    expect(mapClientName('devs coder')).toBe('other');
+  });
+
+  // The telemetry Worker accepts exactly this list (its CLIENTS), and a value it doesn't know fails
+  // the whole batch. Change both together, and deploy the Worker before a release sends the value.
+  it('pins the client list the telemetry Worker accepts', () => {
+    expect([...CLIENTS]).toEqual([
+      'claude_desktop',
+      'claude_code',
+      'cursor',
+      'windsurf',
+      'vscode',
+      'visual_studio',
+      'jetbrains',
+      'xcode_copilot',
+      'copilot_cli',
+      'codex',
+      'gemini_cli',
+      'cline',
+      'roo_code',
+      'kilo_code',
+      'continue',
+      'zed',
+      'goose',
+      'opencode',
+      'crush',
+      'amp',
+      'factory',
+      'amazon_q',
+      'kiro',
+      'antigravity',
+      'warp',
+      'lm_studio',
+      'cherry_studio',
+      'raycast',
+      'librechat',
+      'jan',
+      'lobehub',
+      'chatgpt',
+      'other',
+    ]);
+  });
+
+  it('only ever returns a value on the fixed list', () => {
+    expect(new Set(CLIENTS).size).toBe(CLIENTS.length);
+    for (const name of ['', 'x', 'claude', 'Cursor', 'Zed', 'goose', 'unknown-app']) {
+      expect(CLIENTS).toContain(mapClientName(name));
+    }
   });
 
   it('falls back to other for an unrecognized or missing name', () => {

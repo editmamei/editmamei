@@ -23,27 +23,128 @@ export {
 } from '../core/tool-activity.js';
 
 /**
- * Map the MCP client's self-reported `name` (from the `initialize` handshake) to a fixed
- * enum. Lowercase substring rules, first match wins — order matters: `claude-code` must be
- * checked before the bare `claude` fallback, or Claude Code would misclassify as Desktop.
- * Calibrated against the `mcp_client` names these clients actually report: Claude Desktop
- * sends `"claude-ai"` (caught by the generic `claude` rule) and Claude Code sends
- * `"claude-code"` (caught by the specific rule first).
+ * The MCP clients telemetry can name. The server accepts exactly this list (the telemetry Worker's
+ * `CLIENTS`), so a value is added there and deployed before a release sends it.
  */
-export function mapClientName(
-  name: string | undefined
-): 'claude_desktop' | 'claude_code' | 'cursor' | 'windsurf' | 'vscode' | 'other' {
+export const CLIENTS = [
+  'claude_desktop',
+  'claude_code',
+  'cursor',
+  'windsurf',
+  'vscode',
+  'visual_studio',
+  'jetbrains',
+  'xcode_copilot',
+  'copilot_cli',
+  'codex',
+  'gemini_cli',
+  'cline',
+  'roo_code',
+  'kilo_code',
+  'continue',
+  'zed',
+  'goose',
+  'opencode',
+  'crush',
+  'amp',
+  'factory',
+  'amazon_q',
+  'kiro',
+  'antigravity',
+  'warp',
+  'lm_studio',
+  'cherry_studio',
+  'raycast',
+  'librechat',
+  'jan',
+  'lobehub',
+  'chatgpt',
+  'other',
+] as const;
+
+export type ClientToken = (typeof CLIENTS)[number];
+
+const has =
+  (...parts: string[]) =>
+  (n: string): boolean =>
+    parts.some((p) => n.includes(p));
+/** A whole word: not inside a longer run of letters or digits. */
+const word =
+  (...words: string[]) =>
+  (n: string): boolean =>
+    words.some((w) => new RegExp(`(^|[^a-z0-9])${w}([^a-z0-9]|$)`).test(n));
+/** The name's first word. */
+const first =
+  (w: string) =>
+  (n: string): boolean =>
+    new RegExp(`^${w}([^a-z0-9]|$)`).test(n);
+
+/**
+ * Ordered rules, first match wins. The order resolves names that contain another client's:
+ * `claude-code` before `claude`, `cursor-vscode` before `vscode`, the JetBrains and Xcode Copilot
+ * names before the Copilot CLI's, `roo-cline` before `cline`, `opencode` and `Kilo-Code` before any
+ * `code` rule. No rule matches a bare `code` or `cli`, which too many names contain. Short names
+ * match as whole words, or only as the name's first word.
+ */
+const CLIENT_RULES: readonly (readonly [ClientToken, (n: string) => boolean])[] = [
+  ['claude_code', has('claude-code', 'claude_code', 'claudecode')],
+  ['claude_desktop', has('claude')],
+  ['cursor', has('cursor')],
+  ['windsurf', has('windsurf')],
+  ['jetbrains', has('jetbrains', 'junie')],
+  ['xcode_copilot', has('xcode')],
+  [
+    'copilot_cli',
+    (n) => has('github-copilot-developer')(n) || word('copilot-cli', 'copilot cli')(n),
+  ],
+  ['kilo_code', has('kilo')],
+  ['roo_code', has('roo-code', 'roo code', 'roocode', 'roo-cline')],
+  ['cline', has('cline')],
+  ['codex', has('codex')],
+  ['gemini_cli', has('gemini')],
+  ['amazon_q', has('q-dev-cli', 'amazon q', 'amazon-q', 'amazonq')],
+  ['kiro', word('kiro')],
+  ['continue', word('continue')],
+  ['opencode', has('opencode')],
+  ['antigravity', has('antigravity')],
+  [
+    'vscode',
+    (n) =>
+      has(
+        'vscode',
+        'visual studio code',
+        'visual-studio-code',
+        'visual_studio_code',
+        'visualstudiocode',
+        'code-oss'
+      )(n) || word('vs code')(n),
+  ],
+  ['visual_studio', has('visual studio', 'visual-studio', 'visualstudio')],
+  ['zed', word('zed')],
+  ['goose', word('goose')],
+  ['amp', (n) => has('amp-mcp-client', 'sourcegraph')(n) || first('amp')(n)],
+  ['crush', word('crush')],
+  ['factory', (n) => word('factory-cli', 'factory droid')(n) || first('factory')(n)],
+  ['warp', word('warp')],
+  ['lm_studio', has('lm studio', 'lm-studio', 'lmstudio')],
+  ['cherry_studio', has('cherry')],
+  ['raycast', has('raycast')],
+  ['librechat', has('librechat')],
+  ['jan', first('jan')],
+  ['lobehub', has('lobehub', 'lobe-chat', 'lobechat')],
+  ['chatgpt', has('chatgpt')],
+];
+
+/**
+ * Map the MCP client's self-reported `name` (from the `initialize` handshake, or a 2026-07-28
+ * request's client info) to the fixed list above, never the raw string. Calibrated against the
+ * names clients report, among them `claude-ai` (Claude Desktop), `claude-code`, `cursor-vscode`,
+ * `Visual Studio Code`, `codex-mcp-client`, `gemini-cli-mcp-client`, `Cline` and `@cline/core`.
+ */
+export function mapClientName(name: string | undefined): ClientToken {
   if (name === undefined) return 'other';
   const n = name.toLowerCase();
-  if (n.includes('claude-code') || n.includes('claude_code') || n.includes('claudecode')) {
-    return 'claude_code';
-  }
-  if (n.includes('claude')) return 'claude_desktop';
-  if (n.includes('cursor')) return 'cursor';
-  if (n.includes('windsurf')) return 'windsurf';
-  if (n.includes('vscode') || n.includes('visual studio') || n.includes('code-oss')) {
-    return 'vscode';
-  }
+  for (const [client, matches] of CLIENT_RULES) if (matches(n)) return client;
   return 'other';
 }
 
