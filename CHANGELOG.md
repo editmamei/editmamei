@@ -10,6 +10,38 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-11-11
+
+### Added
+
+- **Relight a photo with Photoshop's Relight.** Ask for Relight and your assistant adds up to three
+  lights, placed with the Relight panel's own sliders, as a new layer above the original.
+  - `ps_relight` needs Photoshop 2027 (28.0) or later, signed in to Adobe and online.
+  - Each render spends Adobe Firefly generative credits from your Adobe account (30 per render in
+    Photoshop 28.0). Editmamei asks you before every render, in your AI client's own prompt. A
+    client that can't show the prompt asks you in the chat first.
+  - Your assistant uses it only when you ask for Relight, or say yes after it's offered.
+- **A switch for tools that spend Adobe credits.** Turn it off and those tools aren't offered at
+  all.
+  - `editmamei config set automation.allow_adobe_generative_credits false`, or **Allow Adobe
+    generative AI tools** in Claude Desktop. On by default. See
+    [settings](docs/mcp-reference.md#settings).
+
+### Fixed
+
+- **A slow GIMP operation no longer costs you your work.** A call that runs past its time limit
+  stops waiting instead of stopping GIMP, so the operation finishes and your layers stay.
+  - The call returns `gimp_still_working`. The next call waits for the earlier one, then reports
+    how it ended. GIMP is restarted only if it gives no answer for 15 minutes.
+  - `gimp_ping` reports a busy GIMP as connected and busy.
+
+### Changed
+
+- **Usage stats name more AI apps.** The app that connected is now one of 32 named apps, among them
+  Codex, Gemini CLI, ChatGPT, Cline and Zed, instead of 5. It's still a fixed list, never the raw
+  name. See [privacy](docs/privacy.md).
+- **The npm and registry descriptions name GIMP.**
+
 ## [1.9.7] — 2026-11-09
 
 ### Added
