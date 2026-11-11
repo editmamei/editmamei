@@ -100,8 +100,7 @@ Three ways, all controlling the same settings in `~/.editmamei/settings.json`:
     "send_previews_to_llm": true
   },
   "automation": {
-    "allow_execute_script": true,
-    "allow_adobe_generative_credits": true
+    "allow_execute_script": true
   },
   "update_check": true,
   "ps_path": null,
@@ -126,8 +125,6 @@ Boolean values accept `true`/`false`, `on`/`off`, `yes`/`no`, or `1`/`0`.
 
 `automation.allow_execute_script` (default `true`): set to `false` to make every tool that runs code refuse: arbitrary scripts (`ps_execute_script`) and recorded Actions (`ps_play_action`), since an Action can contain a script step.
 
-`automation.allow_adobe_generative_credits` (default `true`): set to `false` to leave out every tool that runs a Photoshop feature costing Adobe generative AI credits, such as Relight. Your AI assistant then doesn't see those tools at all. While it's on, each use still asks you first. See [Adobe's cloud features](#adobes-cloud-features).
-
 **In Claude Desktop.** The one-click extension has no terminal, so the same switches appear in
 the extension's own settings (Settings → Desktop app → Manage (next to Extensions) → Editmamei): **Share usage stats**
 (opt-out), **Share feature names** (opt-out) and **Share error diagnostics** (opt-in). A change there is saved to the settings file
@@ -136,7 +133,7 @@ the CLI stays in place unless you change the toggle. On that first start, an off
 stats** toggle sets usage off in the file, and an on **Share error diagnostics** toggle sets
 diagnostics on in the file. The other position of each toggle leaves the file as it is. A toggle
 that is off keeps that switch off whenever Claude Desktop starts Editmamei, whatever the file says.
-**Check for updates** and **Allow Adobe generative AI tools** work the same way as **Share usage stats**.
+**Check for updates** works the same way as **Share usage stats**.
 
 **Share feature names** shows as on before you have answered. On an install from before this
 setting existed, it stays off until you answer the question below or move the toggle. Off at
@@ -576,17 +573,6 @@ the long edge by default, and your AI assistant can ask for up to 8192, so a sma
 full size. Tool results go to the same provider, and they can include file paths, layer names,
 measurements, and document metadata. That's a property of
 using a cloud AI, and a function of which assistant you choose, not a hop Editmamei adds.
-
----
-
-## Adobe's cloud features
-
-Some Photoshop features Editmamei can run are processed by Adobe rather than on your computer.
-Relight renders in Adobe's cloud and spends Adobe Firefly generative credits from your Adobe
-account. Photoshop itself sends the image to Adobe, under Adobe's terms; Editmamei doesn't upload
-it anywhere. Before each use, Editmamei asks you to approve the credits through your AI client's
-own prompt, and `automation.allow_adobe_generative_credits` turns these tools off entirely (see
-[What you control](#what-you-control)).
 
 ---
 
