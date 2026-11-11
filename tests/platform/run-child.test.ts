@@ -128,6 +128,35 @@ describe('runChildWithTimeout', () => {
     await expect(promise).rejects.toThrow(/timeout after 1000ms/);
   });
 
+  // An abort stops the child the same way, but resolves (the caller asked for it)
+  // with whatever the child printed.
+  it('kills the child on abort and resolves with its output', async () => {
+    const stub = makeStubChild();
+    __setChildOpsForTests({ spawn: (() => stub.child) as never });
+    const stop = new AbortController();
+
+    const promise = runChildWithTimeout('cmd', [], { timeout: 5000, signal: stop.signal });
+    stub.emitStdout('partial');
+    stop.abort();
+    expect(stub.killedSignals).toEqual(['SIGTERM']);
+    stub.emitExit(null, 'SIGTERM');
+
+    const result = await promise;
+    expect(result.stdout).toBe('partial');
+    expect(result.signal).toBe('SIGTERM');
+  });
+
+  it('kills at once when the signal is already aborted', async () => {
+    const stub = makeStubChild();
+    __setChildOpsForTests({ spawn: (() => stub.child) as never });
+    const stop = new AbortController();
+    stop.abort();
+    const promise = runChildWithTimeout('cmd', [], { timeout: 5000, signal: stop.signal });
+    expect(stub.killedSignals).toEqual(['SIGTERM']);
+    stub.emitExit(null, 'SIGTERM');
+    await expect(promise).resolves.toMatchObject({ signal: 'SIGTERM' });
+  });
+
   // The killed child is NOT proof the PS-side operation failed — Photoshop is
   // a separate process that keeps running the JSX it already received (see
   // the file-header note). The message must say so honestly instead

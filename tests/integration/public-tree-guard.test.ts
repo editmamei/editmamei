@@ -138,7 +138,8 @@ describe('public-tree guard', () => {
     expect(offenders, `pro-tagged Go files in the public tree: ${offenders.join(', ')}`).toEqual(
       []
     );
-  });
+    // One `git show` per Go file: past vitest's 5 s default under a full parallel run.
+  }, 30_000);
 
   it('contains no private build or release script', () => {
     if (!publicTree) return;

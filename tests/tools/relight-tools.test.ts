@@ -1,16 +1,20 @@
 /**
  * ps_relight — Photoshop 28's Relight, behind an Adobe Firefly credits approval.
  *
- * These pin the slider-to-descriptor mapping and the approval gate. They can't catch a
- * descriptor Photoshop rejects; the live check is a real render (verified 2026-11-11,
- * Photoshop 28.0.0 / Windows). Tool ships at dev tier.
+ * These pin the slider-to-descriptor mapping, Adobe's color presets, the approval gate, edit in
+ * place and the free preview's wiring. They can't catch a descriptor Photoshop rejects; the live
+ * check is a real render (verified 2026-11-11, Photoshop 28.0.0 / Windows). The preview loop
+ * itself is pinned in relight-preview.test.ts and go-core/window_test.go.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  ADOBE_RELIGHT_PRESETS,
+  approvalMessage,
   createRelightTools,
   kelvinToRgb,
   toDescriptorLight,
+  type RelightDeps,
 } from '@editmamei/tools/relight-tools.ts';
 import { runWithCallApproval, type CallApprovalChannel } from '@editmamei/core/call-approval.ts';
 import { makeConnection, FakePhotoshopConnection } from '../fixtures/fake-connection.ts';
@@ -53,13 +57,17 @@ describe('createRelightTools', () => {
     snippetClient = makeSnippetClient();
   });
 
+  /** Paid renders only: the probe before the question renders nothing. */
+  const renders = () => snippetClient.allBuilds().filter((b) => b.params.mode === 'render');
+
   /** Call ps_relight as its own tools/call (or as `boundTo`, to model a nested call). */
   const call = async (
     args: Record<string, unknown>,
     channel?: CallApprovalChannel,
-    boundTo = 'ps_relight'
+    boundTo = 'ps_relight',
+    deps: RelightDeps = {}
   ) => {
-    const tools = createRelightTools(conn.asConnection(), snippetClient);
+    const tools = createRelightTools(conn.asConnection(), snippetClient, deps);
     if (!channel) return callTool(tools, 'ps_relight', args);
     const { result } = await runWithCallApproval(channel, boundTo, () =>
       callTool(tools, 'ps_relight', args)
@@ -98,14 +106,40 @@ describe('createRelightTools', () => {
     expect([d.r, d.g, d.b]).toEqual([1, 0.502, 0]);
   });
 
-  it('keeps Kelvin colors near Photoshop presets', () => {
-    const [r, g, b] = kelvinToRgb(5500);
-    expect(r).toBeCloseTo(0.96, 1);
-    expect(g).toBeCloseTo(0.94, 1);
-    expect(b).toBeCloseTo(0.91, 1);
-    const warm = kelvinToRgb(2000);
-    expect(warm[0]).toBeGreaterThan(warm[1]);
-    expect(warm[1]).toBeGreaterThan(warm[2]);
+  it("gives exactly Adobe's preset values at the preset temperatures", () => {
+    // These are what the panel sends; with them its Color menu names the preset.
+    expect(kelvinToRgb(2000)).toEqual([0.94, 0.66, 0.21]);
+    expect(kelvinToRgb(3200)).toEqual([0.96, 0.78, 0.47]);
+    expect(kelvinToRgb(5500)).toEqual([0.96, 0.94, 0.91]);
+    // The panel's nine presets, 1000K to 10000K.
+    expect(ADOBE_RELIGHT_PRESETS.map(([k]) => k)).toEqual([
+      1000, 2000, 3200, 4300, 5500, 6500, 7500, 9000, 10000,
+    ]);
+    expect(kelvinToRgb(1000)).toEqual([0.91, 0.52, 0.04]);
+    expect(kelvinToRgb(10000)).toEqual([0.48, 0.71, 0.97]);
+    for (const [k, rgb] of ADOBE_RELIGHT_PRESETS) expect(kelvinToRgb(k)).toEqual([...rgb]);
+  });
+
+  it('runs warm to cool through the presets', () => {
+    // Blue rises from 1000K to 6500K (Photoshop's own table then holds it near 0.97);
+    // red falls from daylight on, so the cool presets turn bluer.
+    const ks = [1000, 1500, 2000, 2600, 3200, 4300, 5000, 5500, 6500, 7500, 9000, 10000];
+    for (let i = 1; i <= ks.indexOf(6500); i++) {
+      const [, , b0] = kelvinToRgb(ks[i - 1]);
+      const [, , b1] = kelvinToRgb(ks[i]);
+      expect(b1).toBeGreaterThanOrEqual(b0);
+    }
+    for (let i = ks.indexOf(5500) + 1; i < ks.length; i++) {
+      expect(kelvinToRgb(ks[i])[0]).toBeLessThan(kelvinToRgb(ks[i - 1])[0]);
+    }
+    // Between presets: straight-line RGB.
+    expect(kelvinToRgb(2600)).toEqual([0.95, 0.72, 0.34]);
+    // Outside the presets, the nearest end.
+    expect(kelvinToRgb(500)).toEqual(kelvinToRgb(1000));
+    expect(kelvinToRgb(20000)).toEqual(kelvinToRgb(10000));
+    // 7500K is a cool light: blue leads red.
+    const [r, , b] = kelvinToRgb(7500);
+    expect(b).toBeGreaterThan(r);
   });
 
   it('renders after the person approves, with the converted lights and layer', async () => {
@@ -116,6 +150,8 @@ describe('createRelightTools', () => {
     expect(result.isError).toBeFalsy();
     const build = snippetClient.lastBuild();
     expect(build.name).toBe('relight');
+    expect(build.params.mode).toBe('render');
+    expect(build.params.newLayer).toBe(false);
     expect(build.params.ambient).toBe(0.6);
     expect(build.params.layerName).toBe('Model');
     expect(build.params.lights).toEqual([toDescriptorLight(LIGHT)]);
@@ -147,7 +183,7 @@ describe('createRelightTools', () => {
     ['accept', false],
   ] as const)('does not render on %s (box ticked: %s)', async (action, approve) => {
     const result = await call({ lights: [LIGHT] }, answering(action, approve));
-    expect(snippetClient.allBuilds()).toHaveLength(0);
+    expect(renders()).toHaveLength(0);
     expect(result.structuredContent?.relit).toBe(false);
     expect(result.structuredContent?.adobe_credits_used).toBe(0);
   });
@@ -163,7 +199,7 @@ describe('createRelightTools', () => {
       }
     );
     expect(result.structuredContent?.reason).toBe('prompt_failed');
-    expect(snippetClient.allBuilds()).toHaveLength(0);
+    expect(renders()).toHaveLength(0);
   });
 
   it('does not render a late yes after the client cancelled the call', async () => {
@@ -180,7 +216,7 @@ describe('createRelightTools', () => {
       }
     );
     expect(result.structuredContent?.reason).toBe('declined');
-    expect(snippetClient.allBuilds()).toHaveLength(0);
+    expect(renders()).toHaveLength(0);
   });
 
   it('refuses inside another tool, without asking and even with confirm_adobe_credits', async () => {
@@ -199,13 +235,13 @@ describe('createRelightTools', () => {
     );
     expect(result.structuredContent?.reason).toBe('nested');
     expect(asked).toBe(false);
-    expect(snippetClient.allBuilds()).toHaveLength(0);
+    expect(renders()).toHaveLength(0);
   });
 
   it('without a prompt, waits for confirm_adobe_credits from a chat yes', async () => {
     const asked = await call({ lights: [LIGHT] }, { supportsForm: false });
     expect(asked.structuredContent?.reason).toBe('needs_confirmation');
-    expect(snippetClient.allBuilds()).toHaveLength(0);
+    expect(renders()).toHaveLength(0);
 
     const confirmed = await call(
       { lights: [LIGHT], confirm_adobe_credits: true },
@@ -221,7 +257,7 @@ describe('createRelightTools', () => {
       answering('decline')
     );
     expect(result.structuredContent?.reason).toBe('declined');
-    expect(snippetClient.allBuilds()).toHaveLength(0);
+    expect(renders()).toHaveLength(0);
   });
 
   describe('on 2026-07-28', () => {
@@ -238,21 +274,175 @@ describe('createRelightTools', () => {
     it('sends the question back, then renders on the retry with a yes', async () => {
       const first = await modern();
       expect(first.inputRequired).toBeDefined();
-      expect(snippetClient.allBuilds()).toHaveLength(0);
+      expect(renders()).toHaveLength(0);
 
       const retry = await modern({
         adobe_credits: { action: 'accept', content: { approve: true } },
       });
       expect(retry.inputRequired).toBeUndefined();
-      expect(snippetClient.lastBuild().name).toBe('relight');
+      expect(snippetClient.lastBuild().params.mode).toBe('render');
     });
 
     it('renders nothing on a retry that carries a no', async () => {
       const retry = await modern({ adobe_credits: { action: 'decline' } });
       expect(retry.inputRequired).toBeUndefined();
       expect(retry.result.structuredContent?.reason).toBe('declined');
-      expect(snippetClient.allBuilds()).toHaveLength(0);
+      expect(renders()).toHaveLength(0);
     });
+  });
+
+  it('reads the target before asking, and asks about an edit without making it sound cheaper', async () => {
+    conn = makeConnection({
+      resultFor: (script) =>
+        script.includes('"mode":"probe"')
+          ? { probe: true, target_layer: 'Relight Layer 1', is_relight_layer: true, edit: true }
+          : {
+              relit: true,
+              edited: true,
+              layer_name: 'Relight Layer 1',
+              source_layer: 'Relight Layer 1',
+            },
+    });
+    let asked = '';
+    const result = await call(
+      { lights: [LIGHT] },
+      {
+        supportsForm: true,
+        elicit: async (params) => {
+          asked = params.message;
+          return { action: 'accept', content: { approve: true } };
+        },
+      }
+    );
+    expect(snippetClient.allBuilds()[0].params.mode).toBe('probe');
+    expect(asked).toMatch(/Re-render the layer "Relight Layer 1"/);
+    expect(asked).toMatch(/30 Adobe Firefly generative credits/);
+    expect(asked).toMatch(/costs the same/);
+    expect(asked).not.toMatch(/cheaper|free|less/i);
+    expect(result.content[0]).toMatchObject({ type: 'text' });
+    expect((result.content[0] as { text: string }).text).toMatch(/in place/);
+    expect(result.structuredContent?.adobe_credits_used).toBe(30);
+  });
+
+  it('the edit and new-layer wordings both state the full price', () => {
+    for (const edit of [false, true]) {
+      expect(approvalMessage(1, 'Model', edit)).toMatch(
+        /This uses 30 Adobe Firefly generative credits/
+      );
+    }
+    expect(approvalMessage(1, 'Model', false)).toMatch(/new Relight layer/);
+  });
+
+  it('renders only what was approved: the probe answer rides along to the render', async () => {
+    conn = makeConnection({
+      resultFor: (script) =>
+        script.includes('"mode":"probe"')
+          ? { probe: true, target_layer: 'Background', target_id: 7, target_doc_id: 3, edit: false }
+          : { relit: true, layer_name: 'Relight Layer 1', source_layer: 'Background' },
+    });
+    await call({ lights: [LIGHT] }, answering('accept'));
+    expect(snippetClient.lastBuild().params).toMatchObject({
+      mode: 'render',
+      expect: 'new',
+      expectLayerId: 7,
+      expectDocId: 3,
+    });
+  });
+
+  it('refuses a preview from inside another tool (it sends Photoshop keys)', async () => {
+    let previewRan = false;
+    const result = await call(
+      { lights: [LIGHT], preview: true },
+      { supportsForm: true },
+      'ps_sequence',
+      {
+        preview: () => {
+          previewRan = true;
+          throw new Error('should not run');
+        },
+      }
+    );
+    expect(result.structuredContent?.reason).toBe('nested');
+    expect(previewRan).toBe(false);
+  });
+
+  it('passes new_layer through so a Relight layer can be stacked instead of edited', async () => {
+    await call({ lights: [LIGHT], new_layer: true }, answering('accept'));
+    expect(snippetClient.lastBuild().params.newLayer).toBe(true);
+  });
+
+  it('refuses before asking when the probe fails (no document, old Photoshop, no layer)', async () => {
+    conn = makeConnection({
+      resultFor: () => {
+        throw new Error('No document is open in Photoshop');
+      },
+    });
+    let asked = false;
+    const result = await call(
+      { lights: [LIGHT] },
+      {
+        supportsForm: true,
+        elicit: async () => {
+          asked = true;
+          return { action: 'accept', content: { approve: true } };
+        },
+      }
+    );
+    expect(result.isError).toBe(true);
+    expect(asked).toBe(false);
+    expect(renders()).toHaveLength(0);
+  });
+
+  it('preview needs no approval and goes to the preview runner with the same lights', async () => {
+    let asked = false;
+    const seen: Record<string, unknown>[] = [];
+    const deps: RelightDeps = {
+      preview: (base) => {
+        seen.push(base);
+        return {
+          platform: 'win32',
+          script: async (mode) =>
+            mode === 'preview_open'
+              ? { panel_closed: true, rendered: false, edit: false }
+              : {
+                  prepared: true,
+                  hidden_ids: [],
+                  context: { document: { width: 30, height: 40 } },
+                },
+          window: async (action) =>
+            action === 'capture'
+              ? { crop: { x: 1, y: 2, w: 30, h: 40 }, signature: 'ab' }
+              : {
+                  settled: true,
+                  png_base64: 'iVBORw0KGgo=',
+                  width: 30,
+                  height: 40,
+                  closed: 'discarded',
+                },
+        };
+      },
+    };
+    const result = await call(
+      { lights: [LIGHT], preview: true, original_lighting: 70 },
+      {
+        supportsForm: true,
+        elicit: async () => {
+          asked = true;
+          return { action: 'decline' };
+        },
+      },
+      'ps_relight',
+      deps
+    );
+    expect(asked).toBe(false);
+    expect(snippetClient.allBuilds()).toHaveLength(0);
+    expect(seen[0]).toMatchObject({ ambient: 0.7, lights: [toDescriptorLight(LIGHT)] });
+    expect(result.structuredContent).toMatchObject({
+      preview: true,
+      rendered: false,
+      adobe_credits_used: 0,
+    });
+    expect(result.content.some((c) => c.type === 'image')).toBe(true);
   });
 
   it('refuses a bad request before asking anyone', async () => {

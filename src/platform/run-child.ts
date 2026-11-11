@@ -78,6 +78,12 @@ export interface RunChildOptions {
    * caller relies on).
    */
   env?: Record<string, string | undefined>;
+  /**
+   * Stops the child early. On abort the child is killed (SIGTERM, then SIGKILL
+   * after the grace window) and the call RESOLVES with whatever it printed so far
+   * and the kill signal set, rather than rejecting like a timeout.
+   */
+  signal?: AbortSignal;
 }
 
 const childOps = {
@@ -155,12 +161,13 @@ export async function runChildWithTimeout(
       if (settled) return;
       settled = true;
       clearTimers();
+      removeAbort();
       fn();
     };
 
-    const killNow = (reason: 'timeout' | 'overflow'): void => {
+    const killNow = (reason: 'timeout' | 'overflow' | 'abort'): void => {
       if (reason === 'timeout') timedOut = true;
-      else overflowed = true;
+      else if (reason === 'overflow') overflowed = true;
 
       // SIGTERM first — gives cscript / osascript a chance to clean up
       // and report exit normally. If it ignores SIGTERM (some Windows
@@ -183,6 +190,19 @@ export async function runChildWithTimeout(
     killTimer = setTimeout(() => {
       if (!settled) killNow('timeout');
     }, timeout);
+
+    let removeAbort = (): void => undefined;
+    if (options.signal) {
+      const signal = options.signal;
+      const onAbort = (): void => {
+        if (!settled && !timedOut && !overflowed) killNow('abort');
+      };
+      if (signal.aborted) onAbort();
+      else {
+        signal.addEventListener('abort', onAbort, { once: true });
+        removeAbort = () => signal.removeEventListener('abort', onAbort);
+      }
+    }
 
     const handleChunk = (chunk: Buffer | string, target: 'stdout' | 'stderr'): void => {
       const s = typeof chunk === 'string' ? chunk : chunk.toString('utf8');

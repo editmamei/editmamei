@@ -52,6 +52,95 @@ func TestBuildRelightEmitsClampedLights(t *testing.T) {
 	}
 }
 
+func TestBuildRelightModes(t *testing.T) {
+	for _, mode := range []string{"probe", "render", "preview_prepare", "preview_open"} {
+		p := relightParams(map[string]any{"x": 0})
+		p["mode"] = mode
+		jsx, err := build("relight", p)
+		if err != nil {
+			t.Fatalf("mode %s: %v", mode, err)
+		}
+		if !strings.Contains(jsx, "var mode = \""+mode+"\";") {
+			t.Fatalf("mode %s not emitted", mode)
+		}
+		if strings.Contains(jsx, "%!") {
+			t.Fatalf("mode %s: slot-arity mismatch", mode)
+		}
+	}
+	p := relightParams(map[string]any{"x": 0})
+	p["mode"] = "render_twice"
+	if _, err := build("relight", p); err == nil {
+		t.Fatal("an unknown mode was accepted")
+	}
+	// Restoring hidden layers needs no lights.
+	if _, err := build("relight", map[string]any{"mode": "preview_restore", "hiddenIds": []any{4.0}}); err != nil {
+		t.Fatalf("preview_restore without lights: %v", err)
+	}
+}
+
+// The panel only charges on Done; the preview opens it with DialogModes.ALL and
+// the render never does.
+func TestBuildRelightDialogModes(t *testing.T) {
+	jsx, err := build("relight", relightParams(map[string]any{"x": 0}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"executeAction(stringIDToTypeID('lightshop'), desc, DialogModes.ALL);",
+		"executeAction(stringIDToTypeID('lightshop'), desc, DialogModes.NO);",
+		"if (mode === 'preview_open') {",
+	} {
+		if !strings.Contains(jsx, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+	// ALL appears only inside the preview_open branch, which returns before the
+	// render.
+	if strings.Index(jsx, "DialogModes.ALL") > strings.Index(jsx, "desc, DialogModes.NO)") {
+		t.Fatal("the paid render must come after the preview branch returns")
+	}
+}
+
+// Edit in place targets the LAYER; a new Relight layer targets the DOCUMENT.
+// newLayer forces the document target even on a Relight layer.
+func TestBuildRelightEditReference(t *testing.T) {
+	p := relightParams(map[string]any{"x": 0})
+	p["newLayer"] = true
+	jsx, err := build("relight", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"var newLayer = true;",
+		"var edit = isRelight && !newLayer;",
+		"stringIDToTypeID('LightshopVersion')",
+		"targetRef.putEnumerated(charIDToTypeID('Lyr '), charIDToTypeID('Ordn'), charIDToTypeID('Trgt'));",
+		"targetRef.putEnumerated(charIDToTypeID('Dcmn'), charIDToTypeID('Ordn'), charIDToTypeID('Trgt'));",
+	} {
+		if !strings.Contains(jsx, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+	jsx, _ = build("relight", relightParams(map[string]any{"x": 0}))
+	if !strings.Contains(jsx, "var newLayer = false;") {
+		t.Fatal("newLayer should default to false")
+	}
+}
+
+// Only whole positive layer ids reach the restore list.
+func TestBuildRelightHiddenIDs(t *testing.T) {
+	jsx, err := build("relight", map[string]any{
+		"mode":      "preview_restore",
+		"hiddenIds": []any{3.0, 7.0, -1.0, 2.5, "x); app.system('calc'", 12.0},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(jsx, "var hiddenIds = [3, 7, 12];") {
+		t.Fatal("hiddenIds were not filtered to layer ids")
+	}
+}
+
 // A layer name goes through jsLit, so a hostile name can't break out of the
 // string literal.
 func TestBuildRelightEscapesLayerName(t *testing.T) {
@@ -63,5 +152,58 @@ func TestBuildRelightEscapesLayerName(t *testing.T) {
 	}
 	if strings.Contains(jsx, `'); app.system("calc")`) {
 		t.Fatal("relight interpolated a layer name without escaping it")
+	}
+}
+
+// The render refuses when the target changed after the person approved it: the
+// probe's answer rides along as expect / expectLayerId.
+func TestBuildRelightExpectGuard(t *testing.T) {
+	p := relightParams(map[string]any{"x": 0})
+	p["expect"] = "new"
+	p["expectLayerId"] = 42.0
+	p["expectDocId"] = 9.0
+	jsx, err := build("relight", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`var expect = "new";`,
+		"var expectLayerId = 42;",
+		"var expectDocId = 9;",
+		"(expectDocId > 0 && doc.id !== expectDocId)",
+		"(expect === 'edit' && !edit) || (expect === 'new' && edit)",
+		"sourceId !== expectLayerId",
+	} {
+		if !strings.Contains(jsx, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+	// The check sits before the paid render.
+	if strings.Index(jsx, "sourceId !== expectLayerId") > strings.Index(jsx, "desc, DialogModes.NO)") {
+		t.Fatal("the expect check must run before the render")
+	}
+	p["expect"] = "maybe"
+	if _, err := build("relight", p); err == nil {
+		t.Fatal("an unknown expect value was accepted")
+	}
+	p["expect"] = ""
+	p["expectLayerId"] = -3.0
+	jsx, _ = build("relight", p)
+	if !strings.Contains(jsx, "var expectLayerId = 0;") {
+		t.Fatal("a bad layer id must turn the id check off, not pass through")
+	}
+}
+
+// The preview closes the panel by clicking the English Discard button, so it
+// refuses in other UI languages before opening anything.
+func TestBuildRelightPreviewNeedsEnglishUI(t *testing.T) {
+	jsx, err := build("relight", relightParams(map[string]any{"x": 0}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	locale := strings.Index(jsx, "String(app.locale).indexOf('en_') !== 0")
+	hide := strings.Index(jsx, "__setShown(__visibleAbove(")
+	if locale < 0 || hide < 0 || locale > hide {
+		t.Fatal("preview_prepare must check the UI language before touching layers")
 	}
 }

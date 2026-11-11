@@ -18,11 +18,19 @@ type relightLight struct {
 // maxRelightLights is the Relight panel's own limit.
 const maxRelightLights = 3
 
+// relightModes are the fragment's modes (see fragments_relight.go). render is
+// the paid one; the others never render.
+var relightModes = map[string]bool{
+	"probe": true, "render": true,
+	"preview_prepare": true, "preview_open": true, "preview_restore": true,
+}
+
 // relight builds Photoshop 28's Relight (AM lightshop). Every value goes in as a
-// jsNum/jsLit literal, so nothing caller-supplied reaches the JSX unescaped.
-// Slot order: getContextInfo, normNameHelper, notFoundMessageHelper, layerName,
-// lights, ambient, layerName.
-func relight(layerName string, lights []relightLight, ambient float64) string {
+// jsNum/jsLit/jsBool literal, so nothing caller-supplied reaches the JSX
+// unescaped. Slot order: getContextInfo, normNameHelper, notFoundMessageHelper,
+// layerName, lights, ambient, mode, newLayer, hiddenIds, expect, expectLayerId,
+// expectDocId, layerName.
+func relight(layerName string, lights []relightLight, ambient float64, mode string, newLayer bool, hiddenIDs []int, expect string, expectLayerID, expectDocID int) string {
 	rows := make([]string, 0, len(lights))
 	for _, l := range lights {
 		rows = append(rows, "["+strings.Join([]string{
@@ -30,6 +38,10 @@ func relight(layerName string, lights []relightLight, ambient float64) string {
 			jsNum(l.R), jsNum(l.G), jsNum(l.B),
 			jsNum(l.Intensity), jsNum(l.Radius),
 		}, ", ")+"]")
+	}
+	ids := make([]string, 0, len(hiddenIDs))
+	for _, id := range hiddenIDs {
+		ids = append(ids, jsInt(id))
 	}
 	return fmt.Sprintf(
 		tpl[vault.Relight],
@@ -39,6 +51,12 @@ func relight(layerName string, lights []relightLight, ambient float64) string {
 		jsLit(layerName),
 		"["+strings.Join(rows, ", ")+"]",
 		jsNum(ambient),
+		jsLit(mode),
+		jsBool(newLayer),
+		"["+strings.Join(ids, ", ")+"]",
+		jsLit(expect),
+		jsInt(expectLayerID),
+		jsInt(expectDocID),
 		jsLit(layerName),
 	)
 }
@@ -82,10 +100,37 @@ func relightLightsParam(p map[string]any) []relightLight {
 	return out
 }
 
-// buildRelight is the registry entry: validates the light count, then emits.
+// relightHiddenIDsParam reads the layer ids preview_prepare hid. Only positive
+// whole numbers are kept: they are Photoshop layer ids.
+func relightHiddenIDsParam(p map[string]any) []int {
+	arr, ok := p["hiddenIds"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]int, 0, len(arr))
+	for _, e := range arr {
+		if f, ok := e.(float64); ok && f >= 1 && f == float64(int(f)) {
+			out = append(out, int(f))
+		}
+	}
+	return out
+}
+
+// buildRelight is the registry entry: validates the mode and light count, then
+// emits. preview_restore needs no lights.
 func buildRelight(params map[string]any) (string, error) {
+	mode := strParam(params, "mode", "render")
+	if !relightModes[mode] {
+		return "", fmt.Errorf("relight: unknown mode %q", mode)
+	}
+	expect := strParam(params, "expect", "")
+	if expect != "" && expect != "edit" && expect != "new" {
+		return "", fmt.Errorf("relight: expect must be edit, new or empty, got %q", expect)
+	}
+	expectLayerID := positiveIntParam(params, "expectLayerId")
+	expectDocID := positiveIntParam(params, "expectDocId")
 	lights := relightLightsParam(params)
-	if len(lights) == 0 {
+	if mode != "preview_restore" && len(lights) == 0 {
 		return "", fmt.Errorf("relight: at least one light is required")
 	}
 	if len(lights) > maxRelightLights {
@@ -95,5 +140,20 @@ func buildRelight(params map[string]any) (string, error) {
 		strParam(params, "layerName", ""),
 		lights,
 		clampRange(numParam(params, "ambient", 0.8), 0, 1),
+		mode,
+		boolParam(params, "newLayer", false),
+		relightHiddenIDsParam(params),
+		expect,
+		expectLayerID,
+		expectDocID,
 	), nil
+}
+
+// positiveIntParam reads a Photoshop id; anything but a whole number >= 1 is 0
+// (no check).
+func positiveIntParam(p map[string]any, key string) int {
+	if f := numParam(p, key, 0); f >= 1 && f <= 1<<31-1 && f == float64(int(f)) {
+		return int(f)
+	}
+	return 0
 }
