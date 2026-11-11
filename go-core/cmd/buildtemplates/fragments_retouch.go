@@ -32,11 +32,11 @@ func init() {
 
     var layer = doc.activeLayer;
 
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if (__kindOf(layer) === LayerKind.TEXT || __kindOf(layer) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
     }
-    if (layer.kind !== LayerKind.NORMAL) {
-      throw new Error('Content-Aware Fill requires a pixel layer (kind=' + layer.kind + ').');
+    if (__kindOf(layer) !== LayerKind.NORMAL) {
+      throw new Error('Content-Aware Fill requires a pixel layer (kind=' + __kindOf(layer) + ').');
     }
 
     // Map the snake_case blend_mode name to PS's charID. Only the
@@ -108,11 +108,11 @@ func init() {
 
     var layer = doc.activeLayer;
 
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if (__kindOf(layer) === LayerKind.TEXT || __kindOf(layer) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
     }
-    if (layer.kind !== LayerKind.NORMAL) {
-      throw new Error('Patch requires a pixel layer (kind=' + layer.kind + ').');
+    if (__kindOf(layer) !== LayerKind.NORMAL) {
+      throw new Error('Patch requires a pixel layer (kind=' + __kindOf(layer) + ').');
     }
 
     var patchDesc = new ActionDescriptor();
@@ -177,11 +177,11 @@ func init() {
 
     var layer = doc.activeLayer;
 
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if (__kindOf(layer) === LayerKind.TEXT || __kindOf(layer) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
     }
-    if (layer.kind !== LayerKind.NORMAL) {
-      throw new Error('Content-Aware Move requires a pixel layer (kind=' + layer.kind + ').');
+    if (__kindOf(layer) !== LayerKind.NORMAL) {
+      throw new Error('Content-Aware Move requires a pixel layer (kind=' + __kindOf(layer) + ').');
     }
 
     var camDesc = new ActionDescriptor();

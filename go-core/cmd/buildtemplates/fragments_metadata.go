@@ -99,7 +99,7 @@ func init() {
           if (child) entry.children.push(describeLayer(child, depth + 1));
         }
       } else {
-        entry.kind = safe(function() { return String(layer.kind); }, 'NORMAL');
+        entry.kind = safe(function() { return String(__kindOf(layer)); }, 'NORMAL');
         entry.isBackgroundLayer = safe(function() { return layer.isBackgroundLayer; }, false);
         entry.clipped = safe(function() { return layer.grouped; }, false);
         var bounds = safe(function() { return layer.bounds; }, null);
@@ -256,7 +256,7 @@ func init() {
       for (var i = 0; i < layers.length; i++) {
         var l = layers[i];
         var isNormal = false;
-        try { isNormal = (l.kind === LayerKind.NORMAL); } catch (eK) {}
+        try { isNormal = (__kindOf(l) === LayerKind.NORMAL); } catch (eK) {}
         if (isNormal) return l;
         var isGroup = false;
         try { isGroup = (l instanceof LayerSet); } catch (eG) {}

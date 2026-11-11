@@ -273,7 +273,7 @@ func init() {
     var origActive = doc.activeLayer;
     var changedActive = false;
     var activeKind = null;
-    try { activeKind = String(origActive.kind); } catch (eKind) {}
+    try { activeKind = String(__kindOf(origActive)); } catch (eKind) {}
     if (doc.layers.length > 1 && activeKind !== null &&
         activeKind !== String(LayerKind.NORMAL)) {
       try {

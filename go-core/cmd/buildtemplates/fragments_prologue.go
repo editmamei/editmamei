@@ -63,7 +63,7 @@ func init() {
 		// instead. Where the caller let us duplicate, this rasterizes the copy
 		// and the original survives untouched.
 		vault.FiltRast: `
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if (__kindOf(layer) === LayerKind.TEXT || __kindOf(layer) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
     }
 `,
@@ -73,7 +73,7 @@ func init() {
 		vault.FiltRastTrk: `
     var wasRasterized = false;
 
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if (__kindOf(layer) === LayerKind.TEXT || __kindOf(layer) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
       wasRasterized = true;
     }
@@ -91,8 +91,8 @@ func init() {
 		// The default guard: a filter needs real pixels, and by this point the
 		// rasterize block has converted anything convertible.
 		vault.FiltKindNorm: `
-    if (layer.kind !== LayerKind.NORMAL) {
-      throw new Error('This filter needs a pixel layer; the active layer is ' + layer.kind);
+    if (__kindOf(layer) !== LayerKind.NORMAL) {
+      throw new Error('This filter needs a pixel layer; the active layer is ' + __kindOf(layer));
     }
 `,
 
@@ -101,8 +101,8 @@ func init() {
 		// step than a filter call should take on its own. Name the remedy and let
 		// the caller choose it.
 		vault.FiltKindSO: `
-    if (layer.kind !== LayerKind.SMARTOBJECT) {
-      throw new Error('as_smart_filter needs a Smart Object; the active layer is ' + layer.kind + '. Convert it first with ps_convert_to_smart_object, or drop as_smart_filter to apply the filter destructively.');
+    if (__kindOf(layer) !== LayerKind.SMARTOBJECT) {
+      throw new Error('as_smart_filter needs a Smart Object; the active layer is ' + __kindOf(layer) + '. Convert it first with ps_convert_to_smart_object, or drop as_smart_filter to apply the filter destructively.');
     }
 `,
 	})

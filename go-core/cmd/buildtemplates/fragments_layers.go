@@ -120,7 +120,7 @@ func init() {
     if (layer.allLocked) {
       throw new Error('Cannot fill a fully locked layer: ' + layer.name);
     }
-    if (layer.kind === LayerKind.TEXT) {
+    if (__kindOf(layer) === LayerKind.TEXT) {
       throw new Error('Cannot fill a text layer. Rasterize it first.');
     }
 
@@ -474,13 +474,13 @@ func init() {
       }
     }
 
-    var originalKind = String(layer.kind);
-    var wasAlreadySmartObject = (layer.kind === LayerKind.SMARTOBJECT);
+    var originalKind = String(__kindOf(layer));
+    var wasAlreadySmartObject = (__kindOf(layer) === LayerKind.SMARTOBJECT);
 
     executeAction(stringIDToTypeID('newPlacedLayer'), undefined, DialogModes.NO);
 
     var converted = app.activeDocument.activeLayer;
-    var isSmartObject = (converted.kind === LayerKind.SMARTOBJECT);
+    var isSmartObject = (__kindOf(converted) === LayerKind.SMARTOBJECT);
 
     return {
       layer_name: converted.name,
@@ -506,8 +506,8 @@ func init() {
       throw new Error('No document is open in Photoshop');
     }
     var layer = app.activeDocument.activeLayer;
-    if (layer.kind !== LayerKind.SMARTOBJECT) {
-      throw new Error('new_via_copy requires a Smart Object layer (active layer kind is ' + String(layer.kind) + '). Convert it first with ps_convert_to_smart_object mode=convert.');
+    if (__kindOf(layer) !== LayerKind.SMARTOBJECT) {
+      throw new Error('new_via_copy requires a Smart Object layer (active layer kind is ' + String(__kindOf(layer)) + '). Convert it first with ps_convert_to_smart_object mode=convert.');
     }
 
     executeAction(stringIDToTypeID('placedLayerMakeCopy'), undefined, DialogModes.NO);
@@ -515,7 +515,7 @@ func init() {
     var copied = app.activeDocument.activeLayer;
     return {
       layer_name: copied.name,
-      is_smart_object: (copied.kind === LayerKind.SMARTOBJECT),
+      is_smart_object: (__kindOf(copied) === LayerKind.SMARTOBJECT),
       source_unlinked: true,
       context: getContextInfo()
     };

@@ -332,6 +332,10 @@ const (
 	AdjPosTd    = "al12" // posterize (slot: posLevels)
 	AdjThrTd    = "al13" // threshold (slot: thrLevel)
 	AdjLvlCrvTd = "al14" // levels/curves shared Mk typeDesc (static presetKindDefault line, no slots) — the post-Mk setd carries the real values; see AdjLvlPM/AdjCrvPM
+	// Clarity and Dehaze, Grain (Photoshop 27.3+). Captured with ScriptListener
+	// and replayed live, PS 28.0.0 / Windows, 2026-11-11.
+	AdjCDTd    = "al18" // clarity_dehaze (slots: clarity, dehaze)
+	AdjGrainTd = "al19" // grain (slots: amount, size, roughness)
 
 	// applyBrushStroke — dev-tier; outer shell + conditional sub-blocks
 	BrushOuter    = "br0"  // outer shell (slots: many)

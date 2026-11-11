@@ -34,10 +34,10 @@ func init() {
     var doc = app.activeDocument;
     var layer = doc.activeLayer;
 
-    if (layer.kind !== LayerKind.NORMAL) {
+    if (__kindOf(layer) !== LayerKind.NORMAL) {
       throw new Error(
         'brush-stroke: active layer must be a pixel layer (kind=' +
-        String(layer.kind) + '). Rasterize, select a pixel layer, or stamp visible first.'
+        String(__kindOf(layer)) + '). Rasterize, select a pixel layer, or stamp visible first.'
       );
     }
     if (layer.allLocked || layer.pixelsLocked) {

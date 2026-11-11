@@ -296,6 +296,20 @@ func init() {
 		vault.AdjThrTd: `
       typeDesc.putInteger(cTID('Lvl '), %s);`,
 
+		// Clarity and Dehaze: one layer type ('clarity') holding both sliders.
+		// Slots: clarity, dehaze (integers, -100..100, clamped by the emitter;
+		// Photoshop stores out-of-range values unclamped).
+		vault.AdjCDTd: `
+      typeDesc.putInteger(sTID('clarity'), %s);
+      typeDesc.putInteger(sTID('dehaze'), %s);`,
+
+		// Grain. Slots: amount, size, roughness (integers, 0..100, clamped by
+		// the emitter). grainSeed is left out: Photoshop assigns one.
+		vault.AdjGrainTd: `
+      typeDesc.putInteger(sTID('grainAmount'), %s);
+      typeDesc.putInteger(sTID('grainSize'), %s);
+      typeDesc.putInteger(sTID('grainRoughness'), %s);`,
+
 		// levels/curves shared Mk typeDesc block (no slots). Mk always emits
 		// presetKindDefault for these two types — the real values are applied
 		// via the post-Mk setd below (AdjLvlPM / AdjCrvPM), which is what

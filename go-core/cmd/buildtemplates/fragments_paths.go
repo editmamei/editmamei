@@ -193,11 +193,11 @@ func init() {
     %s
 
     var layer = doc.activeLayer;
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if (__kindOf(layer) === LayerKind.TEXT || __kindOf(layer) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
     }
-    if (layer.kind !== LayerKind.NORMAL) {
-      throw new Error('Can only stroke a path onto a normal (raster) layer. Layer kind: ' + layer.kind);
+    if (__kindOf(layer) !== LayerKind.NORMAL) {
+      throw new Error('Can only stroke a path onto a normal (raster) layer. Layer kind: ' + __kindOf(layer));
     }
 
     __spath.strokePath(ToolType.%s);
@@ -247,11 +247,11 @@ func init() {
     %s
 
     var layer = doc.activeLayer;
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if (__kindOf(layer) === LayerKind.TEXT || __kindOf(layer) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
     }
-    if (layer.kind !== LayerKind.NORMAL) {
-      throw new Error('Can only fill a path on a normal (raster) layer. Layer kind: ' + layer.kind);
+    if (__kindOf(layer) !== LayerKind.NORMAL) {
+      throw new Error('Can only fill a path on a normal (raster) layer. Layer kind: ' + __kindOf(layer));
     }
 
     var __fpColor = new SolidColor();

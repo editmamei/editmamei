@@ -48,7 +48,7 @@ func init() {
       throw new Error('No document is open in Photoshop');
     }
     var layer = app.activeDocument.activeLayer;
-    if (layer.kind !== LayerKind.TEXT) {
+    if (__kindOf(layer) !== LayerKind.TEXT) {
       throw new Error('Active layer is not a text layer');
     }
 
@@ -200,7 +200,7 @@ func init() {
     }
     var layer = app.activeDocument.activeLayer;
 
-    if (layer.kind !== LayerKind.TEXT) {
+    if (__kindOf(layer) !== LayerKind.TEXT) {
       throw new Error('Active layer is not a text layer');
     }
 
@@ -222,7 +222,7 @@ func init() {
     }
     var layer = app.activeDocument.activeLayer;
 
-    if (layer.kind !== LayerKind.TEXT) {
+    if (__kindOf(layer) !== LayerKind.TEXT) {
       throw new Error('Active layer is not a text layer');
     }
 
@@ -240,7 +240,7 @@ func init() {
     }
     var layer = app.activeDocument.activeLayer;
 
-    if (layer.kind !== LayerKind.TEXT) {
+    if (__kindOf(layer) !== LayerKind.TEXT) {
       throw new Error('Active layer is not a text layer');
     }
 

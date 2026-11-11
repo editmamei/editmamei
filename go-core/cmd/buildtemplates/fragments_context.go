@@ -327,7 +327,7 @@ function getContextInfo() {
 
         context.activeLayer = {
           name: layer.name,
-          kind: String(layer.kind),
+          kind: String(__kindOf(layer)),
           opacity: layer.opacity,
           blendMode: String(layer.blendMode),
           visible: __ownVisible,
