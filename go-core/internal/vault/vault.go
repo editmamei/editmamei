@@ -153,6 +153,10 @@ const (
 	// promotion — Windows-lenient shapes have been macOS-strict-rejected before.
 	SelFocus = "ai1" // focusMask (AM focusMask; depth-of-field selection, no coords)
 	SkyRepl  = "ai2" // skyReplacement (AM skyReplacement; sky group + lighting layers)
+	// Relight: Photoshop 28's Relight layer, rendered in Adobe's cloud. Event
+	// captured with ScriptListener and replayed live, PS 28.0.0 / Windows,
+	// 2026-11-11. Windows only so far; a macOS capture is owed before promotion.
+	Relight = "ai3" // lightshop (AM lightshop; new Relight smart-object layer above the source)
 
 	// more shared helpers
 	HelperFns = "hfn"  // helperFunctions (cTID/sTID)

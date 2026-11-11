@@ -82,6 +82,9 @@ func buildSelections(name string, params map[string]any) (string, bool, error) {
 			boolParam(params, "softMask", false),
 			strParam(params, "selectionType", "replace"),
 		), true, nil
+	case "relight":
+		out, err := buildRelight(params)
+		return out, true, err
 	case "replaceSky":
 		skyPath := strParam(params, "skyPath", "")
 		if skyPath == "" {

@@ -206,6 +206,8 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   // Not a selection — it composites a layer group — but it is the same Sensei
   // family and belongs beside its siblings for discovery.
   ps_replace_sky: 'select_ai',
+  // A non-destructive Relight layer, so it sits with the other lighting and tone layers.
+  ps_relight: 'adjust',
 
   // adjustments
   ps_add_adjustment_layer: 'adjust',

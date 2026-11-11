@@ -230,6 +230,8 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'ps_add_text_to_object',
   'ps_select_face_feature',
   'ps_stroke_face_contour',
+  // Relight adds a new Relight layer above the source.
+  'ps_relight',
 
   // selection tools — every ps_select* variant, plus modify/save-load-channel and layer
   // masks, changes the document's selection state even when nothing else about the

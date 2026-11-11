@@ -26,6 +26,7 @@ import {
 import { loadSettings, applyDesktopToggles, type Settings } from './settings.js';
 import { itemsFromResult } from '../telemetry/activity.js';
 import { clientSupportsForm, runConsentPrompt } from './consent.js';
+import { runWithCallApproval, type CallApprovalChannel } from './call-approval.js';
 import { TelemetryClient } from '../telemetry/client.js';
 import type { ModuleStatusInfo } from '../telemetry/events.js';
 import { callFeatures } from '../telemetry/script-operations.js';
@@ -1056,7 +1057,30 @@ export class EditmameiServer {
       if (era === 'modern') this.noteModernClient(ctx.mcpReq.envelope);
       this.logger.debug(`Received a call for ${request.params.name}`);
       const args = (request.params.arguments as Record<string, unknown>) || {};
-      const result = await this.handleToolCall(request.params.name, args);
+      // A tool that spends something outside Editmamei asks the person first (call-approval.ts).
+      // 2025 asks while the call is open; 2026-07-28 sends the question back as input_required.
+      const channel: CallApprovalChannel =
+        era === 'modern'
+          ? {
+              supportsForm: clientSupportsForm(
+                (
+                  (ctx.mcpReq.envelope as Record<string, unknown> | undefined)?.[
+                    CLIENT_CAPABILITIES_META_KEY
+                  ] as ClientCapabilities | undefined
+                )?.elicitation
+              ),
+              multiRoundTrip: true,
+              inputResponses: ctx.mcpReq.inputResponses,
+            }
+          : {
+              supportsForm: clientSupportsForm(server.getClientCapabilities()?.elicitation),
+              elicit: (params, options) =>
+                server.elicitInput(params, { ...options, relatedRequestId: ctx.mcpReq.id }),
+            };
+      const { result, inputRequired } = await runWithCallApproval(channel, () =>
+        this.handleToolCall(request.params.name, args)
+      );
+      if (inputRequired) return inputRequired;
       // Through the connection's protocol codec, as the SDK asks of a low-level handler.
       const outputSchema = this.toolRegistry.get(request.params.name)?.tool.outputSchema;
       return server.projectCallToolResult(

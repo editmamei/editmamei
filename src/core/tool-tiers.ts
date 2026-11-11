@@ -262,6 +262,9 @@ export const TOOL_TIERS: Record<string, Tier> = {
   // input is a coordinate and we have no precision aiming to give it in any
   // tier, so it stays unbuilt until the coordinate-ID work lands.
   ps_replace_sky: 'community',
+  // Photoshop 28 Relight (AM lightshop). Generative: every render spends the
+  // person's Adobe Firefly credits, behind an approval prompt.
+  ps_relight: 'dev',
   ps_modify_selection: 'community',
   // get_selection_info → ps_inspect
   ps_get_selection_preview: 'community',

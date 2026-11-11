@@ -136,6 +136,13 @@ export const SELECT_FOCUS_AREA_TIMEOUT_MS = 120_000;
  */
 export const SKY_REPLACEMENT_TIMEOUT_MS = 120_000;
 
+/**
+ * `ps_relight` (Photoshop 28 Relight). A cloud render: measured 11.6s on a
+ * 4032x3024 frame, 2026-11-11. The ceiling allows for a slow network or a busy
+ * Adobe service, because a false timeout here can still spend the credits.
+ */
+export const RELIGHT_TIMEOUT_MS = 180_000;
+
 /** `ps_get_preview` with annotations — pre-existing inline literal, centralized. */
 export const ANNOTATED_PREVIEW_TIMEOUT_MS = 90_000;
 
