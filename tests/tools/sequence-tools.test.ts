@@ -404,6 +404,24 @@ describe('createSequenceTools', () => {
     expect(invoked).toEqual([]);
   });
 
+  it('validation refuses a tool that asks for approval, before any step runs', async () => {
+    const invoked: string[] = [];
+    const invokeTool: FakeInvoke = async (name) => {
+      invoked.push(name);
+      return ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_a', args: {} },
+        { tool: 'ps_relight', args: { lights: [{}] } },
+      ],
+    });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/"ps_relight" asks the person to approve/);
+    expect(invoked).toEqual([]);
+  });
+
   it('validation refuses an out-of-range step count and runs nothing', async () => {
     const invoked: string[] = [];
     const invokeTool: FakeInvoke = async (name) => {

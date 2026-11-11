@@ -280,7 +280,7 @@ describe('applyDesktopToggles (Claude Desktop manifest toggles)', () => {
   ): Settings => ({
     telemetry: { usage, diagnostics, install_id: 'x'.repeat(32) },
     privacy: { send_previews_to_llm: true },
-    automation: { allow_execute_script: true },
+    automation: { allow_execute_script: true, allow_adobe_generative_credits: true },
     ps_path: null,
     update_check: true,
     editor: 'auto',
@@ -494,7 +494,7 @@ describe('applyEditorEnvOverride (Claude Desktop manifest toggle)', () => {
   const base: Settings = {
     telemetry: { usage: true, diagnostics: false, install_id: 'z'.repeat(32) },
     privacy: { send_previews_to_llm: true },
-    automation: { allow_execute_script: true },
+    automation: { allow_execute_script: true, allow_adobe_generative_credits: true },
     ps_path: null,
     update_check: true,
     editor: 'auto',
@@ -544,12 +544,53 @@ describe('automation.allow_execute_script', () => {
   });
 });
 
+describe('automation.allow_adobe_generative_credits', () => {
+  const allowed = (s: Settings) => s.automation.allow_adobe_generative_credits;
+  const desktopToggle = (value: string) => ({ EDITMAMEI_ADOBE_GENERATIVE_CREDITS: value });
+
+  it('is on for a new install, and for a file from before the setting existed', async () => {
+    expect(allowed(loadSettings({ dir }).settings)).toBe(true);
+    await writeFile(settingsPath({ dir }), JSON.stringify({ automation: {} }), 'utf8');
+    expect(allowed(loadSettings({ dir }).settings)).toBe(true);
+  });
+
+  it('survives a load/save round trip when off', () => {
+    const { settings } = loadSettings({ dir });
+    settings.automation.allow_adobe_generative_credits = false;
+    saveSettings(settings, { dir });
+    expect(allowed(loadSettings({ dir }).settings)).toBe(false);
+  });
+
+  it('Desktop: a toggle off at first sight turns it off, and is stored', () => {
+    const out = applyDesktopToggles(loadSettings({ dir }).settings, desktopToggle('false'), {
+      dir,
+    });
+    expect(allowed(out)).toBe(false);
+    expect(allowed(loadSettings({ dir }).settings)).toBe(false);
+  });
+
+  it('Desktop: the toggle at its on default keeps a CLI opt-out', () => {
+    const { settings } = loadSettings({ dir });
+    settings.automation.allow_adobe_generative_credits = false;
+    saveSettings(settings, { dir });
+    const out = applyDesktopToggles(loadSettings({ dir }).settings, desktopToggle('true'), { dir });
+    expect(allowed(out)).toBe(false);
+  });
+
+  it('Desktop: moving the toggle back on turns it on', () => {
+    applyDesktopToggles(loadSettings({ dir }).settings, desktopToggle('false'), { dir });
+    const out = applyDesktopToggles(loadSettings({ dir }).settings, desktopToggle('true'), { dir });
+    expect(allowed(out)).toBe(true);
+    expect(allowed(loadSettings({ dir }).settings)).toBe(true);
+  });
+});
+
 describe('saveSettings', () => {
   it('round-trips and leaves no tmp file behind', async () => {
     const s: Settings = {
       telemetry: { usage: false, diagnostics: true, install_id: mintInstallId() },
       privacy: { send_previews_to_llm: false },
-      automation: { allow_execute_script: true },
+      automation: { allow_execute_script: true, allow_adobe_generative_credits: true },
       ps_path: '/Applications/Adobe Photoshop 2026/Photoshop.app',
       update_check: false,
       editor: 'auto',

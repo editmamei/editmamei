@@ -136,6 +136,19 @@ export const SELECT_FOCUS_AREA_TIMEOUT_MS = 120_000;
  */
 export const SKY_REPLACEMENT_TIMEOUT_MS = 120_000;
 
+/**
+ * `ps_relight` (Photoshop 28 Relight). A cloud render: measured 11.6s on a
+ * 4032x3024 frame, 2026-11-11. The ceiling allows for a slow network or a busy
+ * Adobe service, because a false timeout here can still spend the credits.
+ */
+export const RELIGHT_TIMEOUT_MS = 180_000;
+
+/**
+ * The whole `ps_relight` call: the approval prompt (up to `APPROVAL_TIMEOUT_MS`, 5 minutes, in
+ * core/call-approval.ts) and then the render.
+ */
+export const RELIGHT_CALL_BUDGET_MS = 5 * 60_000 + RELIGHT_TIMEOUT_MS;
+
 /** `ps_get_preview` with annotations — pre-existing inline literal, centralized. */
 export const ANNOTATED_PREVIEW_TIMEOUT_MS = 90_000;
 
@@ -206,6 +219,7 @@ export const TOOL_TIMEOUT_BUDGETS_MS: Record<string, number> = {
   ps_select_subject: SELECT_SUBJECT_TIMEOUT_MS,
   ps_select_sky: SELECT_SKY_TIMEOUT_MS,
   ps_replace_sky: SKY_REPLACEMENT_TIMEOUT_MS,
+  ps_relight: RELIGHT_CALL_BUDGET_MS,
   ps_save_psd: SAVE_PSD_TIMEOUT_MS,
 
   // DELIBERATE EXCEPTION to the derivation rule above: measured max_clean

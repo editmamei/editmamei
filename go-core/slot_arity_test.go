@@ -124,6 +124,10 @@ var arityNeedsParams = []string{
 	// which builds it fully populated (defaults + every tuning value) and
 	// asserts no `%!`.
 	"replaceSky",
+	// Requires one to three lights: a Relight with no light would still spend a
+	// render. Arity-checked by relight_test.go, which builds it populated and
+	// asserts no `%!`.
+	"relight",
 }
 
 func TestNoSlotArityMismatch(t *testing.T) {

@@ -236,12 +236,18 @@ describe('mcpb bundle packaging', () => {
     expect(m.user_config?.update_check).toMatchObject({ type: 'boolean', default: true });
     // The verbose-diagnostics opt-in is off by default (logs stay richer only when reproducing).
     expect(m.user_config?.verbose_logging).toMatchObject({ type: 'boolean', default: false });
+    // Tools that spend Adobe generative credits are on by default and can be turned off here.
+    expect(m.user_config?.adobe_generative_credits).toMatchObject({
+      type: 'boolean',
+      default: true,
+    });
     expect(m.server.mcp_config.env).toEqual({
       EDITMAMEI_LICENSE_KEY: '${user_config.license_key}',
       EDITMAMEI_TELEMETRY_USAGE: '${user_config.telemetry_usage}',
       EDITMAMEI_TELEMETRY_DIAGNOSTICS: '${user_config.telemetry_diagnostics}',
       EDITMAMEI_TELEMETRY_FEATURES: '${user_config.telemetry_features}',
       EDITMAMEI_UPDATE_CHECK: '${user_config.update_check}',
+      EDITMAMEI_ADOBE_GENERATIVE_CREDITS: '${user_config.adobe_generative_credits}',
       EDITMAMEI_VERBOSE_LOGGING: '${user_config.verbose_logging}',
       // Install-channel marker so the boot update check tells .mcpb users to download +
       // reinstall the extension (not "npm install"); the npm path sets no such env.
