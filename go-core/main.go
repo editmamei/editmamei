@@ -8,6 +8,7 @@
 // Protocol (Phase 0, per-call spawn):
 //
 //	editmamei-core build <snippet-name>     # params JSON on stdin, JSX on stdout
+//	editmamei-core window <action> [flags]  # Photoshop window helpers (window.go), JSON on stdout
 //
 // Errors go to stderr with a non-zero exit; the TS SnippetClient turns that
 // into a thrown Error. This is snippet *generation* failing, and is separate
@@ -26,6 +27,9 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "version" {
 		fmt.Println("editmamei-core phase0")
 		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "window" {
+		os.Exit(runWindow(os.Args[2:], os.Stdout))
 	}
 	if len(os.Args) < 3 || os.Args[1] != "build" {
 		fmt.Fprintln(os.Stderr, "usage: editmamei-core build <snippet-name>  (params JSON on stdin)")
