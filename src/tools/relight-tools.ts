@@ -151,11 +151,11 @@ interface DescriptorLight {
 const round = (v: number): number => Math.round(v * 10000) / 10000;
 
 /**
- * Photoshop's own Relight color presets (the panel's Color menu): the descriptor RGB it sends for
- * each, from Photoshop 28.0's built-in table. 2000K, 3200K and 5500K were also confirmed with
- * ScriptListener captures, and with exactly these values the panel names the preset rather than
- * showing "Custom color" (verified 2026-11-11). The swatch hex the panel draws (#e9bd69 for
- * 3200K) is color-managed display output, not these values.
+ * Photoshop's own Relight color presets (the panel's Color menu) and the descriptor RGB it uses for
+ * each. Verified on Photoshop 28.0 (2026-11-11): with exactly these values the panel names every
+ * preset rather than showing "Custom color", and 2000K, 3200K and 5500K also match ScriptListener
+ * captures. The swatch hex the panel draws (#e9bd69 for 3200K) is color-managed display output, not
+ * these values.
  */
 export const ADOBE_RELIGHT_PRESETS: ReadonlyArray<
   readonly [number, readonly [number, number, number]]
