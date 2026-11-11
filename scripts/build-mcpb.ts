@@ -97,6 +97,9 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
     // Boot update-check opt-out — Desktop has no terminal for `editmamei config`, so expose
     // the same switch here (reconciled with settings.json via applyDesktopToggles).
     EDITMAMEI_UPDATE_CHECK: '${user_config.update_check}',
+    // Opt-out for tools that spend Adobe generative credits (reconciled with settings.json via
+    // applyDesktopToggles). Off leaves those tools out of the tool list entirely.
+    EDITMAMEI_ADOBE_GENERATIVE_CREDITS: '${user_config.adobe_generative_credits}',
     // Verbose-logging opt-in — Desktop has no terminal to set LOG_LEVEL, so this toggle
     // lowers logging to DEBUG (Logger reads EDITMAMEI_VERBOSE_LOGGING) so a diagnostic
     // bundle captured after a repro carries full detail. Off by default.
@@ -178,6 +181,14 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
           'Log at DEBUG detail so a diagnostic report (ask the assistant to "report a problem") captures more. Logs stay local on your machine — nothing is sent anywhere. Off by default; turn on only while reproducing an issue.',
         required: false,
         default: false,
+      },
+      adobe_generative_credits: {
+        type: 'boolean',
+        title: 'Allow Adobe generative AI tools',
+        description:
+          "Lets your assistant offer Photoshop features that spend Adobe Firefly generative credits from your Adobe account, such as Relight. You're asked to approve every use. Turn off to hide these tools completely. On by default.",
+        required: false,
+        default: true,
       },
     },
   };
