@@ -2,6 +2,9 @@ package main
 
 import "editmamei-core/internal/vault"
 
+// These helpers are also compiled into the Pro module, which can run on an older host
+// whose script wrapper has no __kindOf (the module only checks the ABI). So they call
+// it guarded and fall back to layer.kind there.
 func init() {
 	addFragments(map[string]string{
 		// getMinimalContextInfo helper body (verbatim from _helpers.ts).
@@ -327,7 +330,7 @@ function getContextInfo() {
 
         context.activeLayer = {
           name: layer.name,
-          kind: String(__kindOf(layer)),
+          kind: String((typeof __kindOf === 'function' ? __kindOf(layer) : layer.kind)),
           opacity: layer.opacity,
           blendMode: String(layer.blendMode),
           visible: __ownVisible,
