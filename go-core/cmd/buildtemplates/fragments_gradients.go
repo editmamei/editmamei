@@ -125,11 +125,11 @@ func init() {
     // layer active. false = the event dispatched but did not create what we
     // asked for — surface it instead of claiming success.
     var __isGradientFill = false;
-    try { __isGradientFill = (__newLayer.kind === LayerKind.GRADIENTFILL); } catch (eKind) {}
+    try { __isGradientFill = (__kindOf(__newLayer) === LayerKind.GRADIENTFILL); } catch (eKind) {}
 
     return {
       created: __isGradientFill,
-      layer_kind: String(__newLayer.kind),
+      layer_kind: String(__kindOf(__newLayer)),
       fill_type: 'gradient',
       gradient_type: %s,
       angle: __angle,

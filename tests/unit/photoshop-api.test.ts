@@ -17,6 +17,24 @@ describe('PhotoshopAPIFactory', () => {
   });
 });
 
+// Every snippet reads layer kinds through __kindOf, because layer.kind throws on
+// the Clarity and Dehaze and Grain adjustment layers (Photoshop 27.3+). The
+// wrapper is the one place that defines it, so every script must carry it.
+describe('script wrapper', () => {
+  it('defines __kindOf around every script, with the Action Manager fallback', async () => {
+    const conn = makeConnection();
+    const api = await new PhotoshopAPIFactory(conn.asConnection()).createAPI();
+    await api.executeScript('return __kindOf(app.activeDocument.activeLayer);');
+    const sent = conn.executions[conn.executions.length - 1].script;
+    expect(sent).toContain('function __kindOf(layer)');
+    expect(sent).toContain("if (cls === 'clarity') return 'LayerKind.CLARITYDEHAZE';");
+    expect(sent).toContain("if (cls === 'grainAdjustment') return 'LayerKind.GRAIN';");
+    expect(sent.indexOf('function __kindOf(layer)')).toBeLessThan(
+      sent.indexOf('return __kindOf(app.activeDocument.activeLayer);')
+    );
+  });
+});
+
 // Audit finding 16 / perf M8: the per-creation "ready for scripting"
 // line was INFO — the default log level — so it fired on every one of the
 // ~185 runScript call sites and flooded the diagnostic ring buffer with

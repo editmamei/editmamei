@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"editmamei-core/internal/vault"
@@ -31,6 +32,12 @@ var photoFilterPresetMap = map[string]string{
 	"deep_emerald": "deepEmerald",
 	"deep_yellow":  "deepYellow",
 	"underwater":   "underwater",
+}
+
+// clampRound clamps v to [lo, hi] and rounds it, for sliders Photoshop stores
+// as integers without range-checking them.
+func clampRound(v, lo, hi float64) float64 {
+	return math.Round(clampRange(v, lo, hi))
 }
 
 // Selective-color family order — must mirror TS SC_FAMILY_MAP iteration order.
@@ -193,6 +200,15 @@ func addAdjustmentLayer(
 	posLevels := num("pos_levels", 4)
 	thrLevel := num("thr_level", 128)
 
+	// Clarity and Dehaze, Grain. Photoshop stores whatever it's given, so the
+	// panel's slider ranges are enforced here. A Grain layer made with no values
+	// gets amount 0 (invisible), hence a visible default.
+	cdClarity := clampRound(num("cd_clarity", 0), -100, 100)
+	cdDehaze := clampRound(num("cd_dehaze", 0), -100, 100)
+	grAmount := clampRound(num("grain_amount", 25), 0, 100)
+	grSize := clampRound(num("grain_size", 25), 0, 100)
+	grRoughness := clampRound(num("grain_roughness", 50), 0, 100)
+
 	// ── hasCustomValues ─────────────────────────────────────────────────────
 
 	bwChanged := bwReds != 40 || bwYellows != 60 || bwGreens != 40 || bwCyans != 60 || bwBlues != 20 || bwMagentas != 80 || bwTint
@@ -227,6 +243,9 @@ func addAdjustmentLayer(
 	case "selective_color":
 		hasCustomValues = scChanged
 	case "gradient_map", "invert", "posterize", "threshold":
+		hasCustomValues = true
+	case "clarity_dehaze", "grain":
+		// Always explicit values: the presetKind form is unverified for these.
 		hasCustomValues = true
 	case "exposure":
 		hasCustomValues = expChanged
@@ -361,6 +380,13 @@ func addAdjustmentLayer(
 
 		case "threshold":
 			typeDescBlock = fmt.Sprintf(tpl[vault.AdjThrTd], jsNum(thrLevel))
+
+		case "clarity_dehaze":
+			typeDescBlock = fmt.Sprintf(tpl[vault.AdjCDTd], jsNum(cdClarity), jsNum(cdDehaze))
+
+		case "grain":
+			typeDescBlock = fmt.Sprintf(tpl[vault.AdjGrainTd],
+				jsNum(grAmount), jsNum(grSize), jsNum(grRoughness))
 
 		case "invert":
 			// Invert is parameter-free; typeDesc stays empty.

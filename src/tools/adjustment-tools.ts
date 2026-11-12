@@ -48,8 +48,11 @@ const addAdjustmentLayerSchema: JsonSchemaObject = {
         // covered, posterize + threshold were the only ones missing.
         'posterize',
         'threshold',
+        // Photoshop 27.3+ layer types.
+        'clarity_dehaze',
+        'grain',
       ],
-      description: 'Adjustment kind.',
+      description: 'Adjustment kind. clarity_dehaze and grain need Photoshop 2026 (27.3) or later.',
     },
     clip_to_below: {
       type: 'boolean',
@@ -590,6 +593,49 @@ const addAdjustmentLayerSchema: JsonSchemaObject = {
       default: 128,
     },
 
+    // ---------- clarity_dehaze (one Photoshop layer holds both) ----------
+    cd_clarity: {
+      type: 'number',
+      description:
+        'For type=clarity_dehaze. Midtone local contrast, -100 to 100. Positive adds punch and texture; negative softens (a gentle skin or dreamy look). Start around 10-30.',
+      minimum: -100,
+      maximum: 100,
+      default: 0,
+    },
+    cd_dehaze: {
+      type: 'number',
+      description:
+        'For type=clarity_dehaze. Haze removal, -100 to 100. Positive cuts atmospheric haze and deepens skies; negative adds fog or a soft glow. Start around 10-30.',
+      minimum: -100,
+      maximum: 100,
+      default: 0,
+    },
+
+    // ---------- grain ----------
+    grain_amount: {
+      type: 'number',
+      description:
+        'For type=grain. Strength of the film grain, 0 to 100. Subtle is 10-25, obvious film look 30-50.',
+      minimum: 0,
+      maximum: 100,
+      default: 25,
+    },
+    grain_size: {
+      type: 'number',
+      description: 'For type=grain. Grain particle size, 0 to 100. Photoshop default 25.',
+      minimum: 0,
+      maximum: 100,
+      default: 25,
+    },
+    grain_roughness: {
+      type: 'number',
+      description:
+        'For type=grain. How irregular the grain is, 0 to 100: low is even, high is clumpy. Photoshop default 50.',
+      minimum: 0,
+      maximum: 100,
+      default: 50,
+    },
+
     // ---------- masking (applies to ALL types) ----------
     mask_from_selection: {
       type: 'boolean',
@@ -946,6 +992,12 @@ const FORWARDED_KEYS = new Set<string>([
   // posterize / threshold
   'pos_levels',
   'thr_level',
+  // clarity_dehaze / grain
+  'cd_clarity',
+  'cd_dehaze',
+  'grain_amount',
+  'grain_size',
+  'grain_roughness',
 ]);
 
 /** A 3DLUT given by preset leaf name passes as is; one given as a path is held to the local-path rule. */

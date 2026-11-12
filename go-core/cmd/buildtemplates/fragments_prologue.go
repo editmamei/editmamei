@@ -19,6 +19,10 @@ import "editmamei-core/internal/vault"
 // A fragment now states what it needs and the emitter composes the opening for
 // it. There is one copy to fix, and a fragment cannot forget a helper it never
 // had to remember.
+
+// These helpers are also compiled into the Pro module, which can run on an older host
+// whose script wrapper has no __kindOf (the module only checks the ABI). So they call
+// it guarded and fall back to layer.kind there.
 func init() {
 	addFragments(map[string]string{
 		// Slots: 1 = context helper body, 2 = the cTID/sTID helpers (empty for
@@ -63,7 +67,7 @@ func init() {
 		// instead. Where the caller let us duplicate, this rasterizes the copy
 		// and the original survives untouched.
 		vault.FiltRast: `
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if ((typeof __kindOf === 'function' ? __kindOf(layer) : layer.kind) === LayerKind.TEXT || (typeof __kindOf === 'function' ? __kindOf(layer) : layer.kind) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
     }
 `,
@@ -73,7 +77,7 @@ func init() {
 		vault.FiltRastTrk: `
     var wasRasterized = false;
 
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if ((typeof __kindOf === 'function' ? __kindOf(layer) : layer.kind) === LayerKind.TEXT || (typeof __kindOf === 'function' ? __kindOf(layer) : layer.kind) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
       wasRasterized = true;
     }
@@ -91,8 +95,8 @@ func init() {
 		// The default guard: a filter needs real pixels, and by this point the
 		// rasterize block has converted anything convertible.
 		vault.FiltKindNorm: `
-    if (layer.kind !== LayerKind.NORMAL) {
-      throw new Error('This filter needs a pixel layer; the active layer is ' + layer.kind);
+    if ((typeof __kindOf === 'function' ? __kindOf(layer) : layer.kind) !== LayerKind.NORMAL) {
+      throw new Error('This filter needs a pixel layer; the active layer is ' + (typeof __kindOf === 'function' ? __kindOf(layer) : layer.kind));
     }
 `,
 
@@ -101,8 +105,8 @@ func init() {
 		// step than a filter call should take on its own. Name the remedy and let
 		// the caller choose it.
 		vault.FiltKindSO: `
-    if (layer.kind !== LayerKind.SMARTOBJECT) {
-      throw new Error('as_smart_filter needs a Smart Object; the active layer is ' + layer.kind + '. Convert it first with ps_convert_to_smart_object, or drop as_smart_filter to apply the filter destructively.');
+    if ((typeof __kindOf === 'function' ? __kindOf(layer) : layer.kind) !== LayerKind.SMARTOBJECT) {
+      throw new Error('as_smart_filter needs a Smart Object; the active layer is ' + (typeof __kindOf === 'function' ? __kindOf(layer) : layer.kind) + '. Convert it first with ps_convert_to_smart_object, or drop as_smart_filter to apply the filter destructively.');
     }
 `,
 	})

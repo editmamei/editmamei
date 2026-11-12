@@ -104,6 +104,36 @@ describe('createAdjustmentTools', () => {
     expect(build.params.gm_reverse).toBe(true);
   });
 
+  // Photoshop 27.3+ types. The Go side clamps and defaults; these only check
+  // the handler forwards the values.
+  it('add_adjustment_layer clarity_dehaze forwards cd_clarity and cd_dehaze', async () => {
+    const tools = createAdjustmentTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_add_adjustment_layer', {
+      type: 'clarity_dehaze',
+      cd_clarity: 25,
+      cd_dehaze: -10,
+    });
+    const build = snippetClient.lastBuild();
+    expect(build.params.type).toBe('clarity_dehaze');
+    expect(build.params.cd_clarity).toBe(25);
+    expect(build.params.cd_dehaze).toBe(-10);
+  });
+
+  it('add_adjustment_layer grain forwards amount, size and roughness', async () => {
+    const tools = createAdjustmentTools(conn.asConnection(), snippetClient);
+    await callTool(tools, 'ps_add_adjustment_layer', {
+      type: 'grain',
+      grain_amount: 30,
+      grain_size: 40,
+      grain_roughness: 70,
+    });
+    const build = snippetClient.lastBuild();
+    expect(build.params.type).toBe('grain');
+    expect(build.params.grain_amount).toBe(30);
+    expect(build.params.grain_size).toBe(40);
+    expect(build.params.grain_roughness).toBe(70);
+  });
+
   // ===========================================================================
   // Phase 4 (layer-placement bug) — into_active_group forwarding.
   //
@@ -176,7 +206,9 @@ describe('createAdjustmentTools', () => {
     expect(types).toContain('invert');
     expect(types).toContain('posterize');
     expect(types).toContain('threshold');
-    expect(types.length).toBe(16);
+    expect(types).toContain('clarity_dehaze');
+    expect(types).toContain('grain');
+    expect(types.length).toBe(18);
   });
 
   // ===========================================================================

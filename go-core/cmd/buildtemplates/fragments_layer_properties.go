@@ -407,7 +407,7 @@ func init() {
     return {
       selected: true,
       name: found.name,
-      kind: String(found.kind),
+      kind: String(__kindOf(found)),
       context: getContextInfo()
     };
   `,
@@ -422,7 +422,7 @@ func init() {
     }
     var layer = app.activeDocument.activeLayer;
 
-    if (layer.kind === LayerKind.NORMAL) {
+    if (__kindOf(layer) === LayerKind.NORMAL) {
       return {
         message: 'Layer is already rasterized',
         kind: 'NORMAL',
@@ -430,7 +430,7 @@ func init() {
       };
     }
 
-    var originalKind = String(layer.kind);
+    var originalKind = String(__kindOf(layer));
     layer.rasterize(RasterizeType.ENTIRELAYER);
 
     return {

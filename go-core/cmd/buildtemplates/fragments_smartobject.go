@@ -322,7 +322,7 @@ func init() {
       return {
         is_smart_object: false,
         layer_name: layer.name,
-        layer_kind: String(layer.kind),
+        layer_kind: String(__kindOf(layer)),
         context: getMinimalContextInfo()
       };
     }

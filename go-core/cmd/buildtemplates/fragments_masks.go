@@ -40,11 +40,15 @@ func init() {
       LayerKind.BLACKANDWHITE,
       LayerKind.CHANNELMIXER,
       LayerKind.VIBRANCE,
-      LayerKind.EXPOSURE
+      LayerKind.EXPOSURE,
+      // No DOM LayerKind exists for these; __kindOf names them.
+      'LayerKind.CLARITYDEHAZE',
+      'LayerKind.GRAIN',
+      'LayerKind.ADJUSTMENT'
     ];
     var isAdjustmentLayer = false;
     for (var i = 0; i < ADJ_LAYER_KINDS.length; i++) {
-      if (activeLayer.kind === ADJ_LAYER_KINDS[i]) { isAdjustmentLayer = true; break; }
+      if (__kindOf(activeLayer) === ADJ_LAYER_KINDS[i]) { isAdjustmentLayer = true; break; }
     }
 
     // Probe for an existing selection (use ActionReference / fsel — DOM
@@ -194,7 +198,7 @@ func init() {
     return {
       maskCreated: maskCreated,
       modifiedExistingMask: modifiedExistingMask,
-      activeLayerKind: String(activeLayer.kind),
+      activeLayerKind: String(__kindOf(activeLayer)),
       hadSelection: hasSelection,
       context: getContextInfo()
     };

@@ -23,11 +23,11 @@ func init() {
 
     var layer = doc.activeLayer;
 
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if (__kindOf(layer) === LayerKind.TEXT || __kindOf(layer) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
     }
-    if (layer.kind !== LayerKind.NORMAL) {
-      throw new Error('Shadows/Highlights requires a pixel layer (kind=' + layer.kind + ').');
+    if (__kindOf(layer) !== LayerKind.NORMAL) {
+      throw new Error('Shadows/Highlights requires a pixel layer (kind=' + __kindOf(layer) + ').');
     }
 
     var shDesc = new ActionDescriptor();
@@ -102,11 +102,11 @@ func init() {
     %s
 
     var layer = doc.activeLayer;
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if (__kindOf(layer) === LayerKind.TEXT || __kindOf(layer) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
     }
-    if (layer.kind !== LayerKind.NORMAL) {
-      throw new Error('Color Lookup bake requires a pixel layer (kind=' + layer.kind + ').');
+    if (__kindOf(layer) !== LayerKind.NORMAL) {
+      throw new Error('Color Lookup bake requires a pixel layer (kind=' + __kindOf(layer) + ').');
     }
 
     // Path resolution — same logic as the AdjL form's typeDesc branch.
@@ -196,11 +196,11 @@ func init() {
     %s
 
     var layer = doc.activeLayer;
-    if (layer.kind === LayerKind.TEXT || layer.kind === LayerKind.SMARTOBJECT) {
+    if (__kindOf(layer) === LayerKind.TEXT || __kindOf(layer) === LayerKind.SMARTOBJECT) {
       layer.rasterize(RasterizeType.ENTIRELAYER);
     }
-    if (layer.kind !== LayerKind.NORMAL) {
-      throw new Error('Equalize requires a pixel layer (kind=' + layer.kind + ').');
+    if (__kindOf(layer) !== LayerKind.NORMAL) {
+      throw new Error('Equalize requires a pixel layer (kind=' + __kindOf(layer) + ').');
     }
 
     executeAction(cTID('Eqlz'), new ActionDescriptor(), DialogModes.NO);
@@ -281,6 +281,8 @@ func init() {
     else if (adjType === 'invert') typeCharID = cTID('Invr');
     else if (adjType === 'posterize') typeCharID = cTID('Pstr');
     else if (adjType === 'threshold') typeCharID = cTID('Thrs');
+    else if (adjType === 'clarity_dehaze') typeCharID = sTID('clarity');
+    else if (adjType === 'grain') typeCharID = sTID('grainAdjustment');
     else throw new Error('Unknown adjustment type: ' + adjType);
 
     // Selection state probe via ActionReference / fsel. Accessing the DOM
@@ -334,7 +336,7 @@ func init() {
 
     %s
 
-    var verifiedKind = String(newLayer.kind);
+    var verifiedKind = String(__kindOf(newLayer));
     var expectedKind = null;
     if (adjType === 'hue_saturation') expectedKind = 'LayerKind.HUESATURATION';
     else if (adjType === 'brightness_contrast') expectedKind = 'LayerKind.BRIGHTNESSCONTRAST';
@@ -352,6 +354,8 @@ func init() {
     else if (adjType === 'invert') expectedKind = 'LayerKind.INVERSION';
     else if (adjType === 'posterize') expectedKind = 'LayerKind.POSTERIZE';
     else if (adjType === 'threshold') expectedKind = 'LayerKind.THRESHOLD';
+    else if (adjType === 'clarity_dehaze') expectedKind = 'LayerKind.CLARITYDEHAZE';
+    else if (adjType === 'grain') expectedKind = 'LayerKind.GRAIN';
     var kindMatches = (verifiedKind === expectedKind);
 
     var maskInvertedApplied = false;

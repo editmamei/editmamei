@@ -138,6 +138,30 @@ class ExtendScriptPhotoshopAPI implements PhotoshopAPI {
 
   try { $.__mcp__ = undefined; } catch (e) {}
 
+  // A layer's kind, for every snippet. Reading layer.kind throws "Internal
+  // error" on adjustment layers the scripting DOM has no LayerKind for:
+  // Clarity and Dehaze and Grain (Photoshop 27.3+, still so on 28.0). Those
+  // read back from Action Manager as a string in the DOM's naming style, so
+  // comparisons against LayerKind values stay false rather than throwing.
+  function __kindOf(layer) {
+    try { return layer.kind; } catch (e) {}
+    try {
+      var ref = new ActionReference();
+      ref.putIdentifier(charIDToTypeID('Lyr '), layer.id);
+      var desc = executeActionGet(ref);
+      var adjs = charIDToTypeID('Adjs');
+      var cls = '';
+      if (desc.hasKey(adjs)) {
+        var list = desc.getList(adjs);
+        if (list.count > 0) cls = typeIDToStringID(list.getObjectType(0));
+      }
+      if (cls === 'clarity') return 'LayerKind.CLARITYDEHAZE';
+      if (cls === 'grainAdjustment') return 'LayerKind.GRAIN';
+      if (desc.getInteger(stringIDToTypeID('layerKind')) === 2) return 'LayerKind.ADJUSTMENT';
+    } catch (e2) {}
+    return 'LayerKind.UNKNOWN';
+  }
+
   // In-script JSON encoder. ExtendScript Photoshop has no JSON object, so
   // we walk the result tree ourselves. Handles strings (with escape),
   // numbers, booleans, null/undefined, arrays, and plain objects. Cycles
