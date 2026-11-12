@@ -10,6 +10,22 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.10.2] — 2026-11-11
+
+### Added
+
+- **Clarity and Dehaze, and Grain adjustment layers.** Your assistant can add Photoshop's Clarity
+  and Dehaze layer and its Grain layer, non-destructive like the other adjustment layers.
+  - `ps_add_adjustment_layer` types `clarity_dehaze` and `grain`. They need Photoshop 2026 (27.3)
+    or later.
+
+### Fixed
+
+- **The Relight preview finds the photo on plain backdrops.** It failed on photos with a flat gray
+  or white studio backdrop or a pale sky, saying it couldn't find the photo in Photoshop's window.
+- **Clarity and Dehaze, and Grain layers are named correctly.** Inspecting a document reported them
+  as normal pixel layers.
+
 ## [1.10.1] — 2026-11-11
 
 ### Added
