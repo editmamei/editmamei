@@ -403,3 +403,22 @@ func TestFindCanvasPaleSkyDarkHair(t *testing.T) {
 	}
 	wantCanvas(t, f, canvas)
 }
+
+// A black-and-white or graded photo can show dozens of flat grays on the way to
+// the pasteboard. With the canvas filling the width, the pasteboard is only above
+// and below, after every side ray's grays have been collected; it must still be
+// tried.
+func TestFindCanvasManyFlatGrays(t *testing.T) {
+	paste := rect{X: 60, Y: 40, W: 1080, H: 820}
+	canvas := rect{X: 60, Y: 250, W: 1080, H: 400}
+	f := newFrame(1200, 900, paste, canvas)
+	for i := 0; i < 1080/24; i++ {
+		v := 0x40 + 3*i // 45 distinct flat neutral stripes
+		paint(f, rect{X: canvas.X + i*24, Y: canvas.Y, W: 24, H: canvas.H}, v, v, v)
+	}
+	// Some texture in the middle so the center isn't itself a flat run.
+	for x := 580; x < 620; x++ {
+		paint(f, rect{X: x, Y: canvas.Y, W: 1, H: canvas.H}, 200, 120+x%30, 90)
+	}
+	wantCanvas(t, f, canvas)
+}

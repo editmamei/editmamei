@@ -220,13 +220,13 @@ describe('runRelightPreview', () => {
   it('restores layers when the first capture fails, without opening the panel', async () => {
     const h = harness({
       prepare: { prepared: true, hidden_ids: [3], context: { document: { width: 1, height: 1 } } },
-      capture: new Error('fit the photo on screen (View > Fit on Screen)'),
+      capture: new Error("couldn't find the photo in Photoshop's window, so there's no preview"),
     });
     const result = await runRelightPreview(h.deps, LIGHTS, 30);
     expect(result.isError).toBe(true);
     expect(h.scripts.some((s) => s.mode === 'preview_open')).toBe(false);
     expect(h.scripts.some((s) => s.mode === 'preview_restore')).toBe(true);
-    expect((result.content[0] as { text: string }).text).toMatch(/Fit on Screen/);
+    expect((result.content[0] as { text: string }).text).toMatch(/couldn't find the photo/);
   });
 
   it("isn't available on macOS yet, and touches nothing there", async () => {

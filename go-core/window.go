@@ -94,8 +94,11 @@ const (
 	// pasteboardEdgeRun: pixels of the pasteboard color in a row that mark the
 	// canvas edge (the pasteboard is always far wider than this).
 	pasteboardEdgeRun = 8
-	// maxCandidates bounds the grays tried as the pasteboard.
-	maxCandidates  = 24
+	// maxCandidates only guards against pathological captures. A black-and-white
+	// or graded photo can show dozens of flat grays along one ray before the
+	// pasteboard, and each try costs a single walk along the rays, so the bound
+	// sits far above any real photo.
+	maxCandidates  = 512
 	colorTolerance = 3 // per channel, when matching the pasteboard color
 	minCanvasSide  = 48
 	canvasInset    = 2
