@@ -43,11 +43,190 @@ type PrivateDetector = {
   conventionalPaths(): string[];
   probeCandidates(paths: string[]): Promise<PhotoshopInfo | null>;
   inspectPath(path: string): Promise<PhotoshopInfo | null>;
+  findViaRegistry(): Promise<PhotoshopInfo | null>;
+  readVersionedProgIds(output: string): string[];
+  resolveComProgId(exePath: string): Promise<string | null>;
 };
 
 function asPrivate(d: WindowsDetector): PrivateDetector {
   return d as unknown as PrivateDetector;
 }
+
+const PS2026 = 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe';
+const PS2027 = 'C:\\Program Files\\Adobe\\Adobe Photoshop 2027\\Photoshop.exe';
+
+/**
+ * A registry with 2026 and 2027 installed side by side, as observed on a real
+ * machine: each versioned ProgID points at its own release, and the `.210.1`
+ * entry points at the OLDER release's executable.
+ */
+const SIDE_BY_SIDE: Record<string, string> = {
+  'query HKCR /f Photoshop.Application. /k': [
+    'HKEY_CLASSES_ROOT\\Photoshop.Application.200',
+    'HKEY_CLASSES_ROOT\\Photoshop.Application.200.1',
+    'HKEY_CLASSES_ROOT\\Photoshop.Application.210',
+    'HKEY_CLASSES_ROOT\\Photoshop.Application.210.1',
+    'End of search: 4 match(es) found.',
+  ].join('\r\n'),
+  'query HKCR\\Photoshop.Application.200\\CLSID /ve':
+    '    (Default)    REG_SZ    {2682BB05-0A88-430F-8614-EE4E60E6D916}',
+  'query HKCR\\Photoshop.Application.210\\CLSID /ve':
+    '    (Default)    REG_SZ    {1271048C-E6B0-4EB2-96C5-F5EEC769A313}',
+  'query HKCR\\Photoshop.Application.210.1\\CLSID /ve':
+    '    (Default)    REG_SZ    {6DECC242-87EF-11cf-86B4-444553540000}',
+  'query HKCR\\CLSID\\{6DECC242-87EF-11cf-86B4-444553540000}\\LocalServer32 /ve': `    (Default)    REG_SZ    ${PS2026} /Automation`,
+  'query HKCR\\CLSID\\{2682BB05-0A88-430F-8614-EE4E60E6D916}\\LocalServer32 /ve': `    (Default)    REG_SZ    ${PS2026} /Automation`,
+  'query HKCR\\CLSID\\{1271048C-E6B0-4EB2-96C5-F5EEC769A313}\\LocalServer32 /ve': `    (Default)    REG_SZ    ${PS2027} /Automation`,
+  'query HKLM\\SOFTWARE\\Adobe\\Photoshop /s': [
+    'HKEY_LOCAL_MACHINE\\SOFTWARE\\Adobe\\Photoshop\\200.0',
+    '    ApplicationPath    REG_SZ    C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\',
+    'HKEY_LOCAL_MACHINE\\SOFTWARE\\Adobe\\Photoshop\\210.0',
+    '    ApplicationPath    REG_SZ    C:\\Program Files\\Adobe\\Adobe Photoshop 2027\\',
+  ].join('\r\n'),
+};
+
+/** Answer each reg.exe call from a table; anything unlisted fails like a missing key. */
+function useRegistry(table: Record<string, string>): void {
+  execFileMock.mockImplementation((_file, args, _opts, cb) => {
+    const stdout = table[args.join(' ')];
+    if (stdout === undefined)
+      cb(new Error('ERROR: The system was unable to find the key'), {
+        stdout: '',
+        stderr: '',
+      });
+    else cb(null, { stdout, stderr: '' });
+  });
+}
+
+function resetRegistry(): void {
+  execFileMock.mockReset();
+  execFileMock.mockImplementation((_file, _args, _opts, cb) =>
+    cb(null, { stdout: '', stderr: '' })
+  );
+}
+
+describe('WindowsDetector — COM ProgID for the chosen install', () => {
+  afterEach(() => {
+    resetRegistry();
+    accessMock.mockReset();
+    accessMock.mockImplementation(async () => {
+      throw new Error('ENOENT');
+    });
+  });
+
+  it('keeps only Photoshop.Application.<N>, newest first, compared as numbers', () => {
+    const output = [
+      'HKEY_CLASSES_ROOT\\Photoshop.Application.90',
+      'HKEY_CLASSES_ROOT\\Photoshop.Application.210.1',
+      'HKEY_CLASSES_ROOT\\Photoshop.Application.200',
+      'HKEY_CLASSES_ROOT\\Photoshop.Application.210',
+      'HKEY_CLASSES_ROOT\\Photoshop.ApplicationX.300',
+    ].join('\r\n');
+    expect(asPrivate(new WindowsDetector()).readVersionedProgIds(output)).toEqual([
+      'Photoshop.Application.210',
+      'Photoshop.Application.200',
+      'Photoshop.Application.90',
+    ]);
+  });
+
+  it("matches each install to the ProgID whose server is that install's executable", async () => {
+    useRegistry(SIDE_BY_SIDE);
+    const detector = asPrivate(new WindowsDetector());
+    expect(await detector.resolveComProgId(PS2027)).toBe('Photoshop.Application.210');
+    // .210.1 points at 2026's executable on this machine; it must never be chosen.
+    expect(await detector.resolveComProgId(PS2026)).toBe('Photoshop.Application.200');
+  });
+
+  it('caps every registry query it makes with a timeout', async () => {
+    // detect() blocks every tool call, so a hung reg.exe must not hang it.
+    useRegistry(SIDE_BY_SIDE);
+    execFileMock.mockClear();
+    await asPrivate(new WindowsDetector()).resolveComProgId(PS2027);
+    expect(execFileMock.mock.calls.length).toBeGreaterThan(0);
+    for (const [, , opts] of execFileMock.mock.calls) {
+      expect(opts).toMatchObject({ timeout: expect.any(Number) });
+    }
+  });
+
+  it('compares executable paths case-insensitively and across separators', async () => {
+    useRegistry(SIDE_BY_SIDE);
+    const detector = asPrivate(new WindowsDetector());
+    expect(await detector.resolveComProgId(PS2027.toLowerCase().replace(/\\/g, '/'))).toBe(
+      'Photoshop.Application.210'
+    );
+  });
+
+  it('returns null when no versioned registration points at the install', async () => {
+    useRegistry(SIDE_BY_SIDE);
+    const detector = asPrivate(new WindowsDetector());
+    expect(await detector.resolveComProgId('D:\\Portable\\Photoshop.exe')).toBeNull();
+  });
+
+  it('returns null when the registry search itself fails', async () => {
+    useRegistry({});
+    expect(await asPrivate(new WindowsDetector()).resolveComProgId(PS2027)).toBeNull();
+  });
+
+  it('detect() picks the newest install and carries its ProgID', async () => {
+    useRegistry(SIDE_BY_SIDE);
+    accessMock.mockImplementation(async () => undefined);
+    const saved = process.env.PHOTOSHOP_PATH;
+    delete process.env.PHOTOSHOP_PATH;
+    try {
+      const info = await new WindowsDetector().detect();
+      expect(info.path).toBe(PS2027);
+      expect(info.comProgId).toBe('Photoshop.Application.210');
+    } finally {
+      if (saved !== undefined) process.env.PHOTOSHOP_PATH = saved;
+    }
+  });
+
+  it('detect() honours PHOTOSHOP_PATH and resolves that release, not the newest', async () => {
+    useRegistry(SIDE_BY_SIDE);
+    accessMock.mockImplementation(async () => undefined);
+    const saved = process.env.PHOTOSHOP_PATH;
+    process.env.PHOTOSHOP_PATH = PS2026;
+    try {
+      const info = await new WindowsDetector().detect();
+      expect(info.path).toBe(PS2026);
+      expect(info.comProgId).toBe('Photoshop.Application.200');
+    } finally {
+      if (saved === undefined) delete process.env.PHOTOSHOP_PATH;
+      else process.env.PHOTOSHOP_PATH = saved;
+    }
+  });
+
+  it('detect() leaves comProgId unset when nothing matches', async () => {
+    useRegistry({
+      'query HKLM\\SOFTWARE\\Adobe\\Photoshop /s':
+        SIDE_BY_SIDE['query HKLM\\SOFTWARE\\Adobe\\Photoshop /s'],
+    });
+    accessMock.mockImplementation(async () => undefined);
+    const saved = process.env.PHOTOSHOP_PATH;
+    delete process.env.PHOTOSHOP_PATH;
+    try {
+      const info = await new WindowsDetector().detect();
+      expect(info.path).toBe(PS2027);
+      expect(info.comProgId).toBeUndefined();
+    } finally {
+      if (saved !== undefined) process.env.PHOTOSHOP_PATH = saved;
+    }
+  });
+
+  it('findViaRegistry picks the newest release numerically, not as text', async () => {
+    useRegistry({
+      'query HKLM\\SOFTWARE\\Adobe\\Photoshop /s': [
+        'HKEY_LOCAL_MACHINE\\SOFTWARE\\Adobe\\Photoshop\\90.0',
+        '    ApplicationPath    REG_SZ    C:\\Program Files\\Adobe\\Adobe Photoshop CC 2015.5\\',
+        'HKEY_LOCAL_MACHINE\\SOFTWARE\\Adobe\\Photoshop\\210.0',
+        '    ApplicationPath    REG_SZ    C:\\Program Files\\Adobe\\Adobe Photoshop 2027\\',
+      ].join('\r\n'),
+    });
+    accessMock.mockImplementation(async () => undefined);
+    const info = await asPrivate(new WindowsDetector()).findViaRegistry();
+    expect(info?.path).toBe(PS2027);
+  });
+});
 
 describe('WindowsDetector — registry queries', () => {
   it('runs reg.exe directly, with each argument separate', async () => {

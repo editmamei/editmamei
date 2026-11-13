@@ -42,14 +42,14 @@ describe('resolveHostPlatform', () => {
     expect(typeof host.detector.detect).toBe('function');
   });
 
-  it('exposes useInstall only where the platform needs it', () => {
-    // macOS must be told which application to address; Windows reaches
-    // Photoshop through a fixed COM identifier and has nothing to take.
+  it('exposes useInstall on both platforms', () => {
+    // macOS must be told which application to address; Windows must be told
+    // which versioned COM ProgID reaches the chosen install.
     vi.mocked(platform).mockReturnValue('darwin');
     expect(typeof resolveHostPlatform().adapter.useInstall).toBe('function');
 
     vi.mocked(platform).mockReturnValue('win32');
-    expect(resolveHostPlatform().adapter.useInstall).toBeUndefined();
+    expect(typeof resolveHostPlatform().adapter.useInstall).toBe('function');
   });
 
   it('resolves an inert host where Photoshop does not exist, refusing per call', async () => {

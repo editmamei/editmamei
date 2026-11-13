@@ -77,6 +77,53 @@ describe('WindowsScriptRunner — COM shim', () => {
   });
 });
 
+describe('WindowsScriptRunner — which Photoshop the shim addresses', () => {
+  const install = (comProgId?: string) => ({
+    version: '2027',
+    path: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2027\\Photoshop.exe',
+    comProgId,
+  });
+
+  it('attaches through the versioned ProgID the install carries', () => {
+    // The unversioned ProgID follows whichever release registered last, so it
+    // must not be used when the install names a versioned one.
+    const runner = new WindowsScriptRunner();
+    runner.useInstall(install('Photoshop.Application.210'));
+    const shim = asPrivate(runner).buildComShim('C:\\tmp\\script.jsx');
+    expect(shim).toContain('CreateObject("Photoshop.Application.210")');
+  });
+
+  it('falls back to the unversioned ProgID when the install has none', () => {
+    const runner = new WindowsScriptRunner();
+    runner.useInstall(install('Photoshop.Application.210'));
+    runner.useInstall(install(undefined));
+    const shim = asPrivate(runner).buildComShim('C:\\tmp\\script.jsx');
+    expect(shim).toContain('CreateObject("Photoshop.Application")');
+  });
+
+  it('drops an earlier versioned ProgID when a later one is refused', () => {
+    const runner = new WindowsScriptRunner();
+    runner.useInstall(install('Photoshop.Application.210'));
+    expect(() => runner.useInstall(install('Excel.Application'))).toThrow();
+    expect(asPrivate(runner).buildComShim('C:\\tmp\\script.jsx')).toContain(
+      'CreateObject("Photoshop.Application")'
+    );
+  });
+
+  it.each([
+    'Excel.Application',
+    'Photoshop.Application.210.1',
+    'Photoshop.Application.210")\nWScript.Quit 0\n("',
+    'Photoshop.Application.',
+  ])('refuses %j, since the ProgID is composed into VBScript', (progId) => {
+    const runner = new WindowsScriptRunner();
+    expect(() => runner.useInstall(install(progId))).toThrow(/not a Photoshop\.Application ProgID/);
+    expect(asPrivate(runner).buildComShim('C:\\tmp\\script.jsx')).toContain(
+      'CreateObject("Photoshop.Application")'
+    );
+  });
+});
+
 describe('WindowsScriptRunner — launch', () => {
   it('guards the readiness poll against resolving after the spawn errors', () => {
     // Source-string assertion: spawning Photoshop in a unit test is not

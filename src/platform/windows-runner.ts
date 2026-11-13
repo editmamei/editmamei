@@ -4,7 +4,7 @@ import { Logger } from '../utils/logger.js';
 import { TempDir } from '../utils/temp.js';
 import { DEFAULT_SCRIPT_TIMEOUT_MS } from '../utils/operation-timeouts.js';
 import { ScriptQueue } from './script-queue.js';
-import type { PlatformAdapter } from './ports.js';
+import type { PhotoshopInfo, PlatformAdapter } from './ports.js';
 import { runChildWithTimeout } from './run-child.js';
 import { decodeScriptResult } from './script-result.js';
 import { waitForLaunchReady } from './launch-readiness.js';
@@ -22,6 +22,12 @@ const LAUNCH_PROBE_TIMEOUT_MS = 2_000;
 /** Hard cap on the tasklist check itself, so a wedged process table can't hang isRunning(). */
 const IS_RUNNING_EXEC_TIMEOUT_MS = 3_000;
 
+/** The ProgID used until an install supplies a versioned one. */
+const UNVERSIONED_PROG_ID = 'Photoshop.Application';
+
+/** `Photoshop.Application` or `Photoshop.Application.<digits>`, nothing else. */
+const PROG_ID_PATTERN = /^Photoshop\.Application(\.\d+)?$/;
+
 /**
  * Drives Photoshop on Windows through COM.
  *
@@ -35,6 +41,29 @@ const IS_RUNNING_EXEC_TIMEOUT_MS = 3_000;
 export class WindowsScriptRunner implements PlatformAdapter {
   private readonly logger = new Logger('WindowsScriptRunner');
   private readonly queue = new ScriptQueue(this.logger);
+
+  /**
+   * The COM ProgID the shim attaches through.
+   *
+   * Starts as the unversioned ProgID, which works on a machine with one
+   * release. `useInstall` swaps in the versioned one the detector matched to
+   * the chosen install, so that with several releases side by side scripts
+   * reach that install rather than whichever release registered last.
+   */
+  private progId = UNVERSIONED_PROG_ID;
+
+  useInstall(install: PhotoshopInfo): void {
+    // Reset first, so a refused ProgID never leaves the previous install's in place.
+    this.progId = UNVERSIONED_PROG_ID;
+    const progId = install.comProgId;
+    if (!progId) return;
+    // Composed into a VBScript string literal below, so accept only the exact
+    // shape the detector produces.
+    if (!PROG_ID_PATTERN.test(progId)) {
+      throw new Error(`COM ProgID "${progId}" is not a Photoshop.Application ProgID`);
+    }
+    this.progId = progId;
+  }
 
   async run(script: string, timeoutMs: number = DEFAULT_SCRIPT_TIMEOUT_MS): Promise<unknown> {
     // Serialized through the shared queue so Photoshop never receives two
@@ -105,7 +134,7 @@ export class WindowsScriptRunner implements PlatformAdapter {
     return `
 On Error Resume Next
 Dim ps
-Set ps = CreateObject("Photoshop.Application")
+Set ps = CreateObject("${this.progId}")
 
 If Err.Number <> 0 Then
     WScript.Echo "ERROR: could not attach to Photoshop over COM - " & Err.Description
