@@ -158,7 +158,7 @@ The AI talks to whatever instance of Photoshop is currently running, so Photosho
 
 ### Optional: pin a specific Photoshop install
 
-Editmamei auto-detects Photoshop. If you have multiple versions installed and want to pin a specific one, set the `PHOTOSHOP_PATH` env var in your MCP client config:
+Editmamei auto-detects Photoshop. With several versions installed, it uses the newest one. To use a different one, set the `PHOTOSHOP_PATH` env var in your MCP client config:
 
 ```json
 {

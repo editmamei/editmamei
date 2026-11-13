@@ -110,7 +110,7 @@ Nothing about the content of your edits goes to us: no images, document data, or
 
 ### Can I run Editmamei against multiple Photoshop versions installed side by side?
 
-Yes. Editmamei auto-detects Photoshop, and you can pin a specific install via the `PHOTOSHOP_PATH` env var in your MCP client config. See [installation.md](installation.md#optional-pin-a-specific-photoshop-install).
+Yes. Editmamei auto-detects Photoshop and uses the newest version installed. To use a different one, pin it with the `PHOTOSHOP_PATH` env var in your MCP client config. See [installation.md](installation.md#optional-pin-a-specific-photoshop-install).
 
 ### Why does the AI take longer between edits as my session gets longer?
 

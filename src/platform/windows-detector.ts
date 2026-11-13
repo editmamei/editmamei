@@ -1,11 +1,15 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { access, constants } from 'fs/promises';
+import { win32 } from 'path';
 import { Logger } from '../utils/logger.js';
 import type { PhotoshopInfo } from './ports.js';
 import { windowsSystemTool } from './windows-system-tool.js';
 
 const execFileAsync = promisify(execFile);
+
+/** Cap on each registry query made while resolving the COM ProgID. */
+const REG_QUERY_TIMEOUT_MS = 5_000;
 
 interface RegistryEntry {
   version: string;
@@ -27,6 +31,21 @@ export class WindowsDetector {
   async detect(): Promise<PhotoshopInfo> {
     this.logger.info('Looking for a Photoshop install on Windows');
 
+    const install = await this.findInstall();
+    const comProgId = await this.resolveComProgId(install.path);
+    if (comProgId) {
+      this.logger.info('Addressing Photoshop over COM as', comProgId);
+      return { ...install, comProgId };
+    }
+
+    this.logger.warn(
+      'No versioned COM registration points at this install; falling back to Photoshop.Application',
+      install.path
+    );
+    return install;
+  }
+
+  private async findInstall(): Promise<PhotoshopInfo> {
     const override = process.env.PHOTOSHOP_PATH;
     if (override) {
       this.logger.debug('Trying PHOTOSHOP_PATH override', override);
@@ -51,11 +70,10 @@ export class WindowsDetector {
   /**
    * Ask the registry where Photoshop lives.
    *
-   * Two sources: Adobe's own product keys, and the COM class registration that
-   * Photoshop publishes so it can be scripted at all. The second is worth
-   * consulting because it is the very registration this server depends on — if
-   * it is present, Photoshop can be driven; if it is missing, an install found
-   * any other way would not have worked anyway.
+   * Two sources: Adobe's own product keys, and a COM class registration that
+   * Photoshop publishes so it can be scripted. Which ProgID scripts then attach
+   * through is resolved separately, against the install chosen here (see
+   * `resolveComProgId`).
    */
   private async findViaRegistry(): Promise<PhotoshopInfo | null> {
     try {
@@ -73,7 +91,8 @@ export class WindowsDetector {
           );
           const entries = this.readRegistryEntries(stdout);
           if (entries.length > 0) {
-            const newest = entries.sort((a, b) => b.version.localeCompare(a.version))[0];
+            // Numeric, not lexical: as strings, `90.0` would sort above `210.0`.
+            const newest = entries.sort((a, b) => parseFloat(b.version) - parseFloat(a.version))[0];
             const info = await this.inspectPath(newest.path);
             if (info) return info;
           }
@@ -151,6 +170,82 @@ export class WindowsDetector {
     const match = output.match(/REG_SZ\s+"?(.+?\.exe)"?/i);
     if (!match) return null;
     return match[1].trim();
+  }
+
+  /**
+   * Find the versioned COM ProgID whose server is this install's executable.
+   *
+   * Each release registers `Photoshop.Application.<N>` (`.200` for 2026, `.210`
+   * for 2027) pointing at its own executable. The unversioned
+   * `Photoshop.Application` follows whichever release registered last, so an
+   * update to an older release installed alongside a newer one takes it back
+   * and scripts reach the wrong application. Matching on the executable rather
+   * than guessing from a version number also covers a `PHOTOSHOP_PATH`
+   * override and installs found by the path sweep.
+   *
+   * Returns null when nothing matches; the runner then uses the unversioned
+   * ProgID, which is what every install had before this lookup existed.
+   */
+  private async resolveComProgId(exePath: string): Promise<string | null> {
+    try {
+      const { stdout } = await execFileAsync(
+        windowsSystemTool('reg.exe'),
+        ['query', 'HKCR', '/f', 'Photoshop.Application.', '/k'],
+        { windowsHide: true, timeout: REG_QUERY_TIMEOUT_MS }
+      );
+      const target = this.normalizePath(exePath);
+      for (const progId of this.readVersionedProgIds(stdout)) {
+        const server = await this.readProgIdServer(progId);
+        if (server && this.normalizePath(server) === target) return progId;
+      }
+    } catch (error) {
+      this.logger.debug('COM ProgID lookup failed', error);
+    }
+    return null;
+  }
+
+  /**
+   * Pull the versioned ProgIDs out of `reg query HKCR /f ... /k` output, newest
+   * first.
+   *
+   * Only the `Photoshop.Application.<N>` form is taken. Releases also register
+   * `Photoshop.Application.<N>.1`, and on a machine with two releases those can
+   * point at the other release's executable, so they are not trusted.
+   */
+  private readVersionedProgIds(output: string): string[] {
+    const found: Array<{ progId: string; release: number }> = [];
+    for (const line of output.split('\n')) {
+      const match = line.trim().match(/^HKEY_CLASSES_ROOT\\(Photoshop\.Application\.(\d+))$/);
+      if (match) found.push({ progId: match[1], release: Number(match[2]) });
+    }
+    return found.sort((a, b) => b.release - a.release).map((entry) => entry.progId);
+  }
+
+  /** Resolve a ProgID to the executable its COM class launches, or null. */
+  private async readProgIdServer(progId: string): Promise<string | null> {
+    try {
+      const { stdout: clsidOutput } = await execFileAsync(
+        windowsSystemTool('reg.exe'),
+        ['query', `HKCR\\${progId}\\CLSID`, '/ve'],
+        { windowsHide: true, timeout: REG_QUERY_TIMEOUT_MS }
+      );
+      const clsid = clsidOutput.match(/REG_SZ\s+(\{[0-9A-Fa-f-]+\})/)?.[1];
+      if (!clsid) return null;
+
+      const { stdout: serverOutput } = await execFileAsync(
+        windowsSystemTool('reg.exe'),
+        ['query', `HKCR\\CLSID\\${clsid}\\LocalServer32`, '/ve'],
+        { windowsHide: true, timeout: REG_QUERY_TIMEOUT_MS }
+      );
+      return this.readComServerPath(serverOutput);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Windows paths compare case-insensitively and tolerate either separator. */
+  private normalizePath(path: string): string {
+    return win32.normalize(path.trim().replace(/^"|"$/g, '')).toLowerCase();
   }
 
   /**

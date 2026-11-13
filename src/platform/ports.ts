@@ -36,10 +36,20 @@ export interface PhotoshopInfo {
 
   /**
    * macOS only: the bundle's display name, which is how AppleScript addresses
-   * the application. Windows reaches Photoshop through a fixed COM ProgID and
-   * leaves this unset.
+   * the application. Windows installs leave this unset.
    */
   appName?: string;
+
+  /**
+   * Windows only: the versioned COM ProgID registered for this install, such as
+   * `Photoshop.Application.210`.
+   *
+   * The unversioned `Photoshop.Application` follows whichever release last
+   * registered it, which is not necessarily the newest one installed, so with
+   * two releases side by side it can address the wrong one. Unset when no
+   * versioned registration resolves to this install's executable.
+   */
+  comProgId?: string;
 }
 
 /** Executes one wrapped ExtendScript payload in Photoshop. */
@@ -76,10 +86,9 @@ export interface PlatformAdapter extends ScriptRunner, AppLifecycle {
   /**
    * Hand the adapter the install the detector resolved.
    *
-   * macOS needs the bundle name from it to address Photoshop over AppleScript.
-   * Windows has nothing to take and does not implement this. Optional so the
-   * connection can call it unconditionally rather than carrying a
-   * macOS-shaped branch.
+   * macOS needs the bundle name from it to address Photoshop over AppleScript;
+   * Windows needs the versioned COM ProgID. Optional so the connection can call
+   * it unconditionally and an adapter with nothing to take can leave it out.
    */
   useInstall?(install: PhotoshopInfo): void;
 }
