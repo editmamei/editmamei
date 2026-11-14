@@ -377,6 +377,22 @@
       "default": true
     }
   ],
+  "gegl:high-pass": [
+    {
+      "name": "std-dev",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 10000,
+      "default": 4
+    },
+    {
+      "name": "contrast",
+      "type": "gdouble",
+      "minimum": 0,
+      "maximum": 5,
+      "default": 1
+    }
+  ],
   "gegl:vignette": [
     {
       "name": "shape",

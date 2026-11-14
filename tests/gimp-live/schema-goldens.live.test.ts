@@ -57,6 +57,7 @@ describe.skipIf(!install)('GEGL/GIMP operation schema goldens', () => {
     'gegl:unsharp-mask',
     'gegl:noise-reduction',
     'gegl:gaussian-blur',
+    'gegl:high-pass',
   ];
 
   it("covers exactly lib.py's ADJUST_OPERATIONS (a new adjust type needs its golden)", () => {

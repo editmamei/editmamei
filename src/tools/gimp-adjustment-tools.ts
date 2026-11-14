@@ -41,7 +41,7 @@ import {
  * highlights enum), `saturation` (hue_saturation: -100..100 percent;
  * vibrance: 0..10 scale), and `radius` (shadows_highlights: 0.1..1500;
  * sharpen, where it maps to `std-dev`, and gaussian_blur, where it maps to
- * `std-dev-x`/`std-dev-y`: 0..1500). A flat JSON Schema can only
+ * `std-dev-x`/`std-dev-y`: 0..1500; clarity: 1..500). A flat JSON Schema can only
  * declare ONE bound per property name, so each of these three is widened to
  * the UNION of its per-type bounds here — the bridge still enforces the
  * PRECISE per-type bound and reports an `invalid_argument` naming it when a
@@ -62,6 +62,7 @@ const ADJUST_TYPES = [
   'sharpen',
   'noise_reduction',
   'gaussian_blur',
+  'clarity',
 ] as const;
 
 /** No `default` here for the re-edit-merge reason in the file doc comment above. */
@@ -315,8 +316,10 @@ const adjustSchema: JsonSchemaObject = {
       description:
         'shadows_highlights: spatial falloff radius, 0.1..1500 (default 100 when creating). ' +
         'sharpen: unsharp-mask std-dev, 0..1500 (default 3.0 when creating). gaussian_blur: blur ' +
-        'radius (std-dev) in pixels at full resolution, 0..1500 (default 1.5 when creating). All ' +
-        'three are SPATIAL (radius-scaled on the proxy preview, see gimp_overview).',
+        'radius (std-dev) in pixels at full resolution, 0..1500 (default 1.5 when creating). ' +
+        'clarity: high-pass radius, the size of the detail it works on, in pixels at full resolution, 1..500 ' +
+        '(default 40 when creating); about 1% of the long edge suits most photos, 40 for 12 MP, ' +
+        '60 for 24 MP. All four are SPATIAL (radius-scaled on the proxy preview, see gimp_overview).',
     },
     compress: {
       type: 'number',
@@ -376,6 +379,19 @@ const adjustSchema: JsonSchemaObject = {
       minimum: 0,
       maximum: 1,
       description: 'sharpen only. Default (when creating): 0.',
+    },
+    // ---- clarity ----
+    clarity: {
+      type: 'number',
+      minimum: 0,
+      maximum: 100,
+      description:
+        'clarity only. Midtone local contrast (a high-pass blended in Overlay): 25 is subtle, ' +
+        '50 clear, 100 strong. Shadows and highlights barely move, so it does not clip or ' +
+        'darken the photo the way a large-radius sharpen does; use this instead of one. Above ' +
+        'about 60 a light halo can show where a dark edge meets a bright sky. It only adds ' +
+        'contrast: to soften texture, use gimp_add_effect type=surface_blur. Default (when ' +
+        'creating): 25.',
     },
     // ---- noise_reduction ----
     strength: {
@@ -440,7 +456,7 @@ export function createGimpAdjustmentTools(gimp: GimpBackend): ToolDefinition[] {
           'gimp_export, and gimp_filter op=delete removes it again. `type` picks the adjustment: ' +
           'curves, levels, exposure, brightness_contrast, hue_saturation, color_balance, ' +
           'color_temperature, shadows_highlights, saturation, vibrance, sharpen, noise_reduction, ' +
-          "gaussian_blur. A field another type uses is refused, naming this type's own fields. A " +
+          "gaussian_blur, clarity. A field another type uses is refused, naming this type's own fields. A " +
           'filter applies to ONE layer (`layer_id` or `layer`, else the selected or top layer), ' +
           'not to the flattened image — on a multi-layer document, say which layer. For type ' +
           'vibrance, the knob is the `vibrance` field — `saturation` on that type is a separate ' +
@@ -448,7 +464,9 @@ export function createGimpAdjustmentTools(gimp: GimpBackend): ToolDefinition[] {
           'separate filters for red and blue rather than one filter for both; points are [input, ' +
           'output] 0-255 pairs including the endpoints. hue_saturation and color_balance likewise ' +
           'carry ONE `range` per filter. gaussian_blur: radius in pixels at full resolution; ' +
-          'combine with a saved-selection mask for soft-focus or background-blur effects. A ' +
+          'combine with a saved-selection mask for soft-focus or background-blur effects. ' +
+          'clarity: midtone local contrast (the `clarity` field, 0..100); reach for it instead ' +
+          'of a large-radius sharpen. A ' +
           "re-edit (filter_id) MERGES: any field you omit keeps the filter's existing value, so " +
           "re-editing {contrast: 50} on a brightness_contrast filter doesn't reset brightness. Only " +
           'filters Editmamei created can be re-edited; one added in the GIMP GUI is refused (delete ' +

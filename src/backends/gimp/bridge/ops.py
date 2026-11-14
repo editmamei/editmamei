@@ -567,6 +567,11 @@ def _set_gaussian_blur(cfg, params):
     cfg.set_property('std-dev-y', params['std-dev-y'])
 
 
+def _set_clarity(cfg, params):
+    cfg.set_property('std-dev', params['std-dev'])
+    cfg.set_property('contrast', params['contrast'])
+
+
 # ---- gimp_add_effect setters (lib.EFFECT_OPERATIONS' parallel table to the adjust ones
 # above) -- SETTERS itself is one shared dict below: an operation name is an operation name
 # regardless of which tool (gimp_add_adjustment's `adjust` or gimp_add_effect's `effect`) created
@@ -663,6 +668,7 @@ SETTERS = {
     'gegl:unsharp-mask': _set_sharpen,
     'gegl:noise-reduction': _set_noise_reduction,
     'gegl:gaussian-blur': _set_gaussian_blur,
+    'gegl:high-pass': _set_clarity,
     'gegl:vignette': _set_vignette,
     'gegl:mono-mixer': _set_black_white,
     'gegl:motion-blur-linear': _set_motion_blur,
@@ -742,6 +748,9 @@ def _apply_filter(img, args, operation, params, default_name, type_=None, tag=No
         layer = _layer(img, args)
         f = Gimp.DrawableFilter.new(layer, operation, _unique_name(img, args.get('name', default_name)))
         SETTERS[operation](f.get_config(), params)
+        blend_mode = lib.FILTER_BLEND_MODES.get(type_)
+        if blend_mode:
+            f.set_blend_mode(getattr(Gimp.LayerMode, blend_mode))
         params['mask'] = args.get('mask')
         _append_masked(img, layer, f, params['mask'])
     record = {'operation': operation, 'type': type_, 'params': params}

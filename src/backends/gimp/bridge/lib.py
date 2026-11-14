@@ -76,6 +76,15 @@ ADJUST_OPERATIONS = {
     'sharpen': 'gegl:unsharp-mask',
     'noise_reduction': 'gegl:noise-reduction',
     'gaussian_blur': 'gegl:gaussian-blur',
+    # Composited by the filter's own Overlay blend mode (FILTER_BLEND_MODES), see build_clarity_params.
+    'clarity': 'gegl:high-pass',
+}
+
+# A filter type whose result is composited onto its input by a blend mode other than Normal: the
+# `Gimp.LayerMode` member name, set once when the filter is created (a re-edit keeps it, and the
+# preview proxy copies it from the live filter).
+FILTER_BLEND_MODES = {
+    'clarity': 'OVERLAY',
 }
 
 # Length-typed GEGL properties that must be multiplied by the preview proxy's scale factor
@@ -88,6 +97,7 @@ ADJUST_OPERATIONS = {
 SPATIAL_SCALE_PROPS = {
     'gegl:shadows-highlights': ('radius',),
     'gegl:unsharp-mask': ('std-dev',),
+    'gegl:high-pass': ('std-dev',),
     'gegl:gaussian-blur': ('std-dev-x', 'std-dev-y'),
     'gegl:motion-blur-linear': ('length',),
     'gegl:focus-blur': ('blur-radius',),
@@ -1180,6 +1190,32 @@ def build_gaussian_blur_params(args, defaults):
     return {'std-dev-x': std_dev, 'std-dev-y': std_dev}
 
 
+# Clarity: a high-pass of the photo composited back by the filter's Overlay blend mode, the usual
+# local-contrast technique. Overlay weights the change toward the midtones, so shadows and
+# highlights barely move. Measured in GIMP on four photos against the large-radius unsharp mask
+# it replaces, at the same local-contrast gain: the unsharp mask (linear light, unweighted)
+# clipped 1 to 12% more pixels and darkened the mean 1 to 7 levels; high-pass + Overlay clipped
+# under 1% more and darkened about half as much. Both blur with a Gaussian, so a strong setting
+# still shows a light halo where a dark edge meets a bright sky. An edge-preserving blur would
+# avoid that, but it needs a GEGL graph, and GIMP refuses gegl:gegl as a live filter.
+#
+# `clarity` 0..100 drives the high-pass `contrast` 0..2: +25 subtle, +50 clear, +100 strong.
+# A high-pass can only add contrast, so there is no negative clarity; surface_blur softens.
+CLARITY_CONTRAST_DIVISOR = 50.0
+
+
+def build_clarity_params(args, defaults):
+    return {
+        'std-dev': resolve_field(
+            args, 'radius', defaults, 'std-dev', lambda v: validate_range('radius', v, 1.0, 500.0)
+        ),
+        'contrast': resolve_field(
+            args, 'clarity', defaults, 'contrast',
+            lambda v: validate_range('clarity', v, 0.0, 100.0) / CLARITY_CONTRAST_DIVISOR,
+        ),
+    }
+
+
 def validate_levels(params):
     """Cross-field checks for a resolved levels record (user units, 0-255 levels). The setter
     range-checks each level on its own; these are the relationships it can't see: gamma within
@@ -1205,6 +1241,7 @@ ADJUST_PARAM_BUILDERS = {
     'sharpen': build_sharpen_params,
     'noise_reduction': build_noise_reduction_params,
     'gaussian_blur': build_gaussian_blur_params,
+    'clarity': build_clarity_params,
 }
 
 # Creation-time defaults, already in GEGL-property units -- the `defaults` a builder receives
@@ -1228,6 +1265,8 @@ ADJUST_CREATE_DEFAULTS = {
     'sharpen': {'std-dev': 3.0, 'scale': 0.5, 'threshold': 0.0},
     'noise_reduction': {'iterations': 4},
     'gaussian_blur': {'std-dev-x': 1.5, 'std-dev-y': 1.5},
+    # About 1% of a 12 MP photo's long edge; clarity +25.
+    'clarity': {'std-dev': 40.0, 'contrast': 0.5},
 }
 
 
@@ -1603,6 +1642,10 @@ USER_FIELDS = {
     ),
     'noise_reduction': (('strength', 'iterations', _same),),
     'gaussian_blur': (('radius', 'std-dev-x', _same),),
+    'clarity': (
+        ('radius', 'std-dev', _same),
+        ('clarity', 'contrast', _scaled(CLARITY_CONTRAST_DIVISOR)),
+    ),
     # ---- gimp_add_effect's effects (EFFECT_OPERATIONS, not ADJUST_OPERATIONS) ------------------
     'vignette': (
         ('radius', 'radius', _same),

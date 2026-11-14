@@ -126,9 +126,10 @@ metadata (including any GPS location); only `gimp_export` removes it.
   visibility, merge down, flatten (`gimp_layer`). Place another photo into the document as a new
   layer (`gimp_place_image`) to build a composite, and extend the canvas for borders and frames
   (`gimp_canvas`).
-- **Non-destructive adjustments** (`gimp_add_adjustment`), 13 types: curves, levels, exposure,
+- **Non-destructive adjustments** (`gimp_add_adjustment`), 14 types: curves, levels, exposure,
   brightness/contrast, hue/saturation, color balance, color temperature, shadows/highlights,
-  saturation, vibrance, sharpen, noise reduction, gaussian blur. Each stays live and re-editable by
+  saturation, vibrance, sharpen, noise reduction, gaussian blur, clarity (midtone local
+  contrast). Each stays live and re-editable by
   its `filter_id`; exporting writes a copy and leaves the live document as it was.
 - **Effects** (`gimp_add_effect`): vignette, black and white, motion blur, lens blur, noise, drop
   shadow, outline, outer glow and surface blur (an edge-preserving blur), live and re-editable the
