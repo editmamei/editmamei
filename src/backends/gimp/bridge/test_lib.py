@@ -2722,6 +2722,8 @@ class TestClarity(unittest.TestCase):
         self.assertEqual(lib.ADJUST_OPERATIONS['clarity'], 'gegl:high-pass')
         self.assertEqual(lib.OPERATION_TYPES['gegl:high-pass'], 'clarity')
         self.assertEqual(lib.FILTER_BLEND_MODES, {'clarity': 'OVERLAY'})
+        # Every blend mode is one the layer tool already allows, so it names a real Gimp.LayerMode.
+        self.assertLessEqual(set(lib.FILTER_BLEND_MODES.values()), set(lib.LAYER_MODES.values()))
         self.assertEqual(lib.SPATIAL_SCALE_PROPS['gegl:high-pass'], ('std-dev',))
         self.assertIn('gegl:high-pass', lib.ALLOWED_DESCRIBE_OPERATIONS)
         self.assertEqual(lib.type_fields('clarity'), ('radius', 'clarity'))

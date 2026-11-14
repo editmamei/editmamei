@@ -129,8 +129,8 @@ metadata (including any GPS location); only `gimp_export` removes it.
 - **Non-destructive adjustments** (`gimp_add_adjustment`), 14 types: curves, levels, exposure,
   brightness/contrast, hue/saturation, color balance, color temperature, shadows/highlights,
   saturation, vibrance, sharpen, noise reduction, gaussian blur, clarity (midtone local
-  contrast). Each stays live and re-editable by
-  its `filter_id`; exporting writes a copy and leaves the live document as it was.
+  contrast). Each stays live and re-editable by its `filter_id`; exporting writes a copy and
+  leaves the live document as it was.
 - **Effects** (`gimp_add_effect`): vignette, black and white, motion blur, lens blur, noise, drop
   shadow, outline, outer glow and surface blur (an edge-preserving blur), live and re-editable the
   same way. Outline width and glow spread go up to 50 px. `gimp_bake` merges a layer's live filters
