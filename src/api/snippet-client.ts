@@ -18,6 +18,7 @@ import { arch, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runChildWithTimeout } from '../platform/run-child.js';
+import { unsupportedHostReason } from '../platform/host-platform.js';
 
 // Paths already confirmed executable this process — avoids a stat+chmod on
 // every per-call spawn.
@@ -224,12 +225,21 @@ export class GoSnippetClient implements SnippetClient {
     // child inherit the parent env unchanged (run-child treats undefined as inherit).
     const env =
       Object.keys(this.extraEnv).length > 0 ? { ...process.env, ...this.extraEnv } : undefined;
-    const result = await runChildWithTimeout(this.binaryPath, ['build', name], {
-      timeout: this.timeoutMs,
-      input: paramsJson,
-      diagLabel: `editmamei-core build ${name}`,
-      env,
-    });
+    let result: Awaited<ReturnType<typeof runChildWithTimeout>>;
+    try {
+      result = await runChildWithTimeout(this.binaryPath, ['build', name], {
+        timeout: this.timeoutMs,
+        input: paramsJson,
+        diagLabel: `editmamei-core build ${name}`,
+        env,
+      });
+    } catch (err) {
+      // No core binary ships for an OS Photoshop can't run on, so the spawn fails with
+      // ENOENT. Say why instead: the raw spawn error sends the reader after a missing file.
+      const reason = (err as { code?: string }).code === 'ENOENT' ? unsupportedHostReason() : null;
+      if (reason) throw new Error(reason, { cause: err });
+      throw err;
+    }
     if (result.exitCode !== 0) {
       throw new Error(
         `editmamei-core build "${name}" failed (exit ${result.exitCode}): ` +

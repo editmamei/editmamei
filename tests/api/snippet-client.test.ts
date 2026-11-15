@@ -21,6 +21,12 @@ import {
 } from '@editmamei/api/snippet-client.ts';
 import { __setChildOpsForTests, __resetForTests } from '@editmamei/platform/run-child.ts';
 
+const hostReason = vi.hoisted(() => vi.fn<() => string | null>(() => null));
+vi.mock('@editmamei/platform/host-platform.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@editmamei/platform/host-platform.ts')>()),
+  unsupportedHostReason: hostReason,
+}));
+
 // Pure unit coverage (no binary needed): name + path resolution.
 describe('snippet-client path resolution', () => {
   it('builds the per-platform binary name', () => {
@@ -422,5 +428,30 @@ describe('GoSnippetClient — in-process build cache', () => {
     expect(first).toBe('jsx-a');
     expect(second).toBe('jsx-b'); // not served from a cache that never got populated
     expect(spawnCalls).toHaveLength(2);
+  });
+});
+
+// No core binary ships for an OS Photoshop can't run on: the spawn's ENOENT is replaced by
+// the host's reason there, and left alone where Photoshop does run (a broken install).
+describe('GoSnippetClient — missing binary', () => {
+  const missing = join(tmpdir(), 'em-no-such-core', 'editmamei-core-missing');
+
+  afterEach(() => {
+    hostReason.mockReset();
+    hostReason.mockReturnValue(null);
+  });
+
+  it('names the unsupported OS instead of the spawn ENOENT', async () => {
+    hostReason.mockReturnValue('Editmamei runs on Windows and macOS; this process is on "linux".');
+    const client = new GoSnippetClient({ binaryPath: missing });
+    const err = await client.build('deselect', {}).catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(/runs on Windows and macOS/);
+    expect(((err as Error).cause as NodeJS.ErrnoException).code).toBe('ENOENT');
+  });
+
+  it('keeps the raw spawn error on an OS that runs Photoshop', async () => {
+    const client = new GoSnippetClient({ binaryPath: missing });
+    const err = await client.build('deselect', {}).catch((e: unknown) => e);
+    expect((err as NodeJS.ErrnoException).code).toBe('ENOENT');
   });
 });

@@ -103,8 +103,16 @@ const emptySchema: JsonSchemaObject = {
 const selectRectangleSchema: JsonSchemaObject = {
   type: 'object',
   properties: {
-    left: { type: 'number', description: 'Left edge in pixels', minimum: 0 },
-    top: { type: 'number', description: 'Top edge in pixels', minimum: 0 },
+    left: {
+      type: 'number',
+      description:
+        'Left edge in pixels. May be negative: Photoshop clips the selection to the canvas.',
+    },
+    top: {
+      type: 'number',
+      description:
+        'Top edge in pixels. May be negative: Photoshop clips the selection to the canvas.',
+    },
     right: { type: 'number', description: 'Right edge in pixels', minimum: 1 },
     bottom: { type: 'number', description: 'Bottom edge in pixels', minimum: 1 },
     feather_px: {
@@ -277,8 +285,16 @@ const magicWandSchema: JsonSchemaObject = {
 const selectEllipseSchema: JsonSchemaObject = {
   type: 'object',
   properties: {
-    left: { type: 'number', description: 'Left edge of the bounding box, in pixels', minimum: 0 },
-    top: { type: 'number', description: 'Top edge of the bounding box, in pixels', minimum: 0 },
+    left: {
+      type: 'number',
+      description:
+        'Left edge of the bounding box, in pixels. May be negative (an ellipse larger than the canvas, e.g. for a vignette): Photoshop clips the selection to the canvas.',
+    },
+    top: {
+      type: 'number',
+      description:
+        'Top edge of the bounding box, in pixels. May be negative: Photoshop clips the selection to the canvas.',
+    },
     right: { type: 'number', description: 'Right edge of the bounding box, in pixels', minimum: 1 },
     bottom: {
       type: 'number',

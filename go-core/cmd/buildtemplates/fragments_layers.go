@@ -202,6 +202,42 @@ func init() {
     };
   `,
 
+		// mergeDown — Layer > Merge Down (Ctrl+E): the active layer merges into the
+		// layer below it. On a group, ArtLayer/LayerSet.merge() merges the group's
+		// contents into one layer instead (Merge Group), so the result says which.
+		// Slots: 1=getContextInfo.
+		vault.MergeDown: `
+    %s
+
+    if (app.documents.length === 0) {
+      throw new Error('No document is open in Photoshop');
+    }
+    var doc = app.activeDocument;
+    var layer = doc.activeLayer;
+    var wasGroup = layer.typename === 'LayerSet';
+    var sourceName = layer.name;
+    var beforeLayerCount = doc.layers.length;
+
+    try {
+      layer.merge();
+    } catch (eRun) {
+      // Photoshop refuses when there is no visible layer below (the bottom
+      // layer, the background, a hidden layer underneath). Surface its own
+      // message so the caller can pick another layer.
+      throw new Error('Merge Down failed on "' + sourceName + '": ' + eRun.message);
+    }
+
+    return {
+      merged: true,
+      merged_group: wasGroup,
+      source_layer_name: sourceName,
+      result_layer_name: doc.activeLayer.name,
+      layer_count_before: beforeLayerCount,
+      layer_count_after: doc.layers.length,
+      context: getContextInfo()
+    };
+  `,
+
 		// stampVisible. Slots: 1=getContextInfo.
 		vault.StampVis: `
     %s

@@ -316,6 +316,24 @@ describe('createSelectionTools', () => {
     expect(build.params.selectionType).toBe('replace');
   });
 
+  it.each(['ellipse', 'rectangle'])(
+    'mode=%s accepts a box that starts off the canvas (negative left/top)',
+    async (mode) => {
+      const tools = createSelectionTools(conn.asConnection(), snippetClient);
+      const res = await callTool(tools, 'ps_select', {
+        mode,
+        left: -250,
+        top: -120,
+        right: 2250,
+        bottom: 1620,
+      });
+      expect(res.isError).toBeFalsy();
+      const build = snippetClient.lastBuild();
+      expect(build.params.left).toBe(-250);
+      expect(build.params.top).toBe(-120);
+    }
+  );
+
   it('mode=grow / similar dispatch growSelection with the right mode + tolerance', async () => {
     const cases = [
       { mode: 'grow', tolerance: 50 },

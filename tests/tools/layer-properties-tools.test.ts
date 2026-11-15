@@ -385,13 +385,43 @@ describe('createLayerPropertiesTools', () => {
 
   // ---------- ps_merge ----------
 
-  it('the mode field enumerates the three merge modes', () => {
+  it('the mode field enumerates the four merge modes', () => {
     const tools = createLayerPropertiesTools(conn.asConnection(), snippetClient);
     const tool = tools.find((t) => t.tool.name === 'ps_merge')!;
     const schema = tool.tool.inputSchema as unknown as {
       properties: { mode: { enum: string[] } };
     };
-    expect(schema.properties.mode.enum).toEqual(['visible', 'stamp', 'flatten']);
+    expect(schema.properties.mode.enum).toEqual(['down', 'visible', 'stamp', 'flatten']);
+  });
+
+  it('mode=down dispatches mergeDown and names both layers', async () => {
+    const downConn = makeConnection({
+      result: {
+        merged: true,
+        merged_group: false,
+        source_layer_name: 'Dodge',
+        result_layer_name: 'Background',
+      },
+    });
+    const tools = createLayerPropertiesTools(downConn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_merge', { mode: 'down' });
+    expect(snippetClient.lastBuild().name).toBe('mergeDown');
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toBe('Merged "Dodge" down into "Background"');
+  });
+
+  it('mode=down on a group says the group was merged', async () => {
+    const groupConn = makeConnection({
+      result: {
+        merged: true,
+        merged_group: true,
+        source_layer_name: 'Sky Stack',
+        result_layer_name: 'Sky Stack',
+      },
+    });
+    const tools = createLayerPropertiesTools(groupConn.asConnection(), snippetClient);
+    const res = await callTool(tools, 'ps_merge', { mode: 'down' });
+    expect(textOf(res)).toBe('Merged group "Sky Stack" into layer "Sky Stack"');
   });
 
   it('mode=visible dispatches mergeVisibleLayers', async () => {

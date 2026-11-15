@@ -296,6 +296,7 @@ func TestGaussianBlurGolden(t *testing.T) {
 		{"duplicateLayer()", duplicateLayer("", false)},
 		{`duplicateLayer("Backup")`, duplicateLayer("Backup", true)},
 		{"mergeVisibleLayers()", mergeVisibleLayers()},
+		{"mergeDown()", mergeDown()},
 		{"stampVisible()", stampVisible()},
 		{"flattenImage()", flattenImage()},
 		{`selectLayer("Background copy")`, selectLayer("Background copy")},
