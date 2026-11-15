@@ -220,7 +220,7 @@ const SET_LAYER_INPUT_SCHEMA: JsonSchemaObject = {
 
 const MERGE_MODES = ['down', 'visible', 'stamp', 'flatten'] as const;
 
-// ps_merge merges merge_visible_layers / stamp_visible / flatten_image.
+// ps_merge: mergeDown / mergeVisibleLayers / stampVisible / flattenImage.
 const MERGE_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -405,7 +405,7 @@ export function createLayerPropertiesTools(
       tool: {
         name: 'ps_merge',
         description:
-          'Merge layers — choose with `mode`. `down`: merge the ACTIVE layer into the layer directly below it (Ctrl+E; select the upper layer first with ps_select_layer; on a group it merges the group into one layer). `visible`: collapse all visible layers into one (DESTRUCTIVE; identities lost). `stamp`: merge visible into a NEW layer on top, leaving originals intact (Ctrl+Alt+Shift+E — the non-destructive "final tweak" composite for output sharpening/grain/contrast; prefer this when building on top rather than collapsing). `flatten`: flatten ALL layers into the background (DESTRUCTIVE; transparency filled with bg color — use sparingly, usually prefer `visible` or exporting a flattened copy). Returns context.',
+          'Merge layers — choose with `mode`. `down`: merge the ACTIVE layer into the layer directly below it (Ctrl+E; DESTRUCTIVE; select only the upper layer first with ps_select_layer; on a group it merges the group into one layer; refused on a clipping-group base, a hidden layer, or a multi-layer selection). `visible`: collapse all visible layers into one (DESTRUCTIVE; identities lost). `stamp`: merge visible into a NEW layer on top, leaving originals intact (Ctrl+Alt+Shift+E — the non-destructive "final tweak" composite for output sharpening/grain/contrast; prefer this when building on top rather than collapsing). `flatten`: flatten ALL layers into the background (DESTRUCTIVE; transparency filled with bg color — use sparingly, usually prefer `visible` or exporting a flattened copy). Returns context.',
         inputSchema: MERGE_INPUT_SCHEMA,
         outputSchema: {
           type: 'object',

@@ -1214,14 +1214,6 @@ export class GimpSession {
   }
 
   /**
-   * Read + parse a response file. Retries briefly on EBUSY/EPERM (an
-   * anti-virus or file-indexer lock momentarily holding a just-renamed file
-   * on Windows) — mirrors the same hardening on the bridge's own read of
-   * request files (`lib.read_request`). A body that reads fine but isn't
-   * valid JSON becomes a `gimp_op_failed` GimpError rather than an
-   * uncaught SyntaxError.
-   */
-  /**
    * Rename the written request into the name the bridge polls for, retrying while the OS holds
    * the new file. On giving up, the temp file is removed and the error is a GimpError, like a
    * failed response read.
@@ -1250,6 +1242,14 @@ export class GimpSession {
     }
   }
 
+  /**
+   * Read + parse a response file. Retries briefly on EBUSY/EPERM (an
+   * anti-virus or file-indexer lock momentarily holding a just-renamed file
+   * on Windows) — mirrors the same hardening on the bridge's own read of
+   * request files (`lib.read_request`). A body that reads fine but isn't
+   * valid JSON becomes a `gimp_op_failed` GimpError rather than an
+   * uncaught SyntaxError.
+   */
   async #readResponse<T>(
     respPath: string,
     op: string

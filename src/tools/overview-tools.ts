@@ -120,7 +120,7 @@ schemas in this session, consult \`tools/list\`.
 - **Layers** — create / delete / duplicate / select / rasterize /
   convert-to-smart-object / add layer style, plus \`ps_set_layer\`
   (property opacity / blend_mode / visibility / locked / name),
-  \`ps_merge\` (mode visible / stamp / flatten), and
+  \`ps_merge\` (mode down / visible / stamp / flatten), and
   \`ps_transform_layer\` (op move / rotate / scale / fit / flip —
   auto-promotes the background layer, so you don't have to duplicate
   first).

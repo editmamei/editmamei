@@ -2227,15 +2227,22 @@ describe('GimpSession', () => {
 
     it('a non-retryable rename error becomes GimpError at once and removes the temp file', async () => {
       const tmpPaths: string[] = [];
-      const renameReqFile = vi.fn((from: string) => {
+      const renameReqFile = vi.fn((from: string, to: string) => {
         tmpPaths.push(from);
-        throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+        // Node's own rename message quotes both full paths; the session must redact them.
+        throw Object.assign(
+          new Error(`ENOSPC: no space left on device, rename '${from}' -> '${to}'`),
+          {
+            code: 'ENOSPC',
+          }
+        );
       });
       const h = harness({ extra: { renameReqFile } });
       const err = await h.session.call('ping', {}).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(GimpError);
       expect((err as GimpError).code).toBe('gimp_op_failed');
       expect((err as GimpError).message).toMatch(/could not hand the request to GIMP \(/);
+      expect((err as GimpError).message).not.toContain(h.rootDir);
       expect(renameReqFile).toHaveBeenCalledTimes(1);
       expect(tmpPaths[0]).toMatch(/req-\d+\.json\.tmp$/);
       expect(existsSync(tmpPaths[0])).toBe(false);

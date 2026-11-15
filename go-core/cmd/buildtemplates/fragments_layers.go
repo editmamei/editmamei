@@ -213,9 +213,50 @@ func init() {
       throw new Error('No document is open in Photoshop');
     }
     var doc = app.activeDocument;
+
+    // Ctrl+E changes meaning with context: several selected layers merge together, and a
+    // clipping-group base merges its clipped layers instead. Only a plain one-layer merge
+    // down runs here; anything else is refused before Photoshop is asked.
+    var targetCount = 1;
+    try {
+      var tRef = new ActionReference();
+      tRef.putProperty(stringIDToTypeID('property'), stringIDToTypeID('targetLayersIDs'));
+      tRef.putEnumerated(charIDToTypeID('Dcmn'), charIDToTypeID('Ordn'), charIDToTypeID('Trgt'));
+      var tDesc = executeActionGet(tRef);
+      if (tDesc.hasKey(stringIDToTypeID('targetLayersIDs'))) {
+        targetCount = tDesc.getList(stringIDToTypeID('targetLayersIDs')).count;
+      }
+    } catch (eTargets) {
+      // Older Photoshop without targetLayersIDs: the DOM's single active layer stands.
+    }
+    if (targetCount === 0) {
+      throw new Error('Merge Down needs a selected layer and none is selected; select the upper layer with ps_select_layer first.');
+    }
+    if (targetCount > 1) {
+      throw new Error('Merge Down works on one layer, but ' + targetCount + ' layers are selected; select only the upper layer with ps_select_layer.');
+    }
+
     var layer = doc.activeLayer;
     var wasGroup = layer.typename === 'LayerSet';
     var sourceName = layer.name;
+    var siblings = layer.parent.layers;
+    var index = -1;
+    for (var si = 0; si < siblings.length; si++) {
+      if (siblings[si] === layer) { index = si; break; }
+    }
+    var above = index > 0 ? siblings[index - 1] : null;
+    var aboveClipped = false;
+    try { aboveClipped = above !== null && above.grouped === true; } catch (eAbove) {}
+    if (aboveClipped) {
+      throw new Error('"' + sourceName + '" is the base of a clipping group, where Ctrl+E merges the clipped layers into it instead of merging down. Release it with ps_clipping_mask first, or bake the group with ps_bake_layer.');
+    }
+    if (!layer.visible) {
+      throw new Error('"' + sourceName + '" is hidden; show it before merging it down, or delete it.');
+    }
+    var below = index >= 0 && index < siblings.length - 1 ? siblings[index + 1] : null;
+    if (!wasGroup && below !== null && !below.visible) {
+      throw new Error('The layer below "' + sourceName + '" is hidden; show it before merging down.');
+    }
     var beforeLayerCount = doc.layers.length;
 
     try {
