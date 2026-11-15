@@ -1827,6 +1827,7 @@ USER_ARGS_BY_TYPE = {
     'sharpen': {'radius': 2.5, 'amount': 0.8, 'threshold': 0.1},
     'noise_reduction': {'strength': 7},
     'gaussian_blur': {'radius': 4.0},
+    'clarity': {'radius': 55.0, 'clarity': 35},
 }
 
 
@@ -2690,6 +2691,42 @@ class TestGaussianBlur(unittest.TestCase):
     def test_is_spatial_on_the_proxy(self):
         self.assertEqual(lib.SPATIAL_SCALE_PROPS['gegl:gaussian-blur'], ('std-dev-x', 'std-dev-y'))
         self.assertIn('gegl:gaussian-blur', lib.ALLOWED_DESCRIBE_OPERATIONS)
+
+
+class TestClarity(unittest.TestCase):
+    def test_clarity_drives_the_high_pass_contrast(self):
+        self.assertEqual(
+            lib.build_clarity_params({'radius': 60, 'clarity': 100}, _create_defaults('clarity')),
+            {'std-dev': 60.0, 'contrast': 2.0},
+        )
+
+    def test_create_default(self):
+        self.assertEqual(
+            lib.build_clarity_params({}, _create_defaults('clarity')), {'std-dev': 40.0, 'contrast': 0.5}
+        )
+
+    def test_rejects_out_of_range(self):
+        # A high-pass only adds contrast: no negative clarity.
+        for args in ({'radius': 0.5}, {'radius': 501}, {'clarity': -1}, {'clarity': 100.5},
+                     {'clarity': float('nan')}):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                lib.build_clarity_params(args, _create_defaults('clarity'))
+
+    def test_a_re_edit_keeps_the_field_it_does_not_name(self):
+        existing = {'std-dev': 80.0, 'contrast': 0.8, 'mask': None}
+        self.assertEqual(
+            lib.build_clarity_params({'clarity': 10}, existing), {'std-dev': 80.0, 'contrast': 0.2}
+        )
+
+    def test_is_composited_by_overlay_and_spatial_on_the_proxy(self):
+        self.assertEqual(lib.ADJUST_OPERATIONS['clarity'], 'gegl:high-pass')
+        self.assertEqual(lib.OPERATION_TYPES['gegl:high-pass'], 'clarity')
+        self.assertEqual(lib.FILTER_BLEND_MODES, {'clarity': 'OVERLAY'})
+        # Every blend mode is one the layer tool already allows, so it names a real Gimp.LayerMode.
+        self.assertLessEqual(set(lib.FILTER_BLEND_MODES.values()), set(lib.LAYER_MODES.values()))
+        self.assertEqual(lib.SPATIAL_SCALE_PROPS['gegl:high-pass'], ('std-dev',))
+        self.assertIn('gegl:high-pass', lib.ALLOWED_DESCRIBE_OPERATIONS)
+        self.assertEqual(lib.type_fields('clarity'), ('radius', 'clarity'))
 
 
 class TestUniqueName(unittest.TestCase):

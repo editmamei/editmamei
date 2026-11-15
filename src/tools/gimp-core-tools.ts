@@ -272,7 +272,7 @@ place.
 \`gimp_get_preview\` and the default (non-\`exact\`) \`gimp_get_histogram\`
 render a downscaled proxy with live filters re-applied. Per-pixel
 filters (curves, levels, color balance) are EXACT on the proxy;
-spatial filters (sharpen, gaussian blur, shadows/highlights, noise
+spatial filters (sharpen, gaussian blur, clarity, shadows/highlights, noise
 reduction) are approximate — their radius/std-dev is scaled to the proxy size, not
 rendered at native resolution. \`gimp_get_histogram\`'s \`exact: true\`
 (full-resolution) is the trustworthy final check before export,

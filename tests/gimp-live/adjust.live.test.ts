@@ -796,4 +796,156 @@ describe.skipIf(!install)('adjust: per-type pixel verifiers', () => {
     expect(scaled, `scaled mean abs diff ${scaled}`).toBeLessThan(6);
     expect(unscaled, `unscaled mean abs diff ${unscaled}`).toBeGreaterThan(scaled * 4);
   });
+
+  // ---- clarity ---------------------------------------------------------------------------------
+
+  describe('clarity', () => {
+    const SQUARE = 32;
+    let checkerPath: string;
+
+    beforeAll(() => {
+      checkerPath = join(workDir, 'clarity-checker.png');
+      writeCheckerboard(checkerPath, 256, 128, SQUARE, 100, 150);
+    });
+
+    /** Mean of the dark and the light square centers, after one clarity filter. */
+    async function squares(args: Record<string, unknown>, tag: string) {
+      const opened = await session.call<{ image: number }>('open', { path: checkerPath });
+      try {
+        const added = await session.call<{ type: string; filter_id: number }>('adjust', {
+          image: opened.image,
+          type: 'clarity',
+          ...args,
+        });
+        expect(added.type).toBe('clarity');
+        const outPath = join(workDir, `clarity-${tag}.png`);
+        await session.call('export', { image: opened.image, path: outPath });
+        const ppm = readPng(outPath);
+        const inset = SQUARE / 4;
+        const dark = patchMean(ppm, inset, inset, SQUARE / 2, SQUARE / 2)[0]!;
+        const light = patchMean(ppm, SQUARE + inset, inset, SQUARE / 2, SQUARE / 2)[0]!;
+        return { dark, light, all: patchMean(ppm, 0, 0, ppm.width, ppm.height)[0]! };
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+    }
+
+    it('raises local contrast in proportion to clarity and keeps the mean', async () => {
+      // Unfiltered squares are 100 and 150, 50 apart.
+      const mild = await squares({ clarity: 25, radius: 16 }, 'mild');
+      const strong = await squares({ clarity: 100, radius: 16 }, 'strong');
+      expect(mild.light - mild.dark).toBeGreaterThan(55);
+      expect(strong.light - strong.dark).toBeGreaterThan(mild.light - mild.dark + 10);
+      expect(Math.abs(strong.all - 125)).toBeLessThan(4);
+    });
+
+    it('keeps its Overlay blend through an XCF save and reopen', async () => {
+      const opened = await session.call<{ image: number }>('open', { path: checkerPath });
+      const xcfPath = join(workDir, 'clarity.xcf');
+      const before = join(workDir, 'clarity-before-xcf.png');
+      try {
+        await session.call('adjust', {
+          image: opened.image,
+          type: 'clarity',
+          clarity: 80,
+          radius: 16,
+        });
+        await session.call('export', { image: opened.image, path: before });
+        await session.call('export', { image: opened.image, path: xcfPath });
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+      const reopened = await session.call<{ image: number }>('open', { path: xcfPath });
+      try {
+        const after = join(workDir, 'clarity-after-xcf.png');
+        await session.call('export', { image: reopened.image, path: after });
+        expect(maxAbsDiff(readPng(before), readPng(after))).toBeLessThanOrEqual(1);
+      } finally {
+        await session.call('close', { image: reopened.image });
+      }
+    });
+
+    it('lists in its own field names and units, and a re-edit merges', async () => {
+      const opened = await session.call<{ image: number }>('open', { path: checkerPath });
+      try {
+        const added = await session.call<{ filter_id: number }>('adjust', {
+          image: opened.image,
+          type: 'clarity',
+          clarity: 35,
+          radius: 22,
+        });
+        await session.call('adjust', {
+          image: opened.image,
+          type: 'clarity',
+          filter_id: added.filter_id,
+          clarity: 15,
+        });
+        const listed = await session.call<{
+          filters: Array<{
+            operation: string;
+            type: string;
+            source: string;
+            params: Record<string, unknown>;
+          }>;
+        }>('filter', { image: opened.image, op: 'list' });
+        expect(listed.filters).toHaveLength(1);
+        expect(listed.filters[0]).toMatchObject({
+          operation: 'gegl:high-pass',
+          type: 'clarity',
+          source: 'editmamei',
+          params: { radius: 22, clarity: 15 },
+        });
+      } finally {
+        await session.call('close', { image: opened.image });
+      }
+    });
+
+    it('proxy fidelity: the radius is scaled onto the proxy and the Overlay blend carried over (negative control: unscaled is far off)', async () => {
+      const WIDTH = 2048;
+      const HEIGHT = 512;
+      const SCALE = 512 / WIDTH;
+      const RADIUS = 24;
+      const path = join(workDir, 'clarity-proxy-checker.png');
+      writeCheckerboard(path, WIDTH, HEIGHT, 64, 90, 160);
+
+      async function proxyVsReference(proxyRadius: number, tag: string): Promise<number> {
+        const opened = await session.call<{ image: number }>('open', { path });
+        try {
+          const added = await session.call<{ filter_id: number }>('adjust', {
+            image: opened.image,
+            type: 'clarity',
+            clarity: 80,
+            radius: RADIUS,
+          });
+          const refPath = join(workDir, `${tag}-ref.png`);
+          await session.call('preview', {
+            image: opened.image,
+            max_px: 512,
+            region: { x: 0, y: 0, width: WIDTH, height: HEIGHT },
+            out_path: refPath,
+          });
+          await session.call('adjust', {
+            image: opened.image,
+            type: 'clarity',
+            filter_id: added.filter_id,
+            radius: proxyRadius,
+          });
+          const proxyPath = join(workDir, `${tag}-proxy.png`);
+          await session.call('preview', { image: opened.image, max_px: 512, out_path: proxyPath });
+          const a = readPng(refPath);
+          const b = readPng(proxyPath);
+          expect(b.width).toBe(a.width);
+          let sum = 0;
+          for (let i = 0; i < a.data.length; i++) sum += Math.abs(a.data[i]! - b.data[i]!);
+          return sum / a.data.length;
+        } finally {
+          await session.call('close', { image: opened.image });
+        }
+      }
+
+      const scaled = await proxyVsReference(RADIUS, 'clarity-scaled');
+      const unscaled = await proxyVsReference(Math.min(500, RADIUS / SCALE), 'clarity-unscaled');
+      expect(scaled, `scaled mean abs diff ${scaled}`).toBeLessThan(unscaled / 2);
+    });
+  });
 });
