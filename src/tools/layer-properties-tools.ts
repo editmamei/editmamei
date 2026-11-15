@@ -218,9 +218,9 @@ const SET_LAYER_INPUT_SCHEMA: JsonSchemaObject = {
   required: ['property'],
 };
 
-const MERGE_MODES = ['visible', 'stamp', 'flatten'] as const;
+const MERGE_MODES = ['down', 'visible', 'stamp', 'flatten'] as const;
 
-// ps_merge merges merge_visible_layers / stamp_visible / flatten_image.
+// ps_merge: mergeDown / mergeVisibleLayers / stampVisible / flattenImage.
 const MERGE_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -228,6 +228,7 @@ const MERGE_INPUT_SCHEMA: JsonSchemaObject = {
       type: 'string',
       enum: [...MERGE_MODES],
       description:
+        'down: merge the active layer into the layer directly below it (Ctrl+E; DESTRUCTIVE). ' +
         'visible: collapse all visible layers into one (DESTRUCTIVE; identities lost). ' +
         'stamp: merge visible into a NEW layer on top, originals kept (Ctrl+Alt+Shift+E — non-destructive "final tweak" composite). ' +
         'flatten: flatten ALL layers into the background (DESTRUCTIVE; transparency filled with bg color).',
@@ -404,12 +405,15 @@ export function createLayerPropertiesTools(
       tool: {
         name: 'ps_merge',
         description:
-          'Merge layers — choose with `mode`. `visible`: collapse all visible layers into one (DESTRUCTIVE; identities lost). `stamp`: merge visible into a NEW layer on top, leaving originals intact (Ctrl+Alt+Shift+E — the non-destructive "final tweak" composite for output sharpening/grain/contrast; prefer this when building on top rather than collapsing). `flatten`: flatten ALL layers into the background (DESTRUCTIVE; transparency filled with bg color — use sparingly, usually prefer `visible` or exporting a flattened copy). Returns context.',
+          'Merge layers — choose with `mode`. `down`: merge the ACTIVE layer into the layer directly below it (Ctrl+E; DESTRUCTIVE; select only the upper layer first with ps_select_layer; on a group it merges the group into one layer; refused on a clipping-group base, a hidden layer, or a multi-layer selection). `visible`: collapse all visible layers into one (DESTRUCTIVE; identities lost). `stamp`: merge visible into a NEW layer on top, leaving originals intact (Ctrl+Alt+Shift+E — the non-destructive "final tweak" composite for output sharpening/grain/contrast; prefer this when building on top rather than collapsing). `flatten`: flatten ALL layers into the background (DESTRUCTIVE; transparency filled with bg color — use sparingly, usually prefer `visible` or exporting a flattened copy). Returns context.',
         inputSchema: MERGE_INPUT_SCHEMA,
         outputSchema: {
           type: 'object',
           properties: {
             merged: { type: 'boolean' },
+            merged_group: { type: 'boolean' },
+            source_layer_name: { type: 'string' },
+            result_layer_name: { type: 'string' },
             stamped: { type: 'boolean' },
             flattened: { type: 'boolean' },
             new_layer_name: { type: 'string' },
@@ -516,6 +520,8 @@ async function mergeLayers(
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
   switch (rawArgs.mode) {
+    case 'down':
+      return mergeDown(connection, snippetClient);
     case 'visible':
       return mergeVisibleLayers(connection, snippetClient);
     case 'stamp':
@@ -787,6 +793,30 @@ async function mergeVisibleLayers(
     snippet: 'mergeVisibleLayers',
     errorPrefix: 'Error merging visible layers',
     successText: () => 'All visible layers merged',
+  });
+}
+
+async function mergeDown(
+  connection: PhotoshopConnection,
+  snippetClient: SnippetClient
+): Promise<ToolResult> {
+  return runSnippetTool({
+    connection,
+    snippetClient,
+    rawArgs: {},
+    schema: emptySchema,
+    snippet: 'mergeDown',
+    errorPrefix: 'Error merging down',
+    successText: (result) => {
+      const r = result as {
+        merged_group?: boolean;
+        source_layer_name?: string;
+        result_layer_name?: string;
+      };
+      return r.merged_group
+        ? `Merged group "${r.source_layer_name ?? '?'}" into layer "${r.result_layer_name ?? '?'}"`
+        : `Merged "${r.source_layer_name ?? '?'}" down into "${r.result_layer_name ?? '?'}"`;
+    },
   });
 }
 

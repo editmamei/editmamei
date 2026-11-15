@@ -2199,6 +2199,68 @@ describe('GimpSession', () => {
     });
   });
 
+  describe('#publishRequest (the request-file rename on a locked file)', () => {
+    it('retries EBUSY on the request rename then succeeds', async () => {
+      let attempts = 0;
+      const renameReqFile = vi.fn((from: string, to: string) => {
+        attempts++;
+        if (attempts <= 2) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+        renameSync(from, to);
+      });
+      const h = harness({ extra: { renameReqFile } });
+      const result = await h.session.call<{ op: string }>('open', {});
+      expect(result).toEqual({ op: 'open' });
+      // The ready-ping's rename succeeds on the third try too; the open's goes first time.
+      expect(attempts).toBeGreaterThanOrEqual(3);
+    });
+
+    it('retries EACCES on the request rename then succeeds', async () => {
+      let attempts = 0;
+      const renameReqFile = vi.fn((from: string, to: string) => {
+        attempts++;
+        if (attempts === 1) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        renameSync(from, to);
+      });
+      const h = harness({ extra: { renameReqFile } });
+      await expect(h.session.call<{ op: string }>('open', {})).resolves.toEqual({ op: 'open' });
+    });
+
+    it('a non-retryable rename error becomes GimpError at once and removes the temp file', async () => {
+      const tmpPaths: string[] = [];
+      const renameReqFile = vi.fn((from: string, to: string) => {
+        tmpPaths.push(from);
+        // Node's own rename message quotes both full paths; the session must redact them.
+        throw Object.assign(
+          new Error(`ENOSPC: no space left on device, rename '${from}' -> '${to}'`),
+          {
+            code: 'ENOSPC',
+          }
+        );
+      });
+      const h = harness({ extra: { renameReqFile } });
+      const err = await h.session.call('ping', {}).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(GimpError);
+      expect((err as GimpError).code).toBe('gimp_op_failed');
+      expect((err as GimpError).message).toMatch(/could not hand the request to GIMP \(/);
+      expect((err as GimpError).message).not.toContain(h.rootDir);
+      expect(renameReqFile).toHaveBeenCalledTimes(1);
+      expect(tmpPaths[0]).toMatch(/req-\d+\.json\.tmp$/);
+      expect(existsSync(tmpPaths[0])).toBe(false);
+    });
+
+    it('gives up after exhausting EBUSY retries with GimpError gimp_op_failed', async () => {
+      const renameReqFile = vi.fn(() => {
+        throw Object.assign(new Error('busy forever'), { code: 'EBUSY' });
+      });
+      const h = harness({ extra: { renameReqFile } });
+      const err = await h.session.call('ping', {}).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(GimpError);
+      expect((err as GimpError).code).toBe('gimp_op_failed');
+      expect((err as GimpError).message).toMatch(/after 10 attempts/);
+      expect(renameReqFile).toHaveBeenCalledTimes(10);
+    });
+  });
+
   describe('#readResponse (the response-file read/parse hardening)', () => {
     it('retries EBUSY on the response read then succeeds', async () => {
       let attempts = 0;

@@ -6,6 +6,7 @@ import {
   requireAbsoluteGimpPath,
   toolGimpErrorResult,
   refuseExistingGimpFile,
+  refuseMissingGimpFolder,
 } from '@editmamei/utils/tool-helpers.ts';
 import type { JsonSchemaObject } from '@editmamei/utils/validate.ts';
 import type { SnippetClient } from '@editmamei/api/snippet-client.ts';
@@ -341,6 +342,19 @@ describe('requireAbsoluteGimpPath', () => {
   it('on darwin, the same backslash-rooted value is rejected as not absolute at all — POSIX has no such root, so the drive-letter check never applies', () => {
     const value = String.fromCharCode(92) + 'x.jpg'; // "\x.jpg"
     expect(() => requireAbsoluteGimpPath('file_path', value, 'darwin')).toThrow(/absolute path/);
+  });
+});
+
+describe('refuseMissingGimpFolder', () => {
+  it('refuses with file_not_found, naming the folder, when the folder does not exist', () => {
+    const exists = (p: string) => p !== '/photos/out';
+    expect(() => refuseMissingGimpFolder('/photos/out/edit.jpg', exists)).toThrow(
+      /^file_not_found: the folder "\/photos\/out" does not exist/
+    );
+  });
+
+  it('allows a path whose folder exists', () => {
+    expect(() => refuseMissingGimpFolder('/photos/edit.jpg', () => true)).not.toThrow();
   });
 });
 

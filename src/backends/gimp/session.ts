@@ -99,6 +99,8 @@ export interface GimpSessionOptions {
   chmodRootDir?: (path: string, mode: number) => void;
   /** Defaults to a real `fs.readFileSync(path, 'utf8')`. Injected so the response-read retry/error paths are testable without faking OS-level file locks. */
   readRespFile?: (path: string) => string;
+  /** Defaults to the real `fs.renameSync`. Injected so the request-rename retry/error paths are testable without faking OS-level file locks. */
+  renameReqFile?: (from: string, to: string) => void;
   /**
    * The bridge script GIMP runs (`EM_GIMP_OPS`). Defaults to `resolveOpsPyPath()`, the copy next
    * to this module. Tests point it at the built `dist/` copy, or at a wrapper that loads the real
@@ -176,6 +178,12 @@ const POLL_INTERVAL_MS = 2;
 const MAX_CAPTURED_OUTPUT = 8 * 1024;
 const RESP_READ_RETRY_ATTEMPTS = 5;
 const RESP_READ_RETRY_DELAY_MS = 20;
+/**
+ * On Windows a just-written file can be held for a moment (antivirus, the search indexer), and a
+ * rename of it fails with EBUSY / EPERM / EACCES until it is let go. About a second in all.
+ */
+const REQ_RENAME_RETRY_ATTEMPTS = 10;
+const REQ_RENAME_RETRY_DELAY_MS = 100;
 
 const KNOWN_ERROR_CODES = new Set<GimpErrorCode>(GIMP_ERROR_CODES);
 
@@ -256,6 +264,13 @@ function isRetryableReadError(err: unknown): boolean {
   return code === 'EBUSY' || code === 'EPERM';
 }
 
+function isRetryableRenameError(err: unknown): boolean {
+  return (
+    isRetryableReadError(err) ||
+    (typeof err === 'object' && err !== null && (err as { code?: string }).code === 'EACCES')
+  );
+}
+
 /**
  * GIMP's batch-interpreter SELECTION failing outright (Python support isn't
  * compiled into this GIMP build at all, so the "python-fu-eval" interpreter
@@ -321,6 +336,7 @@ export class GimpSession {
   private readonly statRootDir: (path: string) => { uid: number; mode: number };
   private readonly chmodRootDir: (path: string, mode: number) => void;
   private readonly readRespFile: (path: string) => string;
+  private readonly renameReqFile: (from: string, to: string) => void;
   private readonly opsPyPath: string;
 
   private sessionState: GimpSessionState = 'idle';
@@ -443,6 +459,7 @@ export class GimpSession {
       });
     this.chmodRootDir = opts.chmodRootDir ?? chmodSync;
     this.readRespFile = opts.readRespFile ?? ((path) => readFileSync(path, 'utf8'));
+    this.renameReqFile = opts.renameReqFile ?? renameSync;
     this.opsPyPath = opts.opsPyPath ?? resolveOpsPyPath();
   }
 
@@ -1108,7 +1125,7 @@ export class GimpSession {
     // derives the response path itself from the id, so a malformed or
     // tampered request can't steer a write anywhere else on disk.
     writeFileSync(`${reqPath}.tmp`, JSON.stringify({ id, op, args }));
-    renameSync(`${reqPath}.tmp`, reqPath);
+    await this.#publishRequest(`${reqPath}.tmp`, reqPath, op);
 
     const sent: InFlight = { id, op, respPath, sentAt: this.monotonicClock() };
     this.inFlight = sent;
@@ -1193,6 +1210,35 @@ export class GimpSession {
       unlinkSync(respPath);
     } catch {
       /* best effort */
+    }
+  }
+
+  /**
+   * Rename the written request into the name the bridge polls for, retrying while the OS holds
+   * the new file. On giving up, the temp file is removed and the error is a GimpError, like a
+   * failed response read.
+   */
+  async #publishRequest(tmpPath: string, reqPath: string, op: string): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        this.renameReqFile(tmpPath, reqPath);
+        return;
+      } catch (err) {
+        if (isRetryableRenameError(err) && attempt < REQ_RENAME_RETRY_ATTEMPTS) {
+          await sleep(REQ_RENAME_RETRY_DELAY_MS);
+          continue;
+        }
+        try {
+          unlinkSync(tmpPath);
+        } catch {
+          /* best effort */
+        }
+        const tries = attempt > 1 ? ` after ${attempt} attempts` : '';
+        throw new GimpError(
+          'gimp_op_failed',
+          `${op}: could not hand the request to GIMP${tries} (${this.#redact((err as Error).message)})`
+        );
+      }
     }
   }
 

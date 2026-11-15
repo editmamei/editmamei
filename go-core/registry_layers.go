@@ -24,6 +24,8 @@ func buildLayers(name string, params map[string]any) (string, bool, error) {
 		return duplicateLayer(newName, hasNewName), true, nil
 	case "mergeVisibleLayers":
 		return mergeVisibleLayers(), true, nil
+	case "mergeDown":
+		return mergeDown(), true, nil
 	case "stampVisible":
 		return stampVisible(), true, nil
 	case "flattenImage":

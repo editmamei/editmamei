@@ -7,6 +7,7 @@ import {
   toolGimpErrorResult,
   requireAbsoluteGimpPath,
   refuseExistingGimpFile,
+  refuseMissingGimpFolder,
 } from '../utils/tool-helpers.js';
 import { GimpError } from '../backends/gimp/errors.js';
 import {
@@ -140,6 +141,7 @@ async function gimpSaveXcf(
         `"file_path" must end in .xcf, got "${filePath}" — use gimp_export for a deliverable.`
       );
     }
+    refuseMissingGimpFolder(filePath, existsSync);
     refuseExistingGimpFile(filePath, args.overwrite as boolean | undefined, existsSync);
     const result = await gimp.call<{ path: string; bytes: number }>('export', {
       image: args.image,
@@ -318,6 +320,7 @@ async function gimpExport(
         `"keep_alpha" only works with a .png or .webp file_path, got "${ext}".`
       );
     }
+    refuseMissingGimpFolder(filePath, existsSync);
     refuseExistingGimpFile(filePath, args.overwrite as boolean | undefined, existsSync);
 
     // Only the option(s) relevant to the resolved format are forwarded — the

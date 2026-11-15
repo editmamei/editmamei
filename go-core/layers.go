@@ -49,6 +49,10 @@ func mergeVisibleLayers() string {
 	return fmt.Sprintf(tpl[vault.MergeVis], getContextInfo())
 }
 
+func mergeDown() string {
+	return fmt.Sprintf(tpl[vault.MergeDown], getContextInfo())
+}
+
 func stampVisible() string {
 	return fmt.Sprintf(tpl[vault.StampVis], getContextInfo())
 }

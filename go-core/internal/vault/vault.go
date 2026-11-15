@@ -230,6 +230,7 @@ const (
 	SONewViaCopy   = "l12" // newSmartObjectViaCopy (placedLayerMakeCopy; independent SO copy)
 	CreateShape    = "l13" // createShape (Mk contentLayer; vector shape layer — rectangle/ellipse/line)
 	AddGradFill    = "l14" // addGradientFillLayer (Mk contentLayer; gradientLayer w/ custom stops)
+	MergeDown      = "l15" // mergeDown (Layer > Merge Down; Merge Group on a group)
 
 	// smart filters — the Smart-Object filter stack (m4a STEP-03/04/05/07).
 	// Every write addresses one filter as a filterFX INDEX reference on the

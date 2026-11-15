@@ -18,6 +18,7 @@
  *   the one contract text.
  */
 
+import { dirname } from 'node:path';
 import type { ToolResult } from '../core/tool-registry.js';
 import type { PhotoshopConnection } from '../platform/connection.js';
 import type { SnippetClient } from '../api/snippet-client.js';
@@ -121,6 +122,20 @@ export function refuseExistingGimpFile(
     throw new GimpError(
       'invalid_argument',
       `"${path}" already exists — pass overwrite: true to replace it.`
+    );
+  }
+}
+
+/**
+ * A GIMP write into a folder that doesn't exist fails inside GIMP with only the file name in
+ * its message, so the folder is checked first and named. The folder is never created here.
+ */
+export function refuseMissingGimpFolder(path: string, exists: (p: string) => boolean): void {
+  const folder = dirname(path);
+  if (!exists(folder)) {
+    throw new GimpError(
+      'file_not_found',
+      `the folder "${folder}" does not exist — create it first, or write to a folder that exists.`
     );
   }
 }
