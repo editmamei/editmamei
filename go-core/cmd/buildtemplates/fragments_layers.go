@@ -236,25 +236,50 @@ func init() {
       throw new Error('Merge Down works on one layer, but ' + targetCount + ' layers are selected; select only the upper layer with ps_select_layer.');
     }
 
+    // A layer's OWN flags, by id. The DOM's .visible is effective visibility (a layer in a
+    // hidden group reads hidden), and its .grouped exists on art layers only.
+    function __ownVisible(l) {
+      try {
+        var r = new ActionReference();
+        r.putProperty(charIDToTypeID('Prpr'), charIDToTypeID('Vsbl'));
+        r.putIdentifier(charIDToTypeID('Lyr '), l.id);
+        return executeActionGet(r).getBoolean(charIDToTypeID('Vsbl'));
+      } catch (eVis) {
+        return l.visible;
+      }
+    }
+    function __clipped(l) {
+      try {
+        var r = new ActionReference();
+        r.putIdentifier(charIDToTypeID('Lyr '), l.id);
+        var d = executeActionGet(r);
+        if (d.hasKey(stringIDToTypeID('group'))) return d.getBoolean(stringIDToTypeID('group'));
+      } catch (eClip) {}
+      try { return l.grouped === true; } catch (eDom) { return false; }
+    }
+
     var layer = doc.activeLayer;
     var wasGroup = layer.typename === 'LayerSet';
     var sourceName = layer.name;
     var siblings = layer.parent.layers;
     var index = -1;
     for (var si = 0; si < siblings.length; si++) {
-      if (siblings[si] === layer) { index = si; break; }
+      if (siblings[si].id === layer.id) { index = si; break; }
     }
+    if (index === -1) {
+      throw new Error('Merge Down could not find "' + sourceName + '" among its sibling layers, so it was not run.');
+    }
+    // The base of a clipping group: the layer above is clipped and this one is not (a clipped
+    // layer with another clipped layer above it merges down normally).
     var above = index > 0 ? siblings[index - 1] : null;
-    var aboveClipped = false;
-    try { aboveClipped = above !== null && above.grouped === true; } catch (eAbove) {}
-    if (aboveClipped) {
+    if (above !== null && !__clipped(layer) && __clipped(above)) {
       throw new Error('"' + sourceName + '" is the base of a clipping group, where Ctrl+E merges the clipped layers into it instead of merging down. Release it with ps_clipping_mask first, or bake the group with ps_bake_layer.');
     }
-    if (!layer.visible) {
+    if (!__ownVisible(layer)) {
       throw new Error('"' + sourceName + '" is hidden; show it before merging it down, or delete it.');
     }
-    var below = index >= 0 && index < siblings.length - 1 ? siblings[index + 1] : null;
-    if (!wasGroup && below !== null && !below.visible) {
+    var below = index < siblings.length - 1 ? siblings[index + 1] : null;
+    if (!wasGroup && below !== null && !__ownVisible(below)) {
       throw new Error('The layer below "' + sourceName + '" is hidden; show it before merging down.');
     }
     var beforeLayerCount = doc.layers.length;
