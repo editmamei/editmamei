@@ -356,6 +356,12 @@ export const TOOL_TIERS: Record<string, Tier> = {
   gimp_match_layer: 'dev',
   gimp_retouch: 'dev',
   gimp_fill: 'dev',
+  // Registered by a downloaded module, not by src/modules/gimp. Saved and built-in looks,
+  // a folder batch, and raw develop.
+  gimp_look: 'dev',
+  gimp_preset_look: 'dev',
+  gimp_batch: 'dev',
+  gimp_develop_raw: 'dev',
 };
 
 /**

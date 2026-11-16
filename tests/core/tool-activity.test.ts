@@ -37,6 +37,8 @@ describe('core/tool-activity exports', () => {
 
   it('pins RECIPE_TOOLS membership (mirrored by the telemetry service)', () => {
     expect([...activity.RECIPE_TOOLS].sort()).toEqual([
+      'gimp_batch',
+      'gimp_preset_look',
       'ps_batch',
       'ps_play_action',
       'ps_sequence',

@@ -28,6 +28,7 @@ describe('itemsFromResult', () => {
 
   it('reads files_processed from a batch result', () => {
     expect(itemsFromResult('ps_batch', { structuredContent: { files_processed: 40 } })).toBe(40);
+    expect(itemsFromResult('gimp_batch', { structuredContent: { files_processed: 12 } })).toBe(12);
   });
 
   it('omits a batch that processed nothing, and a batch preview', () => {
@@ -61,9 +62,14 @@ describe('itemsFromResult', () => {
     expect(
       itemsFromResult(
         'ps_sequence',
-        steps(['ps_develop_raw', true], ['ps_create_document', true], ['gimp_open_document', true])
+        steps(
+          ['ps_develop_raw', true],
+          ['ps_create_document', true],
+          ['gimp_open_document', true],
+          ['gimp_develop_raw', true]
+        )
       )
-    ).toBe(3);
+    ).toBe(4);
   });
 
   it('reads a sequence that opened nothing as one document', () => {
@@ -133,10 +139,10 @@ describe('READ_ONLY_TOOLS / KEPT_WORK_TOOLS', () => {
     }
   });
 
-  it('is exactly the original sixteen, six template/document additions, two orchestration wrappers, and seven gimp_* read-only twins (31 total)', () => {
+  it('is exactly the original sixteen, six template/document additions, five orchestration wrappers, and seven gimp_* read-only twins (34 total)', () => {
     // A size pin is deliberately brittle: it forces anyone adding an entry to
     // state why that tool does not count as an edit.
-    expect(READ_ONLY_TOOLS.size).toBe(31);
+    expect(READ_ONLY_TOOLS.size).toBe(34);
   });
 });
 
@@ -221,13 +227,16 @@ describe('classification mirror', () => {
   // automatically and the two stay in step without an edit.
   it('pins READ_ONLY_TOOLS membership (update the aggregation service when this fails)', () => {
     expect([...READ_ONLY_TOOLS].sort()).toEqual([
+      'gimp_batch',
       'gimp_compare',
       'gimp_get_histogram',
       'gimp_get_preview',
       'gimp_get_selection_preview',
       'gimp_inspect',
+      'gimp_look',
       'gimp_overview',
       'gimp_ping',
+      'gimp_preset_look',
       'ps_batch',
       'ps_compare_regions',
       'ps_detect',
@@ -540,7 +549,7 @@ describe('classification of the orchestration wrappers and raw develop', () => {
     // whose `finally` fires onCall for nested dispatches too, so each inner
     // step is already counted. Counting the wrapper as well inflated edits_ok
     // by an amount that scaled with step count.
-    for (const tool of ['ps_sequence', 'ps_batch']) {
+    for (const tool of ['ps_sequence', 'ps_batch', 'gimp_look', 'gimp_preset_look', 'gimp_batch']) {
       expect(READ_ONLY_TOOLS.has(tool)).toBe(true);
       expect(MUTATING_TOOLS.has(tool)).toBe(false);
       expect(KEPT_WORK_TOOLS.has(tool)).toBe(false);
@@ -552,5 +561,10 @@ describe('classification of the orchestration wrappers and raw develop', () => {
     // nothing. Documented in activity.ts rather than silently shipped.
     expect(MUTATING_TOOLS.has('ps_develop_raw')).toBe(true);
     expect(KEPT_WORK_TOOLS.has('ps_develop_raw')).toBe(false);
+  });
+
+  it('counts gimp_develop_raw as mutating, like ps_develop_raw', () => {
+    expect(MUTATING_TOOLS.has('gimp_develop_raw')).toBe(true);
+    expect(READ_ONLY_TOOLS.has('gimp_develop_raw')).toBe(false);
   });
 });

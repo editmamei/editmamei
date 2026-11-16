@@ -38,6 +38,10 @@ export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   'ps_batch',
   'ps_sequence',
   'ps_play_action',
+  // gimp_look is left out: its save/list/delete ops would count as recipe runs too, and
+  // classification here is per tool name.
+  'gimp_preset_look',
+  'gimp_batch',
 ]);
 
 /** Ceiling for `UsageEvent.items` — matches the server's per-call bound. */
@@ -50,6 +54,7 @@ const DOCUMENT_OPENING_STEPS: ReadonlySet<string> = new Set([
   'ps_develop_raw',
   'gimp_open_document',
   'gimp_create_document',
+  'gimp_develop_raw',
 ]);
 
 /**
@@ -57,8 +62,8 @@ const DOCUMENT_OPENING_STEPS: ReadonlySet<string> = new Set([
  * its arguments. Undefined for every other tool, for a failed call, and when no document was
  * processed: the server's lower bound is 1, and one bad value rejects the whole batch.
  *
- * `ps_batch` reports its own count. `ps_sequence` doesn't, so it is the steps that opened a
- * document, or 1 when steps ran on whatever was already open.
+ * `ps_batch` and `gimp_batch` report their own count. `ps_sequence` doesn't, so it is the steps
+ * that opened a document, or 1 when steps ran on whatever was already open.
  */
 export function itemsFromResult(
   tool: string,
@@ -67,7 +72,7 @@ export function itemsFromResult(
   if (!result || result.isError) return undefined;
   const sc = result.structuredContent as { files_processed?: unknown; steps?: unknown } | undefined;
   let items: unknown;
-  if (tool === 'ps_batch') {
+  if (tool === 'ps_batch' || tool === 'gimp_batch') {
     items = sc?.files_processed;
   } else if (tool === 'ps_sequence' && Array.isArray(sc?.steps)) {
     const ran = (sc.steps as { tool?: unknown; ok?: unknown }[]).filter((s) => s?.ok === true);
@@ -92,8 +97,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // nested dispatches too, so every inner step is already counted on its own.
   // Counting the wrapper as well added one phantom edit per call, inflating by
   // an amount that scaled with step count rather than a constant offset.
-  // The telemetry aggregation service mirrors this list and must carry the same
-  // two entries, or the session summary and the server-side rollups disagree.
+  // The telemetry aggregation service mirrors this list and must carry every
+  // wrapper entry, or the session summary and the server-side rollups disagree.
   'ps_sequence',
   'ps_batch',
   'ps_ping',
@@ -131,6 +136,13 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'gimp_get_histogram',
   'gimp_compare',
   'gimp_get_selection_preview',
+  // Orchestration wrappers, neutral for the same reason as ps_sequence / ps_batch above. This
+  // holds only while they make every document change through host.invokeTool, so that each
+  // step is counted on its own; a wrapper that edits the document directly belongs in
+  // MUTATING_TOOLS instead.
+  'gimp_look',
+  'gimp_preset_look',
+  'gimp_batch',
 ]);
 
 /**
@@ -305,6 +317,8 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   'gimp_retouch',
   // gimp_fill: adds a new solid / gradient fill layer (optionally masked) to the document.
   'gimp_fill',
+  // gimp_develop_raw: develops a raw file and opens it, the same class as ps_develop_raw.
+  'gimp_develop_raw',
 ]);
 
 /*

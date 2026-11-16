@@ -38,6 +38,7 @@ import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts
 import { EditmameiServer } from '@editmamei/core/server.ts';
 import { TOOL_TIERS, isToolAllowedInEdition } from '@editmamei/core/tool-tiers.ts';
 import { EDITION } from '@editmamei/edition.ts';
+import { MODULE_ONLY_GIMP_TOOLS } from '../helpers/module-only-tools.ts';
 import type { ToolResult } from '@editmamei/core/tool-registry.ts';
 import { readyGimpRegistry, LIVE_READY_TIMEOUT_MS } from './support.ts';
 
@@ -142,7 +143,12 @@ describe.skipIf(!install)('gimp_* tools through the real server registry', () =>
   it('the GIMP-only boot matrix registered exactly the gimp_* tools the edition allows plus the shared meta tools', () => {
     const names = registry.list().map((t) => t.name);
     const expectedGimp = Object.keys(TOOL_TIERS)
-      .filter((n) => n.startsWith('gimp_') && isToolAllowedInEdition(n, EDITION))
+      .filter(
+        (n) =>
+          n.startsWith('gimp_') &&
+          isToolAllowedInEdition(n, EDITION) &&
+          !MODULE_ONLY_GIMP_TOOLS.has(n)
+      )
       .sort();
     expect(expectedGimp.length).toBeGreaterThanOrEqual(24);
     expect(names.filter((n) => n.startsWith('gimp_')).sort()).toEqual(expectedGimp);
