@@ -97,8 +97,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // nested dispatches too, so every inner step is already counted on its own.
   // Counting the wrapper as well added one phantom edit per call, inflating by
   // an amount that scaled with step count rather than a constant offset.
-  // The telemetry aggregation service mirrors this list and must carry the same
-  // two entries, or the session summary and the server-side rollups disagree.
+  // The telemetry aggregation service mirrors this list and must carry every
+  // wrapper entry, or the session summary and the server-side rollups disagree.
   'ps_sequence',
   'ps_batch',
   'ps_ping',
@@ -136,8 +136,10 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'gimp_get_histogram',
   'gimp_compare',
   'gimp_get_selection_preview',
-  // Orchestration wrappers, neutral for the same reason as ps_sequence / ps_batch above: their
-  // steps run through host.invokeTool, so each step is already counted on its own.
+  // Orchestration wrappers, neutral for the same reason as ps_sequence / ps_batch above. This
+  // holds only while they make every document change through host.invokeTool, so that each
+  // step is counted on its own; a wrapper that edits the document directly belongs in
+  // MUTATING_TOOLS instead.
   'gimp_look',
   'gimp_preset_look',
   'gimp_batch',

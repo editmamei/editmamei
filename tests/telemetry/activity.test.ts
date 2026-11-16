@@ -62,9 +62,14 @@ describe('itemsFromResult', () => {
     expect(
       itemsFromResult(
         'ps_sequence',
-        steps(['ps_develop_raw', true], ['ps_create_document', true], ['gimp_open_document', true])
+        steps(
+          ['ps_develop_raw', true],
+          ['ps_create_document', true],
+          ['gimp_open_document', true],
+          ['gimp_develop_raw', true]
+        )
       )
-    ).toBe(3);
+    ).toBe(4);
   });
 
   it('reads a sequence that opened nothing as one document', () => {
@@ -544,7 +549,7 @@ describe('classification of the orchestration wrappers and raw develop', () => {
     // whose `finally` fires onCall for nested dispatches too, so each inner
     // step is already counted. Counting the wrapper as well inflated edits_ok
     // by an amount that scaled with step count.
-    for (const tool of ['ps_sequence', 'ps_batch']) {
+    for (const tool of ['ps_sequence', 'ps_batch', 'gimp_look', 'gimp_preset_look', 'gimp_batch']) {
       expect(READ_ONLY_TOOLS.has(tool)).toBe(true);
       expect(MUTATING_TOOLS.has(tool)).toBe(false);
       expect(KEPT_WORK_TOOLS.has(tool)).toBe(false);
@@ -556,5 +561,10 @@ describe('classification of the orchestration wrappers and raw develop', () => {
     // nothing. Documented in activity.ts rather than silently shipped.
     expect(MUTATING_TOOLS.has('ps_develop_raw')).toBe(true);
     expect(KEPT_WORK_TOOLS.has('ps_develop_raw')).toBe(false);
+  });
+
+  it('counts gimp_develop_raw as mutating, like ps_develop_raw', () => {
+    expect(MUTATING_TOOLS.has('gimp_develop_raw')).toBe(true);
+    expect(READ_ONLY_TOOLS.has('gimp_develop_raw')).toBe(false);
   });
 });
