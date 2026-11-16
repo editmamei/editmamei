@@ -421,14 +421,14 @@ describe('Repo-config invariants for the build pipeline', () => {
   // gutted/emptied, independent of any build run.
   // -----------------------------------------------------------------------
   proIt('src/tools/*-pro.ts files contain the real Pro implementations', () => {
-    // Every real Pro implementation registers at least one 'ps_*' tool.
-    const REAL_MARKER = 'ps_';
+    // Every real Pro implementation registers at least one 'ps_*' or 'gimp_*' tool.
+    const REAL_MARKER = /\b(?:ps|gimp)_[a-z]/;
     for (const rel of PRO_SOURCE_FILES) {
       const path = join(REPO_ROOT, rel);
       expect(existsSync(path), `expected Pro source at ${rel}`).toBe(true);
       const contents = readFileSync(path, 'utf8');
       expect(
-        contents.includes(REAL_MARKER),
+        REAL_MARKER.test(contents),
         `${rel} is missing the real-implementation marker — did the file get gutted?`
       ).toBe(true);
     }
