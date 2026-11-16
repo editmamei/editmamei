@@ -7,6 +7,7 @@ import { TOOL_TIERS, isToolAllowedInEdition, tierOf } from '@editmamei/core/tool
 import { TOOL_GROUPS } from '@editmamei/core/tool-groups.ts';
 import type { GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
+import { MODULE_ONLY_GIMP_TOOLS } from '../helpers/module-only-tools.ts';
 
 /**
  * Registers BOTH the ps_* and gimp_* surfaces for the universe-enumeration
@@ -142,6 +143,18 @@ describe('TOOL_TIERS classification table', () => {
         Object.keys(TOOL_GROUPS),
         `${name} is allowed as a transition orphan but has no group row`
       ).toContain(name);
+    }
+  });
+
+  it('every module-only gimp_* name has its rows and is registered by no built-in module', () => {
+    const server = new EditmameiServer(BOTH_EDITORS_OPTS) as unknown as {
+      toolRegistry: { list(): Array<{ name: string }> };
+    };
+    const builtIn = new Set(server.toolRegistry.list().map((t) => t.name));
+    for (const name of MODULE_ONLY_GIMP_TOOLS) {
+      expect(Object.keys(TOOL_TIERS), `${name} has no tier row`).toContain(name);
+      expect(Object.keys(TOOL_GROUPS), `${name} has no group row`).toContain(name);
+      expect(builtIn.has(name), `${name} is registered by a built-in module`).toBe(false);
     }
   });
 
