@@ -147,14 +147,25 @@ describe('TOOL_TIERS classification table', () => {
   });
 
   it('every module-only gimp_* name has its rows and is registered by no built-in module', () => {
-    const server = new EditmameiServer(BOTH_EDITORS_OPTS) as unknown as {
-      toolRegistry: { list(): Array<{ name: string }> };
-    };
-    const builtIn = new Set(server.toolRegistry.list().map((t) => t.name));
     for (const name of MODULE_ONLY_GIMP_TOOLS) {
       expect(Object.keys(TOOL_TIERS), `${name} has no tier row`).toContain(name);
       expect(Object.keys(TOOL_GROUPS), `${name} has no group row`).toContain(name);
-      expect(builtIn.has(name), `${name} is registered by a built-in module`).toBe(false);
+    }
+    // Open the tier gate first, as the orphan check does, so a built-in module registering one
+    // of these names is caught whatever edition the tests run as.
+    const saved = { ...TOOL_TIERS };
+    try {
+      for (const name of Object.keys(TOOL_TIERS)) TOOL_TIERS[name] = 'community';
+      const server = new EditmameiServer(BOTH_EDITORS_OPTS) as unknown as {
+        toolRegistry: { list(): Array<{ name: string }> };
+      };
+      const builtIn = new Set(server.toolRegistry.list().map((t) => t.name));
+      for (const name of MODULE_ONLY_GIMP_TOOLS) {
+        expect(builtIn.has(name), `${name} is registered by a built-in module`).toBe(false);
+      }
+    } finally {
+      for (const name of Object.keys(TOOL_TIERS)) delete TOOL_TIERS[name];
+      Object.assign(TOOL_TIERS, saved);
     }
   });
 
