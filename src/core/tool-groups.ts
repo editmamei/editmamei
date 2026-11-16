@@ -332,6 +332,10 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   gimp_match_layer: 'layers',
   gimp_retouch: 'layers',
   gimp_fill: 'layers',
+  gimp_look: 'templates',
+  gimp_preset_look: 'templates',
+  gimp_batch: 'automation',
+  gimp_develop_raw: 'filter',
 };
 
 /**

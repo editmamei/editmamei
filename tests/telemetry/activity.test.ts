@@ -28,6 +28,7 @@ describe('itemsFromResult', () => {
 
   it('reads files_processed from a batch result', () => {
     expect(itemsFromResult('ps_batch', { structuredContent: { files_processed: 40 } })).toBe(40);
+    expect(itemsFromResult('gimp_batch', { structuredContent: { files_processed: 12 } })).toBe(12);
   });
 
   it('omits a batch that processed nothing, and a batch preview', () => {
@@ -133,10 +134,10 @@ describe('READ_ONLY_TOOLS / KEPT_WORK_TOOLS', () => {
     }
   });
 
-  it('is exactly the original sixteen, six template/document additions, two orchestration wrappers, and seven gimp_* read-only twins (31 total)', () => {
+  it('is exactly the original sixteen, six template/document additions, five orchestration wrappers, and seven gimp_* read-only twins (34 total)', () => {
     // A size pin is deliberately brittle: it forces anyone adding an entry to
     // state why that tool does not count as an edit.
-    expect(READ_ONLY_TOOLS.size).toBe(31);
+    expect(READ_ONLY_TOOLS.size).toBe(34);
   });
 });
 
@@ -221,13 +222,16 @@ describe('classification mirror', () => {
   // automatically and the two stay in step without an edit.
   it('pins READ_ONLY_TOOLS membership (update the aggregation service when this fails)', () => {
     expect([...READ_ONLY_TOOLS].sort()).toEqual([
+      'gimp_batch',
       'gimp_compare',
       'gimp_get_histogram',
       'gimp_get_preview',
       'gimp_get_selection_preview',
       'gimp_inspect',
+      'gimp_look',
       'gimp_overview',
       'gimp_ping',
+      'gimp_preset_look',
       'ps_batch',
       'ps_compare_regions',
       'ps_detect',
