@@ -10,7 +10,8 @@
  * `resolveEditorRegistration` below.
  *
  * Photoshop is NOT probed here. The registration decision below registers
- * the Photoshop tool set unconditionally unless the pin says otherwise, so a
+ * the Photoshop tool set unless the pin says otherwise (or the OS is Linux,
+ * which Photoshop has no build for), so a
  * Photoshop presence check has nothing left to decide — a false negative
  * from a registry/filesystem probe could otherwise remove the Photoshop
  * tools for a machine that has it installed, for no benefit. Photoshop's own
@@ -119,12 +120,13 @@ export interface EditorRegistrationDecision {
  *
  * The rule is deliberately asymmetric between the two editors:
  *
- *   - **Photoshop tools register unless the pin explicitly says 'gimp'.**
+ *   - **Photoshop tools register unless the pin explicitly says 'gimp'** (or
+ *     the OS has no Photoshop build; see `photoshopCanRun`).
  *     There is no Photoshop presence check feeding this decision (see the
  *     file doc comment) — a detection false negative can never remove the
  *     Photoshop surface a user may be relying on. The downloaded Pro module
- *     follows the same rule (only skipped when pinned to 'gimp' — see
- *     `ModuleLifecycle`/`server.ts`).
+ *     loads either way; on a boot without Photoshop its `ps_*` tools are
+ *     dropped at registration (see `server.ts`'s `acceptTool`).
  *   - **GIMP tools register when a GIMP install was actually found, or when
  *     pinned to 'gimp'** (in which case they register even with nothing
  *     found — every `gimp_*` call then fails once with a clear
@@ -135,7 +137,13 @@ export interface EditorRegistrationDecision {
  *
  * Both tool sets can be present at once (both register whenever GIMP is
  * found and the pin isn't 'gimp'); GIMP registering never excludes
- * Photoshop — only an explicit 'gimp' pin does that.
+ * Photoshop — only an explicit 'gimp' pin does that, or `photoshopCanRun`
+ * below.
+ *
+ * `photoshopCanRun` is false on an OS Photoshop has no build for (Linux).
+ * There, 'auto' resolves exactly as the 'gimp' pin does, so the boot never
+ * registers a tool set that cannot work on the machine. An explicit
+ * 'photoshop' pin still wins: it is the user's own instruction.
  *
  * `gimpToolsAllowed` (computed from `TOOL_TIERS` + the running `EDITION` —
  * `anyGimpToolAllowedInEdition` above, or an injected value in tests) guards
@@ -151,12 +159,14 @@ export interface EditorRegistrationDecision {
 export function resolveEditorRegistration(
   detected: DetectEditorsResult,
   pin: EditorPin = 'auto',
-  gimpToolsAllowed = true
+  gimpToolsAllowed = true,
+  photoshopCanRun = true
 ): EditorRegistrationDecision {
-  if (pin === 'gimp') {
+  const effective: EditorPin = pin === 'auto' && !photoshopCanRun ? 'gimp' : pin;
+  if (effective === 'gimp') {
     if (!gimpToolsAllowed) {
       logger.warn(
-        "editor pinned to 'gimp', but no gimp_* tool ships in this build — falling back to " +
+        'GIMP-only boot, but no gimp_* tool ships in this build — falling back to ' +
           'registering ps_* instead of leaving the tool surface almost empty.'
       );
       return {
@@ -173,7 +183,7 @@ export function resolveEditorRegistration(
       gimpDetectionTimedOut: detected.timedOut,
     };
   }
-  if (pin === 'photoshop') {
+  if (effective === 'photoshop') {
     return {
       registerPhotoshop: true,
       registerGimp: false,
@@ -196,6 +206,8 @@ export interface ResolveBootEditorsOptions {
   env?: Record<string, string | undefined>;
   /** Injected for tests. Defaults to the real `detectEditors`. */
   detectEditorsFn?: typeof detectEditors;
+  /** Defaults to `process.platform`. Photoshop has no Linux build. */
+  platform?: typeof process.platform;
 }
 
 /**
@@ -231,6 +243,12 @@ export async function resolveBootEditors(
   const detected = gimpToolsAllowed
     ? await detectEditorsFn({ detectGimp: detectGimpOverride })
     : { gimp: null, timedOut: false };
-  const decision = resolveEditorRegistration(detected, effectiveSettings.editor, gimpToolsAllowed);
+  const photoshopCanRun = (opts.platform ?? process.platform) !== 'linux';
+  const decision = resolveEditorRegistration(
+    detected,
+    effectiveSettings.editor,
+    gimpToolsAllowed,
+    photoshopCanRun
+  );
   return gimpPathOverride ? { ...decision, gimpPathOverride } : decision;
 }

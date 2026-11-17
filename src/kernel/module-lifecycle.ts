@@ -163,6 +163,12 @@ export interface ModuleLifecycleDeps {
    * The same hazard `EditmameiServerOptions.licenseAdvisory` is gated against.
    */
   licenseStore?: LicenseStoreOptions;
+  /**
+   * Which tool names this boot registers. Omitted: all of them. The same filter the
+   * kernel applies to a module's own registrations, so a boot without the Photoshop
+   * surface gets no `ps_*` stub either.
+   */
+  acceptTool?: (name: string) => boolean;
 }
 
 /**
@@ -524,6 +530,7 @@ export class ModuleLifecycle {
 
     const names: string[] = [];
     for (const name of toolsInTier('pro')) {
+      if (this.deps.acceptTool && !this.deps.acceptTool(name)) continue;
       // Classify FIRST. `assertToolsClassified()` runs over the whole registry at
       // boot and throws on a name it cannot place, so registering a tier-'pro' name
       // that no longer has a group entry would turn a missing table row into a hard

@@ -2538,13 +2538,11 @@ describe('EditmameiServer.start() boot ordering', () => {
   });
 
   // Pinned the same way as the two tests above (source-level, not a live
-  // start() invocation) — these three post-connect background jobs are all
-  // Photoshop/Pro-only. Without the guard, `ensureEntitledModuleFresh` reads
-  // the real on-disk license store and, on a machine that happens to carry a
-  // Pro entitlement, does real network refresh work for a module that a
-  // 'gimp'-pinned boot (registerPhotoshop: false) never loaded and that
-  // contributes no tools to it at all.
-  it('the Photoshop warmup and the Pro module self-heal/refresh jobs are all gated on registerPhotoshop', () => {
+  // start() invocation). The Photoshop warmup runs only when the Photoshop
+  // surface registered. The module self-heal/refresh jobs run on every boot,
+  // because the module loads with or without Photoshop (a GIMP-only boot keeps
+  // its gimp_* tools), so they must sit outside that guard.
+  it('only the Photoshop warmup is gated on registerPhotoshop; the module jobs run on every boot', () => {
     const serverSrc = readFileSync(join(REPO_ROOT, 'src', 'core', 'server.ts'), 'utf8');
     const startMatch = serverSrc.match(/async start\(\)\s*\{[\s\S]*?\n  \}/);
     expect(startMatch, 'start() body not found in server.ts').toBeTruthy();
@@ -2556,12 +2554,11 @@ describe('EditmameiServer.start() boot ordering', () => {
     expect(guardMatch, 'registerPhotoshop guard block not found in start()').toBeTruthy();
     const guardedBody = guardMatch![1];
 
-    for (const call of [
-      'this.session.initialize(',
-      'this.reprovisionIfModuleSkipped(',
-      'this.ensureEntitledModuleFresh(',
-    ]) {
-      expect(guardedBody, `${call} not found inside the registerPhotoshop guard`).toContain(call);
+    expect(guardedBody).toContain('this.session.initialize(');
+    const afterGuard = startBody.slice(startBody.indexOf(guardMatch![0]) + guardMatch![0].length);
+    for (const call of ['this.reprovisionIfModuleSkipped(', 'this.ensureEntitledModuleFresh(']) {
+      expect(guardedBody, `${call} must not be gated on registerPhotoshop`).not.toContain(call);
+      expect(afterGuard, `${call} not found in start()`).toContain(call);
     }
   });
 });
