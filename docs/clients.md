@@ -87,7 +87,9 @@ Edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
 }
 ```
 
-Cursor's install-link format is documented at [cursor.com/docs/context/mcp/install-links](https://cursor.com/docs/context/mcp/install-links). This link adds Editmamei (paste it into a browser address bar):
+One click: [Install in Cursor](https://cursor.com/en/install-mcp?name=editmamei&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImVkaXRtYW1laSJdfQ==). Cursor opens and asks before it adds the server.
+
+The same link in Cursor's own scheme, for pasting into a browser address bar (the format is documented at [cursor.com/docs/context/mcp/install-links](https://cursor.com/docs/context/mcp/install-links)):
 
 ```
 cursor://anysphere.cursor-deeplink/mcp/install?name=editmamei&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImVkaXRtYW1laSJdfQ==
@@ -113,7 +115,9 @@ From a terminal:
 code --add-mcp "{\"name\":\"editmamei\",\"command\":\"npx\",\"args\":[\"-y\",\"editmamei\"]}"
 ```
 
-VS Code also accepts install links of the form `vscode:mcp/install?<URL-encoded JSON>`:
+One click: [Install in VS Code](https://vscode.dev/redirect/mcp/install?name=editmamei&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22editmamei%22%5D%7D). VS Code opens the server's details so you can review them before installing.
+
+The same link in VS Code's own scheme, `vscode:mcp/install?<URL-encoded JSON>`:
 
 ```
 vscode:mcp/install?%7B%22name%22%3A%22editmamei%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22editmamei%22%5D%7D

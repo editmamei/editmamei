@@ -92,7 +92,20 @@ Here's the waterfall edit in its session. Your AI app runs beside your editor, a
 
 This route doesn't need Node.js, because Claude Desktop ships its own runtime. The [install guide](docs/installation.md#one-click-install-claude-desktop) covers older versions of the app and updates.
 
-**Claude Code, Cursor, and other MCP apps**
+**Cursor and VS Code, one click**
+
+[![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=editmamei&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImVkaXRtYW1laSJdfQ==)
+[![Install in VS Code](https://img.shields.io/badge/Install%20in-VS%20Code-0098FF)](https://vscode.dev/redirect/mcp/install?name=editmamei&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22editmamei%22%5D%7D)
+
+Each button opens the app, which asks before it adds Editmamei. Then ask it: _"Is Photoshop connected?"_
+
+**Claude Code**
+
+```bash
+claude mcp add --scope user editmamei -- npx -y editmamei
+```
+
+**Other MCP apps**
 
 ```bash
 npm install -g editmamei
@@ -100,7 +113,7 @@ editmamei install   # registers with Claude Desktop, Cursor, Claude Code
 editmamei status    # shows which AI apps it's registered with
 ```
 
-Then restart your AI app and ask it: _"Is Photoshop connected?"_ For anything `editmamei install` doesn't detect, see [docs/clients.md](docs/clients.md).
+Then restart your AI app and ask it: _"Is Photoshop connected?"_ [docs/clients.md](docs/clients.md) has the config for Codex, Windsurf, Gemini CLI and the other apps `editmamei install` doesn't detect.
 
 **Requirements**
 
@@ -108,7 +121,7 @@ Then restart your AI app and ask it: _"Is Photoshop connected?"_ For anything `e
 | --- | --- |
 | **Editor** | Adobe Photoshop 2026 (v27.x) on Windows 10/11 or macOS 13+, or GIMP 3.2 on Windows, macOS, or Linux |
 | **AI app** | Any app that can run a local MCP server |
-| **Node.js** | 22+, for the npm route only |
+| **Node.js** | 22+, for every route except the Claude Desktop extension |
 
 **What to expect**
 

@@ -35,6 +35,8 @@ The telemetry switches and your Pro license key (if you have one) live in the ex
 
 ## Install from npm (Claude Code, Cursor, any MCP client)
 
+Cursor and VS Code can add Editmamei in one click: [Install in Cursor](https://cursor.com/en/install-mcp?name=editmamei&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImVkaXRtYW1laSJdfQ==) or [Install in VS Code](https://vscode.dev/redirect/mcp/install?name=editmamei&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22editmamei%22%5D%7D). Each app asks before it adds the server, then runs `npx -y editmamei`. Both need Node.js, as below.
+
 For clients that already have Node. Confirm your Node.js version:
 
 ```bash
