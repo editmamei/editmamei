@@ -1552,13 +1552,17 @@ describe('EditmameiServer.loadModules — a boot without the Photoshop surface',
   });
 
   it('registers no ps_* stub for a lapsed license', async () => {
+    const psStubs = toolsInTier('pro').filter((n) => n.startsWith('ps_'));
+    expect(psStubs.length).toBeGreaterThan(0);
+
+    // Control: the same lapsed home gives a Photoshop boot its stubs.
     buildLicenseOnlyHome({ ageMs: LAPSED_AGE_MS });
+    const withPhotoshop = new EditmameiServer() as unknown as ServerProbe;
+    await withPhotoshop.loadModules();
+    for (const name of psStubs) expect(names(withPhotoshop)).toContain(name);
+
     const server = new EditmameiServer({ editors: gimpOnly() }) as unknown as ServerProbe;
     await server.loadModules();
-
-    const registered = names(server);
-    for (const name of toolsInTier('pro').filter((n) => n.startsWith('ps_'))) {
-      expect(registered).not.toContain(name);
-    }
+    for (const name of psStubs) expect(names(server)).not.toContain(name);
   });
 });

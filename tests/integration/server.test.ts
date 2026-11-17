@@ -161,7 +161,7 @@ describe('EditmameiServer construction', () => {
       for (const n of GIMP_TOOL_NAMES) expect(names).not.toContain(n);
     });
 
-    it("pin 'gimp' registers gimp_* only, and Photoshop tools (ps_ping, the CE surface, and — implicitly — the Pro module) do NOT register, even when GIMP was also detected", () => {
+    it("pin 'gimp' registers gimp_* only, and Photoshop tools (ps_ping and the CE surface) do NOT register, even when GIMP was also detected", () => {
       const editors = resolveEditorRegistration(
         { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
         'gimp'
@@ -195,7 +195,7 @@ describe('EditmameiServer construction', () => {
       for (const n of GIMP_TOOL_NAMES) expect(names).not.toContain(n);
     });
 
-    proIt("pin 'gimp' skips loading the Pro module — loadModules() is a no-op", async () => {
+    proIt("pin 'gimp' loads the Pro module but registers none of its ps_* tools", async () => {
       const editors = resolveEditorRegistration(
         { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
         'gimp'
@@ -206,7 +206,7 @@ describe('EditmameiServer construction', () => {
       };
       await server.loadModules();
       const names = server.toolRegistry.list().map((t) => t.name);
-      expect(names).not.toContain('ps_apply_camera_raw'); // a Pro-only tool never appears
+      expect(names).not.toContain('ps_apply_camera_raw'); // a Pro ps_* tool never appears
     });
 
     it('every gimp_* tool is grouped and tiered (boot assertion passes — construction itself is the proof)', () => {
