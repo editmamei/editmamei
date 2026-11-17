@@ -54,6 +54,12 @@ export interface KernelDeps {
   detection: HostDetection;
   /** Handed to modules as `HostApi.gimp` — absent when this boot isn't registering the GIMP surface. */
   gimp?: GimpBackend;
+  /**
+   * Which tool names a module may register this boot. Omitted: all of them. A boot without
+   * the Photoshop surface still loads a downloaded module for its `gimp_*` tools and passes a
+   * filter that drops its `ps_*` ones, which could not run here.
+   */
+  acceptTool?: (name: string) => boolean;
   sessionId: string;
   logger: Logger;
 }
@@ -65,6 +71,7 @@ export class Kernel {
   private readonly resolveModuleSnippet?: ModuleSnippetResolver;
   private readonly detection: HostDetection;
   private readonly gimp?: GimpBackend;
+  private readonly acceptTool: (name: string) => boolean;
   private readonly sessionId: string;
   private readonly logger: Logger;
 
@@ -86,6 +93,7 @@ export class Kernel {
     this.resolveModuleSnippet = deps.resolveModuleSnippet;
     this.detection = deps.detection;
     this.gimp = deps.gimp;
+    this.acceptTool = deps.acceptTool ?? (() => true);
     this.sessionId = deps.sessionId;
     this.logger = deps.logger;
   }
@@ -111,7 +119,8 @@ export class Kernel {
   private hostApiFor(manifest: ModuleManifest): HostApi {
     return {
       abi: KERNEL_ABI,
-      registerTools: (defs) => this.registry.registerAll(defs),
+      registerTools: (defs) =>
+        this.registry.registerAll(defs.filter((def) => this.acceptTool(def.tool.name))),
       invokeTool: (name, args) => this.invokeTool(name, args),
       hasTool: (name) => this.registry.get(name) !== undefined,
       connection: this.connection,

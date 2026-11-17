@@ -161,7 +161,7 @@ describe('EditmameiServer construction', () => {
       for (const n of GIMP_TOOL_NAMES) expect(names).not.toContain(n);
     });
 
-    it("pin 'gimp' registers gimp_* only, and Photoshop tools (ps_ping, the CE surface, and — implicitly — the Pro module) do NOT register, even when GIMP was also detected", () => {
+    it("pin 'gimp' registers gimp_* only, and Photoshop tools (ps_ping and the CE surface) do NOT register, even when GIMP was also detected", () => {
       const editors = resolveEditorRegistration(
         { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
         'gimp'
@@ -195,7 +195,7 @@ describe('EditmameiServer construction', () => {
       for (const n of GIMP_TOOL_NAMES) expect(names).not.toContain(n);
     });
 
-    proIt("pin 'gimp' skips loading the Pro module — loadModules() is a no-op", async () => {
+    proIt("pin 'gimp' loads the Pro module but registers none of its ps_* tools", async () => {
       const editors = resolveEditorRegistration(
         { gimp: SAMPLE_GIMP_INSTALL, timedOut: false },
         'gimp'
@@ -206,7 +206,7 @@ describe('EditmameiServer construction', () => {
       };
       await server.loadModules();
       const names = server.toolRegistry.list().map((t) => t.name);
-      expect(names).not.toContain('ps_apply_camera_raw'); // a Pro-only tool never appears
+      expect(names).not.toContain('ps_apply_camera_raw'); // a Pro ps_* tool never appears
     });
 
     it('every gimp_* tool is grouped and tiered (boot assertion passes — construction itself is the proof)', () => {
@@ -2538,13 +2538,11 @@ describe('EditmameiServer.start() boot ordering', () => {
   });
 
   // Pinned the same way as the two tests above (source-level, not a live
-  // start() invocation) — these three post-connect background jobs are all
-  // Photoshop/Pro-only. Without the guard, `ensureEntitledModuleFresh` reads
-  // the real on-disk license store and, on a machine that happens to carry a
-  // Pro entitlement, does real network refresh work for a module that a
-  // 'gimp'-pinned boot (registerPhotoshop: false) never loaded and that
-  // contributes no tools to it at all.
-  it('the Photoshop warmup and the Pro module self-heal/refresh jobs are all gated on registerPhotoshop', () => {
+  // start() invocation). The Photoshop warmup runs only when the Photoshop
+  // surface registered. The module self-heal/refresh jobs run on every boot,
+  // because the module loads with or without Photoshop (a GIMP-only boot keeps
+  // its gimp_* tools), so they must sit outside that guard.
+  it('only the Photoshop warmup is gated on registerPhotoshop; the module jobs run on every boot', () => {
     const serverSrc = readFileSync(join(REPO_ROOT, 'src', 'core', 'server.ts'), 'utf8');
     const startMatch = serverSrc.match(/async start\(\)\s*\{[\s\S]*?\n  \}/);
     expect(startMatch, 'start() body not found in server.ts').toBeTruthy();
@@ -2556,12 +2554,11 @@ describe('EditmameiServer.start() boot ordering', () => {
     expect(guardMatch, 'registerPhotoshop guard block not found in start()').toBeTruthy();
     const guardedBody = guardMatch![1];
 
-    for (const call of [
-      'this.session.initialize(',
-      'this.reprovisionIfModuleSkipped(',
-      'this.ensureEntitledModuleFresh(',
-    ]) {
-      expect(guardedBody, `${call} not found inside the registerPhotoshop guard`).toContain(call);
+    expect(guardedBody).toContain('this.session.initialize(');
+    const afterGuard = startBody.slice(startBody.indexOf(guardMatch![0]) + guardMatch![0].length);
+    for (const call of ['this.reprovisionIfModuleSkipped(', 'this.ensureEntitledModuleFresh(']) {
+      expect(guardedBody, `${call} must not be gated on registerPhotoshop`).not.toContain(call);
+      expect(afterGuard, `${call} not found in start()`).toContain(call);
     }
   });
 });

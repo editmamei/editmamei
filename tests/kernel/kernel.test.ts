@@ -404,3 +404,49 @@ describe('Kernel.invokeTool (broker)', () => {
     }
   });
 });
+
+describe('Kernel acceptTool', () => {
+  it("drops the names the filter refuses from a module's registration, and hasTool agrees", async () => {
+    const registry = new ToolRegistry();
+    const kernel = new Kernel({
+      registry,
+      connection: makeConnection().asConnection(),
+      snippet: makeSnippetClient(),
+      detection: makeFakeDetection(),
+      acceptTool: (name) => !name.startsWith('ps_'),
+      sessionId: 'test-session',
+      logger: new Logger('test-kernel'),
+    });
+    let seen: HostApi | undefined;
+    const mod: EditmameiModule = {
+      manifest: { id: 'pro', name: 'Pro', abi: KERNEL_ABI },
+      register(host) {
+        seen = host;
+        host.registerTools([
+          textTool('ps_only', async () => okResult('ps')),
+          textTool('gimp_only', async () => okResult('gimp')),
+        ]);
+      },
+    };
+    await kernel.loadDownloaded(async () => ({ default: mod }));
+    expect(registry.list().map((t) => t.name)).toEqual(['gimp_only']);
+    expect(seen?.hasTool?.('ps_only')).toBe(false);
+    expect(seen?.hasTool?.('gimp_only')).toBe(true);
+  });
+
+  it('registers everything when no filter is given', () => {
+    const { kernel, registry } = makeKernel();
+    kernel.loadBuiltins([
+      {
+        manifest: { id: 'm', name: 'M', abi: KERNEL_ABI },
+        register(host) {
+          host.registerTools([
+            textTool('ps_a', async () => okResult('a')),
+            textTool('gimp_b', async () => okResult('b')),
+          ]);
+        },
+      },
+    ]);
+    expect(registry.count()).toBe(2);
+  });
+});

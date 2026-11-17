@@ -186,6 +186,29 @@ describe('resolveEditorRegistration', () => {
     }
   });
 
+  it("photoshopCanRun: false turns 'auto' into the 'gimp' pin, including its timeout flag and its fallback", () => {
+    expect(resolveEditorRegistration(NOT_FOUND, 'auto', true, false)).toEqual(
+      resolveEditorRegistration(NOT_FOUND, 'gimp')
+    );
+    expect(resolveEditorRegistration(TIMED_OUT, 'auto', true, false)).toEqual(
+      resolveEditorRegistration(TIMED_OUT, 'gimp')
+    );
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      expect(resolveEditorRegistration(FOUND, 'auto', false, false).registerPhotoshop).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('photoshopCanRun: false never overrides an explicit pin', () => {
+    for (const pin of ['photoshop', 'gimp'] as const) {
+      expect(resolveEditorRegistration(FOUND, pin, true, false)).toEqual(
+        resolveEditorRegistration(FOUND, pin)
+      );
+    }
+  });
+
   it("defaults the pin to 'auto' when omitted", () => {
     expect(resolveEditorRegistration(FOUND)).toEqual(resolveEditorRegistration(FOUND, 'auto'));
   });
@@ -228,6 +251,7 @@ describe('resolveBootEditors', () => {
       settings: makeSettings({ editor: 'auto' }),
       env: {},
       detectEditorsFn,
+      platform: 'win32',
     });
     expect(detectEditorsFn).toHaveBeenCalledOnce();
     expect(result).toEqual({
@@ -310,6 +334,28 @@ describe('resolveBootEditors', () => {
         env: expect.objectContaining({ EDITMAMEI_GIMP_PATH: 'C:/from-settings/gimp-console.exe' }),
       })
     );
+  });
+
+  it("on Linux, 'auto' registers gimp_* only; macOS and Windows keep both", async () => {
+    const detectEditorsFn = vi.fn(async () => ({ gimp: SAMPLE_INSTALL, timedOut: false }));
+    const boot = (platform: typeof process.platform, editor: Settings['editor'] = 'auto') =>
+      resolveBootEditors({
+        settings: makeSettings({ editor }),
+        env: {},
+        detectEditorsFn,
+        platform,
+      });
+    expect(await boot('linux')).toEqual({
+      registerPhotoshop: false,
+      registerGimp: true,
+      gimpInstall: SAMPLE_INSTALL,
+      gimpDetectionTimedOut: false,
+    });
+    for (const platform of ['win32', 'darwin'] as const) {
+      expect((await boot(platform)).registerPhotoshop).toBe(true);
+    }
+    // An explicit pin is the user's own instruction and still wins on Linux.
+    expect((await boot('linux', 'photoshop')).registerPhotoshop).toBe(true);
   });
 
   it("threads gimpDetectionTimedOut through to the final decision when pinned to 'gimp'", async () => {

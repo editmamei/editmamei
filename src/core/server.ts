@@ -835,10 +835,16 @@ export class EditmameiServer {
     // resolveProModule() must run BEFORE the Kernel is constructed — its
     // resolveModuleSnippet closure below needs the resolved location's binDir —
     // so the Kernel is threaded into the lifecycle afterwards via setKernel().
+    // A boot without the Photoshop surface (pinned to 'gimp', or Linux) still loads
+    // the Pro module for its gimp_* tools; its ps_* tools, and their lapsed-license
+    // stubs, are dropped here because nothing on this machine could run them.
+    const acceptTool = (name: string): boolean =>
+      this.editorOpts.registerPhotoshop || !name.startsWith('ps_');
     this.moduleLifecycle = new ModuleLifecycle({
       toolRegistry: this.toolRegistry,
       logger: this.logger,
       licenseStore: this.licenseStoreOptions,
+      acceptTool,
       assertToolsClassified: () => this.assertToolsClassified(),
       classifyTool: (name) => this.classifyTool(name),
       onModuleUpdate: (outcome) => {
@@ -860,6 +866,7 @@ export class EditmameiServer {
       // matrix decided to register the GIMP surface (`gimpModule` is the
       // only module that reads it).
       gimp: this.gimpBackend,
+      acceptTool,
       // A module that declares its own go-core snippets (the Pro module) is
       // built by its OWN binary; the kernel composes that with the host binary
       // for the community snippets its handlers also build. The Pro binary
@@ -916,12 +923,11 @@ export class EditmameiServer {
    * there for the ABI gate / rollback nets and the filesystem-only boot-ordering
    * contract this must keep (awaited in start() BEFORE the transport connects).
    *
-   * No-op when `editorOpts.registerPhotoshop` is false — the Pro module only
-   * ever contributes `ps_*` tools, and `registerPhotoshop` is false in exactly
-   * one case (pinned to 'gimp'), where there is nothing for it to add.
+   * Runs on every boot, with or without the Photoshop surface: the kernel's
+   * `acceptTool` filter (see registerTools) keeps a module's `ps_*` tools out of
+   * a boot that has no Photoshop.
    */
   async loadModules(): Promise<void> {
-    if (!this.editorOpts.registerPhotoshop) return;
     return this.moduleLifecycle.loadModules();
   }
 
@@ -1780,35 +1786,30 @@ export class EditmameiServer {
     // extension server" (diagnosed 2026-06-27 from the client MCP logs).
     this.serve(new StdioServerTransport());
 
-    // Every job in this block is Photoshop/Pro-only — skipped entirely when
-    // `registerPhotoshop` is false (pinned to 'gimp'). Without this gate,
-    // `ensureEntitledModuleFresh` reads the real on-disk license store
-    // (`isProEntitled`) and, on a machine that happens to carry a Pro
-    // entitlement, goes on to do real network refresh work for a module that
-    // was never loaded and contributes no tools to this boot at all.
+    // Warm the Photoshop connection in the background — fire-and-forget, and only
+    // when this boot registered the Photoshop surface. Every tool call (and ps_ping)
+    // establishes the connection lazily on first use, so nothing here is required for
+    // correctness; this just pays the first-connect cost ahead of the first real tool
+    // call when PS is already up. initialize() never launches Photoshop: when it isn't
+    // running, the warmup stops after detection. It also swallows its own errors; the
+    // trailing .catch is a backstop so nothing here can surface as an unhandledRejection.
     if (this.editorOpts.registerPhotoshop) {
-      // Warm the Photoshop connection in the background — fire-and-forget. Every tool
-      // call (and ps_ping) establishes the connection lazily on first use, so
-      // nothing here is required for correctness; this just pays the first-connect cost
-      // ahead of the first real tool call when PS is already up. initialize() never
-      // launches Photoshop: when it isn't running, the warmup stops after detection.
-      // It also swallows its own errors; the trailing .catch is a backstop so nothing
-      // here can surface as an unhandledRejection.
       void this.session.initialize().catch(() => undefined);
-
-      // Background self-heal — the FIRST network of boot, deliberately AFTER connect
-      // (v0.20.0 invariant: loadModules stays filesystem/crypto-only; nothing reaches
-      // the network before the handshake). No-op unless loadModules flagged a skipped
-      // module; fully swallowed, so an offline/lapsed/down delivery just stays Community.
-      void this.reprovisionIfModuleSkipped();
-
-      // Background auto-update — the complement to the self-heal on the HEALTHY path:
-      // when the on-disk Pro module loaded fine but a NEWER version is published, pull
-      // it (closes the .mcpb auto-update gap).
-      // Mutually exclusive with the self-heal above (that owns moduleSkipReason !== null),
-      // so exactly one runs per boot. Same post-connect, fire-and-forget, swallowed shape.
-      void this.ensureEntitledModuleFresh();
     }
+
+    // The module jobs run on every boot: the module loads with or without Photoshop.
+    // Background self-heal — the FIRST network of boot, deliberately AFTER connect
+    // (v0.20.0 invariant: loadModules stays filesystem/crypto-only; nothing reaches
+    // the network before the handshake). No-op unless loadModules flagged a skipped
+    // module; fully swallowed, so an offline/lapsed/down delivery just stays Community.
+    void this.reprovisionIfModuleSkipped();
+
+    // Background auto-update — the complement to the self-heal on the HEALTHY path:
+    // when the on-disk Pro module loaded fine but a NEWER version is published, pull
+    // it (closes the .mcpb auto-update gap).
+    // Mutually exclusive with the self-heal above (that owns moduleSkipReason !== null),
+    // so exactly one runs per boot. Same post-connect, fire-and-forget, swallowed shape.
+    void this.ensureEntitledModuleFresh();
 
     // Start the periodic telemetry flush (the final batch + session summary go out when the
     // client disconnects: see onClientGone).

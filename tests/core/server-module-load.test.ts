@@ -66,6 +66,7 @@ vi.mock('@editmamei/delivery/signing.ts', async (importOriginal) => {
 });
 
 import { EditmameiServer, classifyModuleOutcome } from '@editmamei/core/server.ts';
+import { resolveEditorRegistration } from '@editmamei/backends/detect-editors.ts';
 
 /**
  * Fixture module version for every test EXCEPT the forward-compat cases below.
@@ -1518,5 +1519,50 @@ describe('Pro failure visibility — the wiring between the pieces', () => {
     } finally {
       stderr.mockRestore();
     }
+  });
+});
+
+/**
+ * A boot without the Photoshop surface (pinned to 'gimp', or Linux) still loads the
+ * downloaded module for its gimp_* tools. Its ps_* tools, and their lapsed-license
+ * stubs, are dropped: nothing on that machine could run them.
+ */
+describe('EditmameiServer.loadModules — a boot without the Photoshop surface', () => {
+  const gimpOnly = () => resolveEditorRegistration({ gimp: null, timedOut: false }, 'gimp');
+
+  it('loads the module, keeps its gimp_* tools and drops its ps_* ones', async () => {
+    buildHome({ names: ['ps_list_actions', 'gimp_look'], abi: 1 });
+    const server = new EditmameiServer({ editors: gimpOnly() }) as unknown as ServerProbe;
+    await server.loadModules();
+
+    expect(names(server)).toContain('gimp_look');
+    expect(names(server)).not.toContain('ps_list_actions');
+    expect(names(server)).not.toContain('ps_ping'); // no Photoshop surface at all
+    expect(server.moduleSkipReason).toBeNull();
+    expect(server.computeModuleStatus()?.outcome).toBe('loaded');
+  });
+
+  it('keeps both when Photoshop registers (control)', async () => {
+    buildHome({ names: ['ps_list_actions', 'gimp_look'], abi: 1 });
+    const server = new EditmameiServer() as unknown as ServerProbe;
+    await server.loadModules();
+
+    expect(names(server)).toContain('gimp_look');
+    expect(names(server)).toContain('ps_list_actions');
+  });
+
+  it('registers no ps_* stub for a lapsed license', async () => {
+    const psStubs = toolsInTier('pro').filter((n) => n.startsWith('ps_'));
+    expect(psStubs.length).toBeGreaterThan(0);
+
+    // Control: the same lapsed home gives a Photoshop boot its stubs.
+    buildLicenseOnlyHome({ ageMs: LAPSED_AGE_MS });
+    const withPhotoshop = new EditmameiServer() as unknown as ServerProbe;
+    await withPhotoshop.loadModules();
+    for (const name of psStubs) expect(names(withPhotoshop)).toContain(name);
+
+    const server = new EditmameiServer({ editors: gimpOnly() }) as unknown as ServerProbe;
+    await server.loadModules();
+    for (const name of psStubs) expect(names(server)).not.toContain(name);
   });
 });
