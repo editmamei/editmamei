@@ -12,6 +12,7 @@ import { Logger } from '../utils/logger.js';
 import { uninstallClaudeDesktop } from './clients/claude-desktop.js';
 import { uninstallCursor } from './clients/cursor.js';
 import { uninstallClaudeCode } from './clients/claude-code.js';
+import { uninstallCodex } from './clients/codex.js';
 import type { ClientOptions, InstallClientOptions, UninstallResult } from './clients/types.js';
 
 const logger = new Logger('Uninstall');
@@ -20,9 +21,11 @@ export interface UninstallOptions {
   stdout?: (s: string) => void;
   claudeDesktopConfigPath?: string;
   cursorConfigPath?: string;
+  codexConfigPath?: string;
   skipClaudeDesktop?: boolean;
   skipCursor?: boolean;
   skipClaudeCode?: boolean;
+  skipCodex?: boolean;
 }
 
 export async function runUninstall(opts: UninstallOptions = {}): Promise<void> {
@@ -42,6 +45,10 @@ export async function runUninstall(opts: UninstallOptions = {}): Promise<void> {
 
   const ccOpts: ClientOptions = { out };
   if (!opts.skipClaudeCode) results.push(await uninstallClaudeCode(ccOpts));
+
+  const codexOpts: InstallClientOptions = { out };
+  if (opts.codexConfigPath !== undefined) codexOpts.configPath = opts.codexConfigPath;
+  if (!opts.skipCodex) results.push(await uninstallCodex(codexOpts));
 
   let removed = 0;
   let failed = 0;

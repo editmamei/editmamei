@@ -23,6 +23,16 @@ export function getCursorMcpConfigPath(): string {
   return join(homedir(), '.cursor', 'mcp.json');
 }
 
+/**
+ * The ChatGPT desktop app, the Codex CLI and the Codex IDE extension share
+ * `config.toml` in the Codex home folder: `$CODEX_HOME` when set, else
+ * `~/.codex`, on every platform.
+ */
+export function getCodexConfigPath(env: Record<string, string | undefined> = process.env): string {
+  const home = env.CODEX_HOME?.trim();
+  return join(home ? home : join(homedir(), '.codex'), 'config.toml');
+}
+
 export function getClaudeDesktopConfigPath(
   platform: typeof process.platform = process.platform
 ): string {

@@ -8,7 +8,7 @@ The pattern throughout is the same: **you describe what you want in your own wor
 
 ## Step 1: ping Photoshop
 
-With Photoshop open and the MCP client you want to use restarted (any of Claude Desktop, Cursor, or Claude Code; `editmamei install` writes to all three in one pass), start a new conversation and ask:
+With Photoshop open and the MCP client you want to use restarted (any of Claude Desktop, Claude Code, Cursor, or the ChatGPT desktop app or Codex; `npx -y editmamei install` writes to all of them in one pass), start a new conversation and ask:
 
 > "Is Photoshop connected? What version is running?"
 

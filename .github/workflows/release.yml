@@ -107,6 +107,11 @@ jobs:
       - name: Build .mcpb bundle (one-click)
         run: npm run build:mcpb
 
+      # @editmamei/photoshop-mcp and @editmamei/gimp-mcp: launchers that pin
+      # one editor and depend on exactly this release of editmamei.
+      - name: Build editor-named wrapper packages
+        run: npm run build:wrappers
+
       # Uploaded on every run, including dry ones, so the bundle can be installed
       # and exercised before anything publishes.
       #
@@ -138,6 +143,13 @@ jobs:
         if: inputs.dry_run == 'true'
         working-directory: packages/ce
         run: npm pack --dry-run
+
+      - name: Pack wrapper packages (dry-run)
+        if: inputs.dry_run == 'true'
+        run: |
+          for dir in packages/wrappers/*/; do
+            (cd "$dir" && npm pack --dry-run)
+          done
 
       - name: Publish to npm (OIDC trusted publishing, with provenance)
         if: inputs.dry_run == 'false'
@@ -183,3 +195,30 @@ jobs:
               --title "$TAG" \
               --notes "Editmamei $TAG distribution artifacts. See CHANGELOG.md for what changed."
           fi
+
+      # Last, so a failed wrapper publish can't hold back the main package or the
+      # Release (a wrapper that fails to BUILD stops the gate above, like any other
+      # build failure). Republished on every release: npx re-checks only a
+      # wrapper's own version, so a wrapper left behind keeps its users on the old
+      # server. One wrapper failing doesn't stop the other; the step fails at the end.
+      #
+      # Trusted publishing can only publish to a package that already exists and
+      # names this workflow as its publisher. A wrapper not yet on npm is skipped
+      # with a warning; its first version is published by hand.
+      - name: Publish wrapper packages (OIDC trusted publishing, with provenance)
+        if: inputs.dry_run == 'false'
+        run: |
+          FAILED=0
+          for dir in packages/wrappers/*/; do
+            NAME=$(node -p "require('./$dir/package.json').name")
+            VERSION=$(node -p "require('./$dir/package.json').version")
+            if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+              echo "$NAME@$VERSION already on npm — skipping."
+            elif ! npm view "$NAME" name >/dev/null 2>&1; then
+              echo "::warning::$NAME is not on npm yet. Publish its first version by hand, then add this workflow as its trusted publisher."
+            elif ! (cd "$dir" && npm publish --provenance --access public); then
+              echo "::error::publishing $NAME@$VERSION failed. Check that this workflow is its trusted publisher on npm, then re-run."
+              FAILED=1
+            fi
+          done
+          exit "$FAILED"

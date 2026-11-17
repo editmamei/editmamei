@@ -8,18 +8,25 @@ The launch command is the same everywhere:
 npx -y editmamei
 ```
 
-It needs Node.js 22 or later (see [installation.md](installation.md)), except for the Claude Desktop extension, which bundles its own runtime. Browser-only clients (claude.ai and ChatGPT on the web) accept only remote connectors, so they can't launch a local server.
+It needs Node.js 22 or later (see [installation.md](installation.md)), except for the Claude Desktop extension, which bundles its own runtime. Browser-only clients (claude.ai and ChatGPT on the web) accept only remote connectors, so they can't launch a local server; [Editmamei Connect](https://editmamei.com/connect) is the hosted option for those.
+
+One command sets up every supported app it finds on your computer (Claude Desktop, Claude Code, Cursor, and the ChatGPT desktop app and Codex):
+
+```
+npx -y editmamei install
+```
 
 ## Status
 
 | Client | Status | Config |
 |---|---|---|
-| [Claude Desktop](#claude-desktop) | Tested | `.mcpb` extension or JSON |
-| [Claude Code](#claude-code) | Tested | CLI command |
-| [Cursor](#cursor) | The tool cap may apply (see the tool limit note); set `EDITMAMEI_EDITOR=photoshop` to reduce the tool count | JSON or deeplink |
+| [Claude Desktop](#claude-desktop) | Tested | `.mcpb` extension, `editmamei install` or JSON |
+| [Claude Code](#claude-code) | Tested | `editmamei install` or CLI command |
+| [ChatGPT desktop app](#chatgpt-desktop-app-and-codex) | Tested 2026-11-13, Windows, Work mode | `editmamei install` or TOML |
+| [Cursor](#cursor) | Tested 2026-11-13, Cursor 3.30.8 on Windows | `editmamei install`, install link or JSON |
 | [VS Code (Copilot agent mode)](#vs-code-copilot-agent-mode) | Not yet tested | JSON, CLI or install link |
 | [Visual Studio](#visual-studio) | Not yet tested | JSON |
-| [Codex](#codex) | Not yet tested | TOML or CLI command |
+| [Codex](#chatgpt-desktop-app-and-codex) | Same configuration as the ChatGPT desktop app; the Codex CLI itself not yet tested | `editmamei install`, TOML or CLI command |
 | [Windsurf / Devin Desktop](#windsurf--devin-desktop) | Not yet tested | JSON |
 | [Warp](#warp) | Not yet tested | JSON |
 | [Zed](#zed) | Not yet tested | JSON |
@@ -40,15 +47,15 @@ Not supported: LM Studio (the model does not receive images that tools return, s
 
 **Tool count.** Editmamei registers up to 62 tools for Photoshop in Community, 83 with Pro. When GIMP 3.2 is detected, its tools register too, which brings the totals to 91 and 112. Some clients cap the number of tools:
 
-- Cursor: commonly reported as 40. This figure is not in Cursor's documentation.
+- Cursor: commonly reported as 40. This figure is not in Cursor's documentation, and in our 2026-11-13 test Cursor 3.30.8 listed every tool of a Photoshop-only setup without a problem.
 - Windsurf / Devin Desktop: 100 ([docs](https://docs.devin.ai/desktop/cascade/mcp)).
 - VS Code: 128 per request, shared with built-in tools.
 
 If your client truncates the list, set `EDITMAMEI_EDITOR=photoshop` in the server's `env` block to register only the Photoshop tools (or `gimp` for only the GIMP tools). See [gimp.md](gimp.md#pinning-the-editor). Most clients also let you switch off individual tools.
 
-**Timeouts.** Some operations take longer than a minute, such as AI selection and large scene reads. Codex defaults to 300 seconds per tool call ([openai/codex#28234](https://github.com/openai/codex/pull/28234)) and Cline's default is reported as 60 seconds. Raise those limits where the client section below says so.
+**Timeouts.** Some operations take longer than a minute, such as AI selection and large scene reads. The ChatGPT desktop app and Codex document a 60-second default per tool call ([docs](https://learn.chatgpt.com/docs/extend/mcp)), and Cline's default is reported as 60 seconds. Raise those limits where the client section below says so.
 
-**Images and structured results.** Editmamei returns preview images alongside structured results. Two clients have open upstream issues around structured results. VS Code still passes tool-result images to the model, but replaces the text content when structured content is present ([microsoft/vscode#290063](https://github.com/microsoft/vscode/issues/290063)). Codex can drop the rest of a tool result when a structured result is present ([openai/codex#10334](https://github.com/openai/codex/issues/10334)), so the model may not see previews there. Until this is tested, treat Codex as possibly limited.
+**Images and structured results.** Editmamei returns preview images alongside structured results. Two clients have open upstream issues around structured results. VS Code still passes tool-result images to the model, but replaces the text content when structured content is present ([microsoft/vscode#290063](https://github.com/microsoft/vscode/issues/290063)). Codex can drop the rest of a tool result when a structured result is present ([openai/codex#10334](https://github.com/openai/codex/issues/10334)), so the model may not see previews there. The ChatGPT desktop app shares that engine. In our 2026-11-13 test it finished full edits end to end, but we did not check whether the model saw every preview.
 
 ## Claude Desktop
 
@@ -77,7 +84,7 @@ On Windows, if the server fails to start, use `-- cmd /c npx -y editmamei` ([Cla
 
 ## Cursor
 
-Edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
+`npx -y editmamei install` adds Editmamei to `~/.cursor/mcp.json`. To do it by hand, edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
 
 ```json
 {
@@ -139,18 +146,33 @@ Windows only. Visual Studio 2026, or 2022 version 17.14 or later. Create `%USERP
 
 Tools are disabled by default. Open the tool picker in Copilot agent mode and enable the Editmamei tools. Docs: [learn.microsoft.com/visualstudio/ide/mcp-servers](https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers). It shares VS Code's Copilot engine, so the VS Code limits above may apply.
 
-## Codex
+## ChatGPT desktop app and Codex
 
-Shared by the CLI, IDE extension and desktop app: `~/.codex/config.toml`.
+The ChatGPT desktop app, the Codex CLI and the Codex IDE extension share one configuration file, so one entry adds Editmamei to all three. With Node.js 22 or later installed, run:
+
+```bash
+npx -y editmamei install
+```
+
+It writes the entry below into `config.toml` in the Codex home folder (`~/.codex`, or `$CODEX_HOME` when set), changing nothing else in the file. The first time it changes the file, it keeps a copy of the original as `config.toml.bak`. If the folder doesn't exist yet, open the ChatGPT desktop app once and run the command again. To add it by hand instead:
 
 ```toml
 [mcp_servers.editmamei]
 command = "npx"
 args = ["-y", "editmamei"]
+startup_timeout_sec = 60
 tool_timeout_sec = 600
 ```
 
-Or `codex mcp add editmamei -- npx -y editmamei`, then add the `tool_timeout_sec` line by hand. The default is 300 seconds ([openai/codex#28234](https://github.com/openai/codex/pull/28234)). Known limit: issue #10334 above.
+The two timeouts matter. The documented defaults are 10 seconds to start, which the first `npx` download can exceed, and 60 seconds per tool call, which AI selection and large scene reads can exceed. `codex mcp add editmamei -- npx -y editmamei` also works, but then add both lines by hand. Docs: [learn.chatgpt.com/docs/extend/mcp](https://learn.chatgpt.com/docs/extend/mcp).
+
+In the ChatGPT desktop app:
+
+- Quit it fully after the change. It keeps running in the system tray when you close the window, so close it from the tray icon, then open it again.
+- Editmamei's tools are in **Work** mode. Chat mode doesn't run local servers.
+- The app asks before each tool call that changes your document. Choose **Always allow** for a tool to stop the prompts for it; the app records that choice in the same file.
+
+Known limit: issue #10334 above.
 
 ## Windsurf / Devin Desktop
 
