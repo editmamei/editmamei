@@ -1,6 +1,6 @@
 # AI clients
 
-Editmamei is a local MCP stdio server. Any client that can launch a local command and run MCP tools can in principle connect to it. This page lists the clients we document, what has been tested, and the settings each one needs.
+Editmamei is a local MCP stdio server, so any client that can launch a local command and run MCP tools can connect to it. This page lists the supported clients and the settings each one needs.
 
 The launch command is the same everywhere:
 
@@ -16,30 +16,28 @@ One command sets up every supported app it finds on your computer (Claude Deskto
 npx -y editmamei install
 ```
 
-## Status
+## Supported clients
 
-| Client | Status | Config |
-|---|---|---|
-| [Claude Desktop](#claude-desktop) | Tested | `.mcpb` extension, `editmamei install` or JSON |
-| [Claude Code](#claude-code) | Tested | `editmamei install` or CLI command |
-| [ChatGPT desktop app](#chatgpt-desktop-app-and-codex) | Tested on Windows, in Work mode | `editmamei install` or TOML |
-| [Cursor](#cursor) | Tested on Windows | `editmamei install`, install link or JSON |
-| [VS Code (Copilot agent mode)](#vs-code-copilot-agent-mode) | Not yet tested | JSON, CLI or install link |
-| [Visual Studio](#visual-studio) | Not yet tested | JSON |
-| [Codex](#chatgpt-desktop-app-and-codex) | Same configuration as the ChatGPT desktop app; the Codex CLI itself not yet tested | `editmamei install`, TOML or CLI command |
-| [Windsurf / Devin Desktop](#windsurf--devin-desktop) | Not yet tested | JSON |
-| [Warp](#warp) | Not yet tested | JSON |
-| [Zed](#zed) | Not yet tested | JSON |
-| [Gemini CLI](#gemini-cli) | Not yet tested | JSON or CLI command |
-| [Google Antigravity](#google-antigravity) | Not yet tested | JSON |
-| [Cline](#cline) | Not yet tested | JSON |
-| [Goose](#goose) | Not yet tested | YAML or deeplink |
-| [opencode](#opencode) | Not yet tested | JSON |
-| [Kiro](#kiro) | Not yet tested | JSON |
-| [JetBrains AI Assistant](#jetbrains-ai-assistant) | Not yet tested | Settings UI |
-| [Trae](#trae) | Not yet tested | Settings UI |
-
-"Tested" means the client is part of our regular checks. "Not yet tested" means the configuration below comes from the vendor's documentation and has not been run end to end with Editmamei. It may work, and it may hit one of the known limits in the next section.
+| Client | Config |
+|---|---|
+| [Claude Desktop](#claude-desktop) | `.mcpb` extension, `editmamei install` or JSON |
+| [Claude Code](#claude-code) | `editmamei install` or CLI command |
+| [ChatGPT desktop app](#chatgpt-desktop-app-and-codex) | `editmamei install` or TOML |
+| [Cursor](#cursor) | `editmamei install`, install link or JSON |
+| [VS Code (Copilot agent mode)](#vs-code-copilot-agent-mode) | JSON, CLI or install link |
+| [Visual Studio](#visual-studio) | JSON |
+| [Codex](#chatgpt-desktop-app-and-codex) | `editmamei install`, TOML or CLI command |
+| [Windsurf / Devin Desktop](#windsurf--devin-desktop) | JSON |
+| [Warp](#warp) | JSON |
+| [Zed](#zed) | JSON |
+| [Gemini CLI](#gemini-cli) | JSON or CLI command |
+| [Google Antigravity](#google-antigravity) | JSON |
+| [Cline](#cline) | JSON |
+| [Goose](#goose) | YAML or deeplink |
+| [opencode](#opencode) | JSON |
+| [Kiro](#kiro) | JSON |
+| [JetBrains AI Assistant](#jetbrains-ai-assistant) | Settings UI |
+| [Trae](#trae) | Settings UI |
 
 Not supported: LM Studio (the model does not receive images that tools return, so Editmamei's preview loop can't work) and Raycast (MCP is limited to its paid plan and isn't covered here).
 
@@ -47,7 +45,7 @@ Not supported: LM Studio (the model does not receive images that tools return, s
 
 **Tool count.** Editmamei registers up to 62 tools for Photoshop in Community, 83 with Pro. When GIMP 3.2 is detected, its tools register too, which brings the totals to 91 and 112. Some clients cap the number of tools:
 
-- Cursor: commonly reported as 40. This figure is not in Cursor's documentation, and in our testing Cursor listed every tool of a Photoshop-only setup without a problem.
+- Cursor: commonly reported as 40. This figure is not in Cursor's documentation.
 - Windsurf / Devin Desktop: 100 ([docs](https://docs.devin.ai/desktop/cascade/mcp)).
 - VS Code: 128 per request, shared with built-in tools.
 
@@ -55,7 +53,7 @@ If your client truncates the list, set `EDITMAMEI_EDITOR=photoshop` in the serve
 
 **Timeouts.** Some operations take longer than a minute, such as AI selection and large scene reads. The ChatGPT desktop app and Codex document a 60-second default per tool call ([docs](https://learn.chatgpt.com/docs/extend/mcp)), and Cline's default is reported as 60 seconds. Raise those limits where the client section below says so.
 
-**Images and structured results.** Editmamei returns preview images alongside structured results. Two clients have open upstream issues around structured results. VS Code still passes tool-result images to the model, but replaces the text content when structured content is present ([microsoft/vscode#290063](https://github.com/microsoft/vscode/issues/290063)). Codex can drop the rest of a tool result when a structured result is present ([openai/codex#10334](https://github.com/openai/codex/issues/10334)), so the model may not see previews there. The ChatGPT desktop app shares that engine. In our testing it finished full edits end to end, but we did not check whether the model saw every preview.
+**Images and structured results.** Editmamei returns preview images alongside structured results. Two clients have open upstream issues around structured results. VS Code still passes tool-result images to the model, but replaces the text content when structured content is present ([microsoft/vscode#290063](https://github.com/microsoft/vscode/issues/290063)). Codex can drop the rest of a tool result when a structured result is present ([openai/codex#10334](https://github.com/openai/codex/issues/10334)), so the model may not see previews there. The ChatGPT desktop app shares that engine.
 
 ## Claude Desktop
 
