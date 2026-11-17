@@ -856,9 +856,17 @@ def op_open(args):
     if precision not in ('keep', '16', '32'):
         raise ValueError("precision must be one of 'keep', '16', '32'")
     ext = os.path.splitext(path)[1].lower()
+    load_error = None
     try:
         img = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(path))
     except Exception as e:
+        img = None
+        load_error = str(e)
+    # A failed load does not always raise: a file GIMP cannot decode (a truncated or corrupt
+    # image) can come back as `None`, the same shape `op_place_image` handles, and an unchecked
+    # `None` would surface below as a bare AttributeError. Both shapes become a real error here.
+    if img is None:
+        detail = _path_free_detail(load_error)
         # Attempt the load first rather than refusing by extension alone: an
         # install with a raw-develop plug-in (darktable/RawTherapee/ART) can
         # open these directly. Only when the load actually fails AND the
@@ -869,9 +877,13 @@ def op_open(args):
                 'gimp_unsupported_file',
                 'GIMP could not open this %s file (no raw loader by default); install a '
                 'raw-develop plug-in (darktable, RawTherapee, or ART) for GIMP, or develop it '
-                'externally first and open the resulting JPEG/TIFF. (%s)' % (ext, e),
+                'externally first and open the resulting JPEG/TIFF.%s' % (ext, detail),
             )
-        raise
+        raise lib.OpError(
+            'gimp_op_failed',
+            'GIMP could not open %s: the file may be damaged or in a format GIMP cannot read%s'
+            % (os.path.basename(path), detail),
+        )
     # Everything from here on runs against a real, open `img` -- ANY exception in this block
     # (precision conversion, ledger pruning, or building the default proxy) must free it before
     # propagating, or a failure partway through leaks an open image nothing can ever reach again

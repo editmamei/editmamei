@@ -4,7 +4,7 @@
  * approximation -- see `_mirror_filters` in `ops.py`).
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts';
@@ -129,6 +129,24 @@ describe.skipIf(!install)('verify ops: preview / histogram / compare', () => {
       path: indexedPath,
     });
     expect(opened.base_type).toBe('indexed');
+    await session.call('close', { image: opened.image });
+  });
+
+  it('open reports a file GIMP cannot decode as gimp_op_failed, never a bare Python error, and names no path', async () => {
+    const damaged = join(workDir, 'damaged.png');
+    const valid = readFileSync(rampPath);
+    // A real PNG header, then garbage: the extension and signature promise an image that
+    // is not there.
+    writeFileSync(damaged, Buffer.concat([valid.subarray(0, 64), Buffer.alloc(256, 0x5a)]));
+    const err = await session.call('open', { path: damaged }).then(
+      () => null,
+      (e: unknown) => e as { code?: string; message?: string }
+    );
+    expect(err).toMatchObject({ code: 'gimp_op_failed' });
+    expect(err?.message).not.toMatch(/AttributeError|NoneType/);
+    expect(err?.message).not.toContain(workDir);
+    // The session survives the failed load.
+    const opened = await session.call<{ image: number }>('open', { path: rampPath });
     await session.call('close', { image: opened.image });
   });
 
