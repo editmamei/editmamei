@@ -178,6 +178,7 @@ Reaching outside Photoshop, or loading code the scan can't see.
 
 ## Photoshop action ids
 
+- `adaptCorrect`
 - `addNoise`
 - `AdNs`
 - `Adobe Camera Raw Filter`
@@ -206,10 +207,12 @@ Reaching outside Photoshop, or loading code the scan can't see.
 - `clearEvent`
 - `close`
 - `ClrB`
+- `ClrR`
 - `Cls`
 - `CnvS`
 - `colorBalance`
 - `colorLookup`
+- `colorRange`
 - `contentAwareFill`
 - `contentLayer`
 - `convertToProfile`
@@ -225,6 +228,7 @@ Reaching outside Photoshop, or loading code the scan can't see.
 - `cutToLayer`
 - `CvrP`
 - `delete`
+- `denoise`
 - `desaturate`
 - `DfrC`
 - `Dlt`
@@ -232,11 +236,15 @@ Reaching outside Photoshop, or loading code the scan can't see.
 - `Dstr`
 - `duplicate`
 - `dustAndScratches`
+- `Eqlz`
+- `equalize`
 - `Exch`
 - `exchange`
 - `Expn`
 - `exportDocumentAs`
 - `exportSelectionAsFileTypePressed`
+- `exposure`
+- `Exps`
 - `fade`
 - `fill`
 - `Fl`
@@ -265,9 +273,11 @@ Reaching outside Photoshop, or loading code the scan can't see.
 - `jump`
 - `layerStyle`
 - `levels`
+- `lightshop`
 - `linkSelectedLayers`
 - `Lvls`
 - `make`
+- `matchColor`
 - `Mdn`
 - `median`
 - `mergeLayers`
@@ -280,6 +290,7 @@ Reaching outside Photoshop, or loading code the scan can't see.
 - `MrgV`
 - `Mtnb`
 - `Mxm`
+- `newDocument`
 - `newPlacedLayer`
 - `nextFrame`
 - `Ofst`
@@ -295,13 +306,20 @@ Reaching outside Photoshop, or loading code the scan can't see.
 - `placedLayerRelinkToFile`
 - `placedLayerReplaceContents`
 - `placeEvent`
+- `play`
 - `Plc`
+- `Ply`
+- `posterization`
+- `Pstr`
+- `QucM`
+- `quickMask`
 - `quickSelect`
 - `quit`
 - `rasterizeLayer`
 - `reduceNoise`
 - `refineSelectionEdge`
 - `removeBackground`
+- `removeButton`
 - `renameLayer`
 - `replaceColor`
 - `reset`
@@ -316,12 +334,15 @@ Reaching outside Photoshop, or loading code the scan can't see.
 - `selectAllLayers`
 - `selectiveColor`
 - `selectNoLayers`
+- `selectPeopleV2`
 - `selectSky`
 - `selectSubject`
 - `set`
 - `setd`
 - `shadowHighlight`
 - `sharpen`
+- `show`
+- `Shw`
 - `skyReplacement`
 - `slct`
 - `Slct`
@@ -332,6 +353,8 @@ Reaching outside Photoshop, or loading code the scan can't see.
 - `Sv`
 - `SvAs`
 - `threshold`
+- `thresholdClassEvent`
+- `Thrs`
 - `transform`
 - `trim`
 - `Trnf`
