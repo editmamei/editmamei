@@ -50,9 +50,9 @@ If you're not sure: start on Desktop. Move to Code the first time you feel a ses
 
 ### Which Photoshop versions are supported?
 
-**Photoshop 2026 (internal version 27.x).** That's the only Photoshop version Editmamei has been verified against; every ActionManager descriptor we emit was captured against PS 27.x on Windows and macOS.
+**Photoshop 2026 or later** (internal version 27 and up), on Windows and macOS.
 
-Earlier versions (Photoshop 2025 / 2024 / 2023 / 2022) may work (the DOM-level APIs and most AM events are stable across recent majors), but they're unverified. Adobe is known to rotate event IDs between major versions, and a tool that string-match-tests fine in the source can still silent-no-op against a different PS major. The auto-detector still finds older installs so you can try, but failing tools on unsupported versions are a known unsupported-version risk, not a bug.
+It may also work with earlier versions, back to Photoshop 2020. Adobe sometimes changes scripting details between major versions, so if a tool misbehaves on an older Photoshop, include your version when you [open an issue](https://github.com/editmamei/editmamei/issues).
 
 ### Does Editmamei work on Linux?
 

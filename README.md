@@ -122,7 +122,7 @@ npx skills add editmamei/editmamei
 
 | | |
 | --- | --- |
-| **Editor** | Adobe Photoshop 2026 (v27.x) on Windows 10/11 or macOS 13+, or GIMP 3.2 on Windows, macOS, or Linux |
+| **Editor** | Adobe Photoshop 2026 or later on Windows 10/11 or macOS 13+ (earlier versions back to 2020 may also work), or GIMP 3.2 on Windows, macOS, or Linux |
 | **AI app** | Any app that can run a local MCP server |
 | **Node.js** | 22+, for every route except the Claude Desktop extension |
 

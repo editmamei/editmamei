@@ -4,9 +4,9 @@ Editmamei is an MCP server that drives desktop Adobe Photoshop. It installs two 
 
 ---
 
-## Requirements: Photoshop 2026, Node 22+, Windows or macOS
+## Requirements: Photoshop 2026 or later, Node 22+, Windows or macOS
 
-- **Adobe Photoshop 2026 (internal version 27.x).** The only version Editmamei has been verified against. Earlier majors may work but are unverified; see [faq.md](faq.md#which-photoshop-versions-are-supported) for the rationale.
+- **Adobe Photoshop 2026 or later.** It may also work with earlier versions, back to Photoshop 2020; see [faq.md](faq.md#which-photoshop-versions-are-supported).
 - **Operating system:** Windows 10/11 or macOS 13+.
 - **Node.js 22 or later** ([nodejs.org](https://nodejs.org/)), for the npm install path only. The `.mcpb` extension doesn't need it; Claude Desktop bundles its own runtime.
 - An **MCP-compatible client**, at least one of:
