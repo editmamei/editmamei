@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, statSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -47,6 +47,21 @@ describe('zip/unzip bundle container', () => {
   it('is byte-stable for a given input set (deterministic entry order)', () => {
     const files = sampleFiles();
     expect(zipBundle(files).equals(zipBundle([...files].reverse()))).toBe(true);
+  });
+
+  it('is byte-stable across time, not only within one clock tick', () => {
+    // The zip format stores times to two seconds, so two zips made moments apart
+    // only differed when a boundary fell between them. Pin the clock to both sides.
+    const files = sampleFiles();
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 0));
+      const first = zipBundle(files);
+      vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 3));
+      expect(zipBundle(files).equals(first)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
