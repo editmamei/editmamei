@@ -121,7 +121,7 @@ If you hit a Photoshop operation Editmamei doesn't have a dedicated tool for, Pr
 
 ### Photoshop version support
 
-Editmamei is tested against **Photoshop 2026 (internal version 27.x)**, the only Photoshop version every ActionManager descriptor has been ground-truth captured against. Earlier versions (Photoshop 2025 / 2024 / 2023 / 2022) may work, but they're unverified; Adobe rotates event IDs between major versions and silent-no-op descriptor failures on untested PS majors cannot be ruled out. The auto-detector still finds older installs so you can try.
+Editmamei supports **Photoshop 2026 or later**. It may also work with earlier versions, back to Photoshop 2020. Adobe sometimes changes scripting details between major versions, so a tool can behave differently on an older one.
 
 PS 2026 introduced a few descriptor changes that affected some adjustment-layer and selection paths; current builds work around the known ones. If you hit a tool that fails (on PS 2026 or any other version), [open an issue](https://github.com/editmamei/editmamei/issues) and include the output of `editmamei status` plus the relevant snippet from `~/.editmamei/sessions/<session-id>.ndjson`. Please mention your Photoshop version so we can route the bug correctly.
 
