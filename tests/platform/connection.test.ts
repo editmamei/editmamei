@@ -492,7 +492,7 @@ describe('PhotoshopConnection - after a script times out', () => {
     expect((error as Error).message).toBe(WINDOWS_TIMEOUT);
   });
 
-  it('both new messages still count as a timeout in telemetry', async () => {
+  it('the timeout counts as a timeout, and the call refused after it as ps_busy_after_timeout', async () => {
     const { conn } = recording(() => {
       throw new Error(MAC_TIMEOUT);
     });
@@ -500,8 +500,9 @@ describe('PhotoshopConnection - after a script times out', () => {
     expect(timedOut.message).toMatch(/may still be working/);
     expect(classifyError(timedOut.message)).toBe('timeout');
 
+    // The refused call never ran, so one stuck script is one timeout in telemetry.
     const stillBusy = (await conn.executeScript('second').catch((e: Error) => e)) as Error;
     expect(stillBusy.message).toMatch(/This call did not run/);
-    expect(classifyError(stillBusy.message)).toBe('timeout');
+    expect(classifyError(stillBusy.message)).toBe('ps_busy_after_timeout');
   });
 });
