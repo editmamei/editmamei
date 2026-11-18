@@ -10,6 +10,52 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-11-17
+
+### Added
+
+- **Install for the ChatGPT desktop app and Codex.** `npx -y editmamei install` now adds Editmamei
+  to the ChatGPT desktop app and Codex as well, and `status` and `uninstall` cover them.
+  - It edits only Editmamei's own entry in their `config.toml` and leaves the rest of the file
+    alone. In the ChatGPT desktop app, Editmamei's tools are in Work mode.
+- **One-editor packages.** `npx -y @editmamei/photoshop-mcp` or `npx -y @editmamei/gimp-mcp` starts
+  Editmamei with only that editor's tools.
+  - Each one runs the same release as `editmamei`.
+- **The Editmamei skill in one command.** `npx skills add editmamei/editmamei` adds the skill, which
+  teaches the assess, plan, edit and check workflow, to AI apps that load skills.
+- **One-click install for Cursor and VS Code.** The README has an install button for each, and the
+  app asks before it adds Editmamei.
+- **Clarity in GIMP.** Your assistant can add clarity to a photo in GIMP: more local contrast,
+  weighted toward the midtones, without clipping or darkening the photo.
+  - `gimp_add_adjustment` type `clarity`.
+- **Merge Down in Photoshop.** Your assistant can merge a layer into the one below it.
+  - `ps_merge` `mode: "down"`. It refuses where Ctrl+E would do a different merge: several layers
+    selected, a clipping-group base, or a hidden layer.
+
+### Changed
+
+- **Linux sessions list only the GIMP tools.** Photoshop has no Linux version, so its tools no
+  longer load there, which keeps the tool list your AI app reads much shorter.
+  - Setting the editor to `photoshop` still loads them.
+- **Feature details names more Photoshop operations.** 23 more operations a script can run, such
+  as Shadows/Highlights, Color Range and Exposure, are counted by name instead of as `unknown`.
+  - The full list is in [docs/feature-names.md](docs/feature-names.md).
+
+### Fixed
+
+- **The right Photoshop on Windows when two versions are installed.** Editmamei drives the version
+  it detected (the newest, or the one `PHOTOSHOP_PATH` names), not whichever was installed last.
+- **GIMP calls survive a brief Windows file lock.** A request that hit a file held open by another
+  program, such as antivirus, failed. It now retries. Fixes #200.
+- **Rectangle and ellipse selections can start off the canvas.** `ps_select` accepts a negative
+  left or top, and Photoshop clips the selection to the canvas.
+- **GIMP export names a missing folder.** `gimp_export` and `gimp_save_xcf` say the output folder
+  doesn't exist before GIMP is asked to write there.
+- **Opening a damaged file in GIMP gives a clear error.** `gimp_open_document` reported an internal
+  Python error for a file GIMP couldn't decode.
+- **Photoshop tools on a computer without Photoshop say so.** They failed with a missing-file
+  error instead.
+
 ## [1.10.2] — 2026-11-11
 
 ### Added
