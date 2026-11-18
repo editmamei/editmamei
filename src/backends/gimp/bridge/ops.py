@@ -4657,8 +4657,7 @@ def op_place_image(args):
     # loader plug-in installed makes `file_load_layer` return `None` outright (the same "returned
     # normally having silently done nothing" class `_assert_layer_attached`'s own comment names),
     # not raise -- so the raw/no-loader reframing below has to cover BOTH `loaded is None` and a
-    # real exception, not just the exception case `op_open`'s own analogous try/except assumes is
-    # the only failure shape.
+    # real exception, as `op_open` does for `file_load`.
     if loaded is None:
         detail = _path_free_detail(load_error)
         if ext in RAW_EXTENSIONS:
