@@ -15,8 +15,9 @@ export function printHelp(write: (s: string) => void = (s) => process.stdout.wri
 
 Usage:
   editmamei                  Start the MCP server (default — what Claude Desktop spawns)
-  editmamei install          Register Editmamei with Claude Desktop
-  editmamei uninstall        Remove Editmamei from Claude Desktop's config
+  editmamei install          Register Editmamei with Claude Desktop, and with Claude Code,
+                             Cursor, and the ChatGPT desktop app and Codex when they're installed
+  editmamei uninstall        Remove Editmamei from those apps' configs
   editmamei status           Show where Editmamei is currently registered
   editmamei config           Get/set settings (telemetry, privacy) in ~/.editmamei/settings.json
   editmamei activate <key>   Activate a Pro license on this device
@@ -52,6 +53,7 @@ Report options:
   --note "<text>"            Attach a short description of the problem to the bundle
 
 Examples:
+  npx -y editmamei install
   npm install -g editmamei && editmamei install
   editmamei install --photoshop-path "D:\\Adobe\\Photoshop 2025\\Photoshop.exe"
   node /path/to/Editmamei/dist/index.js install --dev

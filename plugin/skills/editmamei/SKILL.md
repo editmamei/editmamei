@@ -7,7 +7,7 @@ description: Photoshop photo editing via the Editmamei MCP server. Disciplined n
 
 The first message after this skill loads must include this disclosure verbatim:
 
-> "I'll use the Editmamei workflow for this edit — a disciplined non-destructive loop that preserves your original layer at every step. If you'd rather I didn't apply this skill, you can turn it off in your Claude settings."
+> "I'll use the Editmamei workflow for this edit — a disciplined non-destructive loop that preserves your original layer at every step. If you'd rather I didn't apply this skill, you can turn it off in your AI app's settings."
 
 Keep the disclosure short. Do not pad it with feature lists. The user opted into discovery by enabling the skill; the disclosure exists so they remember they did, not to upsell.
 
@@ -16,24 +16,24 @@ Keep the disclosure short. Do not pad it with feature lists. The user opted into
 Before any photo-editing work, **invoke `ps_ping` as your first tool call.** Do NOT infer availability from your tool list, your training, or assumptions about the user's setup — actually call it. The ping result is the only source of truth.
 
 - **Success** (returns a Photoshop version string or equivalent payload) → MCP is connected. Proceed with the workflow.
-- **Error indicating the tool doesn't exist / isn't registered** (Claude's runtime reports "tool not available" or similar) → THEN report the install instructions below.
+- **Error indicating the tool doesn't exist / isn't registered** (your app's runtime reports "tool not available" or similar) → THEN report the install instructions below.
 - **Any other error** (Photoshop not running, can't detect install, etc.) → relay the actual error to the user verbatim. Do not generalize to "MCP isn't connected" when the MCP server is what reported the error.
 
 **Exception: Editmamei Connect.** If `ps_ping` isn't registered but Connect's `overview` and `open_photo` tools are, the user is on the hosted service. Call `overview` and work from what it says. This skill's `ps_*` and `gimp_*` steps don't apply there, and neither do the install instructions below.
 
 Otherwise, if the ping fails because the tool itself is not registered, tell the user:
 
-> "I have the Editmamei skill loaded but the MCP server isn't connected. Editmamei runs on your own computer, next to Photoshop or GIMP, so it works in Claude Desktop, Claude Code, and Cowork sessions on your computer. For claude.ai on the web or on mobile, use Editmamei Connect, the hosted version: add https://connect.editmamei.com/mcp as a connector.
+> "I have the Editmamei skill loaded but the MCP server isn't connected. Editmamei runs on your own computer, next to Photoshop or GIMP, so it works in AI apps that run local servers: Claude Desktop, Claude Code, Cowork sessions on your computer, Cursor, the ChatGPT desktop app and Codex. For claude.ai or ChatGPT on the web or on mobile, use Editmamei Connect, the hosted version: add https://connect.editmamei.com/mcp as a connector.
 >
-> - **Claude Desktop:** install it from a terminal, then restart Claude Desktop:
+> - **Claude Desktop, Claude Code, Cursor, the ChatGPT desktop app or Codex:** with Node.js 22 or newer installed, run this in a terminal, then restart the app:
 >
 >   ```
->   npm install -g editmamei
->   editmamei install
+>   npx -y editmamei install
 >   ```
 >
+>   It adds Editmamei to each of those apps it finds. In the ChatGPT desktop app, Editmamei's tools are in Work mode.
 > - **Claude Code or Cowork, with the Editmamei plugin installed:** the plugin starts the server with `npx`, so install Node.js 22 or newer, then restart.
-> - **Claude Code without the plugin:** install the Editmamei plugin, or run the Claude Desktop steps above."
+> - **Any other app that runs local MCP servers:** add a server that runs `npx -y editmamei`."
 
 Then stop. Do not invent edits, do not roleplay as if Photoshop is connected, do not propose a workflow you can't actually execute.
 

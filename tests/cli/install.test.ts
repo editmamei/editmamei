@@ -16,7 +16,11 @@ import { runStatus } from '@editmamei/cli/status.ts';
  * dir so the real Claude Desktop config is never touched.
  */
 
-const onlyClaudeDesktop = { skipCursor: true as const, skipClaudeCode: true as const };
+const onlyClaudeDesktop = {
+  skipCursor: true as const,
+  skipClaudeCode: true as const,
+  skipCodex: true as const,
+};
 
 describe('runInstall — Claude Desktop slice', () => {
   let dir: string;
@@ -374,6 +378,7 @@ describe('runInstall — multi-client orchestration', () => {
       cursorConfigPath,
       stdout,
       skipClaudeCode: true,
+      skipCodex: true,
     });
 
     expect(existsSync(claudeDesktopConfigPath)).toBe(true);
@@ -394,6 +399,7 @@ describe('runInstall — multi-client orchestration', () => {
       cursorConfigPath,
       stdout,
       skipClaudeCode: true,
+      skipCodex: true,
     });
 
     expect(out.match(/Claude Desktop:/g)?.length).toBe(1);
@@ -410,6 +416,7 @@ describe('runInstall — multi-client orchestration', () => {
       cursorConfigPath,
       stdout,
       skipClaudeCode: true,
+      skipCodex: true,
     });
 
     expect(existsSync(cursorConfigPath)).toBe(true);
@@ -426,6 +433,7 @@ describe('runInstall — multi-client orchestration', () => {
       photoshopPath: psPath,
       stdout,
       skipClaudeCode: true,
+      skipCodex: true,
     });
 
     const cd = JSON.parse(readFileSync(claudeDesktopConfigPath, 'utf8'));
@@ -460,6 +468,7 @@ describe('runInstall — multi-client orchestration', () => {
       photoshopPath: '/path/to/Photoshop.exe',
       stdout,
       skipClaudeCode: true,
+      skipCodex: true,
     });
 
     const cd = JSON.parse(readFileSync(claudeDesktopConfigPath, 'utf8'));

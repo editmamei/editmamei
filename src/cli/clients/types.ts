@@ -1,7 +1,7 @@
 /**
  * Shared types for the per-client MCP adapters.
  *
- * Each adapter (Claude Desktop, Cursor, Claude Code) implements its own
+ * Each adapter (Claude Desktop, Cursor, Claude Code, ChatGPT and Codex) implements its own
  * detect / install / uninstall / status — the orchestrator in
  * `src/cli/install.ts` iterates them and aggregates the results.
  */

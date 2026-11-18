@@ -2,7 +2,7 @@
  * `editmamei install` — register Editmamei as an MCP server with every
  * detected MCP client.
  *
- * Today that's three clients:
+ * Today that's four clients:
  *
  *   - Claude Desktop  (`~/Library/Application Support/Claude/...` or
  *                      `%APPDATA%\Claude\...`) — always written.
@@ -10,6 +10,9 @@
  *                     detected.
  *   - Claude Code     (via `claude mcp add --scope user`) — written iff
  *                     the `claude` binary is on PATH.
+ *   - ChatGPT and Codex (`~/.codex/config.toml`, or `$CODEX_HOME`) — written
+ *                     iff that folder exists or `codex` is on PATH. One entry
+ *                     serves the ChatGPT desktop app and both Codex clients.
  *
  * Each per-client adapter knows how to detect itself, write its own
  * config shape, back up the prior state, and report success/skip/failure.
@@ -24,6 +27,7 @@ import { Logger } from '../utils/logger.js';
 import { installClaudeDesktop } from './clients/claude-desktop.js';
 import { installCursor } from './clients/cursor.js';
 import { installClaudeCode } from './clients/claude-code.js';
+import { installCodex } from './clients/codex.js';
 import { detectDownloadsDir } from './downloads-dir.js';
 import type {
   ClientOptions,
@@ -51,10 +55,12 @@ export interface InstallOptions {
   /** Per-client config-path overrides. Test-only. */
   claudeDesktopConfigPath?: string;
   cursorConfigPath?: string;
+  codexConfigPath?: string;
   /** Skip a specific client (test seam — never set by the CLI). */
   skipClaudeDesktop?: boolean;
   skipCursor?: boolean;
   skipClaudeCode?: boolean;
+  skipCodex?: boolean;
   /**
    * Skip the editmamei skill bundle copy. Headless / CI installs that
    * don't need the claude.ai-side skill should pass `--skip-skill`.
@@ -101,6 +107,10 @@ export async function runInstall(opts: InstallOptions = {}): Promise<void> {
 
   const ccOpts: ClientOptions = { out };
   if (!opts.skipClaudeCode) results.push(await installClaudeCode(entry, ccOpts));
+
+  const codexOpts: InstallClientOptions = { out };
+  if (opts.codexConfigPath !== undefined) codexOpts.configPath = opts.codexConfigPath;
+  if (!opts.skipCodex) results.push(await installCodex(entry, codexOpts));
 
   let touched = 0;
   let failed = 0;

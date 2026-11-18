@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Let AI do the parts of the edit you don't want to, and keep your favorite parts for yourself. It works in Photoshop or GIMP with real tools, layer by layer, so every step stays editable and the final touches are yours. A desktop MCP server for Claude and other MCP-compatible AI apps.
+  Let AI do the parts of the edit you don't want to, and keep your favorite parts for yourself. It works in Photoshop or GIMP with real tools, layer by layer, so every step stays editable and the final touches are yours. A desktop MCP server for Claude, ChatGPT, Cursor and other MCP-compatible AI apps.
 </p>
 
 <p align="center">
@@ -92,15 +92,31 @@ Here's the waterfall edit in its session. Your AI app runs beside your editor, a
 
 This route doesn't need Node.js, because Claude Desktop ships its own runtime. The [install guide](docs/installation.md#one-click-install-claude-desktop) covers older versions of the app and updates.
 
-**Claude Code, Cursor, and other MCP apps**
+**Cursor and VS Code, one click**
+
+[![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=editmamei&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImVkaXRtYW1laSJdfQ==)
+[![Install in VS Code](https://img.shields.io/badge/Install%20in-VS%20Code-0098FF)](https://vscode.dev/redirect/mcp/install?name=editmamei&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22editmamei%22%5D%7D)
+
+Each button opens the app, which asks before it adds Editmamei. Then ask it: _"Is Photoshop connected?"_
+
+**ChatGPT, Claude Code, Cursor and Codex, one command**
 
 ```bash
-npm install -g editmamei
-editmamei install   # registers with Claude Desktop, Cursor, Claude Code
-editmamei status    # shows which AI apps it's registered with
+npx -y editmamei install   # adds Editmamei to each of these apps it finds
+npx -y editmamei status    # shows which AI apps it's registered with
 ```
 
-Then restart your AI app and ask it: _"Is Photoshop connected?"_ For anything `editmamei install` doesn't detect, see [docs/clients.md](docs/clients.md).
+Then restart your AI app and ask it: _"Is Photoshop connected?"_ In the ChatGPT desktop app, Editmamei's tools are in Work mode. In Claude Code alone, `claude mcp add --scope user editmamei -- npx -y editmamei` does the same.
+
+**Other MCP apps**
+
+Add a server that runs `npx -y editmamei`. For one editor's tools only, run `npx -y @editmamei/photoshop-mcp` or `npx -y @editmamei/gimp-mcp` instead. [docs/clients.md](docs/clients.md) has the config for Windsurf, Gemini CLI, Zed and other apps.
+
+**The Editmamei skill**, for AI apps that load skills, teaches the assess, plan, edit and check workflow:
+
+```bash
+npx skills add editmamei/editmamei
+```
 
 **Requirements**
 
@@ -108,7 +124,7 @@ Then restart your AI app and ask it: _"Is Photoshop connected?"_ For anything `e
 | --- | --- |
 | **Editor** | Adobe Photoshop 2026 (v27.x) on Windows 10/11 or macOS 13+, or GIMP 3.2 on Windows, macOS, or Linux |
 | **AI app** | Any app that can run a local MCP server |
-| **Node.js** | 22+, for the npm route only |
+| **Node.js** | 22+, for every route except the Claude Desktop extension |
 
 **What to expect**
 
@@ -183,7 +199,7 @@ Every field is documented in [privacy.md](docs/privacy.md), including [your righ
 
 ## For developers
 
-Editmamei is a stdio MCP server. In any MCP client, add a server that runs `npx -y editmamei`. The [MCP reference](docs/mcp-reference.md) covers client config, architecture, the MCP surface, settings and environment variables, and each network request the server makes.
+Editmamei is a stdio MCP server. In any MCP client, add a server that runs `npx -y editmamei`. `@editmamei/photoshop-mcp` and `@editmamei/gimp-mcp` are launchers that set `EDITMAMEI_EDITOR` and depend on the same release; their source is in [wrappers/](wrappers/). The [MCP reference](docs/mcp-reference.md) covers client config, architecture, the MCP surface, settings and environment variables, and each network request the server makes.
 
 The discovery chain is `ps_ping` (liveness), then `ps_overview` (the working method and capability map), then `tools/list` (the full schema-typed inventory). Every tool declares an `outputSchema` and returns typed JSON.
 

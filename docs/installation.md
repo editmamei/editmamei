@@ -1,6 +1,6 @@
 # Installation
 
-Editmamei is an MCP server that drives desktop Adobe Photoshop. It installs two ways: a one-click `.mcpb` extension for Claude Desktop (no terminal, no Node), or the `editmamei` npm package for Claude Code, Cursor, and any other MCP client. Both deliver the same tools. On the npm path, the `editmamei install` subcommand detects your MCP clients and writes each one's config in a single pass; manual configuration is documented below as a fallback.
+Editmamei is an MCP server that drives desktop Adobe Photoshop. It installs two ways: a one-click `.mcpb` extension for Claude Desktop (no terminal, no Node), or the `editmamei` npm package for Claude Code, Cursor, the ChatGPT desktop app, Codex, and any other MCP client. Both deliver the same tools. On the npm path, the `editmamei install` subcommand detects your MCP clients and writes each one's config in a single pass; manual configuration is documented below as a fallback.
 
 ---
 
@@ -13,6 +13,7 @@ Editmamei is an MCP server that drives desktop Adobe Photoshop. It installs two 
   - [Claude Desktop](https://claude.ai/download)
   - [Cursor](https://cursor.com/)
   - [Claude Code](https://claude.ai/code)
+  - The [ChatGPT desktop app](https://chatgpt.com/download) (Work mode) or Codex
 
   Editmamei ships no model of its own and runs on whichever client you connect, so every edit
   spends that client's tokens. That client might be a subscription, an API key, or a model you run yourself.
@@ -33,26 +34,24 @@ The telemetry switches and your Pro license key (if you have one) live in the ex
 
 ---
 
-## Install from npm (Claude Code, Cursor, any MCP client)
+## Install from npm (Claude Code, Cursor, ChatGPT, any MCP client)
 
-For clients that already have Node. Confirm your Node.js version:
+Cursor and VS Code can add Editmamei in one click: [Install in Cursor](https://cursor.com/en/install-mcp?name=editmamei&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImVkaXRtYW1laSJdfQ==) or [Install in VS Code](https://vscode.dev/redirect/mcp/install?name=editmamei&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22editmamei%22%5D%7D). Each app asks before it adds the server, then runs `npx -y editmamei`. Both need Node.js, as below.
+
+Confirm your Node.js version:
 
 ```bash
 node --version
 ```
 
-If you see `v22` or higher, install the CLI globally:
-
-```bash
-npm install -g editmamei
-```
+If you see `v22` or higher, you're ready for the next step. (`npm install -g editmamei` also works if you'd rather have the `editmamei` command installed for good; then drop the `npx -y` from the commands below.)
 
 ---
 
 ## Register with your MCP client(s)
 
 ```bash
-editmamei install
+npx -y editmamei install
 ```
 
 `editmamei install` runs against every supported client in one pass and prints a per-client result line. The clients today are:
@@ -62,12 +61,15 @@ editmamei install
 | **Claude Desktop** | always written (canonical client) | `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
 | **Cursor** | written if `~/.cursor/` exists or `cursor` is on your PATH | `~/.cursor/mcp.json` |
 | **Claude Code** | written if the `claude` binary is on your PATH | uses `claude mcp add --scope user editmamei -- npx -y editmamei` under the hood |
+| **ChatGPT desktop app and Codex** | written if the Codex home folder (`~/.codex`, or `$CODEX_HOME`) exists or `codex` is on your PATH | `config.toml` in that folder, shared by the ChatGPT desktop app, the Codex CLI and the Codex IDE extension |
 
 For each detected client, the command:
 
 1. Reads the existing config (refuses to overwrite if the JSON is malformed; fix that first).
 2. Backs up the existing file to `<config>.bak` only if no `.bak` is already there. The pre-install state is more valuable than any of our own first-run output, so a second install never clobbers the original backup.
 3. Adds an `editmamei` entry to `mcpServers`, or no-ops if the entry already matches. Any env vars you've hand-added to the `editmamei` entry (e.g. `LOG_LEVEL`) are preserved; install only overrides the keys it explicitly sets.
+
+For the ChatGPT desktop app and Codex, the entry is the `[mcp_servers.editmamei]` table in `config.toml`, with a 60-second start timeout and a 600-second tool timeout added when they're missing. Only that table changes: comments, other servers and the per-tool approvals the app saves are kept as they are. See [clients.md](clients.md#chatgpt-desktop-app-and-codex) for using it in the app.
 
 If a client isn't detected, that line is reported as "skipped" and doesn't abort the run.
 
@@ -91,7 +93,7 @@ Restart your AI client(s) after this completes. Config changes only take effect 
 ### Check your install state
 
 ```bash
-editmamei status
+npx -y editmamei status
 ```
 
 Reports, per client, whether Editmamei is registered and what command would launch it. Run this when troubleshooting.
@@ -231,11 +233,10 @@ Problems after an upgrade are covered in [troubleshooting.md](troubleshooting.md
 ## Uninstall
 
 ```bash
-editmamei uninstall
-npm uninstall -g editmamei
+npx -y editmamei uninstall
 ```
 
-The `uninstall` subcommand removes Editmamei from your MCP client configs. The `npm uninstall` removes the package itself. Your per-user data at `~/.editmamei/` (templates, session logs) is left in place; delete it manually if you don't want it.
+The `uninstall` subcommand removes Editmamei from your MCP client configs. If you also installed the package globally, `npm uninstall -g editmamei` removes it. Your per-user data at `~/.editmamei/` (templates, session logs) is left in place; delete it manually if you don't want it.
 
 ---
 
@@ -250,6 +251,19 @@ requirements, detection locations, and troubleshooting: [docs/gimp.md](gimp.md).
 
 ---
 
+## Editor-named packages
+
+Two small npm packages start the same server with one editor's tools:
+
+| Package | Starts | Same as |
+|---|---|---|
+| [`@editmamei/photoshop-mcp`](https://www.npmjs.com/package/@editmamei/photoshop-mcp) | the Photoshop tools only | `npx -y editmamei` with `EDITMAMEI_EDITOR=photoshop` |
+| [`@editmamei/gimp-mcp`](https://www.npmjs.com/package/@editmamei/gimp-mcp) | the GIMP tools only | `npx -y editmamei` with `EDITMAMEI_EDITOR=gimp` |
+
+Use one in place of `editmamei` in any client config, for example `"args": ["-y", "@editmamei/photoshop-mcp"]`. Each is published with every release and depends on exactly that release of `editmamei`, so `npx` keeps it current the same way. A shorter tool list helps in clients that cap it. An `EDITMAMEI_EDITOR` you set in the server's `env` still wins.
+
+---
+
 ## Pro
 
-Pro is a downloaded **module**, not a separate install. Keep your Community setup as-is; when you activate a license, Editmamei fetches the signed Pro module and loads it alongside Community after a restart. Buy at [editmamei.com/desktop/pricing](https://editmamei.com/desktop/pricing), then activate with your license key: with an npm install, run `editmamei activate YOUR-KEY` and restart your client; with the Claude Desktop extension, paste your key into **Settings → Desktop app → Manage (next to Extensions) → Editmamei → Pro license key** and restart. The license re-validates roughly daily in the background; if a subscription lapses there's a seven-day grace window, then Editmamei keeps running as Community rather than locking you out. Full steps at [editmamei.com/desktop/activate](https://editmamei.com/desktop/activate). See [pro-features.md](pro-features.md) for what Pro adds and [roadmap.md](roadmap.md) for what's planned next.
+Pro is a downloaded **module**, not a separate install. Keep your Community setup as-is; when you activate a license, Editmamei fetches the signed Pro module and loads it alongside Community after a restart. Buy at [editmamei.com/desktop/pricing](https://editmamei.com/desktop/pricing), then activate with your license key: with an npm install, run `npx -y editmamei activate YOUR-KEY` and restart your client; with the Claude Desktop extension, paste your key into **Settings → Desktop app → Manage (next to Extensions) → Editmamei → Pro license key** and restart. The license re-validates roughly daily in the background; if a subscription lapses there's a seven-day grace window, then Editmamei keeps running as Community rather than locking you out. Full steps at [editmamei.com/desktop/activate](https://editmamei.com/desktop/activate). See [pro-features.md](pro-features.md) for what Pro adds and [roadmap.md](roadmap.md) for what's planned next.

@@ -6,15 +6,18 @@
 import { statusClaudeDesktop } from './clients/claude-desktop.js';
 import { statusCursor } from './clients/cursor.js';
 import { statusClaudeCode } from './clients/claude-code.js';
+import { statusCodex } from './clients/codex.js';
 import type { ClientOptions, InstallClientOptions, StatusResult } from './clients/types.js';
 
 export interface StatusOptions {
   stdout?: (s: string) => void;
   claudeDesktopConfigPath?: string;
   cursorConfigPath?: string;
+  codexConfigPath?: string;
   skipClaudeDesktop?: boolean;
   skipCursor?: boolean;
   skipClaudeCode?: boolean;
+  skipCodex?: boolean;
 }
 
 export async function runStatus(opts: StatusOptions = {}): Promise<void> {
@@ -34,6 +37,10 @@ export async function runStatus(opts: StatusOptions = {}): Promise<void> {
 
   const ccOpts: ClientOptions = {};
   if (!opts.skipClaudeCode) results.push(await statusClaudeCode(ccOpts));
+
+  const codexOpts: InstallClientOptions = {};
+  if (opts.codexConfigPath !== undefined) codexOpts.configPath = opts.codexConfigPath;
+  if (!opts.skipCodex) results.push(await statusCodex(codexOpts));
 
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
