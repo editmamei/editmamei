@@ -9,7 +9,7 @@
   "repository": "https://github.com/editmamei/editmamei",
   "license": "FSL-1.1-MIT",
   "keywords": ["photo-editing", "photoshop", "gimp", "retouching", "color-grading", "mcp"],
-  "logo": "plugin/icon.png",
+  "logo": ".cursor-plugin/logo.png",
   "skills": "plugin/skills/",
   "mcpServers": ".cursor-plugin/mcp.json"
 }
