@@ -42,13 +42,23 @@ export interface BundleFile {
   mode?: number;
 }
 
-/** Zip a set of files into a single container buffer (deterministic entry order). */
+/**
+ * Every entry's modification time. adm-zip stamps an added buffer with the
+ * current time, which the zip format stores to two seconds, so two zips of the
+ * same files a moment apart could differ. 1980-01-01 is the earliest time the
+ * format can hold.
+ */
+const ENTRY_TIME = new Date(1980, 0, 1);
+
+/** Zip a set of files into a single container buffer, byte-stable for a given input set. */
 export function zipBundle(files: BundleFile[]): Buffer {
   const zip = new AdmZip();
-  // Sort by name so the container is byte-stable for a given input set.
+  // Sorted by name, with a fixed entry time, so the same files always give the same bytes.
   for (const f of [...files].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
     zip.addFile(f.name, Buffer.from(f.data));
   }
+  // By entry, not by name: adm-zip may store a name differently from the one given.
+  for (const entry of zip.getEntries()) entry.header.time = ENTRY_TIME;
   return zip.toBuffer();
 }
 
