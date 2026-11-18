@@ -145,6 +145,7 @@ export const BACKGROUND_VERSION_PROBE_TIMEOUT_MS = 3_000;
 /** Error classes a failed pingState round trip may report as-is; see its catch in pingPhotoshop. */
 const PING_ROUND_TRIP_CLASSES: ReadonlySet<string> = new Set([
   'timeout',
+  'ps_busy_after_timeout',
   'ps_modal_blocking',
   'ps_not_running',
   'ps_general_error',

@@ -20,6 +20,7 @@ import {
   type SessionLogCallEntry,
 } from '@editmamei/utils/session-log.ts';
 import { ToolRegistry } from '@editmamei/core/tool-registry.ts';
+import { PHOTOSHOP_SETTLE_TIMEOUT_MS } from '@editmamei/utils/operation-timeouts.ts';
 import { createGimpDocumentTools } from '@editmamei/tools/gimp-document-tools.ts';
 import { makeGimpBackend } from '../fixtures/fake-gimp-session.ts';
 
@@ -404,6 +405,18 @@ describe('classifyError', () => {
     ).toBe('ps_command_unavailable');
   });
 
+  it('classifies the post-timeout refusal as ps_busy_after_timeout, not timeout or a modal', () => {
+    // connection.ts settleAfterTimeout's real message, and as a tool handler wraps it.
+    const refusal =
+      `Photoshop did not answer within ${PHOTOSHOP_SETTLE_TIMEOUT_MS}ms: an earlier script ` +
+      'timed out and may still be working, or a dialog may be open. This call did not run. ' +
+      'Try again once Photoshop is free.';
+    expect(classifyError(refusal)).toBe('ps_busy_after_timeout');
+    expect(classifyError(`Error getting preview: ${refusal}`)).toBe('ps_busy_after_timeout');
+    // The timeout that caused it keeps its own class.
+    expect(classifyError('Script execution timeout after 30000ms')).toBe('timeout');
+  });
+
   it('returns other for unrecognized errors', () => {
     expect(classifyError('some weird error')).toBe('other');
     expect(classifyError('')).toBe('other');
@@ -477,6 +490,7 @@ describe('classifyError', () => {
     expect(classes).toContain('ps_modal_blocking');
     expect(classes).toContain('ps_not_running');
     expect(classes).toContain('timeout');
+    expect(classes).toContain('ps_busy_after_timeout');
     // Perception pipeline (2026-08-25).
     expect(classes).toContain('perception_export_failed');
     expect(classes).toContain('image_decode_failed');

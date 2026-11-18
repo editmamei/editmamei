@@ -197,7 +197,9 @@ export function generateSessionId(now: Date = new Date()): string {
  * (One residual exception, accepted: the empty-envelope phrase rule above
  * still precedes this tier, so a layer literally named "failed with no
  * message" in the suffix would steer its miss to `ps_empty_error` — the
- * synthetics' phrases are distinctive enough that this stays theoretical.)
+ * synthetics' phrases are distinctive enough that this stays theoretical. The
+ * same holds for the `ps_busy_after_timeout` row, whose fixed phrase also
+ * sits above this tier.)
  * Within the tier the patterns are narrow and quote the engine's own
  * wording for the same reason: `/layer.*not found/` used to match "Error
  * applying layer style: Font not found: Futura" and steal it from
@@ -255,6 +257,14 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
   { errorClass: 'file_not_found', pattern: /\bfile_not_found\b/ },
   // ── Empty-envelope synthetics (must precede every cause-word class) ──────
   { errorClass: 'ps_empty_error', pattern: /returned an empty error|failed with no message/i },
+  // ── Refused while Photoshop is still busy (connection.ts settleAfterTimeout).
+  //    The call never ran: the earlier script's timeout is the failure, and it
+  //    already has its own row. The fixed text narrates a timeout and a dialog,
+  //    so it must precede `timeout` and `ps_modal_blocking`. ──────────────────
+  {
+    errorClass: 'ps_busy_after_timeout',
+    pattern: /an earlier script timed out and may still be working/i,
+  },
   // ── Named-target-is-the-wrong-kind (hoisted for the same reason as the
   //    not-found tier below: the message embeds a user-chosen GROUP name, so
   //    at its natural wrong_layer_kind position a group called "Validation" or

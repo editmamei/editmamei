@@ -1487,6 +1487,28 @@ describe('telemetry: ps_ping success reflects whether Photoshop was actually rea
     });
   });
 
+  // A ping refused while Photoshop is still busy after an earlier timeout: Photoshop
+  // is running, so it must not read as ps_not_running.
+  it('keeps ps_busy_after_timeout for a ping refused after an earlier timeout', async () => {
+    const server = new EditmameiServer() as unknown as PingTelemetryServer;
+    server.session.connection = makeConnection({
+      throwOnExecute: new Error(
+        'Photoshop did not answer within 30000ms: an earlier script timed out and may still ' +
+          'be working, or a dialog may be open. This call did not run. Try again once ' +
+          'Photoshop is free.'
+      ),
+    });
+    server.snippetClient = makeSnippetClient();
+    const telemetry = spyTelemetry();
+    server.telemetry = telemetry;
+
+    await server.handleToolCall('ps_ping', {});
+
+    expect(telemetry.recordCall.mock.calls[0][0]).toMatchObject({
+      error_class: 'ps_busy_after_timeout',
+    });
+  });
+
   // The failure reason is per-ping state: a second unreachable ping reports its
   // own reason, not the first one's.
   it('reports each failed ping with its own reason', async () => {
