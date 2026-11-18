@@ -35,6 +35,14 @@ describe('Cursor plugin manifest', () => {
     }
   });
 
+  it('has a square logo on an opaque background, as the marketplace asks', () => {
+    const png = readFileSync(join(REPO_ROOT, manifest.logo));
+    expect(png.subarray(1, 4).toString('ascii')).toBe('PNG');
+    expect(png.readUInt32BE(16)).toBe(png.readUInt32BE(20));
+    // PNG colour type 2 is RGB with no alpha channel, so there is no transparency to show through.
+    expect(png[25]).toBe(2);
+  });
+
   it('starts the published server with npx, unpinned so each restart picks up the latest release', () => {
     const mcp = JSON.parse(readFileSync(join(REPO_ROOT, manifest.mcpServers), 'utf8'));
     expect(mcp).toEqual({
