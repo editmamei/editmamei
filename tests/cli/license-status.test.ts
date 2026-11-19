@@ -11,7 +11,7 @@ const cfg: PolarConfig = { env: 'sandbox', baseUrl: 'https://api.test/v1', organ
 
 function rec(over: Partial<LicenseRecord> = {}): LicenseRecord {
   return {
-    key: 'K',
+    key: 'EDIT-ABCDEF01-2345-4678-89AB-CDEF01234567',
     organization_id: 'org',
     status: 'granted',
     expires_at: null,
@@ -60,8 +60,15 @@ describe('runLicenseStatus', () => {
 
   it('shows Pro unlocked after an online re-check returns granted', async () => {
     writeLicense(rec(), { dir });
-    await runLicenseStatus({ stdout: o, dir, fetchImpl: grantedFetch, config: cfg });
+    let calls = 0;
+    const counting: FetchLike = async (...a) => {
+      calls++;
+      return grantedFetch(...a);
+    };
+    await runLicenseStatus({ stdout: o, dir, fetchImpl: counting, config: cfg });
+    expect(calls).toBe(1);
     expect(out).toMatch(/Pro:\s+unlocked/);
+    expect(out).not.toContain('offline');
   });
 
   it('degrades to the cached verdict + offline note when the re-check fails', async () => {

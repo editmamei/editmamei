@@ -311,17 +311,20 @@ describe('maybeActivateFromEnv', () => {
   });
 
   it('activation failure never throws (boots as Community)', async () => {
+    let calls = 0;
     const boom: FetchLike = async () => {
+      calls++;
       throw new Error('network down');
     };
     await expect(
       // No-op backoff: the thrown fetch is retried, and this test is about
       // booting as Community regardless, not the retry schedule.
       maybeActivateFromEnv(
-        { EDITMAMEI_LICENSE_KEY: 'X' },
+        { EDITMAMEI_LICENSE_KEY: 'EDIT-ABCDEF01-2345-4678-89AB-CDEF01234567' },
         { dir, config: CFG, fetchImpl: boom, client: { sleep: async () => {} } }
       )
     ).resolves.toBeUndefined();
+    expect(calls).toBeGreaterThan(0);
     expect(existsSync(join(dir, 'license.json'))).toBe(false);
   });
 
