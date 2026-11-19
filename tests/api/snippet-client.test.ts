@@ -16,9 +16,11 @@ import type { ChildProcess } from 'node:child_process';
 import {
   GoSnippetClient,
   coreBinaryName,
+  coreBlockedReason,
   resolveCoreBinaryPath,
   ensureExecutable,
 } from '@editmamei/api/snippet-client.ts';
+import { classifyError } from '@editmamei/utils/session-log.ts';
 import { __setChildOpsForTests, __resetForTests } from '@editmamei/platform/run-child.ts';
 
 const hostReason = vi.hoisted(() => vi.fn<() => string | null>(() => null));
@@ -453,5 +455,57 @@ describe('GoSnippetClient — missing binary', () => {
     const client = new GoSnippetClient({ binaryPath: missing });
     const err = await client.build('deselect', {}).catch((e: unknown) => e);
     expect((err as NodeJS.ErrnoException).code).toBe('ENOENT');
+  });
+});
+
+// Smart App Control or antivirus refusing the unsigned binary reaches Node as `spawn UNKNOWN`.
+function spawnError(code: string, binaryPath: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`spawn ${code}`), { code, syscall: `spawn ${binaryPath}` });
+}
+
+describe('coreBlockedReason', () => {
+  const bin = 'C:\\Ext\\editmamei\\dist\\bin\\editmamei-core-win-x64.exe';
+
+  it.each(['UNKNOWN', 'EPERM', 'EACCES'])('explains a Windows spawn %s', (code) => {
+    const reason = coreBlockedReason(spawnError(code, bin), bin, 'win32');
+    expect(reason).toContain("Windows would not start Editmamei's helper program");
+    expect(reason).toContain(bin);
+    expect(reason).toContain('Smart App Control');
+    expect(reason).toContain(`(spawn ${code})`);
+    // Classified as its own failure, not as file_io on the trailing code.
+    expect(classifyError(reason!)).toBe('core_blocked');
+  });
+
+  it('leaves other platforms, other codes and non-spawn errors alone', () => {
+    expect(coreBlockedReason(spawnError('UNKNOWN', bin), bin, 'darwin')).toBeNull();
+    expect(coreBlockedReason(spawnError('ENOENT', bin), bin, 'win32')).toBeNull();
+    const notSpawn = Object.assign(new Error('EPERM'), { code: 'EPERM', syscall: 'open' });
+    expect(coreBlockedReason(notSpawn, bin, 'win32')).toBeNull();
+    expect(coreBlockedReason(new Error('boom'), bin, 'win32')).toBeNull();
+    expect(coreBlockedReason(undefined, bin, 'win32')).toBeNull();
+  });
+});
+
+describe('GoSnippetClient — Windows refuses to start the binary', () => {
+  const bin = join(tmpdir(), 'em-blocked-core', 'editmamei-core-win-x64.exe');
+  const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', realPlatform);
+    __resetForTests();
+  });
+
+  it('replaces spawn UNKNOWN with the reason, keeping the original as the cause', async () => {
+    Object.defineProperty(process, 'platform', { ...realPlatform, value: 'win32' });
+    __setChildOpsForTests({
+      spawn: (() => {
+        throw spawnError('UNKNOWN', bin);
+      }) as never,
+    });
+    const client = new GoSnippetClient({ binaryPath: bin });
+    const err = await client.build('deselect', {}).catch((e: unknown) => e);
+    expect((err as Error).message).toContain("Windows would not start Editmamei's helper program");
+    expect((err as Error).message).toContain(bin);
+    expect(((err as Error).cause as NodeJS.ErrnoException).code).toBe('UNKNOWN');
   });
 });

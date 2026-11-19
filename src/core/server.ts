@@ -1489,11 +1489,16 @@ export class EditmameiServer {
     // shape. When the probe also fails, this collapses to the same
     // "not connected" shape a pingState SCRIPT failure produces below.
     let pingStateSnippet: string | null = null;
+    // Set when Windows refused to start the core binary: Photoshop still answers, but every
+    // other tool will fail, so the ping says why instead of only listing a degraded signal.
+    let coreBlockedNote: string | null = null;
     try {
       pingStateSnippet = await this.snippetClient.build('pingState');
     } catch (err) {
+      const buildError = err instanceof Error ? err.message : String(err);
+      if (classifyError(buildError) === 'core_blocked') coreBlockedNote = buildError;
       this.logger.warn(
-        `pingState snippet build failed (go-core binary missing/broken?): ${err instanceof Error ? err.message : String(err)}`
+        `pingState snippet build failed (go-core binary missing/broken?): ${buildError}`
       );
       const alive = await connection.ping().catch(() => false);
       if (!alive) {
@@ -1681,6 +1686,7 @@ export class EditmameiServer {
               `${actionSetsCount} custom action set(s), ${userTemplates} saved template(s), ` +
               `${openDocuments.length} open document(s)${openDocuments.length ? ': ' + openDocuments.join(', ') : ''}` +
               `${degradedNote}.` +
+              (coreBlockedNote ? ` ${coreBlockedNote}` : '') +
               update.note
           ),
         },
@@ -1692,6 +1698,7 @@ export class EditmameiServer {
         user_templates: userTemplates,
         open_documents: openDocuments,
         degraded,
+        ...(coreBlockedNote ? { message: coreBlockedNote } : {}),
         update_available: this.updateInfo,
         notify_user: update.notify,
       },

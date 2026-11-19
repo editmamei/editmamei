@@ -691,6 +691,44 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
     expect(res.structuredContent.open_documents).toEqual([]); // zero-valued state field
   });
 
+  it('build() blocked by Windows: the ping says why in its text and message', async () => {
+    const server = new EditmameiServer() as unknown as PingServerFull;
+    const fakeConn = makeConnection();
+    server.session.connection = fakeConn;
+    const blocked =
+      "Windows would not start Editmamei's helper program (C:\\x\\editmamei-core-win-x64.exe), " +
+      "so Photoshop tools can't run. (spawn UNKNOWN)";
+    server.snippetClient = {
+      build: async () => {
+        throw new Error(blocked);
+      },
+    };
+    server.updateInfo = null;
+
+    const res = await server.pingPhotoshop();
+
+    expect(res.structuredContent.connected).toBe(true);
+    expect(res.structuredContent.degraded).toEqual(['pingState']);
+    expect((res.structuredContent as { message?: string }).message).toBe(blocked);
+    expect(res.content[0].text).toContain(blocked);
+  });
+
+  it('build() fails for another reason: no message is added', async () => {
+    const server = new EditmameiServer() as unknown as PingServerFull;
+    server.session.connection = makeConnection();
+    server.snippetClient = {
+      build: async () => {
+        throw new Error('go-core binary missing');
+      },
+    };
+    server.updateInfo = null;
+
+    const res = await server.pingPhotoshop();
+
+    expect((res.structuredContent as { message?: string }).message).toBeUndefined();
+    expect(res.content[0].text).not.toContain('go-core binary missing');
+  });
+
   it('build() throws AND the ping() probe also fails: connected:false (Q3)', async () => {
     const server = new EditmameiServer() as unknown as PingServerFull;
     // A detected, running install keeps the not-found and not-running answers
