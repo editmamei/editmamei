@@ -257,6 +257,9 @@ export const ERROR_CLASS_TABLE: Array<{ errorClass: string; pattern: RegExp }> =
   { errorClass: 'file_not_found', pattern: /\bfile_not_found\b/ },
   // ── Empty-envelope synthetics (must precede every cause-word class) ──────
   { errorClass: 'ps_empty_error', pattern: /returned an empty error|failed with no message/i },
+  // ── Windows refused to start the core binary (snippet-client.ts coreBlockedReason).
+  //    The fixed text ends with the spawn code, which `file_io` would match. ─────
+  { errorClass: 'core_blocked', pattern: /would not start Editmamei's helper program/i },
   // ── Refused while Photoshop is still busy (connection.ts settleAfterTimeout).
   //    The call never ran: the earlier script's timeout is the failure, and it
   //    already has its own row. The fixed text narrates a timeout and a dialog,

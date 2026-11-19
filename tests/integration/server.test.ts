@@ -17,6 +17,7 @@ import { resolveEditorRegistration } from '@editmamei/backends/detect-editors.ts
 import type { GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
+import { coreBlockedReason } from '@editmamei/api/snippet-client.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import type { Transport } from '@modelcontextprotocol/server';
@@ -689,6 +690,47 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
     expect(fakeConn.executions).toHaveLength(0); // never reached runScript/pingState
     expect(res.structuredContent.custom_action_sets).toBe(0); // zero-valued state field
     expect(res.structuredContent.open_documents).toEqual([]); // zero-valued state field
+  });
+
+  it('build() blocked by Windows: the ping says why in its text and message', async () => {
+    const server = new EditmameiServer() as unknown as PingServerFull;
+    const fakeConn = makeConnection();
+    server.session.connection = fakeConn;
+    const bin = 'C:\\x\\editmamei-core-win-x64.exe';
+    const blocked = coreBlockedReason(
+      Object.assign(new Error('spawn UNKNOWN'), { code: 'UNKNOWN', syscall: `spawn ${bin}` }),
+      bin,
+      'win32'
+    )!;
+    server.snippetClient = {
+      build: async () => {
+        throw new Error(blocked);
+      },
+    };
+    server.updateInfo = null;
+
+    const res = await server.pingPhotoshop();
+
+    expect(res.structuredContent.connected).toBe(true);
+    expect(res.structuredContent.degraded).toEqual(['pingState']);
+    expect((res.structuredContent as { message?: string }).message).toBe(blocked);
+    expect(res.content[0].text).toContain(blocked);
+  });
+
+  it('build() fails for another reason: no message is added', async () => {
+    const server = new EditmameiServer() as unknown as PingServerFull;
+    server.session.connection = makeConnection();
+    server.snippetClient = {
+      build: async () => {
+        throw new Error('go-core binary missing');
+      },
+    };
+    server.updateInfo = null;
+
+    const res = await server.pingPhotoshop();
+
+    expect((res.structuredContent as { message?: string }).message).toBeUndefined();
+    expect(res.content[0].text).not.toContain('go-core binary missing');
   });
 
   it('build() throws AND the ping() probe also fails: connected:false (Q3)', async () => {

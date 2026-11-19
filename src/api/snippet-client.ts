@@ -48,6 +48,34 @@ export function ensureExecutable(binaryPath: string): void {
   }
 }
 
+/** Spawn error codes Node reports when Windows refuses to start a program that exists. */
+const REFUSED_SPAWN_CODES = new Set(['UNKNOWN', 'EPERM', 'EACCES']);
+
+/**
+ * Why the core binary could not start, when Windows refused to run it; otherwise null.
+ *
+ * An application-control block (Smart App Control) or an antivirus block reaches Node as
+ * `spawn UNKNOWN`, a code that names no cause, and the call fails with nothing to act on.
+ * The binary is unsigned, which is what those blocks key on.
+ */
+export function coreBlockedReason(
+  err: unknown,
+  binaryPath: string,
+  os: string = process.platform
+): string | null {
+  if (os !== 'win32') return null;
+  const { code, syscall } = (err ?? {}) as { code?: unknown; syscall?: unknown };
+  if (typeof code !== 'string' || !REFUSED_SPAWN_CODES.has(code)) return null;
+  if (typeof syscall === 'string' && !syscall.startsWith('spawn')) return null;
+  return (
+    `Windows would not start Editmamei's helper program (${binaryPath}), so most Photoshop ` +
+    `tools can't run. Smart App Control or antivirus software blocking it is the usual ` +
+    `cause, and a damaged install the other. Check Windows Security > Protection history ` +
+    `and your antivirus for a block on this file and allow it, or reinstall Editmamei, ` +
+    `then try again. (spawn ${code})`
+  );
+}
+
 export interface SnippetClient {
   /**
    * Build a snippet's inner JSX body from its name + params. Rejects if the
@@ -236,7 +264,10 @@ export class GoSnippetClient implements SnippetClient {
     } catch (err) {
       // No core binary ships for an OS Photoshop can't run on, so the spawn fails with
       // ENOENT. Say why instead: the raw spawn error sends the reader after a missing file.
-      const reason = (err as { code?: string }).code === 'ENOENT' ? unsupportedHostReason() : null;
+      const reason =
+        (err as { code?: string }).code === 'ENOENT'
+          ? unsupportedHostReason()
+          : coreBlockedReason(err, this.binaryPath);
       if (reason) throw new Error(reason, { cause: err });
       throw err;
     }
