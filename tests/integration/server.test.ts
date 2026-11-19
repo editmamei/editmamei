@@ -17,6 +17,7 @@ import { resolveEditorRegistration } from '@editmamei/backends/detect-editors.ts
 import type { GimpInstall } from '@editmamei/backends/gimp/detect.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient } from '../fixtures/fake-snippet-client.ts';
+import { coreBlockedReason } from '@editmamei/api/snippet-client.ts';
 import { useSessionLogSandbox } from '../fixtures/session-log-sandbox.ts';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import type { Transport } from '@modelcontextprotocol/server';
@@ -695,9 +696,12 @@ describe('ps_ping — build() failure falls back to a liveness probe instead of 
     const server = new EditmameiServer() as unknown as PingServerFull;
     const fakeConn = makeConnection();
     server.session.connection = fakeConn;
-    const blocked =
-      "Windows would not start Editmamei's helper program (C:\\x\\editmamei-core-win-x64.exe), " +
-      "so Photoshop tools can't run. (spawn UNKNOWN)";
+    const bin = 'C:\\x\\editmamei-core-win-x64.exe';
+    const blocked = coreBlockedReason(
+      Object.assign(new Error('spawn UNKNOWN'), { code: 'UNKNOWN', syscall: `spawn ${bin}` }),
+      bin,
+      'win32'
+    )!;
     server.snippetClient = {
       build: async () => {
         throw new Error(blocked);

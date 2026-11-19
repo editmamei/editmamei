@@ -68,10 +68,11 @@ export function coreBlockedReason(
   if (typeof code !== 'string' || !REFUSED_SPAWN_CODES.has(code)) return null;
   if (typeof syscall === 'string' && !syscall.startsWith('spawn')) return null;
   return (
-    `Windows would not start Editmamei's helper program (${binaryPath}), so Photoshop tools ` +
-    `can't run. Smart App Control or antivirus software blocking it is the usual cause. ` +
-    `Check Windows Security > Protection history and your antivirus for a block on this ` +
-    `file, allow it, then try again. (spawn ${code})`
+    `Windows would not start Editmamei's helper program (${binaryPath}), so most Photoshop ` +
+    `tools can't run. Smart App Control or antivirus software blocking it is the usual ` +
+    `cause, and a damaged install the other. Check Windows Security > Protection history ` +
+    `and your antivirus for a block on this file and allow it, or reinstall Editmamei, ` +
+    `then try again. (spawn ${code})`
   );
 }
 
