@@ -28,6 +28,32 @@ const UNVERSIONED_PROG_ID = 'Photoshop.Application';
 /** `Photoshop.Application` or `Photoshop.Application.<digits>`, nothing else. */
 const PROG_ID_PATTERN = /^Photoshop\.Application(\.\d+)?$/;
 
+const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+const UTF16LE_BOM = Buffer.from([0xff, 0xfe]);
+
+/**
+ * The bytes of a script file for `$.evalFile`: UTF-8 with a byte-order mark.
+ *
+ * Without the mark, ExtendScript recognizes UTF-8 only from a file's opening
+ * bytes and otherwise decodes it in the system code page. Wrapped scripts carry
+ * non-ASCII text past that window, so on a code page such as 949 every call
+ * failed with "Cannot convert", and on 1252 such text arrived garbled.
+ */
+export function encodeScriptFile(script: string): Buffer {
+  return Buffer.concat([UTF8_BOM, Buffer.from(script, 'utf8')]);
+}
+
+/**
+ * The bytes of the VBScript shim: UTF-16LE with a byte-order mark.
+ *
+ * `cscript` reads a shim without a mark in the system ANSI code page, which
+ * garbled a script path containing non-ASCII characters (an account name in
+ * %TEMP%), so Photoshop could not find the script file.
+ */
+export function encodeShimFile(shim: string): Buffer {
+  return Buffer.concat([UTF16LE_BOM, Buffer.from(shim, 'utf16le')]);
+}
+
 /**
  * Drives Photoshop on Windows through COM.
  *
@@ -83,8 +109,8 @@ export class WindowsScriptRunner implements PlatformAdapter {
   private async runOnce(script: string, timeoutMs: number): Promise<unknown> {
     const dir = await TempDir.create('editmamei-win-');
     try {
-      const scriptPath = await dir.write('script.jsx', script);
-      const shimPath = await dir.write('run.vbs', this.buildComShim(scriptPath));
+      const scriptPath = await dir.write('script.jsx', encodeScriptFile(script));
+      const shimPath = await dir.write('run.vbs', encodeShimFile(this.buildComShim(scriptPath)));
 
       // Deliberately not execFileAsync: a Photoshop modal dialog blocks the COM
       // call indefinitely, and only a killable child gets us out of it. The

@@ -29,10 +29,11 @@ const NON_ASCII = /[^ -~]/g;
  *   // → layer.name = "foo\"bar";
  */
 export function jsLit(value: unknown): string {
-  // Every character outside printable ASCII is re-escaped as \uXXXX. The
-  // emitted .jsx is written UTF-8 with no BOM and carries no `#encoding`
-  // directive, so ExtendScript decodes it by the platform codepage: a raw 'ü'
-  // arrives mojibake and every comparison against it misses. The escape is
+  // Every character outside printable ASCII is re-escaped as \uXXXX. On macOS
+  // the emitted .jsx is written UTF-8 with no BOM and carries no `#encoding`
+  // directive, so ExtendScript can decode it by the platform codepage: a raw 'ü'
+  // arrives mojibake and every comparison against it misses. (Windows writes a
+  // BOM; see encodeScriptFile in windows-runner.ts.) The escape is
   // pure ASCII, survives any codepage, and the JS parser turns it back into
   // the exact character. Astral characters need no special case here — JS
   // strings are UTF-16, so each surrogate half escapes separately and the

@@ -180,8 +180,9 @@ class ExtendScriptPhotoshopAPI implements PhotoshopAPI {
   // produces routes through here, errors included, so this covers messages as
   // well as values. It does NOT cover the Windows shim's own COM failures
   // (windows-runner.ts echoes Err.Description straight to stdout), nor raw
-  // non-ASCII sitting in a snippet's own source text — that arrives by a
-  // different path and is not addressed here.
+  // non-ASCII in a snippet's own source text. That reaches Photoshop in the
+  // script file, which Windows writes with a byte-order mark
+  // (encodeScriptFile in windows-runner.ts).
   function __mcpJsonEncode(v, __depth) {
     if (__depth === undefined) __depth = 0;
     if (__depth > 32) return '"<<truncated:max-depth>>"';
