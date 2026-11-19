@@ -19,6 +19,9 @@
 import { VERSION } from '../version.js';
 import { resolveInstallChannel, type InstallChannel } from '../install-channel.js';
 import { isSecureEndpoint } from '../utils/secure-endpoint.js';
+import { Logger } from '../utils/logger.js';
+
+const logger = new Logger('UpdateCheck');
 
 export interface UpdateInfo {
   /** The version currently running. */
@@ -83,7 +86,9 @@ export function resolveUpdateCheckUrl(
 ): string | null {
   const override = env.EDITMAMEI_UPDATE_CHECK_URL;
   if (!override) return DEFAULT_LATEST_MANIFEST_URL;
-  return isSecureEndpoint(override) ? override : null;
+  if (isSecureEndpoint(override)) return override;
+  logger.warn('EDITMAMEI_UPDATE_CHECK_URL is not an https URL; skipping the update check');
+  return null;
 }
 
 /** Fetches the `latest` version manifest, or null on any failure. Injectable for tests. */

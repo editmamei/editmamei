@@ -3,11 +3,9 @@
  * machine's own loopback address, for local development against a server on the same machine.
  */
 
-/** Whether `host` (a URL's `hostname`) names this machine's loopback interface. */
+/** Whether `host` (a URL's `hostname`, where IPv6 is always bracketed) names this machine's loopback interface. */
 export function isLoopbackHost(host: string): boolean {
-  return (
-    host === 'localhost' || host === '::1' || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host)
-  );
+  return host === 'localhost' || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host);
 }
 
 /** Whether `url` parses and may receive data from this machine (see the module comment). */

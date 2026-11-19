@@ -9,6 +9,9 @@ describe('isSecureEndpoint', () => {
     'http://127.0.0.1:8787/x',
     'http://127.5.6.7',
     'http://[::1]:8787',
+    'HTTP://LOCALHOST:8787',
+    // The host is localhost; the part before @ is userinfo.
+    'http://evil.example@localhost:8787',
   ])('accepts %s', (url) => {
     expect(isSecureEndpoint(url)).toBe(true);
   });
@@ -18,6 +21,11 @@ describe('isSecureEndpoint', () => {
     'http://192.168.1.10:8787',
     'http://localhost.example.com',
     'http://127.0.0.1.example.com',
+    // The host is evil.example; "localhost" is only userinfo.
+    'http://localhost@evil.example',
+    'http://localhost.',
+    'http://[::ffff:127.0.0.1]',
+    'http://127.999.0.1',
     'ftp://example.com',
     'file:///etc/passwd',
     'javascript:alert(1)',

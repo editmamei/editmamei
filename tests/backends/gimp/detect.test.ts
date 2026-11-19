@@ -68,6 +68,10 @@ describe('detectGimp', () => {
     ])(
       'on %s, ignores a non-absolute or non-local override %s without checking it, then searches as usual',
       async (platform, override) => {
+        const conventional =
+          platform === 'win32'
+            ? 'C:\\Program Files\\GIMP 3\\bin\\gimp-console-3.exe'
+            : '/var/lib/flatpak/app/org.gimp.GIMP';
         const checked: string[] = [];
         const install = await detectGimp({
           platform,
@@ -75,11 +79,12 @@ describe('detectGimp', () => {
           homedir: '/home/u',
           exists: async (p) => {
             checked.push(p);
-            return false;
+            return p === conventional;
           },
         });
         expect(checked).not.toContain(override);
-        expect(install).toBeNull();
+        expect(install?.source).toBe(platform === 'win32' ? 'conventional' : 'flatpak');
+        expect(install?.path).toBe(conventional);
       }
     );
   });
