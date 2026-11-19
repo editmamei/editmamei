@@ -21,7 +21,7 @@ import {
   isModuleFileDigestArray,
   type ModuleFileDigest,
 } from './signing.js';
-import { installModule, readInstalledModule } from './store.js';
+import { installModule, readInstalledModule, VERSION_RE } from './store.js';
 import { KERNEL_ABI } from '../kernel/host-api.js';
 import { readLicense, type LicenseStoreOptions } from '../license/store.js';
 import { Logger } from '../utils/logger.js';
@@ -43,7 +43,7 @@ const logger = new Logger('Modules');
  * `compareVersions`'s "already validated" precondition holds for every caller.
  */
 const SKU_RE = /^[a-z0-9-]{2,32}$/;
-export const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+export { VERSION_RE };
 
 /**
  * Hard cap on a downloaded module artifact — defense-in-depth against a hostile

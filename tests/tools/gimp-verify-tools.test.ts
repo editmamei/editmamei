@@ -566,7 +566,7 @@ describe('privacy.send_previews_to_llm, read from settings.json (no injected pre
         join(home, '.editmamei', 'settings.json'),
         JSON.stringify({
           privacy: { send_previews_to_llm: false },
-          telemetry: { install_id: 'keep0000000000' },
+          telemetry: { install_id: 'beef0000000000000000000000000000' },
         })
       );
       // os.homedir() reads HOME on POSIX and USERPROFILE on Windows at call time.

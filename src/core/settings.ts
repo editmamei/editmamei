@@ -82,7 +82,7 @@ export interface Settings {
   telemetry: TelemetrySettings;
   privacy: PrivacySettings;
   automation: AutomationSettings;
-  /** Absolute path to the Photoshop binary; null = auto-detect (PHOTOSHOP_PATH still wins). */
+  /** Kept so existing files load unchanged; nothing reads it. Photoshop detection reads PHOTOSHOP_PATH. */
   ps_path: string | null;
   /**
    * Boot-time "is a newer Editmamei published?" check (opt-out: defaults true). When on, the
@@ -134,6 +134,11 @@ export function settingsPath(opts: LoadSettingsOptions = {}): string {
 /** Mint an install id: 32 hex chars, salted and random but stable — pseudonymous, not anonymous. Matches the server's id pattern. */
 export function mintInstallId(): string {
   return randomBytes(16).toString('hex');
+}
+
+/** Whether `v` has the shape `mintInstallId` produces. Anything else is replaced with a new id. */
+export function isInstallId(v: unknown): v is string {
+  return typeof v === 'string' && /^[0-9a-f]{32}$/.test(v);
 }
 
 const EDITOR_PINS: readonly EditorPin[] = ['auto', 'photoshop', 'gimp'];
@@ -226,11 +231,8 @@ function coerce(raw: unknown, installId: string): Settings {
       diagnostics: typeof t.diagnostics === 'boolean' ? t.diagnostics : base.telemetry.diagnostics,
       // No fallback on purpose: a file from an older version must not gain this setting.
       ...(typeof t.features === 'boolean' ? { features: t.features } : {}),
-      // Preserve an existing id; mint only when absent/blank.
-      install_id:
-        typeof t.install_id === 'string' && t.install_id.length > 0
-          ? t.install_id
-          : base.telemetry.install_id,
+      // Preserve an existing well-formed id; otherwise use the one passed in.
+      install_id: isInstallId(t.install_id) ? t.install_id : base.telemetry.install_id,
     },
     privacy: {
       send_previews_to_llm:
@@ -348,11 +350,14 @@ export function loadSettings(opts: LoadSettingsOptions = {}): LoadSettingsResult
   try {
     const raw = readFileSync(path, 'utf8');
     const parsed = raw.trim().length === 0 ? {} : (JSON.parse(raw) as unknown);
-    // If a file exists but has no id (hand-created / older), mint one and persist it so
-    // the id stays stable across boots.
+    // If a file exists with no id or a malformed one (hand-created / hand-edited / older),
+    // mint one and persist it so the id stays stable across boots. A malformed id would
+    // otherwise be sent with every event and refused by the server.
     const existingId = (parsed as { telemetry?: { install_id?: unknown } })?.telemetry?.install_id;
-    const id =
-      typeof existingId === 'string' && existingId.length > 0 ? existingId : mintInstallId();
+    const id = isInstallId(existingId) ? existingId : mintInstallId();
+    if (id !== existingId && existingId !== undefined && existingId !== '') {
+      logger.warn('settings.json install_id was malformed; replaced it with a new one');
+    }
     const settings = coerce(parsed, id);
     if (id !== existingId) {
       try {

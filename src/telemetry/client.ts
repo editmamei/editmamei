@@ -265,11 +265,13 @@ export class TelemetryClient {
   constructor(opts: TelemetryClientOptions) {
     this.settings = opts.settings;
     this.transport = opts.transport ?? httpTransport();
-    this.endpoint = opts.endpoint ?? resolveEndpoint();
+    // A refused endpoint override resolves to null: this client then records and sends nothing.
+    const endpoint = opts.endpoint ?? resolveEndpoint();
+    this.endpoint = endpoint ?? '';
     this.now = opts.now ?? (() => new Date());
     this.flushIntervalMs = opts.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
     this.maxBatchSize = opts.maxBatchSize ?? MAX_BATCH_SIZE;
-    this.active = opts.active ?? (EDITION !== 'dev' && !isTestEnv());
+    this.active = endpoint !== null && (opts.active ?? (EDITION !== 'dev' && !isTestEnv()));
     this.outboxOpts = {
       ...(opts.outboxDir ? { dir: opts.outboxDir } : {}),
       ...(opts.outboxPid !== undefined ? { pid: opts.outboxPid } : {}),

@@ -765,7 +765,7 @@ describe('createGimpSelectionTools', () => {
           join(home, '.editmamei', 'settings.json'),
           JSON.stringify({
             privacy: { send_previews_to_llm: false },
-            telemetry: { install_id: 'keep0000000000' },
+            telemetry: { install_id: 'beef0000000000000000000000000000' },
           })
         );
         process.env.HOME = home;

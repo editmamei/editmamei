@@ -58,6 +58,30 @@ describe('detectGimp', () => {
       expect(install?.source).toBe('conventional');
       expect(install?.path).toBe('C:\\Program Files\\GIMP 3\\bin\\gimp-console-3.exe');
     });
+
+    it.each([
+      ['win32', 'gimp-console.exe'],
+      ['win32', '\\\\server\\share\\gimp-console.exe'],
+      ['win32', '\\gimp\\gimp-console.exe'],
+      ['linux', 'bin/gimp-console'],
+      ['linux', '${user_config.gimp_path}'],
+    ])(
+      'on %s, ignores a non-absolute or non-local override %s without checking it, then searches as usual',
+      async (platform, override) => {
+        const checked: string[] = [];
+        const install = await detectGimp({
+          platform,
+          env: { EDITMAMEI_GIMP_PATH: override, ProgramFiles: 'C:\\Program Files' },
+          homedir: '/home/u',
+          exists: async (p) => {
+            checked.push(p);
+            return false;
+          },
+        });
+        expect(checked).not.toContain(override);
+        expect(install).toBeNull();
+      }
+    );
   });
 
   describe('windows', () => {

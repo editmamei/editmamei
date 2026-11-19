@@ -65,7 +65,7 @@ describe('telemetry.features', () => {
   it('reads as not asked until there is a choice', async () => {
     await writeFile(
       settingsPath({ dir }),
-      JSON.stringify({ telemetry: { usage: true, install_id: 'x'.repeat(32) } })
+      JSON.stringify({ telemetry: { usage: true, install_id: 'f'.repeat(32) } })
     );
     const lines: string[] = [];
     runConfig(['get', 'telemetry.features'], { ...io(), out: (s) => lines.push(s) });
@@ -75,7 +75,7 @@ describe('telemetry.features', () => {
   it('records the choice as made through the CLI', async () => {
     await writeFile(
       settingsPath({ dir }),
-      JSON.stringify({ telemetry: { usage: true, install_id: 'x'.repeat(32) } })
+      JSON.stringify({ telemetry: { usage: true, install_id: 'f'.repeat(32) } })
     );
     runConfig(['set', 'telemetry.features', 'false'], io());
     const { settings } = loadSettings({ dir });
@@ -133,6 +133,15 @@ describe('config set', () => {
     runConfig(['set', 'ps_path', '/tmp/x'], io());
     runConfig(['set', 'ps_path', ''], io());
     expect(loadSettings({ dir }).settings.ps_path).toBeNull();
+  });
+
+  it('says ps_path has no effect and names PHOTOSHOP_PATH, only when a path is set', () => {
+    runConfig(['set', 'ps_path', '/Applications/PS/Photoshop.app'], io());
+    expect(err.join('')).toContain('ps_path has no effect');
+    expect(err.join('')).toContain('PHOTOSHOP_PATH');
+    err.length = 0;
+    runConfig(['set', 'ps_path', 'null'], io());
+    expect(err.join('')).toBe('');
   });
 
   it('sets gimp_path and clears it with "null" or empty string', () => {

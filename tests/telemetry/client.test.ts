@@ -118,6 +118,28 @@ describe('active gate', () => {
     await c.flush();
     expect(rec.batches).toHaveLength(0);
   });
+
+  it('is inert when the endpoint override is refused, even when asked to be active', async () => {
+    vi.stubEnv('EDITMAMEI_TELEMETRY_URL', 'http://example.com/v1/telemetry');
+    try {
+      const rec = recorder();
+      const c = new TelemetryClient({
+        settings: makeSettings(),
+        getPsVersion: () => '2026',
+        transport: rec.transport,
+        active: true,
+        flushIntervalMs: 10_000_000,
+        outboxDir: freshOutboxDir(),
+      });
+      expect(c.isActive()).toBe(false);
+      c.recordCall({ tool: 'photoshop_x', success: true, duration_ms: 1, error_class: null });
+      expect(c.pendingCount()).toBe(0);
+      await c.flush();
+      expect(rec.batches).toHaveLength(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe('consent gating', () => {
