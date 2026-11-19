@@ -1,15 +1,15 @@
 {
   "name": "editmamei",
-  "version": "1.11.0",
+  "version": "1.11.1",
   "private": true,
   "description": "Photoshop and GIMP MCP server for AI photo editing, layer by layer with real tools",
   "mcpName": "io.github.editmamei/editmamei-photoshop-mcp",
   "editmamei": {
     "fixesByVersion": {
+      "1.11.1": ["ps_create_document", "ps_document", "ps_inspect"],
       "1.11.0": ["gimp_export", "gimp_save_xcf", "gimp_add_adjustment", "ps_select"],
       "1.10.2": ["ps_relight"],
-      "1.9.3": ["gimp_text"],
-      "1.9.1": ["ps_replace_sky"]
+      "1.9.3": ["gimp_text"]
     }
   },
   "main": "dist/index.js",

@@ -10,6 +10,19 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.11.1] — 2026-11-19
+
+### Fixed
+
+- **Photoshop on Windows in every language.** On Windows set to Japanese, Chinese, Korean or
+  another language whose code page couldn't read the scripts, every Photoshop call failed with
+  "Cannot convert". Fixes #214.
+  - Non-English text written into a script, such as in `ps_execute_script` code, no longer arrives
+    garbled on any Windows.
+- **Windows accounts with non-English names.** When the account name in the temp folder path had
+  characters outside English letters, every Photoshop call failed with "File or folder does not
+  exist". Fixes #215.
+
 ## [1.11.0] — 2026-11-17
 
 ### Added
