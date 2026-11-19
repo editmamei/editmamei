@@ -31,6 +31,17 @@ describe('TempDir', () => {
     }
   });
 
+  it('writes bytes exactly as given, byte-order mark included', async () => {
+    const dir = await TempDir.create('editmamei-test-');
+    try {
+      const bytes = Uint8Array.from([0xff, 0xfe, 0x41, 0x00, 0x5c, 0xd5]);
+      const written = await dir.write('bytes.bin', bytes);
+      expect([...(await readFile(written))]).toEqual([...bytes]);
+    } finally {
+      await dir.cleanup();
+    }
+  });
+
   it('cleanup() is idempotent and best-effort (second call does not throw)', async () => {
     const dir = await TempDir.create('editmamei-test-');
     await dir.cleanup();

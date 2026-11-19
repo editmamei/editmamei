@@ -82,10 +82,11 @@ export class TempDir {
     return join(this.root, name);
   }
 
-  /** Write a file with the given contents inside this temp dir. */
-  async write(name: string, contents: string): Promise<string> {
+  /** Write a file inside this temp dir: a string as UTF-8, bytes exactly as given. */
+  async write(name: string, contents: string | Uint8Array): Promise<string> {
     const full = this.path(name);
-    await fsOps.writeFile(full, contents, 'utf8');
+    if (typeof contents === 'string') await fsOps.writeFile(full, contents, 'utf8');
+    else await fsOps.writeFile(full, contents);
     return full;
   }
 
