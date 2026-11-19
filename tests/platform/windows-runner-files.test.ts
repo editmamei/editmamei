@@ -11,12 +11,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * non-ASCII temp path.
  */
 
-const written = vi.hoisted(() => ({ script: null as Buffer | null, shim: null as Buffer | null }));
+const written = vi.hoisted(() => ({
+  script: null as Buffer | null,
+  shim: null as Buffer | null,
+  shimPath: null as string | null,
+}));
 
 vi.mock('@editmamei/platform/run-child.ts', () => ({
   runChildWithTimeout: vi.fn(async (_cmd: string, args: string[]) => {
     // Read the files while they exist: the runner removes its temp dir after.
     const shimPath = args[1];
+    written.shimPath = shimPath;
     written.shim = await readFile(shimPath);
     written.script = await readFile(join(dirname(shimPath), 'script.jsx'));
     return { stdout: 'pong\r\n', stderr: '', exitCode: 0 };
@@ -49,6 +54,7 @@ describe('WindowsScriptRunner — files on disk', () => {
   beforeEach(() => {
     written.script = null;
     written.shim = null;
+    written.shimPath = null;
   });
 
   it('writes the script and the shim in those encodings', async () => {
@@ -60,8 +66,11 @@ describe('WindowsScriptRunner — files on disk', () => {
 
     expect(written.shim).not.toBeNull();
     expect([...written.shim!.subarray(0, 2)]).toEqual([0xff, 0xfe]);
-    const shimText = written.shim!.subarray(2).toString('utf16le');
-    expect(shimText).toContain('DoJavaScript');
-    expect(shimText).toContain('script.jsx');
+    // The whole shim, composed for the script file the runner actually wrote.
+    const scriptPath = join(dirname(written.shimPath!), 'script.jsx');
+    const expected = (runner as unknown as { buildComShim(p: string): string }).buildComShim(
+      scriptPath
+    );
+    expect(written.shim!.equals(encodeShimFile(expected))).toBe(true);
   });
 });

@@ -36,8 +36,8 @@ const UTF16LE_BOM = Buffer.from([0xff, 0xfe]);
  *
  * Without the mark, ExtendScript recognizes UTF-8 only from a file's opening
  * bytes and otherwise decodes it in the system code page. Wrapped scripts carry
- * non-ASCII text past that window, so on a code page such as 949 every call
- * failed with "Cannot convert", and on 1252 such text arrived garbled.
+ * non-ASCII text past that window, which a code page such as 949 rejects with
+ * "Cannot convert" and 1252 decodes garbled.
  */
 export function encodeScriptFile(script: string): Buffer {
   return Buffer.concat([UTF8_BOM, Buffer.from(script, 'utf8')]);
@@ -47,8 +47,8 @@ export function encodeScriptFile(script: string): Buffer {
  * The bytes of the VBScript shim: UTF-16LE with a byte-order mark.
  *
  * `cscript` reads a shim without a mark in the system ANSI code page, which
- * garbled a script path containing non-ASCII characters (an account name in
- * %TEMP%), so Photoshop could not find the script file.
+ * garbles a script path containing non-ASCII characters (an account name in
+ * %TEMP%), so Photoshop cannot find the script file.
  */
 export function encodeShimFile(shim: string): Buffer {
   return Buffer.concat([UTF16LE_BOM, Buffer.from(shim, 'utf16le')]);

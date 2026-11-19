@@ -182,7 +182,7 @@ class ExtendScriptPhotoshopAPI implements PhotoshopAPI {
   // (windows-runner.ts echoes Err.Description straight to stdout), nor raw
   // non-ASCII in a snippet's own source text. That reaches Photoshop in the
   // script file, which Windows writes with a byte-order mark
-  // (encodeScriptFile in windows-runner.ts).
+  // (encodeScriptFile in windows-runner.ts); macOS does not yet.
   function __mcpJsonEncode(v, __depth) {
     if (__depth === undefined) __depth = 0;
     if (__depth > 32) return '"<<truncated:max-depth>>"';
