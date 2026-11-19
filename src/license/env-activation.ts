@@ -30,6 +30,7 @@
 import { Logger } from '../utils/logger.js';
 import { readLicense } from './store.js';
 import { activate, isProEntitled, reactivateAtBoot, type LicenseOps } from './entitlement.js';
+import { isUnfilledPlaceholder } from './key-format.js';
 import { provisionModules, type ProvisionOptions } from '../delivery/provision.js';
 import { readInstalledModule, PRO_SKU } from '../delivery/store.js';
 
@@ -63,7 +64,9 @@ export async function maybeActivateFromEnv(
   delivery: EnvActivateDelivery = {}
 ): Promise<void> {
   const key = (env.EDITMAMEI_LICENSE_KEY ?? '').trim();
-  if (!key) return;
+  // An extension whose license field was never filled in passes the unreplaced
+  // `${user_config.license_key}` literal: that is no key, same as blank.
+  if (!key || isUnfilledPlaceholder(key)) return;
 
   // Phase 1 — activate, but only when the cache doesn't already hold this key.
   // Polar activations stack (they don't dedupe by device), so re-activating an

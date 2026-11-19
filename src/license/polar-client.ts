@@ -10,6 +10,7 @@
  */
 
 import type { PolarConfig } from './config.js';
+import { isLicenseKeyFormat, LICENSE_KEY_EXAMPLE } from './key-format.js';
 
 export type FetchLike = (
   url: string,
@@ -200,6 +201,17 @@ export class PolarLicenseClient {
     body: Record<string, unknown>,
     opts: { retry?: boolean } = {}
   ): Promise<T> {
+    // Every endpoint here carries the key. Anything that isn't shaped like one is
+    // refused locally, so a typo or an unfilled config placeholder never leaves
+    // the machine.
+    if (typeof body.key !== 'string' || !isLicenseKeyFormat(body.key, this.cfg.env)) {
+      throw new PolarLicenseError(
+        `That isn't an Editmamei license key. Keys look like ${LICENSE_KEY_EXAMPLE}; ` +
+          'copy yours again from your purchase email.',
+        0,
+        'invalid_license'
+      );
+    }
     const once = () => this.postOnce<T>(path, body);
     return opts.retry === true ? this.withRetry(once) : once();
   }

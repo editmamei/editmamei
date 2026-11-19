@@ -8,6 +8,8 @@ const cfg: PolarConfig = {
   organizationId: 'org_x',
 };
 
+const KEY = 'EDIT-77777777-7777-4777-8777-777777777777';
+
 interface Call {
   url: string;
   init: { method: string; headers: Record<string, string>; body: string };
@@ -33,13 +35,52 @@ const VALIDATED = {
   display_key: '****-X',
 };
 
+describe('PolarLicenseClient key format gate', () => {
+  const production: PolarConfig = { ...cfg, env: 'production' };
+
+  it.each([
+    ['validate', (c: PolarLicenseClient, k: string) => c.validate(k)],
+    ['activate', (c: PolarLicenseClient, k: string) => c.activate(k, 'devhash')],
+    ['deactivate', (c: PolarLicenseClient, k: string) => c.deactivate(k, 'act_1')],
+  ])('%s refuses a malformed key without a request', async (_name, call) => {
+    for (const bad of ['${user_config.license_key}', 'K', '', `${KEY} x`]) {
+      const { fetchImpl, calls } = fake(200, VALIDATED);
+      await expect(call(new PolarLicenseClient(cfg, fetchImpl), bad)).rejects.toMatchObject({
+        code: 'invalid_license',
+        httpStatus: 0,
+      });
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('production refuses a key without the EDIT prefix that the sandbox accepts', async () => {
+    const other = 'ETTA-77777777-7777-4777-8777-777777777777';
+    const prod = fake(200, VALIDATED);
+    await expect(
+      new PolarLicenseClient(production, prod.fetchImpl).validate(other)
+    ).rejects.toMatchObject({ code: 'invalid_license' });
+    expect(prod.calls).toHaveLength(0);
+
+    const sandbox = fake(200, VALIDATED);
+    await new PolarLicenseClient(cfg, sandbox.fetchImpl).validate(other);
+    expect(sandbox.calls).toHaveLength(1);
+  });
+
+  it('production sends a well-formed key exactly as given', async () => {
+    const { fetchImpl, calls } = fake(200, VALIDATED);
+    const lower = KEY.toLowerCase();
+    await new PolarLicenseClient(production, fetchImpl).validate(lower);
+    expect(JSON.parse(calls[0].init.body).key).toBe(lower);
+  });
+});
+
 describe('PolarLicenseClient', () => {
   it('validate posts {key, organization_id} tokenless to the customer-portal endpoint', async () => {
     const { fetchImpl, calls } = fake(200, VALIDATED);
-    const v = await new PolarLicenseClient(cfg, fetchImpl).validate('K');
+    const v = await new PolarLicenseClient(cfg, fetchImpl).validate(KEY);
     expect(v.status).toBe('granted');
     expect(calls[0].url).toBe('https://api.test/v1/customer-portal/license-keys/validate');
-    expect(JSON.parse(calls[0].init.body)).toEqual({ key: 'K', organization_id: 'org_x' });
+    expect(JSON.parse(calls[0].init.body)).toEqual({ key: KEY, organization_id: 'org_x' });
     // tokenless: no Authorization header, but a UA is set (Cloudflare 1010 lesson)
     expect(calls[0].init.headers.authorization).toBeUndefined();
     expect(calls[0].init.headers['user-agent']).toBeTruthy();
@@ -50,10 +91,10 @@ describe('PolarLicenseClient', () => {
       id: 'act',
       license_key: { id: 'lk', display_key: '****-X', status: 'granted', expires_at: null },
     });
-    await new PolarLicenseClient(cfg, fetchImpl).activate('K', 'devhash');
+    await new PolarLicenseClient(cfg, fetchImpl).activate(KEY, 'devhash');
     expect(calls[0].url).toContain('/customer-portal/license-keys/activate');
     expect(JSON.parse(calls[0].init.body)).toEqual({
-      key: 'K',
+      key: KEY,
       organization_id: 'org_x',
       label: 'devhash',
     });
@@ -61,10 +102,10 @@ describe('PolarLicenseClient', () => {
 
   it('deactivate posts the activation id', async () => {
     const { fetchImpl, calls } = fake(200, {});
-    await new PolarLicenseClient(cfg, fetchImpl).deactivate('K', 'act_9');
+    await new PolarLicenseClient(cfg, fetchImpl).deactivate(KEY, 'act_9');
     expect(calls[0].url).toContain('/deactivate');
     expect(JSON.parse(calls[0].init.body)).toEqual({
-      key: 'K',
+      key: KEY,
       organization_id: 'org_x',
       activation_id: 'act_9',
     });
@@ -75,7 +116,7 @@ describe('PolarLicenseClient', () => {
       error: 'NotPermitted',
       detail: 'License key activation limit already reached',
     });
-    await expect(new PolarLicenseClient(cfg, fetchImpl).activate('K', 'd')).rejects.toMatchObject({
+    await expect(new PolarLicenseClient(cfg, fetchImpl).activate(KEY, 'd')).rejects.toMatchObject({
       code: 'seat_limit_reached',
       httpStatus: 403,
     });
@@ -83,7 +124,7 @@ describe('PolarLicenseClient', () => {
 
   it('maps a generic non-OK to invalid_license', async () => {
     const { fetchImpl } = fake(404, { error: 'NotFound' });
-    await expect(new PolarLicenseClient(cfg, fetchImpl).validate('K')).rejects.toMatchObject({
+    await expect(new PolarLicenseClient(cfg, fetchImpl).validate(KEY)).rejects.toMatchObject({
       code: 'invalid_license',
     });
   });
@@ -95,7 +136,7 @@ describe('PolarLicenseClient', () => {
     // No-op backoff: a network error is retried, and this test is about the code
     // it settles on, not the wall-clock it spends getting there.
     await expect(
-      new PolarLicenseClient(cfg, fetchImpl, { sleep: async () => {} }).validate('K')
+      new PolarLicenseClient(cfg, fetchImpl, { sleep: async () => {} }).validate(KEY)
     ).rejects.toMatchObject({
       code: 'network',
     });
@@ -141,7 +182,7 @@ describe('PolarLicenseClient retry policy', () => {
       },
     });
 
-    const v = await client.validate('K');
+    const v = await client.validate(KEY);
     expect(v.status).toBe('granted');
     expect(calls).toHaveLength(2);
     // The server said 60s; that wins over the 1s base backoff.
@@ -157,7 +198,7 @@ describe('PolarLicenseClient retry policy', () => {
       },
     });
 
-    await client.validate('K');
+    await client.validate(KEY);
     expect(calls).toHaveLength(3);
     expect(waits).toEqual([1000, 2000]);
   });
@@ -172,7 +213,7 @@ describe('PolarLicenseClient retry policy', () => {
       },
     });
 
-    await client.validate('K');
+    await client.validate(KEY);
     expect(waits).toEqual([5_000]);
   });
 
@@ -180,7 +221,7 @@ describe('PolarLicenseClient retry policy', () => {
     const { fetchImpl, calls } = scripted([404]);
     const client = new PolarLicenseClient(cfg, fetchImpl, { sleep: async () => {} });
 
-    await expect(client.validate('K')).rejects.toMatchObject({ code: 'invalid_license' });
+    await expect(client.validate(KEY)).rejects.toMatchObject({ code: 'invalid_license' });
     expect(calls).toHaveLength(1);
   });
 
@@ -192,7 +233,7 @@ describe('PolarLicenseClient retry policy', () => {
     const { fetchImpl, calls } = scripted([503, 200]);
     const client = new PolarLicenseClient(cfg, fetchImpl, { sleep: async () => {} });
 
-    await expect(client.activate('K', 'device')).rejects.toMatchObject({ code: 'transient' });
+    await expect(client.activate(KEY, 'device')).rejects.toMatchObject({ code: 'transient' });
     expect(calls).toHaveLength(1);
   });
 
@@ -200,7 +241,7 @@ describe('PolarLicenseClient retry policy', () => {
     const { fetchImpl, calls } = scripted([503, 200]);
     const client = new PolarLicenseClient(cfg, fetchImpl, { sleep: async () => {} });
 
-    await expect(client.deactivate('K', 'act_1')).rejects.toMatchObject({ code: 'transient' });
+    await expect(client.deactivate(KEY, 'act_1')).rejects.toMatchObject({ code: 'transient' });
     expect(calls).toHaveLength(1);
   });
 
@@ -216,7 +257,7 @@ describe('PolarLicenseClient retry policy', () => {
       },
     });
 
-    await client.validate('K');
+    await client.validate(KEY);
     expect(waits).toEqual([1000]);
   });
 
@@ -232,7 +273,7 @@ describe('PolarLicenseClient retry policy', () => {
     };
     const client = new PolarLicenseClient(cfg, fetchImpl, { sleep: async () => {} });
 
-    await expect(client.activate('K', 'd')).rejects.toMatchObject({ code: 'seat_limit_reached' });
+    await expect(client.activate(KEY, 'd')).rejects.toMatchObject({ code: 'seat_limit_reached' });
     expect(calls).toHaveLength(1);
   });
 
@@ -247,7 +288,7 @@ describe('PolarLicenseClient retry policy', () => {
       sleep: async () => {},
     });
 
-    await expect(client.validate('K')).rejects.toMatchObject({ code: 'network' });
+    await expect(client.validate(KEY)).rejects.toMatchObject({ code: 'network' });
     expect(calls).toBe(3);
   });
 
@@ -255,7 +296,7 @@ describe('PolarLicenseClient retry policy', () => {
     const { fetchImpl, calls } = scripted([429], { retryAfter: '60' });
     const client = new PolarLicenseClient(cfg, fetchImpl, { sleep: async () => {} });
 
-    await expect(client.validate('K')).rejects.toMatchObject({
+    await expect(client.validate(KEY)).rejects.toMatchObject({
       code: 'transient',
       httpStatus: 429,
       retryAfterMs: 60_000,
@@ -297,7 +338,7 @@ describe('PolarLicenseClient retry policy', () => {
         retry: { baseDelayMs: BACKOFF_MS, maxDelayMs: BACKOFF_MS },
       });
 
-      const v = await client.validate('K');
+      const v = await client.validate(KEY);
       expect(v.status).toBe('granted');
       expect(calls).toHaveLength(2);
     } finally {
@@ -324,7 +365,7 @@ describe('PolarLicenseClient retry policy', () => {
       sleep: async () => {},
     });
 
-    await expect(client.validate('K')).rejects.toMatchObject({
+    await expect(client.validate(KEY)).rejects.toMatchObject({
       code: 'transient',
       retryAfterMs: undefined,
     });

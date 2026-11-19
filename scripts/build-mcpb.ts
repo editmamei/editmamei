@@ -124,7 +124,9 @@ export function buildMcpbManifest(version: string, polarEnv?: string): McpbManif
       entry_point: 'dist/index.js',
       // ${__dirname} is substituted by Claude Desktop with the installed
       // bundle directory at runtime; ${user_config.license_key} with the value
-      // the user typed into the extension settings (empty string when blank).
+      // the user typed into the extension settings. A field that was never
+      // filled in has no default, so it arrives as the literal placeholder;
+      // env-activation.ts treats that as no key.
       mcp_config: {
         command: 'node',
         args: ['${__dirname}/dist/index.js'],

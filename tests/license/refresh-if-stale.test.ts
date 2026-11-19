@@ -46,7 +46,7 @@ const PROD_ENV = {};
 
 function rec(over: Partial<LicenseRecord> = {}): LicenseRecord {
   return {
-    key: 'ETTA-KEY',
+    key: 'EDIT-11111111-1111-4111-8111-111111111111',
     organization_id: 'org_test',
     status: 'granted',
     expires_at: null,
@@ -374,14 +374,17 @@ describe('refreshIfStale', () => {
     // this record against real time rather than the fixed NOW.
     const realNow = Date.now();
     writeLicense(
-      rec({ key: 'SAME', last_validated_at: new Date(realNow - 2 * DAY_MS).toISOString() }),
+      rec({
+        key: 'EDIT-22222222-2222-4222-8222-222222222222',
+        last_validated_at: new Date(realNow - 2 * DAY_MS).toISOString(),
+      }),
       { dir }
     );
     const { fetchImpl, urls } = validateFetch('granted');
 
     // Delivery endpoint that makes provisioning a clean no-op (not_configured).
     await maybeActivateFromEnv(
-      { EDITMAMEI_LICENSE_KEY: 'SAME' },
+      { EDITMAMEI_LICENSE_KEY: 'EDIT-22222222-2222-4222-8222-222222222222' },
       { dir, config: CFG, fetchImpl },
       { config: { baseUrl: '' } }
     );

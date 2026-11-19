@@ -25,7 +25,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 function rec(over: Partial<LicenseRecord> = {}): LicenseRecord {
   return {
-    key: 'ETTA-KEY',
+    key: 'EDIT-11111111-1111-4111-8111-111111111111',
     organization_id: 'org_test',
     status: 'granted',
     expires_at: null,
@@ -198,8 +198,13 @@ describe('activate', () => {
         },
       },
     ]);
-    const r = await activate('  etta-key  ', { dir, fetchImpl, config: CFG, now: () => NOW });
-    expect(r.key).toBe('etta-key'); // trimmed
+    const r = await activate('  edit-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa  ', {
+      dir,
+      fetchImpl,
+      config: CFG,
+      now: () => NOW,
+    });
+    expect(r.key).toBe('edit-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'); // trimmed
     expect(r.status).toBe('granted');
     expect(r.activation_id).toBe('act_99');
     expect(r.expires_at).toBe('2027-06-15T00:00:00.000Z');
@@ -209,7 +214,10 @@ describe('activate', () => {
     expect(r.high_water_mark).toBe(new Date(NOW).toISOString());
     expect(readLicense({ dir })?.activation_id).toBe('act_99');
     expect(readLicense({ dir })?.high_water_mark).toBe(new Date(NOW).toISOString());
-    expect(bodies[0]).toMatchObject({ key: 'etta-key', organization_id: 'org_test' });
+    expect(bodies[0]).toMatchObject({
+      key: 'edit-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      organization_id: 'org_test',
+    });
     expect(typeof bodies[0].label).toBe('string');
     // Nothing can fail between taking the seat and recording its id.
     expect(bodies).toHaveLength(1);
@@ -223,7 +231,9 @@ describe('activate', () => {
         body: { detail: 'License key activation limit already reached' },
       },
     ]);
-    await expect(activate('k', { dir, fetchImpl, config: CFG })).rejects.toMatchObject({
+    await expect(
+      activate('EDIT-88888888-8888-4888-8888-888888888888', { dir, fetchImpl, config: CFG })
+    ).rejects.toMatchObject({
       code: 'seat_limit_reached',
     });
     expect(existsSync(join(dir, 'license.json'))).toBe(false);
@@ -236,7 +246,7 @@ describe('activate', () => {
   });
 
   it('is idempotent per device — re-activating the same key refreshes, never a 2nd seat', async () => {
-    writeLicense(rec({ key: 'SAME' }), { dir });
+    writeLicense(rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222' }), { dir });
     const urls: string[] = [];
     const fetchImpl: FetchLike = async (url) => {
       urls.push(url);
@@ -256,7 +266,11 @@ describe('activate', () => {
           }),
       };
     };
-    const r = await activate('SAME', { dir, fetchImpl, config: CFG });
+    const r = await activate('EDIT-22222222-2222-4222-8222-222222222222', {
+      dir,
+      fetchImpl,
+      config: CFG,
+    });
     expect(r.status).toBe('granted');
     // Must re-validate but NOT hit /activate (which would burn the 2nd seat).
     expect(urls.some((u) => u.includes('/validate'))).toBe(true);
@@ -264,9 +278,14 @@ describe('activate', () => {
   });
 
   it('takes a new seat when the check finds the activation removed, in three requests', async () => {
-    writeLicense(rec({ key: 'SAME' }), { dir });
+    writeLicense(rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222' }), { dir });
     const { fetchImpl, calls } = activationGoneFetch();
-    const r = await activate('SAME', { dir, fetchImpl, config: CFG, now: () => NOW });
+    const r = await activate('EDIT-22222222-2222-4222-8222-222222222222', {
+      dir,
+      fetchImpl,
+      config: CFG,
+      now: () => NOW,
+    });
     expect(r.activation_id).toBe('act_new');
     expect(r.activation_removed).toBeUndefined();
     expect(readLicense({ dir })?.activation_id).toBe('act_new');
@@ -274,32 +293,53 @@ describe('activate', () => {
   });
 
   it('a record marked removed whose activation validates again takes no new seat', async () => {
-    writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+    writeLicense(
+      rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222', activation_removed: true }),
+      { dir }
+    );
     const { fetchImpl, bodies } = fakeFetch([
       { match: '/validate', body: { status: 'granted', expires_at: null, display_key: 'k' } },
     ]);
-    const r = await activate('SAME', { dir, fetchImpl, config: CFG, now: () => NOW });
+    const r = await activate('EDIT-22222222-2222-4222-8222-222222222222', {
+      dir,
+      fetchImpl,
+      config: CFG,
+      now: () => NOW,
+    });
     expect(r.activation_id).toBe('act_1');
     expect(r.activation_removed).toBeUndefined();
     expect(bodies).toHaveLength(1);
   });
 
   it('takes no seat for a dead key', async () => {
-    writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+    writeLicense(
+      rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222', activation_removed: true }),
+      { dir }
+    );
     const { fetchImpl, calls } = activationGoneFetch(404);
-    await expect(activate('SAME', { dir, fetchImpl, config: CFG })).rejects.toMatchObject({
+    await expect(
+      activate('EDIT-22222222-2222-4222-8222-222222222222', { dir, fetchImpl, config: CFG })
+    ).rejects.toMatchObject({
       code: 'invalid_license',
     });
     expect(calls.some((c) => c.url.includes('/activate'))).toBe(false);
   });
 
   it('keeps the removed mark and the key when the new activation is refused', async () => {
-    writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+    writeLicense(
+      rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222', activation_removed: true }),
+      { dir }
+    );
     const { fetchImpl } = activationGoneFetch(200, 403);
-    await expect(activate('SAME', { dir, fetchImpl, config: CFG })).rejects.toMatchObject({
+    await expect(
+      activate('EDIT-22222222-2222-4222-8222-222222222222', { dir, fetchImpl, config: CFG })
+    ).rejects.toMatchObject({
       code: 'seat_limit_reached',
     });
-    expect(readLicense({ dir })).toMatchObject({ key: 'SAME', activation_removed: true });
+    expect(readLicense({ dir })).toMatchObject({
+      key: 'EDIT-22222222-2222-4222-8222-222222222222',
+      activation_removed: true,
+    });
   });
 });
 
@@ -341,7 +381,11 @@ describe('refresh + deactivate', () => {
     ]);
     await refresh({ dir, fetchImpl, config: CFG, now: () => NOW });
     expect(bodies).toEqual([
-      { key: 'ETTA-KEY', organization_id: 'org_test', activation_id: 'act_1' },
+      {
+        key: 'EDIT-11111111-1111-4111-8111-111111111111',
+        organization_id: 'org_test',
+        activation_id: 'act_1',
+      },
     ]);
   });
 
@@ -353,7 +397,7 @@ describe('refresh + deactivate', () => {
     expect(calls.map((c) => c.body.activation_id)).toEqual(['act_1', undefined]);
     // The key stays on disk, and the check still counts as a check.
     expect(readLicense({ dir })).toMatchObject({
-      key: 'ETTA-KEY',
+      key: 'EDIT-11111111-1111-4111-8111-111111111111',
       activation_removed: true,
       last_validated_at: new Date(NOW + 1000).toISOString(),
     });
@@ -477,7 +521,7 @@ describe('refresh + deactivate', () => {
     expect(await deactivate({ dir, fetchImpl, config: CFG })).toBe(true);
     expect(existsSync(join(dir, 'license.json'))).toBe(false);
     expect(bodies[0]).toEqual({
-      key: 'ETTA-KEY',
+      key: 'EDIT-11111111-1111-4111-8111-111111111111',
       organization_id: 'org_test',
       activation_id: 'act_1',
     });
