@@ -34,7 +34,7 @@ export interface DeliveryResponse {
 
 export type DeliveryFetch = (
   url: string,
-  init: { method: string; headers: Record<string, string> }
+  init: { method: string; headers: Record<string, string>; signal?: AbortSignal }
 ) => Promise<DeliveryResponse>;
 
 /** One module's manifest entry (subset of the Worker's ModuleManifestEntry). */
@@ -154,6 +154,19 @@ const DEFAULT_RETRY: RetryConfig = { attempts: 4, baseDelayMs: 1000, maxDelayMs:
  */
 const DEFAULT_MIN_INTERVAL_MS = 500;
 
+/**
+ * Time limits, so a server that accepts the connection and then goes quiet can't
+ * hold the caller for as long as Node's fetch would wait. `responseMs` bounds each
+ * request up to its response headers, and the whole of a small JSON response.
+ * The artifact is large and a slow link is fine as long as bytes keep arriving,
+ * so its body is bounded by `idleMs` between chunks rather than by a total.
+ */
+export interface DeliveryTimeouts {
+  responseMs: number;
+  idleMs: number;
+}
+const DEFAULT_TIMEOUTS: DeliveryTimeouts = { responseMs: 30_000, idleMs: 60_000 };
+
 type Sleep = (ms: number) => Promise<void>;
 const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -165,6 +178,7 @@ export class DeliveryClient {
   private readonly minIntervalMs: number;
   private readonly maxArtifactBytes: number;
   private readonly activationId: string | undefined;
+  private readonly timeouts: DeliveryTimeouts;
   private lastRequestAt = 0;
 
   constructor(
@@ -184,8 +198,11 @@ export class DeliveryClient {
       minRequestIntervalMs?: number;
       /** Override the artifact byte cap (tests use a small value so cap-sized fixtures stay tiny). Defaults to MAX_ARTIFACT_BYTES. */
       maxArtifactBytes?: number;
+      /** Override the time limits (tests). */
+      timeouts?: Partial<DeliveryTimeouts>;
     } = {}
   ) {
+    this.timeouts = { ...DEFAULT_TIMEOUTS, ...opts.timeouts };
     this.cfg = opts.config ?? resolveDeliveryConfig();
     this.fetchImpl = opts.fetchImpl ?? defaultFetch;
     this.retry = { ...DEFAULT_RETRY, ...opts.retry };
@@ -205,14 +222,16 @@ export class DeliveryClient {
 
   async fetchManifest(key: string): Promise<DeliveryManifest> {
     return this.withRetry(async () => {
-      const res = await this.get('/v1/modules/manifest', key);
+      const signal = AbortSignal.timeout(this.timeouts.responseMs);
+      const res = await this.get('/v1/modules/manifest', key, signal);
       return JSON.parse(await this.bodyOrThrow(res)) as DeliveryManifest;
     });
   }
 
   async fetchKey(key: string, sku: string): Promise<ModuleContentKey> {
     return this.withRetry(async () => {
-      const res = await this.get(`/v1/modules/${sku}/key`, key);
+      const signal = AbortSignal.timeout(this.timeouts.responseMs);
+      const res = await this.get(`/v1/modules/${sku}/key`, key, signal);
       return JSON.parse(await this.bodyOrThrow(res)) as ModuleContentKey;
     });
   }
@@ -220,16 +239,33 @@ export class DeliveryClient {
   /** The encrypted artifact bytes (IV||ct||tag). */
   async fetchArtifact(key: string, sku: string, version: string): Promise<Uint8Array> {
     return this.withRetry(async () => {
-      const res = await this.get(`/v1/modules/${sku}/${version}`, key);
-      if (!res.ok) throw this.errorFor(res.status, await safeText(res), this.retryAfterMsOf(res));
-      // Reject a DECLARED oversize before reading any body bytes. Content-Length
-      // is attacker-influenced (same trust level as the manifest's vEntry.size in
-      // provision.ts) so this is a cheap early-out, not the real gate — the streaming
-      // counter below is what actually bounds peak memory when it's absent or lies low.
-      const declared = Number(res.headers?.get('content-length'));
-      if (Number.isFinite(declared) && declared > this.maxArtifactBytes) {
-        throw this.oversizeError(res.status, declared);
+      const deadline = new Deadline(this.timeouts.responseMs);
+      try {
+        return await this.fetchArtifactOnce(key, sku, version, deadline);
+      } finally {
+        deadline.clear();
       }
+    });
+  }
+
+  private async fetchArtifactOnce(
+    key: string,
+    sku: string,
+    version: string,
+    deadline: Deadline
+  ): Promise<Uint8Array> {
+    const res = await this.get(`/v1/modules/${sku}/${version}`, key, deadline.signal);
+    if (!res.ok) throw this.errorFor(res.status, await safeText(res), this.retryAfterMsOf(res));
+    // Reject a DECLARED oversize before reading any body bytes. Content-Length
+    // is attacker-influenced (same trust level as the manifest's vEntry.size in
+    // provision.ts) so this is a cheap early-out, not the real gate — the streaming
+    // counter below is what actually bounds peak memory when it's absent or lies low.
+    const declared = Number(res.headers?.get('content-length'));
+    if (Number.isFinite(declared) && declared > this.maxArtifactBytes) {
+      throw this.oversizeError(res.status, declared);
+    }
+    deadline.restart(this.timeouts.idleMs);
+    try {
       const body = res.body;
       if (!body) {
         // Test doubles (and any fetch-like impl without a streamable body) fall back to
@@ -238,8 +274,11 @@ export class DeliveryClient {
         if (buf.length > this.maxArtifactBytes) throw this.oversizeError(res.status, buf.length);
         return buf;
       }
-      return await this.readCapped(body, res.status);
-    });
+      return await this.readCapped(body, res.status, deadline);
+    } catch (err) {
+      if (!deadline.expired) throw err;
+      throw new DeliveryError('The delivery server stopped sending the module.', 0, 'network');
+    }
   }
 
   /**
@@ -247,8 +286,13 @@ export class DeliveryClient {
    * `arrayBuffer()`'s whole-body allocation — the moment the running total
    * exceeds the cap, cancel the underlying stream and throw, so a hostile/MITM'd
    * endpoint can never get the host to buffer more than `maxArtifactBytes`.
+   * Each chunk that arrives restarts the idle limit.
    */
-  private async readCapped(body: ReadableStream<Uint8Array>, status: number): Promise<Uint8Array> {
+  private async readCapped(
+    body: ReadableStream<Uint8Array>,
+    status: number,
+    deadline: Deadline
+  ): Promise<Uint8Array> {
     const reader = body.getReader();
     const chunks: Uint8Array[] = [];
     let total = 0;
@@ -256,6 +300,7 @@ export class DeliveryClient {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        deadline.restart(this.timeouts.idleMs);
         total += value.byteLength;
         if (total > this.maxArtifactBytes) {
           try {
@@ -312,7 +357,7 @@ export class DeliveryClient {
     throw lastErr;
   }
 
-  private async get(path: string, key: string): Promise<DeliveryResponse> {
+  private async get(path: string, key: string, signal: AbortSignal): Promise<DeliveryResponse> {
     // Client-side pacing: stay under Polar's documented 3 req/sec on the chain of
     // re-validations the worker performs per delivery request (see DEFAULT_MIN_INTERVAL_MS).
     const sinceLast = Date.now() - this.lastRequestAt;
@@ -326,6 +371,7 @@ export class DeliveryClient {
           [HEADER_KEY]: key,
           ...(this.activationId ? { [HEADER_ACTIVATION]: this.activationId } : {}),
         },
+        signal,
       });
     } catch (err) {
       throw new DeliveryError(
@@ -337,7 +383,16 @@ export class DeliveryClient {
   }
 
   private async bodyOrThrow(res: DeliveryResponse): Promise<string> {
-    const text = await res.text();
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (err) {
+      throw new DeliveryError(
+        `The delivery server stopped responding: ${err instanceof Error ? err.message : String(err)}`,
+        0,
+        'network'
+      );
+    }
     if (res.ok) return text;
     throw this.errorFor(res.status, text, this.retryAfterMsOf(res));
   }
@@ -377,6 +432,39 @@ export class DeliveryClient {
       'server',
       retryAfterMs
     );
+  }
+}
+
+/**
+ * An abort signal on a timer that can be restarted: a fixed limit up to the response,
+ * then an idle limit that each arriving chunk resets.
+ */
+class Deadline {
+  private readonly controller = new AbortController();
+  private timer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(ms: number) {
+    this.restart(ms);
+  }
+
+  get signal(): AbortSignal {
+    return this.controller.signal;
+  }
+
+  get expired(): boolean {
+    return this.controller.signal.aborted;
+  }
+
+  restart(ms: number): void {
+    this.clear();
+    if (this.expired) return;
+    this.timer = setTimeout(() => this.controller.abort(), ms);
+    this.timer.unref?.();
+  }
+
+  clear(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
   }
 }
 

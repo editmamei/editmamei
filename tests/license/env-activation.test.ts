@@ -196,6 +196,43 @@ describe('maybeActivateFromEnv', () => {
     expect(readLicense({ dir })?.key).toBe('EDIT-44444444-4444-4444-8444-444444444444');
   });
 
+  it('a stalled activation does not hold boot, and still saves the license when it lands', async () => {
+    const key = 'EDIT-45454545-4545-4545-8545-454545454545';
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const slowPolar: FetchLike = async (url, init) => {
+      await gate;
+      return okFetch(url, init);
+    };
+    let deliveryCalls = 0;
+    const deliveryFetch: DeliveryFetch = async () => {
+      deliveryCalls++;
+      return jsonRes(500, {});
+    };
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const started = Date.now();
+      await maybeActivateFromEnv(
+        { EDITMAMEI_LICENSE_KEY: key },
+        { dir, config: CFG, fetchImpl: slowPolar },
+        {
+          config: { baseUrl: 'http://localhost:8787' },
+          fetchImpl: deliveryFetch,
+          activationTimeoutMs: 30,
+        }
+      );
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(readLicense({ dir })).toBeNull();
+      expect(deliveryCalls).toBe(0);
+      expect(warn.mock.calls.map((c) => String(c[0])).join('')).toMatch(/taking too long/);
+
+      release();
+      await vi.waitFor(() => expect(readLicense({ dir })?.key).toBe(key));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('env key === cached key → does NOT re-activate (no Polar seat burn)', async () => {
     writeLicense(rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222' }), { dir });
     let polarCalled = false;

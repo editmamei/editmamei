@@ -371,3 +371,61 @@ describe('PolarLicenseClient retry policy', () => {
     });
   });
 });
+
+describe('PolarLicenseClient time limits', () => {
+  const noSleep = async () => {};
+
+  /** A server that accepts the request and never answers; returns how long each call waited. */
+  function silent(): { fetchImpl: FetchLike; calls: number[] } {
+    const calls: number[] = [];
+    const fetchImpl: FetchLike = (_url, init) => {
+      const started = Date.now();
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => {
+          calls.push(Date.now() - started);
+          reject(new Error('aborted'));
+        });
+      });
+    };
+    return { fetchImpl, calls };
+  }
+
+  it('gives up on validate after its limit and retries it as a network error', async () => {
+    const { fetchImpl, calls } = silent();
+    const client = new PolarLicenseClient(cfg, fetchImpl, {
+      sleep: noSleep,
+      timeouts: { validateMs: 30, writeMs: 5_000 },
+    });
+    await expect(client.validate(KEY)).rejects.toMatchObject({ code: 'network', httpStatus: 0 });
+    expect(calls).toHaveLength(3);
+    expect(Math.max(...calls)).toBeLessThan(1_000);
+  });
+
+  it('waits the longer write limit on activate, once', async () => {
+    const { fetchImpl, calls } = silent();
+    const client = new PolarLicenseClient(cfg, fetchImpl, {
+      sleep: noSleep,
+      timeouts: { validateMs: 10, writeMs: 80 },
+    });
+    await expect(client.activate(KEY, 'label')).rejects.toMatchObject({ code: 'network' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBeGreaterThanOrEqual(60);
+  });
+
+  it('turns a response body that never finishes into a network error', async () => {
+    const fetchImpl: FetchLike = async (_url, init) => ({
+      ok: true,
+      status: 200,
+      text: () =>
+        new Promise<string>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    });
+    const client = new PolarLicenseClient(cfg, fetchImpl, {
+      sleep: noSleep,
+      retry: { attempts: 1 },
+      timeouts: { validateMs: 30 },
+    });
+    await expect(client.validate(KEY)).rejects.toMatchObject({ code: 'network' });
+  });
+});

@@ -39,6 +39,27 @@ const logger = new Logger('License');
 /** Default boot-time cap on Pro provisioning (ms) — see EnvActivateDelivery.bootTimeoutMs. */
 const PROVISION_BOOT_TIMEOUT_MS = 20_000;
 
+/** Default boot-time cap on activating a new key (ms) — see EnvActivateDelivery.activationTimeoutMs. */
+const ACTIVATION_BOOT_TIMEOUT_MS = 15_000;
+
+/**
+ * `promise`'s value, or null once `ms` pass first. The promise keeps running and
+ * its outcome is swallowed, so a late rejection is never unhandled.
+ */
+async function withBootDeadline<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  promise.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([promise, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * Delivery-side options forwarded to `provisionModules`. Production passes
  * nothing (the baked delivery default + pinned signing keys apply); tests inject
@@ -49,13 +70,21 @@ export type EnvActivateDelivery = Pick<
   'config' | 'fetchImpl' | 'sleep' | 'signingKeys'
 > & {
   /**
-   * Max ms to wait on provisioning before boot continues as Community. Node's
-   * global fetch has no default timeout, so a stalled delivery server must not
-   * hang the whole MCP server start. Default 20s; tests set it small. On expiry
+   * Max ms to wait on provisioning before boot continues as Community. Each
+   * delivery request has its own time limit, but retries add up, and a slow
+   * download must not hold the whole MCP server start. Default 20s; tests set it small. On expiry
    * the in-flight download is abandoned — provisionModules is idempotent and the
    * install is an atomic swap, so the next boot retries cleanly.
    */
   bootTimeoutMs?: number;
+  /**
+   * Max ms to wait on activating a new key before boot continues as Community.
+   * Default 15s; tests set it small. The activation is not abandoned: it keeps
+   * running and caches the license when it lands, because a request that reached
+   * the server has already taken a seat. The next start then finds the cached key
+   * and provisions.
+   */
+  activationTimeoutMs?: number;
 };
 
 export async function maybeActivateFromEnv(
@@ -78,16 +107,31 @@ export async function maybeActivateFromEnv(
   if (cached?.key === key && cached.activation_removed === true) {
     await reactivateAtBoot(key, ops);
   } else if (!cached || cached.key !== key) {
-    try {
-      await activate(key, ops);
-      logger.info('Activated Pro from EDITMAMEI_LICENSE_KEY.');
-    } catch (err) {
+    const activation = activate(key, ops).then(
+      () => {
+        logger.info('Activated Pro from EDITMAMEI_LICENSE_KEY.');
+        return true;
+      },
+      (err: unknown) => {
+        logger.warn(
+          `Could not activate from EDITMAMEI_LICENSE_KEY (continuing as Community): ` +
+            `${err instanceof Error ? err.message : String(err)}`
+        );
+        return false;
+      }
+    );
+    const activated = await withBootDeadline(
+      activation,
+      delivery.activationTimeoutMs ?? ACTIVATION_BOOT_TIMEOUT_MS
+    );
+    if (activated === null) {
       logger.warn(
-        `Could not activate from EDITMAMEI_LICENSE_KEY (continuing as Community): ` +
-          `${err instanceof Error ? err.message : String(err)}`
+        'License activation is taking too long — starting as Community. It finishes in the ' +
+          'background, and the next start picks it up.'
       );
-      return; // no valid license → nothing to provision
+      return;
     }
+    if (!activated) return; // no valid license → nothing to provision
   }
 
   // Phase 2 — provision the Pro module. The `.mcpb` path can't reach the CLI's
@@ -114,19 +158,12 @@ export async function maybeActivateFromEnv(
       // A stalled delivery server must not hang the MCP server start — bound the
       // wait and continue as Community on expiry (next boot retries; the install
       // is atomic so an abandoned download leaves no half-install). The original
-      // promise may settle later in the background; swallow its outcome so a late
-      // rejection isn't unhandled.
-      provisioning.catch(() => {});
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const deadline = new Promise<null>((resolve) => {
-        timer = setTimeout(
-          () => resolve(null),
-          delivery.bootTimeoutMs ?? PROVISION_BOOT_TIMEOUT_MS
-        );
-        timer.unref?.();
-      });
-      const prov = await Promise.race([provisioning, deadline]);
-      if (timer) clearTimeout(timer);
+      // promise may settle later in the background (withBootDeadline swallows its
+      // outcome, so a late rejection isn't unhandled).
+      const prov = await withBootDeadline(
+        provisioning,
+        delivery.bootTimeoutMs ?? PROVISION_BOOT_TIMEOUT_MS
+      );
       if (!prov) {
         logger.warn(
           'Pro module provisioning did not finish in time — continuing as Community; the next start retries.'
