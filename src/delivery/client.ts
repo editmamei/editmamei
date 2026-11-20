@@ -387,6 +387,8 @@ export class DeliveryClient {
     try {
       text = await res.text();
     } catch (err) {
+      // A refusal is a refusal whether or not its body arrives.
+      if (!res.ok) throw this.errorFor(res.status, '', this.retryAfterMsOf(res));
       throw new DeliveryError(
         `The delivery server stopped responding: ${err instanceof Error ? err.message : String(err)}`,
         0,

@@ -126,8 +126,8 @@ export async function maybeActivateFromEnv(
     );
     if (activated === null) {
       logger.warn(
-        'License activation is taking too long — starting as Community. It finishes in the ' +
-          'background, and the next start picks it up.'
+        'License activation is taking too long — starting as Community. It keeps going in the ' +
+          'background; if it succeeds, the next start picks it up.'
       );
       return;
     }

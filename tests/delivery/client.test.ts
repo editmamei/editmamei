@@ -460,17 +460,38 @@ describe('DeliveryClient time limits', () => {
 
   it('lets a slow download finish when bytes keep arriving, past the response limit', async () => {
     const chunks = Array.from({ length: 6 }, (_, i) => new Uint8Array([i]));
+    const slow = { responseMs: 60, idleMs: 250 };
     const client = new DeliveryClient({
       config: cfg,
-      fetchImpl: streamingFetch(chunks, 15, false),
+      fetchImpl: streamingFetch(chunks, 20, false),
       sleep: noSleep,
       minRequestIntervalMs: 0,
-      timeouts,
+      timeouts: slow,
       retry: { attempts: 1 },
     });
     const started = Date.now();
     const bytes = await client.fetchArtifact('K', 'pro', '1.0.0');
     expect(Array.from(bytes)).toEqual([0, 1, 2, 3, 4, 5]);
-    expect(Date.now() - started).toBeGreaterThan(timeouts.responseMs);
+    expect(Date.now() - started).toBeGreaterThan(slow.responseMs);
+  });
+
+  it('keeps a refusal a refusal when its body never arrives', async () => {
+    const fetchImpl: DeliveryFetch = async (_url, init) => ({
+      ok: false,
+      status: 403,
+      text: () =>
+        new Promise<string>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+    const client = new DeliveryClient({
+      config: cfg,
+      fetchImpl,
+      sleep: noSleep,
+      minRequestIntervalMs: 0,
+      timeouts,
+    });
+    await expect(client.fetchManifest('K')).rejects.toMatchObject({ code: 'not_entitled' });
   });
 });
