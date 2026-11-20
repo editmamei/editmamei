@@ -134,6 +134,18 @@ describe('sanitizeMessage', () => {
       ['macOS folder with a colon', '/Users/a/Acme:Brand/sub/x.psd'],
       ['macOS folder with a colon and a space', '/Users/a/Acme: Brand Kit/x.psd'],
       ['tilde folder with a colon', '~/Acme:Brand/x.psd'],
+      ['Windows folder with an apostrophe', "D:\\Clients\\O'Brien Wedding\\x.psd"],
+      ['Windows folder with an apostrophe, forward slashes', "D:/Clients/O'Brien Wedding/x.psd"],
+      ['UNC folder with an apostrophe', "\\\\nas\\Clients\\O'Brien Wedding\\x.psd"],
+      ['POSIX folder with an apostrophe', "/Volumes/Work/O'Brien Wedding/x.psd"],
+      ['tilde folder with an apostrophe', "~/O'Brien Wedding/x.psd"],
+      ['Windows folder ending in an apostrophe', "D:\\Clients\\Kids' Photos\\x.psd"],
+      ['Windows folder starting with an apostrophe', "D:\\Shoots\\'90s Party\\x.psd"],
+      ['Windows folder with a doubled apostrophe', "D:\\Clients\\O''Brien\\x.psd"],
+      ['UNC folder ending in an apostrophe', "\\\\nas\\Kids' Photos\\x.psd"],
+      ['POSIX folder ending in an apostrophe', "/Volumes/Kids' Photos/x.psd"],
+      ['POSIX first folder ending in an apostrophe', "/Kids'/sub/x.psd"],
+      ['tilde folder starting with an apostrophe', "~/'90s Party/x.psd"],
     ];
     for (const [label, path] of cases) {
       it(`keeps only the file name: ${label}`, () => {
@@ -145,6 +157,57 @@ describe('sanitizeMessage', () => {
     it('keeps only the file name when the path ends the message', () => {
       expect(sanitizeMessage('open C:\\Projects\\Acme Corp\\x.psd')).toBe('open x.psd');
     });
+  });
+
+  it('keeps only the file name when a quoted path holds an apostrophe', () => {
+    expect(sanitizeMessage("could not open 'D:\\Clients\\O'Brien\\x.psd' for write")).toBe(
+      "could not open 'x.psd' for write"
+    );
+  });
+
+  it('never leaks a folder name when a quoted path is followed by slash-bearing words', () => {
+    // These over-match and lose the file name too; the guard is only that no folder survives.
+    for (const m of [
+      "open 'C:\\Clients\\Acme Corp\\x.psd' and/or retry",
+      "open '/Volumes/Acme Corp/a.psd' and/or '/Clients/Acme/c.psd'",
+    ]) {
+      const out = sanitizeMessage(m);
+      expect(out).not.toContain('Acme');
+      expect(out).not.toContain('Clients');
+      expect(out).not.toContain('Volumes');
+    }
+  });
+
+  it('keeps only the file name when a quoted POSIX or tilde path holds an apostrophe', () => {
+    expect(sanitizeMessage("could not open '/Volumes/O'Brien/x.psd' for write")).toBe(
+      "could not open 'x.psd' for write"
+    );
+    expect(sanitizeMessage("could not open '~/O'Brien/x.psd' for write")).toBe(
+      "could not open 'x.psd' for write"
+    );
+  });
+
+  it('keeps a possessive after the file name as plain text', () => {
+    expect(sanitizeMessage("C:\\Work\\Client\\file.psd's size is too large")).toBe(
+      "file.psd's size is too large"
+    );
+  });
+
+  it('basenames each of several paths with apostrophes in one message', () => {
+    expect(sanitizeMessage("copy C:\\A's\\x.psd to D:\\Kids' Photos\\y.psd failed")).toBe(
+      'copy x.psd to y.psd failed'
+    );
+  });
+
+  it('redacts a single-segment POSIX path whose name holds an apostrophe', () => {
+    expect(sanitizeMessage("could not open /O'Brien for write")).toBe(
+      'could not open /… for write'
+    );
+    expect(sanitizeMessage("could not open /Kids' for write")).toBe('could not open /… for write');
+  });
+
+  it('redacts a whole username that holds an apostrophe under a Users parent', () => {
+    expect(sanitizeMessage("mount failed at C:\\Users\\O'Brien")).toBe('mount failed at ~');
   });
 
   it('leaves non-path text with spaces untouched', () => {
