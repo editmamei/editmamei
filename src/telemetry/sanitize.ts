@@ -55,27 +55,38 @@ function homedirPrefixes(): string[] {
  * single-segment POSIX token reduces to a `/…` redaction marker (no real basename to keep —
  * the lone segment IS the name we must drop).
  */
-const SINGLE_SEG_POSIX = /(^|\s)\/[^\s"'/]+(?=$|\s)/;
 // A directory segment may hold single spaces ("Acme Corp") as long as a separator follows it,
 // so a match always runs to the LAST separator and only the file name survives. The final
 // token takes no spaces: text after a path ("... failed") is not part of it.
 // Segment characters depend on the path style: Windows names can't hold `:`, but a POSIX name
 // can hold `:` and `\` (Finder shows a `/` in a folder name as `:`), and `~` paths take either
 // separator.
-const WORD = String.raw`[^\s"'\\/:]+`;
-const DIR = String.raw`${WORD}(?: ${WORD})*`;
-const TILDE_WORD = String.raw`[^\s"'\\/]+`;
-const TILDE_DIR = String.raw`${TILDE_WORD}(?: ${TILDE_WORD})*`;
-const POSIX_WORD = String.raw`[^\s"'/]+`;
-const POSIX_DIR = String.raw`${POSIX_WORD}(?: ${POSIX_WORD})*`;
+// Apostrophes: a folder name may start, end or hold any number of them ("O'Brien",
+// "Kids' Photos", "'90s Party"), because a separator must follow a folder, so a quote around
+// the whole path can't be taken for part of one. The final name keeps only an apostrophe
+// between name characters: one at its end is the closing quote. A quoted path followed by
+// slash-bearing words ("'C:\a\x.psd' and/or") over-matches and loses the file name, which
+// redacts more, never less.
+const name = (chars: string): string => `${chars}+(?:'${chars}+)*`;
+const folder = (chars: string): string => `'*${chars}+(?:'+${chars}+)*'*`;
+const WIN_CHARS = String.raw`[^\s"'\\/:]`;
+const TILDE_CHARS = String.raw`[^\s"'\\/]`;
+const POSIX_CHARS = String.raw`[^\s"'/]`;
+const DIR = String.raw`${folder(WIN_CHARS)}(?: ${folder(WIN_CHARS)})*`;
+const TILDE_WORD = name(TILDE_CHARS);
+const TILDE_DIR = String.raw`${folder(TILDE_CHARS)}(?: ${folder(TILDE_CHARS)})*`;
+const POSIX_WORD = name(POSIX_CHARS);
+const POSIX_FOLDER = folder(POSIX_CHARS);
+const POSIX_DIR = String.raw`${POSIX_FOLDER}(?: ${POSIX_FOLDER})*`;
+const SINGLE_SEG_POSIX = new RegExp(String.raw`(^|\s)\/${POSIX_FOLDER}(?=$|\s)`);
 const PATH_TOKEN = new RegExp(
   [
     String.raw`[A-Za-z]:[\\/](?:${DIR}[\\/])*[^\s"']*`,
     String.raw`\\\\(?:${DIR}[\\/])*[^\s"']+`,
     String.raw`file:\/\/[^\s"']*`,
     String.raw`(?<![\w~])~(?:[\\/]${TILDE_DIR}(?=[\\/]))*[\\/]${TILDE_WORD}[\\/]?`,
-    String.raw`\/${POSIX_WORD}(?:\/${POSIX_DIR}(?=\/))*\/${POSIX_WORD}\/?`,
-    String.raw`(?:^|\s)\/[^\s"'/]+(?=$|\s)`,
+    String.raw`\/${POSIX_FOLDER}(?:\/${POSIX_DIR}(?=\/))*\/${POSIX_WORD}\/?`,
+    String.raw`(?:^|\s)\/${POSIX_FOLDER}(?=$|\s)`,
   ].join('|'),
   'gi'
 );
@@ -101,10 +112,13 @@ function basenamePaths(s: string): string {
  * username itself). Conservative: only fires inside a recognized `Users`/`home` parent, leaving
  * unrelated text untouched.
  */
+const USER_NAME = folder(String.raw`[^\\/\s"']`);
+const USERS_DIR = new RegExp(String.raw`\bUsers([\\/])${USER_NAME}`, 'g');
+const HOME_DIR = new RegExp(String.raw`\bhome([\\/])${USER_NAME}`, 'g');
 function redactGenericUserDirs(s: string): string {
-  let out = s.replace(/\bUsers([\\/])[^\\/\s"']+/g, 'Users$1~');
+  let out = s.replace(USERS_DIR, 'Users$1~');
   if (process.platform !== 'win32') {
-    out = out.replace(/\bhome([\\/])[^\\/\s"']+/g, 'home$1~');
+    out = out.replace(HOME_DIR, 'home$1~');
   }
   return out;
 }
