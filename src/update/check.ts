@@ -18,6 +18,10 @@
 
 import { VERSION } from '../version.js';
 import { resolveInstallChannel, type InstallChannel } from '../install-channel.js';
+import { isSecureEndpoint } from '../utils/secure-endpoint.js';
+import { Logger } from '../utils/logger.js';
+
+const logger = new Logger('UpdateCheck');
 
 export interface UpdateInfo {
   /** The version currently running. */
@@ -73,12 +77,18 @@ export interface LatestManifest {
  */
 const RELEASES_URL = 'https://editmamei.com/download';
 
-/** Endpoint override (tests / future custom registry). Mirrors the telemetry transport. */
+/**
+ * Endpoint override (tests / future custom registry). Mirrors the telemetry transport: an
+ * override that isn't https (or http to localhost) gives null, and the check is skipped.
+ */
 export function resolveUpdateCheckUrl(
   env: Record<string, string | undefined> = process.env
-): string {
+): string | null {
   const override = env.EDITMAMEI_UPDATE_CHECK_URL;
-  return override && override.length > 0 ? override : DEFAULT_LATEST_MANIFEST_URL;
+  if (!override) return DEFAULT_LATEST_MANIFEST_URL;
+  if (isSecureEndpoint(override)) return override;
+  logger.warn('EDITMAMEI_UPDATE_CHECK_URL is not an https URL; skipping the update check');
+  return null;
 }
 
 /** Fetches the `latest` version manifest, or null on any failure. Injectable for tests. */
@@ -281,8 +291,10 @@ export async function checkForUpdateWithStatus(
     const env = opts.env ?? process.env;
     const current = opts.current ?? VERSION;
     const channel = resolveInstallChannel(env);
+    const url = resolveUpdateCheckUrl(env);
+    if (url === null) return { status: 'failed', info: null };
     const fetchLatest = opts.fetchLatest ?? httpFetchLatest();
-    const manifest = await fetchLatest(resolveUpdateCheckUrl(env), opts.timeoutMs ?? 4000);
+    const manifest = await fetchLatest(url, opts.timeoutMs ?? 4000);
     if (!manifest || !parseSemver(manifest.version)) return { status: 'failed', info: null };
     const latest = manifest.version;
     if (!isNewer(latest, current)) return { status: 'current', info: null };

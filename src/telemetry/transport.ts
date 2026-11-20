@@ -9,6 +9,11 @@
  * swallowed by the caller; telemetry must never break or block a tool call.
  */
 
+import { isSecureEndpoint } from '../utils/secure-endpoint.js';
+import { Logger } from '../utils/logger.js';
+
+const logger = new Logger('Telemetry');
+
 /**
  * Resolve the ingest endpoint: env override (EDITMAMEI_TELEMETRY_URL) wins, else the
  * baked production default.
@@ -23,9 +28,18 @@
 export const DEFAULT_TELEMETRY_ENDPOINT =
   'https://editmamei-telemetry-server.editmamei.workers.dev/v1/telemetry';
 
-export function resolveEndpoint(env: Record<string, string | undefined> = process.env): string {
+/**
+ * An override that isn't https (or http to localhost) gives null: nothing is sent, rather than
+ * sending to an unsafe address or quietly to the default the override was set to avoid.
+ */
+export function resolveEndpoint(
+  env: Record<string, string | undefined> = process.env
+): string | null {
   const override = env.EDITMAMEI_TELEMETRY_URL;
-  return override && override.length > 0 ? override : DEFAULT_TELEMETRY_ENDPOINT;
+  if (!override) return DEFAULT_TELEMETRY_ENDPOINT;
+  if (isSecureEndpoint(override)) return override;
+  logger.warn('EDITMAMEI_TELEMETRY_URL is not an https URL; telemetry is off for this session');
+  return null;
 }
 
 /** Sends a JSON body to the endpoint. Resolves on a 2xx; throws on anything else. */

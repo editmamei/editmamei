@@ -18,6 +18,10 @@ import { platform as osPlatform, homedir as osHomedir } from 'node:os';
 import { posix as pathPosix, win32 as pathWin32 } from 'node:path';
 import { stat } from 'node:fs/promises';
 import { exeLaunchSpec, flatpakLaunchSpec, type LaunchSpec } from './launcher.js';
+import { localPathProblem } from '../../utils/local-path.js';
+import { Logger } from '../../utils/logger.js';
+
+const logger = new Logger('GimpDetect');
 
 export type GimpInstallSource = 'env' | 'path' | 'conventional' | 'flatpak';
 
@@ -153,7 +157,8 @@ async function detectLinux(
  * `EDITMAMEI_GIMP_PATH` override, then the OS-appropriate conventional
  * search. A literal `flatpak` override value means "launch via Flatpak" (the
  * Linux packaging where there is no single exe path to point at); anything
- * else is checked as a path. An override that resolves to nothing falls
+ * else must be an absolute local path (logged and ignored otherwise) and is
+ * checked for existence. An override that resolves to nothing falls
  * through to the conventional search rather than failing outright — the same
  * recoverable posture `WindowsDetector`/`MacOSDetector` give `PHOTOSHOP_PATH`.
  */
@@ -168,7 +173,15 @@ export async function detectGimp(opts: DetectGimpOptions = {}): Promise<GimpInst
     if (override === 'flatpak') {
       return { source: 'env', path: override, launch: flatpakLaunchSpec() };
     }
-    if (await exists(override)) {
+    // The same rule the gimp_path setting gets: a relative path would resolve against the
+    // server's working directory, and a UNC path would reach out to another machine.
+    const problem = localPathProblem(override, platform);
+    if (problem) {
+      logger.warn(
+        `ignoring EDITMAMEI_GIMP_PATH (${problem}): it must be an absolute local path; ` +
+          'searching the usual install locations'
+      );
+    } else if (await exists(override)) {
       return { source: 'env', path: override, launch: exeLaunchSpec(override) };
     }
   }

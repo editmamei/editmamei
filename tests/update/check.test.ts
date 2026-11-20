@@ -92,6 +92,20 @@ describe('resolveUpdateCheckUrl', () => {
       'https://x/y'
     );
   });
+  it('allows plain http only to localhost', () => {
+    expect(
+      resolveUpdateCheckUrl({ EDITMAMEI_UPDATE_CHECK_URL: 'http://localhost:4873/editmamei' })
+    ).toBe('http://localhost:4873/editmamei');
+    expect(
+      resolveUpdateCheckUrl({ EDITMAMEI_UPDATE_CHECK_URL: 'http://127.0.0.1:4873/editmamei' })
+    ).toBe('http://127.0.0.1:4873/editmamei');
+  });
+  it.each(['http://example.com/latest', 'ftp://example.com/x', 'not a url', 'registry.npmjs.org'])(
+    'refuses %s instead of falling back to the default',
+    (url) => {
+      expect(resolveUpdateCheckUrl({ EDITMAMEI_UPDATE_CHECK_URL: url })).toBeNull();
+    }
+  );
 });
 
 describe('shouldCheckForUpdate', () => {
@@ -226,6 +240,20 @@ describe('checkForUpdateWithStatus', () => {
     });
     expect(result.status).toBe('failed');
     expect(result.info).toBeNull();
+  });
+
+  it('status "failed" without any request when the URL override is refused', async () => {
+    let calls = 0;
+    const result = await checkForUpdateWithStatus({
+      env: { EDITMAMEI_UPDATE_CHECK_URL: 'http://example.com/latest' },
+      current: '0.18.0',
+      fetchLatest: async () => {
+        calls++;
+        return bare('0.99.0');
+      },
+    });
+    expect(result.status).toBe('failed');
+    expect(calls).toBe(0);
   });
 
   it('status "failed" for a malformed latest value', async () => {

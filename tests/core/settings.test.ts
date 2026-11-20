@@ -63,13 +63,15 @@ describe('loadSettings — existing / malformed', () => {
   it('merges missing keys onto defaults while preserving user values + id', async () => {
     await writeFile(
       settingsPath({ dir }),
-      JSON.stringify({ telemetry: { usage: false, install_id: 'abc123def456' } }),
+      JSON.stringify({
+        telemetry: { usage: false, install_id: 'abc123def45600000000000000000000' },
+      }),
       'utf8'
     );
     const { settings } = loadSettings({ dir });
     expect(settings.telemetry.usage).toBe(false); // preserved
     expect(settings.telemetry.diagnostics).toBe(false); // defaulted
-    expect(settings.telemetry.install_id).toBe('abc123def456'); // preserved
+    expect(settings.telemetry.install_id).toBe('abc123def45600000000000000000000'); // preserved
     expect(settings.privacy.send_previews_to_llm).toBe(true); // defaulted
     expect(settings.automation.allow_execute_script).toBe(true); // defaulted
     expect(settings.update_check).toBe(true); // defaulted for an older file lacking the key
@@ -85,7 +87,7 @@ describe('loadSettings — existing / malformed', () => {
       JSON.stringify({
         editor: 'gimp',
         gimp_path: gimpPath,
-        telemetry: { install_id: 'keep0000000000' },
+        telemetry: { install_id: 'beef0000000000000000000000000000' },
       }),
       'utf8'
     );
@@ -102,7 +104,10 @@ describe('loadSettings — existing / malformed', () => {
     async (_label, gimpPath) => {
       await writeFile(
         settingsPath({ dir }),
-        JSON.stringify({ gimp_path: gimpPath, telemetry: { install_id: 'keep0000000000' } }),
+        JSON.stringify({
+          gimp_path: gimpPath,
+          telemetry: { install_id: 'beef0000000000000000000000000000' },
+        }),
         'utf8'
       );
       const { settings } = loadSettings({ dir });
@@ -113,7 +118,10 @@ describe('loadSettings — existing / malformed', () => {
   it('falls back editor to the default on an unrecognized value rather than throwing', async () => {
     await writeFile(
       settingsPath({ dir }),
-      JSON.stringify({ editor: 'nonsense', telemetry: { install_id: 'keep0000000000' } }),
+      JSON.stringify({
+        editor: 'nonsense',
+        telemetry: { install_id: 'beef0000000000000000000000000000' },
+      }),
       'utf8'
     );
     const { settings } = loadSettings({ dir });
@@ -123,7 +131,10 @@ describe('loadSettings — existing / malformed', () => {
   it('preserves an explicit update_check=false from disk', async () => {
     await writeFile(
       settingsPath({ dir }),
-      JSON.stringify({ update_check: false, telemetry: { install_id: 'keep0000000000' } }),
+      JSON.stringify({
+        update_check: false,
+        telemetry: { install_id: 'beef0000000000000000000000000000' },
+      }),
       'utf8'
     );
     const { settings } = loadSettings({ dir });
@@ -137,6 +148,32 @@ describe('loadSettings — existing / malformed', () => {
     // Persisted: a re-read sees the same id.
     expect(loadSettings({ dir }).settings.telemetry.install_id).toBe(settings.telemetry.install_id);
   });
+
+  it.each([
+    ['too short', 'abc123def456'],
+    ['upper case', 'ABC123DEF45600000000000000000000'],
+    ['not hex', 'x'.repeat(32)],
+    ['free text', 'hello world'],
+    ['a number', 12345],
+  ])(
+    'replaces a %s install_id with a new one and persists it, keeping the other settings',
+    async (_label, badId) => {
+      await writeFile(
+        settingsPath({ dir }),
+        JSON.stringify({ update_check: false, telemetry: { usage: false, install_id: badId } }),
+        'utf8'
+      );
+      const { settings } = loadSettings({ dir });
+      expect(settings.telemetry.install_id).toMatch(/^[a-f0-9]{32}$/);
+      expect(settings.telemetry.install_id).not.toBe(badId);
+      expect(settings.telemetry.usage).toBe(false);
+      expect(settings.update_check).toBe(false);
+      const onDisk = JSON.parse(await readFile(settingsPath({ dir }), 'utf8')) as {
+        telemetry: { install_id: string };
+      };
+      expect(onDisk.telemetry.install_id).toBe(settings.telemetry.install_id);
+    }
+  );
 
   it('degrades to defaults (no throw) on malformed JSON', async () => {
     await writeFile(settingsPath({ dir }), '{ not valid json', 'utf8');
@@ -171,7 +208,7 @@ describe('Feature details setting', () => {
   it('stays absent and off for an existing install that upgrades', async () => {
     await writeFile(
       settingsPath({ dir }),
-      JSON.stringify({ telemetry: { usage: true, diagnostics: false, install_id: 'x'.repeat(32) } })
+      JSON.stringify({ telemetry: { usage: true, diagnostics: false, install_id: 'f'.repeat(32) } })
     );
     const { settings } = loadSettings({ dir });
     expect(settings.telemetry).not.toHaveProperty('features');
@@ -182,7 +219,7 @@ describe('Feature details setting', () => {
   it('does not gain the setting when an older file is saved back', async () => {
     await writeFile(
       settingsPath({ dir }),
-      JSON.stringify({ telemetry: { usage: true, install_id: 'x'.repeat(32) } })
+      JSON.stringify({ telemetry: { usage: true, install_id: 'f'.repeat(32) } })
     );
     saveSettings(loadSettings({ dir }).settings, { dir });
     const reread = JSON.parse(await readFile(settingsPath({ dir }), 'utf8')) as Settings;
@@ -201,7 +238,7 @@ describe('Feature details setting', () => {
   it.each(['yes', 1, null])('ignores a malformed value (%s)', async (features) => {
     await writeFile(
       settingsPath({ dir }),
-      JSON.stringify({ telemetry: { features, install_id: 'x'.repeat(32) } })
+      JSON.stringify({ telemetry: { features, install_id: 'f'.repeat(32) } })
     );
     expect(loadSettings({ dir }).settings.telemetry).not.toHaveProperty('features');
   });
@@ -224,7 +261,7 @@ describe('Feature details setting', () => {
     await writeFile(
       settingsPath({ dir }),
       JSON.stringify({
-        telemetry: { features: true, install_id: 'x'.repeat(32) },
+        telemetry: { features: true, install_id: 'f'.repeat(32) },
         consent: { features: { version: 'one', answer: 'accepted', via: 'cli', date: 'today' } },
       })
     );
@@ -253,7 +290,7 @@ describe('Feature details setting', () => {
   it('honors a hand-edited setting with no record', async () => {
     await writeFile(
       settingsPath({ dir }),
-      JSON.stringify({ telemetry: { usage: true, features: true, install_id: 'x'.repeat(32) } })
+      JSON.stringify({ telemetry: { usage: true, features: true, install_id: 'f'.repeat(32) } })
     );
     expect(featureDetailsEnabled(loadSettings({ dir }).settings)).toBe(true);
   });
@@ -278,7 +315,7 @@ describe('applyDesktopToggles (Claude Desktop manifest toggles)', () => {
     usage = true,
     diagnostics = false
   ): Settings => ({
-    telemetry: { usage, diagnostics, install_id: 'x'.repeat(32) },
+    telemetry: { usage, diagnostics, install_id: 'f'.repeat(32) },
     privacy: { send_previews_to_llm: true },
     automation: { allow_execute_script: true, allow_adobe_generative_credits: true },
     ps_path: null,
@@ -321,7 +358,7 @@ describe('applyDesktopToggles (Claude Desktop manifest toggles)', () => {
     expect(settings.telemetry.usage).toBe(true);
     expect(settings.desktop_toggles).toBeUndefined();
     expect(out.telemetry.usage).toBe(false);
-    expect(out.telemetry.install_id).toBe('x'.repeat(32));
+    expect(out.telemetry.install_id).toBe('f'.repeat(32));
     expect(out.privacy.send_previews_to_llm).toBe(true);
   });
 

@@ -52,7 +52,7 @@ const WAIT_CAVEAT_WORDS = ['a few hours', 'instead of restarting it again'];
 
 function rec(over: Partial<LicenseRecord> = {}): LicenseRecord {
   return {
-    key: 'ETTA-KEY',
+    key: 'EDIT-11111111-1111-4111-8111-111111111111',
     organization_id: 'org_test',
     status: 'granted',
     expires_at: null,

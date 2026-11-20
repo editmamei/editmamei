@@ -206,6 +206,12 @@ export function runConfig(args: string[], io: ConfigIo & LoadSettingsOptions = {
     spec.set(settings, coerced);
     saveSettings(settings, io);
     out(`${key} = ${String(coerced ?? 'null')}\n`);
+    if (key === 'ps_path' && coerced !== null) {
+      err(
+        'Note: ps_path has no effect. To point Editmamei at Photoshop, set the PHOTOSHOP_PATH ' +
+          "environment variable in your AI app's MCP server config.\n"
+      );
+    }
     return;
   }
 

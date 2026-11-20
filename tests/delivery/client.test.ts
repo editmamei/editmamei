@@ -372,3 +372,126 @@ describe('DeliveryClient', () => {
     });
   });
 });
+
+describe('DeliveryClient time limits', () => {
+  const noSleep: (ms: number) => Promise<void> = async () => {};
+  const timeouts = { responseMs: 40, idleMs: 40 };
+
+  /** A server that accepts the request and never answers, like a stalled connection. */
+  const silentFetch =
+    (onCall: () => void = () => {}): DeliveryFetch =>
+    (_url, init) => {
+      onCall();
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    };
+
+  /** Answers at once, then streams `chunks` every `gapMs` and, if `stall`, goes quiet. */
+  const streamingFetch =
+    (chunks: Uint8Array[], gapMs: number, stall: boolean): DeliveryFetch =>
+    async (_url, init) => {
+      let i = 0;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal?.addEventListener('abort', () => controller.error(new Error('aborted')));
+        },
+        async pull(controller) {
+          if (i < chunks.length) {
+            await new Promise((r) => setTimeout(r, gapMs));
+            controller.enqueue(chunks[i++]);
+          } else if (!stall) {
+            controller.close();
+          } else {
+            await new Promise(() => {});
+          }
+        },
+      });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        arrayBuffer: async () => {
+          throw new Error('arrayBuffer() must not be called when a streamed body is present');
+        },
+        body,
+      };
+    };
+
+  it('gives up on a manifest request that never answers, as a retried network error', async () => {
+    let calls = 0;
+    const client = new DeliveryClient({
+      config: cfg,
+      fetchImpl: silentFetch(() => calls++),
+      sleep: noSleep,
+      minRequestIntervalMs: 0,
+      timeouts,
+      retry: { attempts: 2 },
+    });
+    await expect(client.fetchManifest('K')).rejects.toMatchObject({ code: 'network' });
+    expect(calls).toBe(2);
+  });
+
+  it('passes an abort signal on every request', async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const fetchImpl: DeliveryFetch = async (_url, init) => {
+      signals.push(init.signal);
+      return jsonRes(200, { alg: 'x', key: 'y' });
+    };
+    const client = new DeliveryClient({ config: cfg, fetchImpl, minRequestIntervalMs: 0 });
+    await client.fetchKey('K', 'pro');
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+  });
+
+  it('gives up on a module download that stops sending partway', async () => {
+    const client = new DeliveryClient({
+      config: cfg,
+      fetchImpl: streamingFetch([new Uint8Array([1, 2])], 5, true),
+      sleep: noSleep,
+      minRequestIntervalMs: 0,
+      timeouts,
+      retry: { attempts: 1 },
+    });
+    const err = await client.fetchArtifact('K', 'pro', '1.0.0').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DeliveryError);
+    expect(err).toMatchObject({ code: 'network' });
+    expect((err as Error).message).toMatch(/stopped sending/);
+  });
+
+  it('lets a slow download finish when bytes keep arriving, past the response limit', async () => {
+    const chunks = Array.from({ length: 6 }, (_, i) => new Uint8Array([i]));
+    const slow = { responseMs: 60, idleMs: 250 };
+    const client = new DeliveryClient({
+      config: cfg,
+      fetchImpl: streamingFetch(chunks, 20, false),
+      sleep: noSleep,
+      minRequestIntervalMs: 0,
+      timeouts: slow,
+      retry: { attempts: 1 },
+    });
+    const started = Date.now();
+    const bytes = await client.fetchArtifact('K', 'pro', '1.0.0');
+    expect(Array.from(bytes)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(Date.now() - started).toBeGreaterThan(slow.responseMs);
+  });
+
+  it('keeps a refusal a refusal when its body never arrives', async () => {
+    const fetchImpl: DeliveryFetch = async (_url, init) => ({
+      ok: false,
+      status: 403,
+      text: () =>
+        new Promise<string>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+    const client = new DeliveryClient({
+      config: cfg,
+      fetchImpl,
+      sleep: noSleep,
+      minRequestIntervalMs: 0,
+      timeouts,
+    });
+    await expect(client.fetchManifest('K')).rejects.toMatchObject({ code: 'not_entitled' });
+  });
+});

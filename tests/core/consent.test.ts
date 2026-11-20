@@ -32,7 +32,7 @@ afterEach(async () => {
 async function existingInstall(extra: Record<string, unknown> = {}) {
   await writeFile(
     settingsPath({ dir }),
-    JSON.stringify({ telemetry: { usage: true, install_id: 'x'.repeat(32) }, ...extra })
+    JSON.stringify({ telemetry: { usage: true, install_id: 'f'.repeat(32) }, ...extra })
   );
   return loadSettings({ dir }).settings;
 }
@@ -107,7 +107,7 @@ describe('who is asked', () => {
 
   it('asks a new install again when the question version rises', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: true, features: true, install_id: 'x'.repeat(32) },
+      telemetry: { usage: true, features: true, install_id: 'f'.repeat(32) },
       consent: {
         features: {
           version: FEATURES_QUESTION.version - 1,
@@ -124,7 +124,7 @@ describe('who is asked', () => {
 
   it('does not ask while the Claude Desktop toggle is off', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      telemetry: { usage: true, features: false, install_id: 'f'.repeat(32) },
       desktop_toggles: { features: false },
       consent: {
         features: {
@@ -149,7 +149,7 @@ describe('who is asked', () => {
 
   it('does not ask anyone with usage stats off, and sends nothing for them', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: false, install_id: 'x'.repeat(32) },
+      telemetry: { usage: false, install_id: 'f'.repeat(32) },
     });
     const { all, elicit, report } = deps({ settings });
     await runConsentPrompt(all);
@@ -159,7 +159,7 @@ describe('who is asked', () => {
 
   it('does not ask when the setting was already chosen by hand', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      telemetry: { usage: true, features: false, install_id: 'f'.repeat(32) },
     });
     const { all, elicit } = deps({ settings });
     await runConsentPrompt(all);
@@ -223,7 +223,7 @@ describe('answers', () => {
       settings,
       elicit: async () => {
         const raw = {
-          telemetry: { usage: true, diagnostics: true, install_id: 'x'.repeat(32) },
+          telemetry: { usage: true, diagnostics: true, install_id: 'f'.repeat(32) },
         };
         await writeFile(settingsPath({ dir }), JSON.stringify(raw));
         return { action: 'accept' as const, content: { share: true } };
@@ -335,7 +335,7 @@ describe('marking an answer as reported', () => {
 
   it('waits for the send to settle', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      telemetry: { usage: true, features: false, install_id: 'f'.repeat(32) },
       consent: { features: record },
     });
     let finishSend: () => void = () => undefined;
@@ -352,7 +352,7 @@ describe('marking an answer as reported', () => {
     'never sends an answer whose question version (%i) the server would refuse',
     async (version) => {
       const settings = await existingInstall({
-        telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+        telemetry: { usage: true, features: false, install_id: 'f'.repeat(32) },
         consent: { features: { ...record, version } },
       });
       const d = deps({ settings, supportsForm: false });
@@ -365,7 +365,7 @@ describe('marking an answer as reported', () => {
 
   it('stays unmarked when the send could not be delivered or stored', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      telemetry: { usage: true, features: false, install_id: 'f'.repeat(32) },
       consent: { features: record },
     });
     await runConsentPrompt(deps({ settings, report: () => false }).all);
@@ -374,7 +374,7 @@ describe('marking an answer as reported', () => {
 
   it('holds the mark until the real client has sent, even with a nearly full queue', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      telemetry: { usage: true, features: false, install_id: 'f'.repeat(32) },
       consent: { features: record },
     });
     let finishSend: () => void = () => undefined;
@@ -403,7 +403,7 @@ describe('marking an answer as reported', () => {
 
   it('leaves unmarked a different answer saved while the send was running', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      telemetry: { usage: true, features: false, install_id: 'f'.repeat(32) },
       consent: { features: record },
     });
     await runConsentPrompt(
@@ -413,7 +413,7 @@ describe('marking an answer as reported', () => {
           await writeFile(
             settingsPath({ dir }),
             JSON.stringify({
-              telemetry: { usage: true, features: true, install_id: 'x'.repeat(32) },
+              telemetry: { usage: true, features: true, install_id: 'f'.repeat(32) },
               consent: { features: { ...record, answer: 'accepted' } },
             })
           );
@@ -430,7 +430,7 @@ describe('marking an answer as reported', () => {
 describe('answers given elsewhere', () => {
   it('reports a CLI or Desktop choice at the next session, once', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      telemetry: { usage: true, features: false, install_id: 'f'.repeat(32) },
       consent: {
         features: {
           version: FEATURES_QUESTION.version,
@@ -452,7 +452,7 @@ describe('answers given elsewhere', () => {
 
   it('holds a choice back while usage stats are off', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: false, features: false, install_id: 'x'.repeat(32) },
+      telemetry: { usage: false, features: false, install_id: 'f'.repeat(32) },
       consent: {
         features: {
           version: FEATURES_QUESTION.version,
@@ -506,7 +506,7 @@ describe('Claude Desktop toggle', () => {
 
   it('keeps an answer through an unchanged toggle', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: true, features: false, install_id: 'x'.repeat(32) },
+      telemetry: { usage: true, features: false, install_id: 'f'.repeat(32) },
       desktop_toggles: { features: true },
       consent: {
         features: {
@@ -536,7 +536,7 @@ describe('Claude Desktop toggle', () => {
 
   it('lets an off toggle win for this launch without rewriting the stored answer', async () => {
     const settings = await existingInstall({
-      telemetry: { usage: true, features: true, install_id: 'x'.repeat(32) },
+      telemetry: { usage: true, features: true, install_id: 'f'.repeat(32) },
       desktop_toggles: { features: false },
     });
     const out = applyDesktopToggles(settings, desktop('false'), { dir });

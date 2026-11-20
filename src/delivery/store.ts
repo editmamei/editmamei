@@ -180,6 +180,12 @@ function isInstalledModuleBase(v: unknown): v is Record<string, unknown> {
   );
 }
 
+/**
+ * A module version as it may appear in a manifest or the installed pointer: strict semver.
+ * A version becomes a directory name, so it is checked before it is joined into any path.
+ */
+export const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+
 /** Read the installed-module pointer for a SKU, or null when absent / malformed / incomplete. */
 export function readInstalledModule(
   sku: string,
@@ -189,7 +195,7 @@ export function readInstalledModule(
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
-    if (!isInstalledModuleBase(parsed)) {
+    if (!isInstalledModuleBase(parsed) || !VERSION_RE.test(parsed.version as string)) {
       logger.warn(`installed.json for '${sku}' malformed — ignoring`);
       return null;
     }

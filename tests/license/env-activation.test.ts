@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -36,7 +36,7 @@ const okFetch: FetchLike = async (url) => {
 
 function rec(over: Partial<LicenseRecord> = {}): LicenseRecord {
   return {
-    key: 'EXISTING',
+    key: 'EDIT-33333333-3333-4333-8333-333333333333',
     organization_id: 'org',
     status: 'granted',
     expires_at: null,
@@ -145,24 +145,103 @@ describe('maybeActivateFromEnv', () => {
     expect(readLicense({ dir })).toBeNull();
   });
 
+  it('unfilled ${user_config.license_key} placeholder → no request, no warning', async () => {
+    let calls = 0;
+    const counting: FetchLike = async (...a) => {
+      calls++;
+      return okFetch(...a);
+    };
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await maybeActivateFromEnv(
+        { EDITMAMEI_LICENSE_KEY: '${user_config.license_key}' },
+        { dir, config: CFG, fetchImpl: counting },
+        NO_DELIVERY
+      );
+      expect(calls).toBe(0);
+      expect(readLicense({ dir })).toBeNull();
+      expect(stderr.mock.calls.join('')).not.toMatch(/EDITMAMEI_LICENSE_KEY/);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('malformed env key → no request, warns, stays Community', async () => {
+    let calls = 0;
+    const counting: FetchLike = async (...a) => {
+      calls++;
+      return okFetch(...a);
+    };
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await maybeActivateFromEnv(
+        { EDITMAMEI_LICENSE_KEY: 'not-a-license-key' },
+        { dir, config: CFG, fetchImpl: counting },
+        NO_DELIVERY
+      );
+      expect(calls).toBe(0);
+      expect(readLicense({ dir })).toBeNull();
+      expect(stderr.mock.calls.join('')).toMatch(/isn't an Editmamei license key/);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it('env key + no cache → activates and writes the license', async () => {
     await maybeActivateFromEnv(
-      { EDITMAMEI_LICENSE_KEY: 'NEW-KEY' },
+      { EDITMAMEI_LICENSE_KEY: 'EDIT-44444444-4444-4444-8444-444444444444' },
       { dir, config: CFG, fetchImpl: okFetch },
       NO_DELIVERY
     );
-    expect(readLicense({ dir })?.key).toBe('NEW-KEY');
+    expect(readLicense({ dir })?.key).toBe('EDIT-44444444-4444-4444-8444-444444444444');
+  });
+
+  it('a stalled activation does not hold boot, and still saves the license when it lands', async () => {
+    const key = 'EDIT-45454545-4545-4545-8545-454545454545';
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const slowPolar: FetchLike = async (url, init) => {
+      await gate;
+      return okFetch(url, init);
+    };
+    let deliveryCalls = 0;
+    const deliveryFetch: DeliveryFetch = async () => {
+      deliveryCalls++;
+      return jsonRes(500, {});
+    };
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const started = Date.now();
+      await maybeActivateFromEnv(
+        { EDITMAMEI_LICENSE_KEY: key },
+        { dir, config: CFG, fetchImpl: slowPolar },
+        {
+          config: { baseUrl: 'http://localhost:8787' },
+          fetchImpl: deliveryFetch,
+          activationTimeoutMs: 30,
+        }
+      );
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(readLicense({ dir })).toBeNull();
+      expect(deliveryCalls).toBe(0);
+      expect(warn.mock.calls.map((c) => String(c[0])).join('')).toMatch(/taking too long/);
+
+      release();
+      await vi.waitFor(() => expect(readLicense({ dir })?.key).toBe(key));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('env key === cached key → does NOT re-activate (no Polar seat burn)', async () => {
-    writeLicense(rec({ key: 'SAME' }), { dir });
+    writeLicense(rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222' }), { dir });
     let polarCalled = false;
     const spy: FetchLike = async (url, init) => {
       polarCalled = true;
       return okFetch(url, init);
     };
     await maybeActivateFromEnv(
-      { EDITMAMEI_LICENSE_KEY: 'SAME' },
+      { EDITMAMEI_LICENSE_KEY: 'EDIT-22222222-2222-4222-8222-222222222222' },
       { dir, config: CFG, fetchImpl: spy },
       NO_DELIVERY
     );
@@ -187,13 +266,16 @@ describe('maybeActivateFromEnv', () => {
     };
     const boot = (fetchImpl: FetchLike, extra: Record<string, unknown> = {}) =>
       maybeActivateFromEnv(
-        { EDITMAMEI_LICENSE_KEY: 'SAME' },
+        { EDITMAMEI_LICENSE_KEY: 'EDIT-22222222-2222-4222-8222-222222222222' },
         { dir, config: CFG, fetchImpl, ...extra },
         NO_DELIVERY
       );
 
     it('takes a new seat, and the next boot takes none', async () => {
-      writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+      writeLicense(
+        rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222', activation_removed: true }),
+        { dir }
+      );
       const { urls, fetchImpl } = urlsFor();
       await boot(fetchImpl);
       expect(readLicense({ dir })).toMatchObject({ activation_id: 'act' });
@@ -206,7 +288,10 @@ describe('maybeActivateFromEnv', () => {
     });
 
     it('backs off after a refusal, so the next boot makes no request', async () => {
-      writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+      writeLicense(
+        rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222', activation_removed: true }),
+        { dir }
+      );
       const { urls, fetchImpl } = urlsFor(403);
       await boot(fetchImpl);
       expect(urls.some((u) => u.includes('/activate'))).toBe(true);
@@ -219,16 +304,33 @@ describe('maybeActivateFromEnv', () => {
 
     it('makes no request for a license the last check found inactive or ended', async () => {
       const { urls, fetchImpl } = urlsFor();
-      writeLicense(rec({ key: 'SAME', activation_removed: true, status: 'revoked' }), { dir });
+      writeLicense(
+        rec({
+          key: 'EDIT-22222222-2222-4222-8222-222222222222',
+          activation_removed: true,
+          status: 'revoked',
+        }),
+        { dir }
+      );
       await boot(fetchImpl);
       const ended = new Date(Date.now() - 1000).toISOString();
-      writeLicense(rec({ key: 'SAME', activation_removed: true, expires_at: ended }), { dir });
+      writeLicense(
+        rec({
+          key: 'EDIT-22222222-2222-4222-8222-222222222222',
+          activation_removed: true,
+          expires_at: ended,
+        }),
+        { dir }
+      );
       await boot(fetchImpl);
       expect(urls).toEqual([]);
     });
 
     it('does not hold boot when the request hangs', async () => {
-      writeLicense(rec({ key: 'SAME', activation_removed: true }), { dir });
+      writeLicense(
+        rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222', activation_removed: true }),
+        { dir }
+      );
       const hang: FetchLike = () => new Promise(() => {});
       await boot(hang, { expiredRefreshTimeoutMs: 20 });
       expect(readLicense({ dir })?.activation_removed).toBe(true);
@@ -236,27 +338,30 @@ describe('maybeActivateFromEnv', () => {
   });
 
   it('env key differs from cache → re-activates', async () => {
-    writeLicense(rec({ key: 'OLD' }), { dir });
+    writeLicense(rec({ key: 'EDIT-55555555-5555-4555-8555-555555555555' }), { dir });
     await maybeActivateFromEnv(
-      { EDITMAMEI_LICENSE_KEY: 'DIFFERENT' },
+      { EDITMAMEI_LICENSE_KEY: 'EDIT-66666666-6666-4666-8666-666666666666' },
       { dir, config: CFG, fetchImpl: okFetch },
       NO_DELIVERY
     );
-    expect(readLicense({ dir })?.key).toBe('DIFFERENT');
+    expect(readLicense({ dir })?.key).toBe('EDIT-66666666-6666-4666-8666-666666666666');
   });
 
   it('activation failure never throws (boots as Community)', async () => {
+    let calls = 0;
     const boom: FetchLike = async () => {
+      calls++;
       throw new Error('network down');
     };
     await expect(
       // No-op backoff: the thrown fetch is retried, and this test is about
       // booting as Community regardless, not the retry schedule.
       maybeActivateFromEnv(
-        { EDITMAMEI_LICENSE_KEY: 'X' },
+        { EDITMAMEI_LICENSE_KEY: 'EDIT-ABCDEF01-2345-4678-89AB-CDEF01234567' },
         { dir, config: CFG, fetchImpl: boom, client: { sleep: async () => {} } }
       )
     ).resolves.toBeUndefined();
+    expect(calls).toBeGreaterThan(0);
     expect(existsSync(join(dir, 'license.json'))).toBe(false);
   });
 
@@ -275,10 +380,10 @@ describe('maybeActivateFromEnv', () => {
     // The exact Desktop scenario: a prior boot validated the key (cache present)
     // but the module never downloaded. This boot must provision it. On the old
     // code (no provision call) readInstalledModule stays null and this fails.
-    writeLicense(rec({ key: 'SAME' }), { dir });
+    writeLicense(rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222' }), { dir });
     const d = fakeDelivery('0.17.4');
     await maybeActivateFromEnv(
-      { EDITMAMEI_LICENSE_KEY: 'SAME' },
+      { EDITMAMEI_LICENSE_KEY: 'EDIT-22222222-2222-4222-8222-222222222222' },
       { dir, config: CFG, fetchImpl: okFetch },
       deliveryOpts(d)
     );
@@ -287,10 +392,10 @@ describe('maybeActivateFromEnv', () => {
   });
 
   it('module already installed → does NOT re-fetch (no per-boot network)', async () => {
-    writeLicense(rec({ key: 'SAME' }), { dir });
+    writeLicense(rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222' }), { dir });
     const first = fakeDelivery('0.17.4');
     await maybeActivateFromEnv(
-      { EDITMAMEI_LICENSE_KEY: 'SAME' },
+      { EDITMAMEI_LICENSE_KEY: 'EDIT-22222222-2222-4222-8222-222222222222' },
       { dir, config: CFG, fetchImpl: okFetch },
       deliveryOpts(first)
     );
@@ -298,7 +403,7 @@ describe('maybeActivateFromEnv', () => {
 
     const second = fakeDelivery('0.17.4');
     await maybeActivateFromEnv(
-      { EDITMAMEI_LICENSE_KEY: 'SAME' },
+      { EDITMAMEI_LICENSE_KEY: 'EDIT-22222222-2222-4222-8222-222222222222' },
       { dir, config: CFG, fetchImpl: okFetch },
       deliveryOpts(second)
     );
@@ -306,13 +411,13 @@ describe('maybeActivateFromEnv', () => {
   });
 
   it('provision failure is non-fatal — license stays valid, Pro stays dark', async () => {
-    writeLicense(rec({ key: 'SAME' }), { dir });
+    writeLicense(rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222' }), { dir });
     const boomDelivery: DeliveryFetch = async () => {
       throw new Error('delivery down');
     };
     await expect(
       maybeActivateFromEnv(
-        { EDITMAMEI_LICENSE_KEY: 'SAME' },
+        { EDITMAMEI_LICENSE_KEY: 'EDIT-22222222-2222-4222-8222-222222222222' },
         { dir, config: CFG, fetchImpl: okFetch },
         {
           config: { baseUrl: 'http://localhost:8787' },
@@ -321,17 +426,20 @@ describe('maybeActivateFromEnv', () => {
         }
       )
     ).resolves.toBeUndefined();
-    expect(readLicense({ dir })?.key).toBe('SAME');
+    expect(readLicense({ dir })?.key).toBe('EDIT-22222222-2222-4222-8222-222222222222');
     expect(readInstalledModule(PRO_SKU, { dir })).toBeNull();
   });
 
   it('not entitled (grace-expired) → never provisions', async () => {
     // A stale cache past the grace window must not trigger a download.
     const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
-    writeLicense(rec({ key: 'SAME', last_validated_at: old }), { dir });
+    writeLicense(
+      rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222', last_validated_at: old }),
+      { dir }
+    );
     const d = fakeDelivery('0.17.4');
     await maybeActivateFromEnv(
-      { EDITMAMEI_LICENSE_KEY: 'SAME' },
+      { EDITMAMEI_LICENSE_KEY: 'EDIT-22222222-2222-4222-8222-222222222222' },
       { dir, config: CFG, fetchImpl: okFetch },
       deliveryOpts(d)
     );
@@ -340,11 +448,11 @@ describe('maybeActivateFromEnv', () => {
   });
 
   it('provisioning that stalls does not hang boot (bounded by bootTimeoutMs)', async () => {
-    writeLicense(rec({ key: 'SAME' }), { dir });
+    writeLicense(rec({ key: 'EDIT-22222222-2222-4222-8222-222222222222' }), { dir });
     const hangingFetch: DeliveryFetch = () => new Promise(() => {}); // never resolves
     await expect(
       maybeActivateFromEnv(
-        { EDITMAMEI_LICENSE_KEY: 'SAME' },
+        { EDITMAMEI_LICENSE_KEY: 'EDIT-22222222-2222-4222-8222-222222222222' },
         { dir, config: CFG, fetchImpl: okFetch },
         {
           config: { baseUrl: 'http://localhost:8787' },

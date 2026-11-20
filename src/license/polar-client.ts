@@ -10,10 +10,11 @@
  */
 
 import type { PolarConfig } from './config.js';
+import { isLicenseKeyFormat, LICENSE_KEY_EXAMPLE } from './key-format.js';
 
 export type FetchLike = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body: string }
+  init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal }
 ) => Promise<{
   ok: boolean;
   status: number;
@@ -95,6 +96,19 @@ export interface PolarRetryConfig {
 }
 const DEFAULT_RETRY: PolarRetryConfig = { attempts: 3, baseDelayMs: 1000, maxDelayMs: 65_000 };
 
+/**
+ * Per-request time limits. Without one, a server that accepts the connection and
+ * never answers holds the caller for as long as Node's fetch is willing to wait.
+ * `validate` is idempotent and retried, so its limit is short. `activate` and
+ * `deactivate` get a longer one: a request that reached the server has already
+ * taken effect, and abandoning it early would lose the record of that change.
+ */
+export interface PolarTimeouts {
+  validateMs: number;
+  writeMs: number;
+}
+const DEFAULT_TIMEOUTS: PolarTimeouts = { validateMs: 15_000, writeMs: 60_000 };
+
 export type Sleep = (ms: number) => Promise<void>;
 /**
  * An ordinary timer, which holds the process up for the length of the wait.
@@ -131,11 +145,14 @@ export interface PolarClientOptions {
    * tests that should not actually wait. Defaults to a plain timer.
    */
   sleep?: Sleep;
+  /** Override the per-request time limits (tests). */
+  timeouts?: Partial<PolarTimeouts>;
 }
 
 export class PolarLicenseClient {
   private readonly retry: PolarRetryConfig;
   private readonly sleep: Sleep;
+  private readonly timeouts: PolarTimeouts;
 
   constructor(
     private readonly cfg: PolarConfig,
@@ -144,6 +161,7 @@ export class PolarLicenseClient {
   ) {
     this.retry = { ...DEFAULT_RETRY, ...opts.retry };
     this.sleep = opts.sleep ?? defaultSleep;
+    this.timeouts = { ...DEFAULT_TIMEOUTS, ...opts.timeouts };
   }
 
   /**
@@ -200,7 +218,19 @@ export class PolarLicenseClient {
     body: Record<string, unknown>,
     opts: { retry?: boolean } = {}
   ): Promise<T> {
-    const once = () => this.postOnce<T>(path, body);
+    // Every endpoint here carries the key. Anything that isn't shaped like one is
+    // refused locally, so a typo or an unfilled config placeholder never leaves
+    // the machine.
+    if (typeof body.key !== 'string' || !isLicenseKeyFormat(body.key, this.cfg.env)) {
+      throw new PolarLicenseError(
+        `That isn't an Editmamei license key. Keys look like ${LICENSE_KEY_EXAMPLE}; ` +
+          'copy yours again from your purchase email.',
+        0,
+        'invalid_license'
+      );
+    }
+    const timeoutMs = opts.retry === true ? this.timeouts.validateMs : this.timeouts.writeMs;
+    const once = () => this.postOnce<T>(path, body, timeoutMs);
     return opts.retry === true ? this.withRetry(once) : once();
   }
 
@@ -249,18 +279,25 @@ export class PolarLicenseClient {
     return Number.isFinite(secs) && secs >= 0 ? Math.round(secs * 1000) : undefined;
   }
 
-  private async postOnce<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  private async postOnce<T>(
+    path: string,
+    body: Record<string, unknown>,
+    timeoutMs: number
+  ): Promise<T> {
     let res: {
       ok: boolean;
       status: number;
       text: () => Promise<string>;
       headers?: { get: (name: string) => string | null };
     };
+    // One signal covers the whole exchange, response body included.
+    const signal = AbortSignal.timeout(timeoutMs);
     try {
       res = await this.fetchImpl(`${this.cfg.baseUrl}${path}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'user-agent': USER_AGENT },
         body: JSON.stringify(body),
+        signal,
       });
     } catch (err) {
       throw new PolarLicenseError(
@@ -270,7 +307,16 @@ export class PolarLicenseClient {
       );
     }
 
-    const text = await res.text();
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (err) {
+      throw new PolarLicenseError(
+        `The license server stopped responding: ${err instanceof Error ? err.message : String(err)}`,
+        0,
+        'network'
+      );
+    }
     if (res.ok) {
       return (text ? JSON.parse(text) : {}) as T;
     }

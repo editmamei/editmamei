@@ -69,6 +69,9 @@ variable to the absolute path of your `gimp-console` binary, in your MCP client 
 }
 ```
 
+A relative path or a network share (`\\server\share\...`) is ignored, and the usual install
+locations are searched instead.
+
 On Linux, to launch GIMP through Flatpak, set the environment variable to the literal value
 `flatpak` instead of a path. This works only in the environment variable, not in the settings file.
 

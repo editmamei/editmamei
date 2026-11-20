@@ -9,6 +9,8 @@
  * exercise the loop against a locally-running Worker.
  */
 
+import { isSecureEndpoint } from '../utils/secure-endpoint.js';
+
 export interface DeliveryConfig {
   /** Origin with no trailing slash and no `/v1` suffix. */
   baseUrl: string;
@@ -44,14 +46,8 @@ function assertSecureEndpoint(baseUrl: string): void {
   } catch {
     throw new Error(`EDITMAMEI_DELIVERY_URL is not a valid URL: ${baseUrl}`);
   }
-  if (u.protocol === 'https:') return;
+  if (isSecureEndpoint(baseUrl)) return;
   const host = u.hostname;
-  const isLoopback =
-    host === 'localhost' ||
-    host === '::1' ||
-    host === '[::1]' ||
-    /^127(?:\.\d{1,3}){3}$/.test(host);
-  if (u.protocol === 'http:' && isLoopback) return;
   throw new Error(
     `EDITMAMEI_DELIVERY_URL must use https (got ${u.protocol}//${host}); ` +
       'plaintext http is allowed only for localhost during local development.'

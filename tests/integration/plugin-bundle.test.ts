@@ -149,10 +149,10 @@ describe('plugin README', () => {
     // Clear the delivery override so a local dev endpoint in the shell can't stand in for the default.
     vi.stubEnv('EDITMAMEI_DELIVERY_URL', undefined);
     const hosts = [
-      new URL(resolveEndpoint({})).host,
+      new URL(resolveEndpoint({})!).host,
       new URL(resolveDeliveryConfig().baseUrl).host,
       new URL(resolvePolarConfig('production').baseUrl).host,
-      new URL(resolveUpdateCheckUrl({})).host,
+      new URL(resolveUpdateCheckUrl({})!).host,
     ];
     vi.unstubAllEnvs();
     for (const host of hosts) expect(readme, `README does not mention ${host}`).toContain(host);

@@ -240,6 +240,25 @@ describe('module store', () => {
     }
   });
 
+  it.each(['../../elsewhere', '0.17.0/../../../elsewhere', 'latest', ''])(
+    'ignores a pointer whose version %j is not a plain version, before using it in a path',
+    (version) => {
+      const dir = tmpDir();
+      try {
+        installModule(rec, moduleBlob(), { dir });
+        // Plant a manifest where the version would lead if it were joined into a path.
+        const target = join(dir, 'modules', 'pro', version);
+        mkdirSync(target, { recursive: true });
+        writeFileSync(join(target, 'manifest.json'), '{}');
+        const pointer = JSON.parse(readFileSync(installedPath('pro', { dir }), 'utf8')) as object;
+        writeFileSync(installedPath('pro', { dir }), JSON.stringify({ ...pointer, version }));
+        expect(readInstalledModule('pro', { dir })).toBeNull();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('throws on a wrong content key (the bundle decrypt fails before any write)', () => {
     const dir = tmpDir();
     try {

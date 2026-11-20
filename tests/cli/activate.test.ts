@@ -49,7 +49,7 @@ describe('runActivate', () => {
 
   it('activates and prints the unlock confirmation', async () => {
     await runActivate({
-      key: 'ETTA-K',
+      key: 'EDIT-99999999-9999-4999-8999-999999999999',
       stdout: o,
       stderr: e,
       dir,
@@ -73,8 +73,29 @@ describe('runActivate', () => {
       text: async () => '{"detail":"License key activation limit already reached"}',
     });
     await expect(
-      runActivate({ key: 'K', stdout: o, stderr: e, dir, fetchImpl, config: cfg })
+      runActivate({
+        key: 'EDIT-77777777-7777-4777-8777-777777777777',
+        stdout: o,
+        stderr: e,
+        dir,
+        fetchImpl,
+        config: cfg,
+      })
     ).rejects.toThrow('seat_limit_reached');
     expect(err).toContain('maximum of 2 devices');
+  });
+
+  it('refuses a mistyped key without contacting the license server', async () => {
+    let calls = 0;
+    const fetchImpl: FetchLike = async (...a) => {
+      calls++;
+      return okFetch(...a);
+    };
+    await expect(
+      runActivate({ key: 'EDIT-1234', stdout: o, stderr: e, dir, fetchImpl, config: cfg })
+    ).rejects.toThrow('invalid_license');
+    expect(calls).toBe(0);
+    expect(err).toContain("isn't an Editmamei license key");
+    expect(readLicense({ dir })).toBeNull();
   });
 });
