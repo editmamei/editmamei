@@ -1,7 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  existsSync,
+  writeFileSync,
+  readFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomBytes, generateKeyPairSync, sign as edSign } from 'node:crypto';
 import { provisionModules, compareVersions } from '@editmamei/delivery/provision.ts';
 import { sha256Hex } from '@editmamei/delivery/crypto.ts';
@@ -13,6 +21,7 @@ import {
 } from '@editmamei/delivery/signing.ts';
 import {
   readInstalledModule,
+  readInstalledVersion,
   moduleHandlersPath,
   moduleArtifactPath,
   installedModuleDir,
@@ -419,6 +428,225 @@ describe('provisionModules', () => {
       });
       expect(res2.installed).toEqual([]);
       expect(res2.errors[0]?.message).toMatch(/signature/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('provisionModules — content key and damaged-pointer downgrade floor', () => {
+  /** Serve `fake`, but answer the key route with `body` instead of the real key. */
+  function withKeyBody(fake: ReturnType<typeof fakeDelivery>, body: unknown): DeliveryFetch {
+    return async (url, init) =>
+      url.endsWith('/v1/modules/pro/key') ? jsonRes(200, body) : fake.fetchImpl(url, init);
+  }
+
+  /**
+   * Damage the stored pointer so readInstalledModule rejects it while it still names its
+   * version: a mistyped field, a legacy pointer with no `abi`, or an incomplete install
+   * whose unpacked manifest.json is gone.
+   */
+  type Damage = 'bad-alg' | 'no-abi' | 'no-manifest';
+  const DAMAGES: Damage[] = ['bad-alg', 'no-abi', 'no-manifest'];
+  function damagePointer(dir: string, damage: Damage = 'bad-alg'): void {
+    const path = installedPath('pro', { dir });
+    const rec = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    if (damage === 'bad-alg') writeFileSync(path, JSON.stringify({ ...rec, alg: 5 }));
+    if (damage === 'no-abi') {
+      delete rec.abi;
+      writeFileSync(path, JSON.stringify(rec));
+    }
+    if (damage === 'no-manifest') {
+      rmSync(join(installedModuleDir('pro', rec.version as string, { dir }), 'manifest.json'));
+    }
+    expect(readInstalledModule('pro', { dir })).toBeNull();
+  }
+
+  it('refuses a content key that is not an AES-256-GCM key, before writing anything', async () => {
+    const bodies: unknown[] = [
+      { alg: 'none', key: 'AAAA' },
+      { alg: 5, key: 'AAAA' },
+      { key: 'AAAA' },
+      { alg: 'AES-256-GCM', key: 7 },
+      null,
+      [],
+      'AES-256-GCM',
+    ];
+    for (const body of bodies) {
+      const dir = tmpDir();
+      const fake = fakeDelivery('1.0.0');
+      try {
+        const res = await provisionModules('K', {
+          dir,
+          config: cfg,
+          fetchImpl: withKeyBody(fake, body),
+          signingKeys: [fake.pubB64],
+        });
+        expect(res.installed).toEqual([]);
+        expect(res.errors[0]?.message).toMatch(/content key/);
+        expect(existsSync(installedPath('pro', { dir }))).toBe(false);
+        expect(existsSync(installedModuleDir('pro', '1.0.0', { dir }))).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('a bad content key on an upgrade leaves the working install readable', async () => {
+    const dir = tmpDir();
+    const good = fakeDelivery('1.0.0');
+    const next = fakeDelivery('2.0.0');
+    try {
+      await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: good.fetchImpl,
+        signingKeys: [good.pubB64],
+      });
+      const before = readInstalledModule('pro', { dir });
+      const res = await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: withKeyBody(next, { alg: 'other', key: next.keyB64 }),
+        signingKeys: [next.pubB64],
+      });
+      expect(res.installed).toEqual([]);
+      expect(readInstalledModule('pro', { dir })).toEqual(before);
+      expect(existsSync(installedModuleDir('pro', '2.0.0', { dir }))).toBe(false);
+      const skuDir = dirname(installedPath('pro', { dir }));
+      expect(readdirSync(skuDir).some((e) => e.startsWith('.tmp-'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  for (const damage of DAMAGES) {
+    it(`still blocks a downgrade when the installed pointer is damaged (${damage})`, async () => {
+      const dir = tmpDir();
+      const newer = fakeDelivery('2.0.0');
+      const older = fakeDelivery('1.0.0');
+      try {
+        await provisionModules('K', {
+          dir,
+          config: cfg,
+          fetchImpl: newer.fetchImpl,
+          signingKeys: [newer.pubB64],
+        });
+        damagePointer(dir, damage);
+        // `force` is what the corrupt self-heal passes; it must not lift the guard.
+        const res = await provisionModules('K', {
+          dir,
+          force: true,
+          config: cfg,
+          fetchImpl: older.fetchImpl,
+          signingKeys: [older.pubB64],
+        });
+        expect(res.installed).toEqual([]);
+        expect(res.errors).toEqual([]);
+        expect(res.skipped[0]?.reason).toMatch(/downgrade-blocked \(installed v2\.0\.0/);
+        expect(readInstalledVersion('pro', { dir })).toBe('2.0.0');
+        expect(existsSync(installedModuleDir('pro', '2.0.0', { dir }))).toBe(true);
+        expect(existsSync(installedModuleDir('pro', '1.0.0', { dir }))).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it('upgrades past a damaged pointer and prunes the old version', async () => {
+    const dir = tmpDir();
+    const old = fakeDelivery('1.0.0');
+    const next = fakeDelivery('2.0.0');
+    try {
+      await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: old.fetchImpl,
+        signingKeys: [old.pubB64],
+      });
+      damagePointer(dir);
+      const res = await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: next.fetchImpl,
+        signingKeys: [next.pubB64],
+      });
+      expect(res.installed).toEqual([{ sku: 'pro', version: '2.0.0' }]);
+      expect(readInstalledModule('pro', { dir })?.version).toBe('2.0.0');
+      expect(existsSync(installedModuleDir('pro', '1.0.0', { dir }))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('readInstalledVersion returns only a valid version from the raw pointer', () => {
+    const dir = tmpDir();
+    try {
+      const path = installedPath('pro', { dir });
+      expect(readInstalledVersion('pro', { dir })).toBeNull(); // absent
+      mkdirSync(dirname(path), { recursive: true });
+      for (const [raw, want] of [
+        ['{"version":"2.0.0","alg":5}', '2.0.0'],
+        ['{"version":"../../evil"}', null],
+        ['{"version":2}', null],
+        ['["2.0.0"]', null],
+        ['"2.0.0"', null],
+        ['7', null],
+        ['{not json', null],
+      ] as const) {
+        writeFileSync(path, raw);
+        expect(readInstalledVersion('pro', { dir })).toBe(want);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('repairs a damaged pointer at the same version', async () => {
+    const dir = tmpDir();
+    const good = fakeDelivery('2.0.0');
+    try {
+      await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: good.fetchImpl,
+        signingKeys: [good.pubB64],
+      });
+      damagePointer(dir);
+      const res = await provisionModules('K', {
+        dir,
+        force: true,
+        config: cfg,
+        fetchImpl: good.fetchImpl,
+        signingKeys: [good.pubB64],
+      });
+      expect(res.installed).toEqual([{ sku: 'pro', version: '2.0.0' }]);
+      expect(readInstalledModule('pro', { dir })?.alg).toBe('AES-256-GCM');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('installs normally when the pointer is unparseable and names no version', async () => {
+    const dir = tmpDir();
+    const good = fakeDelivery('1.0.0');
+    try {
+      await provisionModules('K', {
+        dir,
+        config: cfg,
+        fetchImpl: good.fetchImpl,
+        signingKeys: [good.pubB64],
+      });
+      // Intended: an unparseable pointer names no version, so there is no floor to keep.
+      writeFileSync(installedPath('pro', { dir }), '{not json');
+      const res = await provisionModules('K', {
+        dir,
+        force: true,
+        config: cfg,
+        fetchImpl: good.fetchImpl,
+        signingKeys: [good.pubB64],
+      });
+      expect(res.installed).toEqual([{ sku: 'pro', version: '1.0.0' }]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

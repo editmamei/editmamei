@@ -13,7 +13,7 @@
 
 import { DeliveryClient, DeliveryError, type DeliveryFetch } from './client.js';
 import type { DeliveryConfig } from './config.js';
-import { sha256Hex } from './crypto.js';
+import { CONTENT_KEY_ALG, sha256Hex } from './crypto.js';
 import {
   verifyModuleSignature,
   verifyModuleSignatureV2,
@@ -21,7 +21,7 @@ import {
   isModuleFileDigestArray,
   type ModuleFileDigest,
 } from './signing.js';
-import { installModule, readInstalledModule, VERSION_RE } from './store.js';
+import { installModule, readInstalledModule, readInstalledVersion, VERSION_RE } from './store.js';
 import { KERNEL_ABI } from '../kernel/host-api.js';
 import { readLicense, type LicenseStoreOptions } from '../license/store.js';
 import { Logger } from '../utils/logger.js';
@@ -209,11 +209,15 @@ export async function provisionModules(
       // bypassed the equality skip above, where versions are EQUAL so this is a
       // no-op) — a legitimate publisher rollback ships as a HIGHER version, never a
       // client flag. Blocked path `continue`s before install AND before any prune.
-      if (installed && compareVersions(latest, installed.version) < 0) {
+      // The floor falls back to the version a damaged pointer still names: a pointer
+      // that fails the strict shape check (the 'corrupt' self-heal case) must not
+      // lift the guard for the forced re-provision that follows.
+      const floor = installed?.version ?? readInstalledVersion(sku, opts);
+      if (floor && compareVersions(latest, floor) < 0) {
         result.skipped.push({
           sku,
           version: latest,
-          reason: `downgrade-blocked (installed v${installed.version} is newer than manifest latest v${latest})`,
+          reason: `downgrade-blocked (installed v${floor} is newer than manifest latest v${latest})`,
         });
         continue;
       }
@@ -298,7 +302,23 @@ export async function provisionModules(
         }
       }
 
-      const contentKey = await client.fetchKey(key, sku);
+      const contentKey: unknown = await client.fetchKey(key, sku);
+      // The key response is unvalidated JSON and goes into the pointer verbatim. A
+      // value `readInstalledModule` would reject leaves a pointer it can't read, so
+      // check its shape here, before anything is written.
+      if (
+        typeof contentKey !== 'object' ||
+        contentKey === null ||
+        (contentKey as { alg?: unknown }).alg !== CONTENT_KEY_ALG ||
+        typeof (contentKey as { key?: unknown }).key !== 'string'
+      ) {
+        result.errors.push({
+          sku,
+          message: `the content key for ${sku} v${latest} is not an ${CONTENT_KEY_ALG} key — refusing to install it`,
+        });
+        continue;
+      }
+      const { alg, key: contentKeyB64 } = contentKey as { alg: string; key: string };
       // installModule decrypts + unpacks the bundle (GCM-authenticated, so a
       // key/artifact mismatch throws here and is caught below rather than leaving
       // Pro half-installed). The verified signature is persisted with the pointer
@@ -310,8 +330,8 @@ export async function provisionModules(
           version: latest,
           abi,
           sha256: digest,
-          alg: contentKey.alg,
-          content_key: contentKey.key,
+          alg,
+          content_key: contentKeyB64,
           sig: sig as string,
           ...(filesForRec && sigV2ForRec ? { files: filesForRec, sig_v2: sigV2ForRec } : {}),
         },
