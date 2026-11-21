@@ -21,7 +21,7 @@ export const MCP_APPS_EXTENSION = 'io.modelcontextprotocol/ui';
 /** Longest page the registry accepts, in characters. */
 const MAX_HTML = 4_000_000;
 
-const URI_SHAPE = /^ui:\/\/[a-z0-9][a-z0-9.-]{0,62}\/[A-Za-z0-9._-]{1,128}$/;
+const URI_SHAPE = /^ui:\/\/[a-z0-9][a-z0-9.-]{0,62}\/[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 const NAME_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
 
 /** One page a module serves. */
@@ -64,6 +64,7 @@ export class PanelRegistry {
 
   /** Add pages. Throws on a malformed or duplicate URI, so a module's mistake fails its own load. */
   register(defs: readonly PanelDefinition[]): void {
+    const batch = new Set<string>();
     for (const def of defs) {
       if (!URI_SHAPE.test(def.uri))
         throw new Error(`Panel URI is not a ui:// address: ${String(def.uri).slice(0, 200)}`);
@@ -75,7 +76,10 @@ export class PanelRegistry {
       if (typeof def.html !== 'string' || def.html.length === 0 || def.html.length > MAX_HTML) {
         throw new Error(`Panel page must be 1 to ${MAX_HTML} characters: ${def.uri}`);
       }
-      if (this.panels.has(def.uri)) throw new Error(`Panel already registered: ${def.uri}`);
+      if (this.panels.has(def.uri) || batch.has(def.uri)) {
+        throw new Error(`Panel already registered: ${def.uri}`);
+      }
+      batch.add(def.uri);
     }
     for (const def of defs) this.panels.set(def.uri, { ...def });
   }

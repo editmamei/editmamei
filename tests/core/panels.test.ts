@@ -62,6 +62,12 @@ describe('PanelRegistry', () => {
     expect(() => panels.register([page('ui://editmamei/ok.html'), page('bad')])).toThrow();
     expect(panels.resources([linking('ui://editmamei/ok.html')])).toEqual([]);
 
+    expect(() => panels.register([page('ui://editmamei/..')])).toThrow(/ui:\/\//);
+    expect(() =>
+      panels.register([page('ui://editmamei/twice.html'), page('ui://editmamei/twice.html')])
+    ).toThrow(/already/);
+    expect(panels.resources([linking('ui://editmamei/twice.html')])).toEqual([]);
+
     panels.register([page('ui://editmamei/a.html')]);
     expect(() => panels.register([page('ui://editmamei/a.html')])).toThrow(/already/);
   });

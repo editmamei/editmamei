@@ -138,8 +138,8 @@ export interface HostApi {
    * tool's result. A tool links to one with `_meta.ui.resourceUri`, and a panel
    * is served only while a registered tool links to it. Throws on a malformed or
    * duplicate URI. Additive-optional like `hasTool?` (does not raise
-   * `KERNEL_ABI`): a module checks for it and leaves `_meta.ui` off its tools on
-   * an older host, where the tool works without a panel.
+   * `KERNEL_ABI`): a module checks for it, and on an older host that lacks it
+   * leaves out the panel and any tool that needs one.
    */
   registerPanels?(panels: PanelDefinition[]): void;
 }

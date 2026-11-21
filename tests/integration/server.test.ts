@@ -3458,10 +3458,19 @@ describe('MCP Apps panels', () => {
   };
   const URI = 'ui://editmamei/test-panel.html';
 
-  async function connect(server: Internals) {
+  type Era = 'legacy' | { pin: '2026-07-28' };
+  const ERAS: Array<[string, Era]> = [
+    ['2025 initialize', 'legacy'],
+    ['2026-07-28', { pin: '2026-07-28' }],
+  ];
+
+  async function connect(server: Internals, mode: Era) {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     server.serve(serverTransport);
-    const client = new Client({ name: 'test-host', version: '1.0.0' }, { capabilities: {} });
+    const client = new Client(
+      { name: 'test-host', version: '1.0.0' },
+      { capabilities: {}, versionNegotiation: { mode } }
+    );
     await client.connect(clientTransport);
     return client;
   }
@@ -3486,8 +3495,8 @@ describe('MCP Apps panels', () => {
     return server;
   }
 
-  it('announces and serves a panel a registered tool links to', async () => {
-    const client = await connect(make(true));
+  it.each(ERAS)('announces and serves a linked panel (%s)', async (_name, mode) => {
+    const client = await connect(make(true), mode);
     const caps = client.getServerCapabilities() as Record<string, unknown>;
     expect(caps.resources).toBeDefined();
     expect(caps.extensions).toEqual({ 'io.modelcontextprotocol/ui': {} });
@@ -3516,8 +3525,8 @@ describe('MCP Apps panels', () => {
     await client.close();
   });
 
-  it('announces no resources when no tool links to a panel', async () => {
-    const client = await connect(make(false));
+  it.each(ERAS)('announces no resources when no tool links a panel (%s)', async (_name, mode) => {
+    const client = await connect(make(false), mode);
     const caps = client.getServerCapabilities() as Record<string, unknown>;
     expect(caps.resources).toBeUndefined();
     expect(caps.extensions).toBeUndefined();

@@ -1070,11 +1070,13 @@ export class EditmameiServer {
     );
 
     if (panelled) {
-      server.setRequestHandler('resources/list', async () => ({
-        resources: this.panels.resources(this.toolRegistry.list()),
-      }));
+      server.setRequestHandler('resources/list', async (_request, ctx) => {
+        if (era === 'modern') this.noteModernClient(ctx.mcpReq.envelope);
+        return { resources: this.panels.resources(this.toolRegistry.list()) };
+      });
       server.setRequestHandler('resources/templates/list', async () => ({ resourceTemplates: [] }));
-      server.setRequestHandler('resources/read', async (request) => {
+      server.setRequestHandler('resources/read', async (request, ctx) => {
+        if (era === 'modern') this.noteModernClient(ctx.mcpReq.envelope);
         const read = this.panels.read(request.params.uri, this.toolRegistry.list());
         if (read === null) {
           throw new ResourceNotFoundError(request.params.uri.slice(0, 200), 'Resource not found');
