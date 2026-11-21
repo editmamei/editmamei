@@ -34,6 +34,11 @@ describe('MCP registry identity sync', () => {
     expect(serverJson.mcpName).toBe(pkg.mcpName);
   });
 
+  it('server.json has a display title', () => {
+    // Without one, registry listings show the raw io.github name.
+    expect(serverJson.title).toBe('Editmamei Desktop');
+  });
+
   it('server.json description fits the registry limit', () => {
     // The registry rejects a publish with 422 "expected length <= 100" on
     // body.description. Nothing local caught that before — it surfaced only at
