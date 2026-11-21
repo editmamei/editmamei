@@ -136,7 +136,8 @@ const sequenceOutputSchema = {
   properties: {
     message: {
       type: 'string',
-      description: 'The outcome in words, including why a rollback failed.',
+      description:
+        "The outcome in words, including why a rollback failed. When a step stopped the sequence, it ends with that step's own error, on a new line.",
     },
     on_error: { type: 'string' },
     return: { type: 'string' },
@@ -265,11 +266,15 @@ function syntheticError(message: string): ToolResult {
   return { content: [{ type: 'text' as const, text: message }], isError: true };
 }
 
-function firstTextLine(result: ToolResult): string {
+function firstText(result: ToolResult): string {
   const block = result.content?.find((b) => b.type === 'text');
-  if (!block || !('text' in block)) return '';
-  const newline = block.text.indexOf('\n');
-  return newline === -1 ? block.text : block.text.slice(0, newline);
+  return block && 'text' in block ? block.text : '';
+}
+
+function firstTextLine(result: ToolResult): string {
+  const text = firstText(result);
+  const newline = text.indexOf('\n');
+  return newline === -1 ? text : text.slice(0, newline);
 }
 
 /** Drops image content blocks; text/other blocks and structuredContent are untouched. */
@@ -447,19 +452,59 @@ interface FailedStep {
   tool: string;
 }
 
+/** How much of a failing step's error the sequence's own message quotes. */
+const MAX_STEP_ERROR_CHARS = 2000;
+
+/**
+ * The failing step's own error, as the last line of the sequence's message.
+ *
+ * The message is the text an error class is read from (classifyError in
+ * session-log.ts), so it has to carry the step's cause and not only the
+ * wrapper around it. The error is quoted whole and placed last, because that
+ * table also has rules anchored to the end of the text and rules that read a
+ * later line. It starts a line of its own because `.` stops at a line break,
+ * so no rule that spans with `.` can match across the wrapper and the error.
+ *
+ * The message then classifies as the step's error does alone, with two
+ * exceptions. The wrapper can decide the class itself: a rollback that did not
+ * complete reports its own error there, and any rollback names a history state
+ * or a document, which can read like an error. And a step that gave no text is
+ * reported as failing with no message.
+ */
+function stepErrorSentence(failedStep: FailedStep, error: string): string {
+  const step = `Step ${failedStep.index + 1}`;
+  if (error.trim() === '') return `${step} failed with no message.`;
+  const quoted =
+    error.length > MAX_STEP_ERROR_CHARS ? `${error.slice(0, MAX_STEP_ERROR_CHARS)}…` : error;
+  return `${step} error: ${quoted}`;
+}
+
 function buildMessage(input: {
   ranSteps: number;
   total: number;
   onError: OnError;
+  /** The first step that failed, with the text of its error. */
   failedStep: FailedStep | null;
-  capExceeded: boolean;
+  failedError: string;
+  /** The step the overall budget stopped before, when it ran out. */
+  cappedStep: FailedStep | null;
   rolledBack: boolean;
   rollbackMessage: string;
 }): string {
-  const { ranSteps, total, onError, failedStep, capExceeded, rolledBack, rollbackMessage } = input;
+  const {
+    ranSteps,
+    total,
+    onError,
+    failedStep,
+    failedError,
+    cappedStep,
+    rolledBack,
+    rollbackMessage,
+  } = input;
 
-  if (capExceeded && failedStep) {
-    const base = `Sequence exceeded its overall time budget (${SEQUENCE_OVERALL_TIMEOUT_MS}ms) before step ${failedStep.index + 1} (${failedStep.tool}) could run; stopped after ${ranSteps}/${total} step(s).`;
+  if (cappedStep) {
+    // Worded as run-script.ts words a tool that ran out of budget, so both read as a timeout.
+    const base = `Sequence exceeded its ${SEQUENCE_OVERALL_TIMEOUT_MS}ms budget before step ${cappedStep.index + 1} (${cappedStep.tool}) could run; stopped after ${ranSteps}/${total} step(s).`;
     if (onError !== 'rollback') return base;
     return rolledBack
       ? `${base} Document rolled back: ${rollbackMessage}.`
@@ -474,13 +519,16 @@ function buildMessage(input: {
     return `Sequence completed all ${total} step(s); step ${failedStep.index + 1} (${failedStep.tool}) failed and was recorded.`;
   }
 
+  const stopped = `Sequence stopped at step ${failedStep.index + 1} (${failedStep.tool}) after a failure`;
+  const why = stepErrorSentence(failedStep, failedError);
+
   if (onError === 'rollback') {
     return rolledBack
-      ? `Sequence stopped at step ${failedStep.index + 1} (${failedStep.tool}) after a failure; ${rollbackMessage}.`
-      : `Sequence stopped at step ${failedStep.index + 1} (${failedStep.tool}) after a failure; rollback did not complete: ${rollbackMessage}.`;
+      ? `${stopped}; ${rollbackMessage}.\n${why}`
+      : `${stopped}; rollback did not complete: ${rollbackMessage}.\n${why}`;
   }
 
-  return `Sequence stopped at step ${failedStep.index + 1} (${failedStep.tool}) after a failure; ${ranSteps}/${total} step(s) ran.`;
+  return `${stopped}; ${ranSteps}/${total} step(s) ran.\n${why}`;
 }
 
 async function runSequence(
@@ -517,7 +565,8 @@ async function runSequence(
   const startedAt = now();
   const entries: StepEntry[] = [];
   let failedStep: FailedStep | null = null;
-  let capExceeded = false;
+  let failedError = '';
+  let cappedStep: FailedStep | null = null;
   let rolledBack = false;
   let rollbackReason: RollbackReason | undefined;
   let rollbackMessage = '';
@@ -531,15 +580,15 @@ async function runSequence(
     // dispatches through invokeTool, and with no outer deadline to inherit each
     // of its probes gets its own full budget however long the sequence has run.
     if (now() - startedAt > SEQUENCE_OVERALL_TIMEOUT_MS) {
-      capExceeded = true;
-      if (failedStep === null) failedStep = { index: i, tool: step.tool };
+      cappedStep = { index: i, tool: step.tool };
+      if (failedStep === null) failedStep = cappedStep;
       entries.push({
         index: i,
         tool: step.tool,
         ok: false,
         duration_ms: 0,
         result: syntheticError(
-          `Sequence exceeded its overall time budget (${SEQUENCE_OVERALL_TIMEOUT_MS}ms) before this step could run.`
+          `Sequence exceeded its ${SEQUENCE_OVERALL_TIMEOUT_MS}ms budget before this step could run.`
         ),
       });
       if (onError === 'rollback') {
@@ -567,7 +616,10 @@ async function runSequence(
       // several steps can fail, but "failed_step" points at the one that
       // started it, same as 'stop'/'rollback' (which never see a second one
       // to compare against). Every step's own `ok` still shows in `steps`.
-      if (failedStep === null) failedStep = { index: i, tool: step.tool };
+      if (failedStep === null) {
+        failedStep = { index: i, tool: step.tool };
+        failedError = firstText(result);
+      }
       if (onError === 'rollback') {
         const r = await performRollback(invokeTool, capturedHistory as HistorySnapshot);
         rolledBack = r.ok;
@@ -588,6 +640,7 @@ async function runSequence(
   // and it isn't the result callers actually want back. `lastRealIndex`
   // points at the last step that actually executed; -1 when the cap fired
   // before any step ran at all.
+  const capExceeded = cappedStep !== null;
   const lastRealIndex = capExceeded ? entries.length - 2 : entries.length - 1;
   const stripped = entries.map((e, idx) =>
     idx === lastRealIndex ? e : { ...e, result: stripImages(e.result) }
@@ -603,7 +656,8 @@ async function runSequence(
     total: steps.length,
     onError,
     failedStep,
-    capExceeded,
+    failedError,
+    cappedStep,
     rolledBack,
     rollbackMessage,
   });
