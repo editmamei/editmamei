@@ -12,6 +12,7 @@ import {
   type ToolResult,
 } from '@editmamei/core/tool-registry.ts';
 import { Logger } from '@editmamei/utils/logger.ts';
+import { PanelRegistry } from '@editmamei/core/panels.ts';
 import type { ModuleSnippetResolver } from '@editmamei/kernel/kernel.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { makeSnippetClient, FakeSnippetClient } from '../fixtures/fake-snippet-client.ts';
@@ -402,6 +403,60 @@ describe('Kernel.invokeTool (broker)', () => {
     for (const res of results) {
       expect((res.content?.[0] as { text: string }).text).toBe('done');
     }
+  });
+});
+
+describe('Kernel panels', () => {
+  const panel = { uri: 'ui://editmamei/p.html', name: 'p', title: 'P', html: '<p>p</p>' };
+
+  it('hands modules registerPanels when the host has a panel registry', () => {
+    const registry = new ToolRegistry();
+    const panels = new PanelRegistry();
+    const kernel = new Kernel({
+      registry,
+      connection: makeConnection().asConnection(),
+      snippet: makeSnippetClient(),
+      detection: makeFakeDetection(),
+      panels,
+      sessionId: 'test-session',
+      logger: new Logger('test-kernel'),
+    });
+    kernel.loadBuiltins([
+      {
+        manifest: { id: 'm', name: 'M', abi: KERNEL_ABI },
+        register(host) {
+          expect(host.registerPanels).toBeTypeOf('function');
+          host.registerPanels?.([panel]);
+          host.registerTools([
+            {
+              ...textTool('gimp_panel', async () => okResult('ok')),
+              tool: {
+                name: 'gimp_panel',
+                description: 'test tool',
+                inputSchema: { type: 'object', properties: {} },
+                _meta: { ui: { resourceUri: panel.uri } },
+              },
+            },
+          ]);
+        },
+      },
+    ]);
+    expect(panels.resources(registry.list()).map((r) => r.uri)).toEqual([panel.uri]);
+  });
+
+  it('leaves registerPanels off without a panel registry', () => {
+    const { kernel } = makeKernel();
+    let seen: HostApi | undefined;
+    kernel.loadBuiltins([
+      {
+        manifest: { id: 'm', name: 'M', abi: KERNEL_ABI },
+        register(host) {
+          seen = host;
+        },
+      },
+    ]);
+    expect(seen).toBeDefined();
+    expect(seen?.registerPanels).toBeUndefined();
   });
 });
 

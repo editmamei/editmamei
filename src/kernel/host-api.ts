@@ -15,6 +15,7 @@ import type { SnippetClient } from '../api/snippet-client.js';
 import type { ToolDefinition, ToolResult } from '../core/tool-registry.js';
 import type { Logger } from '../utils/logger.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
+import type { PanelDefinition } from '../core/panels.js';
 
 /**
  * Kernel ABI version. Bumped only when the HostApi gains a new capability type.
@@ -131,6 +132,16 @@ export interface HostApi {
    * Absent whenever this boot didn't decide to register the GIMP surface.
    */
   readonly gimp?: GimpBackend;
+
+  /**
+   * Register MCP Apps panels (src/core/panels.ts): pages a host draws next to a
+   * tool's result. A tool links to one with `_meta.ui.resourceUri`, and a panel
+   * is served only while a registered tool links to it. Throws on a malformed or
+   * duplicate URI. Additive-optional like `hasTool?` (does not raise
+   * `KERNEL_ABI`): a module checks for it and leaves `_meta.ui` off its tools on
+   * an older host, where the tool works without a panel.
+   */
+  registerPanels?(panels: PanelDefinition[]): void;
 }
 
 /** A module's self-description. */
