@@ -801,7 +801,8 @@ export class TelemetryClient {
    *      is not delivered is appended back to the live outbox, so the batches that did land
    *      are never sent a second time, and an append a sibling made meanwhile is kept.
    *
-   * Respects CURRENT consent: if usage telemetry is now off, the backlog is dropped unsent.
+   * Respects CURRENT consent: if usage telemetry is now off, the backlog is dropped unsent,
+   * and stored feature-detail or diagnostic events are dropped while their setting is off.
    * Best-effort and fire-and-forget — never throws, never blocks boot.
    */
   async flushOutboxOnStartup(): Promise<void> {
@@ -838,9 +839,15 @@ export class TelemetryClient {
       // breaks early would silently discard the unsafe events beyond the break when it wrote
       // the remainder back, with nothing counting them. One filter, one count, and the
       // remainder is already safe by construction.
-      const allowed = featureDetailsEnabled(this.settings)
-        ? pending
-        : pending.filter((event) => event.type !== 'feature_usage');
+      // Each opt-in category is checked against its own current setting, the same way usage
+      // is above: a stored event is sent only while the consent it was recorded under stands.
+      const featuresOn = featureDetailsEnabled(this.settings);
+      const diagnosticsOn = this.settings.telemetry.diagnostics;
+      const allowed = pending.filter(
+        (event) =>
+          (featuresOn || event.type !== 'feature_usage') &&
+          (diagnosticsOn || event.type !== 'diagnostic')
+      );
       const sendable = allowed.filter(isContentSafe);
       this.droppedUnsafe += allowed.length - sendable.length;
       // How many of `sendable` are delivered. Used to hand back ONLY the undelivered

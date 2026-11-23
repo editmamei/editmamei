@@ -1060,6 +1060,38 @@ describe('flushOutboxOnStartup', () => {
     expect(readOutbox({ dir })).toHaveLength(0); // and the backlog is cleared
   });
 
+  it('drops stored diagnostics unsent when diagnostics consent is now off', async () => {
+    const dir = freshOutboxDir();
+    const failRec = recorder({ fail: true });
+    const c1 = makeClient(makeSettings({ diagnostics: true }), failRec, { outboxDir: dir });
+    c1.recordCall({ tool: 'photoshop_a', success: false, duration_ms: 1, error_class: 'other' });
+    c1.recordDiagnostic({ tool: 'photoshop_a', error_class: 'other', error_message: 'boom' });
+    await c1.flush(); // fails → both events land in the outbox
+    expect(readOutbox({ dir }).some((e) => e.type === 'diagnostic')).toBe(true);
+
+    // Next startup: usage still on, diagnostics turned off in between.
+    const okRec = recorder();
+    const c2 = makeClient(makeSettings({ diagnostics: false }), okRec, { outboxDir: dir });
+    await c2.flushOutboxOnStartup();
+    const sent = okRec.batches.flat();
+    expect(sent.some((e) => e.type === 'usage')).toBe(true);
+    expect(sent.some((e) => e.type === 'diagnostic')).toBe(false);
+    expect(readOutbox({ dir })).toHaveLength(0); // not kept for a later send either
+  });
+
+  it('sends stored diagnostics while diagnostics consent stands', async () => {
+    const dir = freshOutboxDir();
+    const failRec = recorder({ fail: true });
+    const c1 = makeClient(makeSettings({ diagnostics: true }), failRec, { outboxDir: dir });
+    c1.recordDiagnostic({ tool: 'photoshop_a', error_class: 'other', error_message: 'boom' });
+    await c1.flush(); // → outbox
+
+    const okRec = recorder();
+    const c2 = makeClient(makeSettings({ diagnostics: true }), okRec, { outboxDir: dir });
+    await c2.flushOutboxOnStartup();
+    expect(okRec.batches.flat().some((e) => e.type === 'diagnostic')).toBe(true);
+  });
+
   it('keeps the backlog for a later startup when delivery fails', async () => {
     const dir = freshOutboxDir();
     const seedRec = recorder({ fail: true });
