@@ -83,7 +83,7 @@ const PATH_TOKEN = new RegExp(
   [
     String.raw`[A-Za-z]:[\\/](?:${DIR}[\\/])*[^\s"']*`,
     String.raw`\\\\(?:${DIR}[\\/])*[^\s"']+`,
-    String.raw`file:\/\/[^\s"']*`,
+    String.raw`file:\/\/(?:(?:${POSIX_DIR})?\/)*(?:${POSIX_WORD})?`,
     String.raw`(?<![\w~])~(?:[\\/]${TILDE_DIR}(?=[\\/]))*[\\/]${TILDE_WORD}[\\/]?`,
     String.raw`\/${POSIX_FOLDER}(?:\/${POSIX_DIR}(?=\/))*\/${POSIX_WORD}\/?`,
     String.raw`(?:^|\s)\/${POSIX_FOLDER}(?=$|\s)`,

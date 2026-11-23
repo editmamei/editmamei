@@ -146,6 +146,10 @@ describe('sanitizeMessage', () => {
       ['POSIX folder ending in an apostrophe', "/Volumes/Kids' Photos/x.psd"],
       ['POSIX first folder ending in an apostrophe', "/Kids'/sub/x.psd"],
       ['tilde folder starting with an apostrophe', "~/'90s Party/x.psd"],
+      ['file URL folder with an apostrophe', "file:///Volumes/Work/O'Brien%20Wedding/x.psd"],
+      ['file URL folder with an apostrophe and a space', "file:///Volumes/O'Brien Wedding/x.psd"],
+      ['file URL Windows folder ending in an apostrophe', "file:///D:/Kids'%20Photos/x.psd"],
+      ['file URL host folder with an apostrophe', "file://nas/Clients/O'Brien/x.psd"],
     ];
     for (const [label, path] of cases) {
       it(`keeps only the file name: ${label}`, () => {
@@ -183,6 +187,9 @@ describe('sanitizeMessage', () => {
       "could not open 'x.psd' for write"
     );
     expect(sanitizeMessage("could not open '~/O'Brien/x.psd' for write")).toBe(
+      "could not open 'x.psd' for write"
+    );
+    expect(sanitizeMessage("could not open 'file:///Volumes/O'Brien/x.psd' for write")).toBe(
       "could not open 'x.psd' for write"
     );
   });
