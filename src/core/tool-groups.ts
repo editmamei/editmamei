@@ -336,6 +336,7 @@ export const TOOL_GROUPS: Record<string, ToolGroup> = {
   gimp_preset_look: 'templates',
   gimp_batch: 'automation',
   gimp_develop_raw: 'filter',
+  gimp_mark_up: 'verify',
 };
 
 /**

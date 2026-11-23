@@ -362,6 +362,7 @@ export const TOOL_TIERS: Record<string, Tier> = {
   gimp_preset_look: 'dev',
   gimp_batch: 'dev',
   gimp_develop_raw: 'dev',
+  gimp_mark_up: 'dev',
 };
 
 /**

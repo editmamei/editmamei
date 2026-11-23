@@ -1,4 +1,5 @@
 import {
+  ResourceNotFoundError,
   Server,
   CLIENT_CAPABILITIES_META_KEY,
   CLIENT_INFO_META_KEY,
@@ -10,6 +11,7 @@ import {
 import { serveStdio, StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { Logger } from '../utils/logger.js';
 import { ToolRegistry, type ToolResult } from './tool-registry.js';
+import { MCP_APPS_EXTENSION, PanelRegistry } from './panels.js';
 import { tierOf } from './tool-tiers.js';
 import { groupOf, GROUPS, type ToolGroup } from './tool-groups.js';
 import { CAMERA_RAW_TOOL, RAW_DEVELOP_TOOL } from './tool-activity.js';
@@ -218,6 +220,8 @@ export class EditmameiServer {
   };
   private logger: Logger;
   private toolRegistry: ToolRegistry;
+  /** Modules' MCP Apps panels (`HostApi.registerPanels`); served while a tool links to one. */
+  private readonly panels = new PanelRegistry();
   /** The person turned off tools that spend Adobe generative credits; they aren't registered. */
   private adobeCreditToolsOff = false;
   private session: Session;
@@ -868,6 +872,7 @@ export class EditmameiServer {
       // only module that reads it).
       gimp: this.gimpBackend,
       acceptTool,
+      panels: this.panels,
       // A module that declares its own go-core snippets (the Pro module) is
       // built by its OWN binary; the kernel composes that with the host binary
       // for the community snippets its handlers also build. The Pro binary
@@ -1047,6 +1052,9 @@ export class EditmameiServer {
    * session (that is serve()'s, on the transport). @internal — exercised directly by tests.
    */
   private buildServer(era: ProtocolEra): Server {
+    // MCP Apps panels (src/core/panels.ts): announced, and their resource methods answered,
+    // only when a registered tool links to one, so a surface without panels is unchanged.
+    const panelled = this.panels.linked(this.toolRegistry.list()).length > 0;
     const server = new Server(
       {
         name: 'editmamei',
@@ -1054,8 +1062,28 @@ export class EditmameiServer {
         // version actually running.
         version: VERSION,
       },
-      { capabilities: { tools: {} } }
+      {
+        capabilities: panelled
+          ? { tools: {}, resources: {}, extensions: { [MCP_APPS_EXTENSION]: {} } }
+          : { tools: {} },
+      }
     );
+
+    if (panelled) {
+      server.setRequestHandler('resources/list', async (_request, ctx) => {
+        if (era === 'modern') this.noteModernClient(ctx.mcpReq.envelope);
+        return { resources: this.panels.resources(this.toolRegistry.list()) };
+      });
+      server.setRequestHandler('resources/templates/list', async () => ({ resourceTemplates: [] }));
+      server.setRequestHandler('resources/read', async (request, ctx) => {
+        if (era === 'modern') this.noteModernClient(ctx.mcpReq.envelope);
+        const read = this.panels.read(request.params.uri, this.toolRegistry.list());
+        if (read === null) {
+          throw new ResourceNotFoundError(request.params.uri.slice(0, 200), 'Resource not found');
+        }
+        return read;
+      });
+    }
 
     if (era === 'legacy') {
       this.clientInfo = () => server.getClientVersion();

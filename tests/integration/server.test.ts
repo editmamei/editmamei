@@ -3443,3 +3443,93 @@ describe('privacy.send_previews_to_llm is enforced on every tool result', () => 
     expect(checks()).toBe(0);
   });
 });
+
+describe('MCP Apps panels', () => {
+  type Internals = {
+    serve(wire: Transport): void;
+    panels: {
+      register(defs: Array<{ uri: string; name: string; title: string; html: string }>): void;
+    };
+    toolRegistry: {
+      register(name: string, def: unknown): void;
+      unregister(name: string): void;
+    };
+    telemetry: { shutdown(): Promise<void> };
+  };
+  const URI = 'ui://editmamei/test-panel.html';
+
+  type Era = 'legacy' | { pin: '2026-07-28' };
+  const ERAS: Array<[string, Era]> = [
+    ['2025 initialize', 'legacy'],
+    ['2026-07-28', { pin: '2026-07-28' }],
+  ];
+
+  async function connect(server: Internals, mode: Era) {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    server.serve(serverTransport);
+    const client = new Client(
+      { name: 'test-host', version: '1.0.0' },
+      { capabilities: {}, versionNegotiation: { mode } }
+    );
+    await client.connect(clientTransport);
+    return client;
+  }
+
+  function make(linked: boolean) {
+    const server = new EditmameiServer() as unknown as Internals;
+    server.telemetry.shutdown = vi.fn(async () => undefined);
+    server.panels.register([
+      { uri: URI, name: 'test-panel', title: 'Test panel', html: '<!doctype html><p>panel</p>' },
+    ]);
+    if (linked) {
+      server.toolRegistry.register('gimp_test_panel', {
+        tool: {
+          name: 'gimp_test_panel',
+          description: 'test tool',
+          inputSchema: { type: 'object', properties: {} },
+          _meta: { ui: { resourceUri: URI } },
+        },
+        handler: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+      });
+    }
+    return server;
+  }
+
+  it.each(ERAS)('announces and serves a linked panel (%s)', async (_name, mode) => {
+    const client = await connect(make(true), mode);
+    const caps = client.getServerCapabilities() as Record<string, unknown>;
+    expect(caps.resources).toBeDefined();
+    expect(caps.extensions).toEqual({ 'io.modelcontextprotocol/ui': {} });
+
+    const tools = await client.listTools();
+    const tool = tools.tools.find((t) => t.name === 'gimp_test_panel');
+    expect(tool?._meta).toEqual({ ui: { resourceUri: URI } });
+
+    const listed = await client.listResources();
+    expect(listed.resources).toEqual([
+      expect.objectContaining({
+        uri: URI,
+        name: 'test-panel',
+        mimeType: 'text/html;profile=mcp-app',
+      }),
+    ]);
+    const read = await client.readResource({ uri: URI });
+    expect(read.contents).toEqual([
+      expect.objectContaining({
+        uri: URI,
+        mimeType: 'text/html;profile=mcp-app',
+        text: '<!doctype html><p>panel</p>',
+      }),
+    ]);
+    await expect(client.readResource({ uri: 'ui://editmamei/other.html' })).rejects.toThrow();
+    await client.close();
+  });
+
+  it.each(ERAS)('announces no resources when no tool links a panel (%s)', async (_name, mode) => {
+    const client = await connect(make(false), mode);
+    const caps = client.getServerCapabilities() as Record<string, unknown>;
+    expect(caps.resources).toBeUndefined();
+    expect(caps.extensions).toBeUndefined();
+    await client.close();
+  });
+});

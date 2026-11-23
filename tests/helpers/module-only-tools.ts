@@ -12,4 +12,5 @@ export const MODULE_ONLY_GIMP_TOOLS: ReadonlySet<string> = new Set([
   'gimp_preset_look',
   'gimp_batch',
   'gimp_develop_raw',
+  'gimp_mark_up',
 ]);

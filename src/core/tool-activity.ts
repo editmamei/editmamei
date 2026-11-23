@@ -136,6 +136,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'gimp_get_histogram',
   'gimp_compare',
   'gimp_get_selection_preview',
+  // Shows the open photo in a panel; renders it through gimp_get_preview via host.invokeTool.
+  'gimp_mark_up',
   // Orchestration wrappers, neutral for the same reason as ps_sequence / ps_batch above. This
   // holds only while they make every document change through host.invokeTool, so that each
   // step is counted on its own; a wrapper that edits the document directly belongs in

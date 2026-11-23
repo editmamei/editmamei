@@ -23,6 +23,7 @@ import {
   type ModuleManifest,
 } from './host-api.js';
 import type { GimpBackend } from '../backends/gimp/backend.js';
+import type { PanelDefinition, PanelRegistry } from '../core/panels.js';
 
 /**
  * Resolves a module's OWN go-core snippet client — the binary that emits the
@@ -60,6 +61,8 @@ export interface KernelDeps {
    * filter that drops its `ps_*` ones, which could not run here.
    */
   acceptTool?: (name: string) => boolean;
+  /** Where modules' MCP Apps panels go. Absent: `HostApi.registerPanels` is left off. */
+  panels?: PanelRegistry;
   sessionId: string;
   logger: Logger;
 }
@@ -72,6 +75,7 @@ export class Kernel {
   private readonly detection: HostDetection;
   private readonly gimp?: GimpBackend;
   private readonly acceptTool: (name: string) => boolean;
+  private readonly panels?: PanelRegistry;
   private readonly sessionId: string;
   private readonly logger: Logger;
 
@@ -94,6 +98,7 @@ export class Kernel {
     this.detection = deps.detection;
     this.gimp = deps.gimp;
     this.acceptTool = deps.acceptTool ?? (() => true);
+    this.panels = deps.panels;
     this.sessionId = deps.sessionId;
     this.logger = deps.logger;
   }
@@ -117,7 +122,9 @@ export class Kernel {
 
   /** The stable HostApi handed to a module's register(). */
   private hostApiFor(manifest: ModuleManifest): HostApi {
+    const panels = this.panels;
     return {
+      ...(panels ? { registerPanels: (defs: PanelDefinition[]) => panels.register(defs) } : {}),
       abi: KERNEL_ABI,
       registerTools: (defs) =>
         this.registry.registerAll(defs.filter((def) => this.acceptTool(def.tool.name))),
