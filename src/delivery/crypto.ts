@@ -14,6 +14,9 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 const IV_LEN = 12;
 const TAG_LEN = 16;
 
+/** The one content-key algorithm the delivery service issues and this host decrypts. */
+export const CONTENT_KEY_ALG = 'AES-256-GCM';
+
 /** Lowercase hex SHA-256 of the raw artifact bytes (the whole IV||ct||tag blob). */
 export function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');

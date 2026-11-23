@@ -239,6 +239,25 @@ export function readInstalledModule(
 }
 
 /**
+ * The version an installed.json names, read without the full shape check, or null when the
+ * file is absent, unparseable, or names no valid version. Provisioning uses it as the
+ * downgrade floor: a pointer that fails `readInstalledModule` for any other field still
+ * says which version is installed, and that must keep blocking an older manifest.
+ */
+export function readInstalledVersion(sku: string, opts: LicenseStoreOptions = {}): string | null {
+  const path = installedPath(sku, opts);
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const version = (parsed as Record<string, unknown>).version;
+    return typeof version === 'string' && VERSION_RE.test(version) ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Delete a superseded directory, never failing the caller.
  *
  * For paths whose removal is housekeeping rather than correctness: the work
