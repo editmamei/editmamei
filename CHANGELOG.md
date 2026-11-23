@@ -10,6 +10,31 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.11.2] — 2026-11-23
+
+### Fixed
+
+- **A clear message when Windows blocks the core program.** When Windows refused to start
+  Editmamei's core program, every call failed with only "spawn UNKNOWN". The error now names the
+  program and what to check. Fixes #216.
+  - `ps_ping` includes the explanation when Photoshop is otherwise reachable.
+- **Sequences say why they stopped.** When a step in a sequence fails, the error now ends with that
+  step's own error instead of a generic message.
+  - A `ps_sequence` run that runs out of time names the step that didn't run.
+- **License and setting values are checked.** A value that isn't shaped like a license key is
+  refused locally and never sent, and license requests have time limits, so a server that never
+  answers no longer holds startup.
+  - Activating a new key from the extension setting continues in the background.
+  - Telemetry and update-check address overrides must use https, and `EDITMAMEI_GIMP_PATH` must be
+    an absolute local path.
+  - Setting `ps_path` now says it has no effect.
+- **Diagnostics follow your current choice.** Diagnostics queued in an earlier session are dropped
+  at startup if you have since turned diagnostics off.
+  - Folder names that contain an apostrophe are removed from diagnostic messages, leaving only the
+    file name.
+- **Safer module updates.** A malformed download response is refused before anything is saved, and
+  a damaged install record no longer lets an older module version replace a newer one.
+
 ## [1.11.1] — 2026-11-19
 
 ### Fixed
