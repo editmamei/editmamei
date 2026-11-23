@@ -130,7 +130,7 @@ Work through these in order:
 1. **Is Photoshop actually running, with a document open?** Editmamei drives a running copy. It
    won't launch one for you.
 2. **Restart Photoshop, then your AI client**, in that order.
-3. **Check you're on a supported version.** See [Requirements](installation.md#requirements-photoshop-2026-node-22-windows-or-macos).
+3. **Check you're on a supported version.** See [Requirements](installation.md#requirements-photoshop-2026-or-later-node-22-windows-or-macos).
 4. **If you have more than one Photoshop installed**, Editmamei may be talking to the wrong one.
    Pin the one you want with `--photoshop-path`, described under
    [Optional: pin a specific Photoshop install](installation.md#optional-pin-a-specific-photoshop-install).
