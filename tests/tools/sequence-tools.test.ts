@@ -13,6 +13,7 @@ import {
 } from '@editmamei/utils/operation-timeouts.ts';
 import { currentToolBudget } from '@editmamei/utils/tool-budget-context.ts';
 import { runScript } from '@editmamei/utils/run-script.ts';
+import { classifyError } from '@editmamei/utils/session-log.ts';
 import { makeConnection } from '../fixtures/fake-connection.ts';
 import { assertToolShape, callTool, textOf } from '../fixtures/tool-helpers.ts';
 import {
@@ -513,6 +514,9 @@ describe('createSequenceTools', () => {
     expect(sc.failed_step).toEqual({ index: 1, tool: 'tool_throws' });
     expect(sc.steps[1].ok).toBe(false);
     expect(sc.steps[1].text).toMatch(/kernel depth exceeded/);
+    expect(textOf(res)).toBe(
+      'Sequence stopped at step 2 (tool_throws) after a failure; 2/3 step(s) ran.\nStep 2 error: kernel depth exceeded'
+    );
   });
 
   it('on_error=continue records the failure and runs every remaining step', async () => {
@@ -554,6 +558,217 @@ describe('createSequenceTools', () => {
     };
     expect(sc.failed_step).toEqual({ index: 0, tool: 'tool_fail_1' });
     expect(sc.steps.map((s) => s.ok)).toEqual([false, true, false]);
+  });
+
+  // ---------- the failing step's error, in the sequence's own message ----------
+
+  // The message is the first thing a caller reads, and it is the text an error
+  // class is read from. So it ends with the step's own error, word for word, and
+  // must classify exactly as that error does standing alone.
+  const STEP_ERRORS: Array<[string, string]> = [
+    ['Error selecting layer: Layer not found: "Sky"', 'layer_not_found'],
+    [
+      'Error applying filter: General Photoshop error occurred. This functionality may not be available in this version of Photoshop.\n- The command "Gaussian Blur" is not currently available.',
+      'ps_command_unavailable',
+    ],
+    [
+      "Error applying filter: Tool 'ps_filter' exceeded its 120000ms budget: Script execution timeout",
+      'timeout',
+    ],
+    ['Error filling layer: No active document', 'no_document'],
+    ['Error running script: JSON is undefined', 'extendscript_reference_error'],
+    ['Error deselecting: ', 'ps_empty_error'],
+    ['Error merging layers: Merge failed: unexpected state', 'ps_op_failed'],
+    ['boom', 'other'],
+  ];
+
+  it.each(STEP_ERRORS)(
+    'on_error=stop ends its message with the step error %j, and classifies as %s',
+    async (stepError, errorClass) => {
+      expect(classifyError(stepError), 'the fixture itself').toBe(errorClass);
+      const invokeTool: FakeInvoke = async (name) =>
+        name === 'tool_fail' ? fail(stepError) : ok();
+      const tools = createSequenceTools(invokeTool, allow);
+      const res = await callTool(tools, 'ps_sequence', {
+        steps: [
+          { tool: 'tool_a', args: {} },
+          { tool: 'tool_fail', args: {} },
+        ],
+      });
+      expect(textOf(res)).toBe(
+        `Sequence stopped at step 2 (tool_fail) after a failure; 2/2 step(s) ran.\nStep 2 error: ${stepError}`
+      );
+      expect(classifyError(textOf(res))).toBe(errorClass);
+      expect((res.structuredContent as { message: string }).message).toBe(textOf(res));
+    }
+  );
+
+  it.each(STEP_ERRORS)(
+    'on_error=rollback keeps the step error %j last, after the rollback outcome (%s)',
+    async (stepError, errorClass) => {
+      let historyReads = 0;
+      const invokeTool: FakeInvoke = async (name) => {
+        if (name === 'ps_inspect') {
+          historyReads++;
+          if (historyReads === 2) return historyResult(6, { stateName: 'S6', total: 11 });
+          return historyResult(5, { stateName: 'S5', total: 10 });
+        }
+        if (name === 'ps_undo') return ok('Undo successful');
+        return name === 'tool_fail' ? fail(stepError) : ok();
+      };
+      const tools = createSequenceTools(invokeTool, allow);
+      const res = await callTool(tools, 'ps_sequence', {
+        steps: [
+          { tool: 'tool_a', args: {} },
+          { tool: 'tool_fail', args: {} },
+        ],
+        on_error: 'rollback',
+      });
+      expect(textOf(res)).toBe(
+        `Sequence stopped at step 2 (tool_fail) after a failure; document verified restored to its state before step 1 ("S5", 1 step undone).\nStep 2 error: ${stepError}`
+      );
+      expect(classifyError(textOf(res))).toBe(errorClass);
+    }
+  );
+
+  it('a rollback that did not complete still ends the message with the step error', async () => {
+    let historyReads = 0;
+    const invokeTool: FakeInvoke = async (name) => {
+      if (name === 'ps_inspect') {
+        historyReads++;
+        if (historyReads === 1) return historyResult(5, { stateName: 'S5', total: 10 });
+        return historyResult(4, { stateName: 'S4', total: 10 }); // the cursor went backward
+      }
+      return name === 'tool_fail' ? fail('Error selecting layer: Layer not found: "Sky"') : ok();
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_fail', args: {} }],
+      on_error: 'rollback',
+    });
+    expect((res.structuredContent as { rollback_reason: string }).rollback_reason).toBe(
+      'cursor_moved_backward'
+    );
+    expect(textOf(res)).toMatch(
+      /^Sequence stopped at step 1 \(tool_fail\) after a failure; rollback did not complete: /
+    );
+    expect(textOf(res)).toMatch(/\.\nStep 1 error: Error selecting layer: Layer not found: "Sky"$/);
+    expect(classifyError(textOf(res))).toBe('layer_not_found');
+  });
+
+  // The rollback sentence here names Photoshop, and a rule such as "photoshop …
+  // not … running" would reach from it into a step error on the same line.
+  it.each(STEP_ERRORS)(
+    'a rollback that found its history state gone still classifies the step error %j as %s',
+    async (stepError, errorClass) => {
+      let historyReads = 0;
+      const invokeTool: FakeInvoke = async (name) => {
+        if (name === 'ps_inspect') {
+          historyReads++;
+          if (historyReads === 1) return historyResult(5, { stateName: 'S5', total: 10 });
+          if (historyReads === 2) return historyResult(8, { stateName: 'S8', total: 13 });
+          return historyResult(6, { stateName: 'S-evicted', total: 13 });
+        }
+        if (name === 'ps_undo') return ok('Undo successful');
+        return fail(stepError);
+      };
+      const tools = createSequenceTools(invokeTool, allow);
+      const res = await callTool(tools, 'ps_sequence', {
+        steps: [{ tool: 'tool_fail', args: {} }],
+        on_error: 'rollback',
+      });
+      expect((res.structuredContent as { rollback_reason: string }).rollback_reason).toBe(
+        'history_evicted'
+      );
+      expect(textOf(res)).toMatch(/Photoshop's history buffer is finite/);
+      expect(textOf(res).endsWith(`.\nStep 1 error: ${stepError}`)).toBe(true);
+      expect(classifyError(textOf(res))).toBe(errorClass);
+    }
+  );
+
+  it('a rollback whose undo failed can decide the class with its own error', async () => {
+    let historyReads = 0;
+    const invokeTool: FakeInvoke = async (name) => {
+      if (name === 'ps_inspect') {
+        historyReads++;
+        return historyReads === 1
+          ? historyResult(5, { stateName: 'S5', total: 10 })
+          : historyResult(8, { stateName: 'S8', total: 13 });
+      }
+      if (name === 'ps_undo') return fail('Error undoing: No active document');
+      return fail('boom');
+    };
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [{ tool: 'tool_fail', args: {} }],
+      on_error: 'rollback',
+    });
+    expect((res.structuredContent as { rollback_reason: string }).rollback_reason).toBe(
+      'undo_failed'
+    );
+    expect(textOf(res).endsWith('.\nStep 1 error: boom')).toBe(true);
+    expect(classifyError('boom')).toBe('other');
+    expect(classifyError(textOf(res))).toBe('no_document');
+  });
+
+  it('a step that fails without any text is reported as failing with no message', async () => {
+    const invokeTool: FakeInvoke = async () => ({ content: [], isError: true });
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', { steps: [{ tool: 'tool_fail', args: {} }] });
+    expect(textOf(res)).toBe(
+      'Sequence stopped at step 1 (tool_fail) after a failure; 1/1 step(s) ran.\nStep 1 failed with no message.'
+    );
+    expect(classifyError(textOf(res))).toBe('ps_empty_error');
+  });
+
+  it('quotes at most 2000 characters of a step error', async () => {
+    const invokeTool: FakeInvoke = async () => fail('x'.repeat(5000));
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', { steps: [{ tool: 'tool_fail', args: {} }] });
+    expect(textOf(res)).toBe(
+      `Sequence stopped at step 1 (tool_fail) after a failure; 1/1 step(s) ran.\nStep 1 error: ${'x'.repeat(2000)}…`
+    );
+  });
+
+  it('on_error=continue leaves the message without the step error, since the call is not an error', async () => {
+    const invokeTool: FakeInvoke = async (name) =>
+      name === 'tool_fail' ? fail('Error selecting layer: Layer not found: "Sky"') : ok();
+    const tools = createSequenceTools(invokeTool, allow);
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_fail', args: {} },
+        { tool: 'tool_b', args: {} },
+      ],
+      on_error: 'continue',
+    });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toBe(
+      'Sequence completed all 2 step(s); step 1 (tool_fail) failed and was recorded.'
+    );
+  });
+
+  it('a registry observer sees the same error class for a failed sequence as for its failing step', async () => {
+    // The real path: the registry hands an observer the first text block of an
+    // error result, for the step's own dispatch and again for the sequence's. It
+    // calls the observer before execute() settles.
+    const seen = new Map<string, string | undefined>();
+    const registry = new ToolRegistry({
+      onCall: (entry) => {
+        seen.set(entry.tool, entry.error);
+      },
+    });
+    registry.register(
+      'ps_select_layer',
+      fakeTool('ps_select_layer', async () => fail('Error selecting layer: Layer not found: "Sky"'))
+    );
+    const invoke: FakeInvoke = (name, args) => registry.execute(name, args) as Promise<ToolResult>;
+    const [seq] = createSequenceTools(invoke, allow);
+    registry.register('ps_sequence', seq);
+
+    await registry.execute('ps_sequence', { steps: [{ tool: 'ps_select_layer', args: {} }] });
+
+    expect(classifyError(seen.get('ps_select_layer'))).toBe('layer_not_found');
+    expect(classifyError(seen.get('ps_sequence'))).toBe('layer_not_found');
   });
 
   // ---------- rollback: verified restore ----------
@@ -873,8 +1088,8 @@ describe('createSequenceTools', () => {
     expect(sc.cap_exceeded).toBe(true);
     expect(sc.rolled_back).toBe(true);
     expect(sc.failed_step).toEqual({ index: 1, tool: 'tool_b' });
-    // buildMessage's capExceeded-and-rolledBack arm names both the cap AND the rollback.
-    expect(textOf(res)).toMatch(/exceeded its overall time budget/);
+    // buildMessage's out-of-budget arm names both the cap AND the rollback.
+    expect(textOf(res)).toMatch(/exceeded its \d+ms budget/);
     expect(textOf(res)).toMatch(/Document rolled back/);
   });
 
@@ -1012,7 +1227,36 @@ describe('createSequenceTools', () => {
     // The never-run synthetic cap entry must not count as a step that ran.
     expect(sc.ran_steps).toBe(1);
     expect(res.isError).toBe(true);
-    expect(textOf(res)).toMatch(/exceeded its overall time budget/);
+    expect(textOf(res)).toBe(
+      `Sequence exceeded its ${SEQUENCE_OVERALL_TIMEOUT_MS}ms budget before step 2 (tool_b) could run; stopped after 1/3 step(s).`
+    );
+    expect(classifyError(textOf(res))).toBe('timeout');
+  });
+
+  it('a time-budget abort names the step that never ran, not a step that failed earlier', async () => {
+    const invokeTool: FakeInvoke = async (name) => (name === 'tool_fail' ? fail() : ok());
+    let t = 0;
+    const now = () => {
+      const v = t;
+      t += 200_000;
+      return v;
+    };
+    const tools = createSequenceTools(invokeTool, allow, { now });
+    const res = await callTool(tools, 'ps_sequence', {
+      steps: [
+        { tool: 'tool_fail', args: {} }, // fails, and on_error=continue carries on
+        { tool: 'tool_b', args: {} }, // the budget runs out before this one
+      ],
+      on_error: 'continue',
+    });
+    const sc = res.structuredContent as { cap_exceeded: boolean; failed_step: unknown };
+    expect(sc.cap_exceeded).toBe(true);
+    // failed_step keeps meaning the first failure.
+    expect(sc.failed_step).toEqual({ index: 0, tool: 'tool_fail' });
+    expect(textOf(res)).toBe(
+      `Sequence exceeded its ${SEQUENCE_OVERALL_TIMEOUT_MS}ms budget before step 2 (tool_b) could run; stopped after 1/2 step(s).`
+    );
+    expect(classifyError(textOf(res))).toBe('timeout');
   });
 
   it("a time-budget abort makes `final` the last REAL step's result, not the synthetic cap stub, and keeps its image", async () => {
@@ -1041,7 +1285,7 @@ describe('createSequenceTools', () => {
     // image, since it's the real last step, not the synthetic one.
     expect(sc.final.content).toEqual([{ type: 'text', text: 'tool_a ok' }, image]);
     // The cap notice still surfaces in the text and status fields.
-    expect(textOf(res)).toMatch(/exceeded its overall time budget/);
+    expect(textOf(res)).toMatch(/exceeded its \d+ms budget/);
   });
 });
 
