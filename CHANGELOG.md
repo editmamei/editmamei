@@ -10,6 +10,24 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.11.3] — 2026-11-25
+
+### Added
+
+- **Browser-style blending for GIMP layers.** A GIMP layer or group can blend in perceptual space,
+  so partly transparent pixels, soft edges and text look the way they do in Photoshop and browsers.
+  - `gimp_layer` set takes `blend_space`: `auto`, `linear` or `perceptual`. GIMP's default is
+    linear, and changing a layer's mode resets it to `auto`.
+  - `gimp_inspect` reports each layer's blend and composite space.
+- **Delete a saved selection in GIMP.** `gimp_modify_selection` takes `op: delete`. A selection a
+  filter still uses as its mask is kept until that filter is removed.
+
+### Fixed
+
+- **Vignettes look the same on portrait photos.** In GIMP, a vignette on a photo taller than wide
+  was much stronger than the same vignette on a landscape one. Fixes #230.
+  - The radius follows the layer when it is cropped, rotated, resized or transformed.
+
 ## [1.11.2] — 2026-11-23
 
 ### Fixed
