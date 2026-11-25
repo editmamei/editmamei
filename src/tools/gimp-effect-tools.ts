@@ -116,10 +116,11 @@ const effectSchema: JsonSchemaObject = {
       description:
         'vignette: size of the untouched centre, 0..3, relative to the LAYER (not absolute ' +
         'pixels — the same value looks visually equivalent at any resolution, and consistent ' +
-        'with center_x/center_y below). SMALLER is STRONGER. Default (when creating): 2.0, a ' +
+        'with center_x/center_y below), and the same on any frame shape, portrait or ' +
+        'landscape. SMALLER is STRONGER. Default (when creating): 2.0, a ' +
         'subtle vignette (corners about a quarter darker, centre untouched). At the default ' +
         'softness and gamma, 1.5 is strong (corners more than half darker) and 1.2 or less ' +
-        'turns the corners black. A lower gamma blackens them sooner: measured on 4:5 and square frames, ' +
+        'turns the corners black. A lower gamma blackens them sooner: measured on square frames, ' +
         'radius 1.4 at gamma 1.6 and radius 1.6 at gamma 1.5 both reach pure black before the ' +
         'corner, and where the darkening reaches black it shows as a hard edge (a ring) on any ' +
         'frame shape. For a falloff with no edge, keep the corners above black. ' +

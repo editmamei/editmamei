@@ -1331,6 +1331,18 @@ def record_type(rec):
 # `val` keeps the two files' schema-bounds-drift tests fully decoupled.
 
 
+def vignette_gegl_radius(radius, width, height, maximum=None):
+    """The gegl:vignette radius that gives `radius`'s look on a `width` x `height` layer. GEGL
+    reaches less far into the corners of a layer taller than it is wide, so there the radius is
+    multiplied by height / width (measured live: matching corner values at 4:3, 3:4, 2:3 and 1:1).
+    Capped at GEGL's own maximum when given."""
+    if width > 0 and height > width:
+        radius = radius * height / float(width)
+    if maximum is not None:
+        radius = min(radius, maximum)
+    return radius
+
+
 def build_vignette_params(args, defaults):
     # Proportional/scale-invariant, relative to the LAYER's own extent (the drawable this filter
     # attaches to, not the document canvas -- every GEGL op here runs per-drawable): x/y are a

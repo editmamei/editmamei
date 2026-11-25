@@ -344,7 +344,7 @@ def _mirror_filters(src_img, dst_img):
             rec = filters.get(f.get_name())
             mask = None
             if rec and rec['operation'] == f.get_operation_name():
-                SETTERS[rec['operation']](dst_cfg, rec['params'])
+                _configure_filter(dst_cfg, rec['operation'], rec['params'], dst)
                 mask = rec['params'].get('mask')
                 operation = rec['operation']
                 pspecs = {p.name: p for p in dst_cfg.list_properties()}
@@ -585,6 +585,44 @@ def _set_vignette(cfg, params):
     cfg.set_property('y', params['y'])
 
 
+def _vignette_radius_for(cfg, radius, drawable):
+    pspec = next((p for p in cfg.list_properties() if p.name == 'radius'), None)
+    return lib.vignette_gegl_radius(
+        radius, drawable.get_width(), drawable.get_height(), getattr(pspec, 'maximum', None)
+    )
+
+
+def _configure_filter(cfg, operation, params, drawable):
+    """SETTERS plus what depends on the drawable's shape: the ledger keeps the vignette radius
+    as asked, and GEGL gets it fitted to `drawable` (`lib.vignette_gegl_radius`)."""
+    SETTERS[operation](cfg, params)
+    if operation == 'gegl:vignette':
+        cfg.set_property('radius', _vignette_radius_for(cfg, params['radius'], drawable))
+
+
+def _refit_vignettes(img):
+    """Refit every ledgered vignette's radius to its layer's current shape, after a change that
+    can alter it. Returns the names of filters whose live update failed."""
+    filters, _unknown = _ledger_get(img)
+    failures = []
+    for layer in _all_layers(img):
+        for f in layer.get_filters():
+            rec = filters.get(f.get_name())
+            if not rec or rec['operation'] != 'gegl:vignette' or f.get_operation_name() != 'gegl:vignette':
+                continue
+            cfg = f.get_config()
+            radius = _vignette_radius_for(cfg, rec['params']['radius'], layer)
+            if abs(cfg.get_property('radius') - radius) < 1e-9:
+                continue
+            try:
+                cfg.set_property('radius', radius)
+                f.update()
+            except Exception as e:
+                failures.append(f.get_name())
+                sys.stderr.write('vignette refit failed for filter %r: %s\n' % (f.get_name(), e))
+    return failures
+
+
 def _set_black_white(cfg, params):
     cfg.set_property('red', params['red'])
     cfg.set_property('green', params['green'])
@@ -742,12 +780,13 @@ def _apply_filter(img, args, operation, params, default_name, type_=None, tag=No
         if args.get('mask'):
             raise ValueError('mask is fixed when the filter is created; add a new filter to change it')
         params['mask'] = filters.get(f.get_name(), {}).get('params', {}).get('mask')
-        SETTERS[operation](f.get_config(), params)
+        owner, _f = _find_filter(img, f.get_id())
+        _configure_filter(f.get_config(), operation, params, owner)
         f.update()
     else:
         layer = _layer(img, args)
         f = Gimp.DrawableFilter.new(layer, operation, _unique_name(img, args.get('name', default_name)))
-        SETTERS[operation](f.get_config(), params)
+        _configure_filter(f.get_config(), operation, params, layer)
         blend_mode = lib.FILTER_BLEND_MODES.get(type_)
         if blend_mode:
             f.set_blend_mode(getattr(Gimp.LayerMode, blend_mode))
@@ -2187,9 +2226,10 @@ def _apply_planned_effect_transform(img, planned):
     ALSO fails, the filter is simply left wherever the failed attempt left it) and keeps the ledger
     record at the OLD params either way. The filter's name is collected and returned so the caller
     can report it (`effect_update_failures`) -- a silent partial failure here would otherwise look
-    identical to a filter the geometry op never touched at all."""
+    identical to a filter the geometry op never touched at all. Every vignette is then refit to
+    its layer's new shape (`_refit_vignettes`), planned or not."""
     if not planned:
-        return []
+        return _refit_vignettes(img)
     failures = []
     filters, unknown = _ledger_get(img)
     for layer in _all_layers(img):
@@ -2201,7 +2241,7 @@ def _apply_planned_effect_transform(img, planned):
             rec = filters.get(f.get_name())
             old_params = rec['params'] if rec is not None else None
             try:
-                SETTERS[operation](f.get_config(), new_params)
+                _configure_filter(f.get_config(), operation, new_params, layer)
                 f.update()
             except Exception as e:
                 failures.append(f.get_name())
@@ -2211,7 +2251,7 @@ def _apply_planned_effect_transform(img, planned):
                 )
                 if old_params is not None:
                     try:
-                        SETTERS[operation](f.get_config(), old_params)
+                        _configure_filter(f.get_config(), operation, old_params, layer)
                         f.update()
                     except Exception as restore_error:
                         sys.stderr.write(
@@ -2222,7 +2262,7 @@ def _apply_planned_effect_transform(img, planned):
             if rec is not None:
                 rec['params'] = new_params
     _ledger_put(img, filters, unknown)
-    return failures
+    return failures + [name for name in _refit_vignettes(img) if name not in failures]
 
 
 def op_crop(args):
@@ -2243,8 +2283,14 @@ def op_crop(args):
     width, height = lib.validate_resize_dims(width, height)
     Gimp.Selection.none(img)  # see op_open: geometry always applies to the whole canvas
     img.crop(width, height, left, top)
-    _drop_proxies(img.get_id())
-    return {'width': img.get_width(), 'height': img.get_height()}
+    try:
+        failures = _refit_vignettes(img)
+    finally:
+        _drop_proxies(img.get_id())
+    result = {'width': img.get_width(), 'height': img.get_height()}
+    if failures:
+        result['effect_update_failures'] = failures
+    return result
 
 
 def op_resize(args):
