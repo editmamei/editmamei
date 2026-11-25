@@ -181,6 +181,46 @@ def validate_layer_mode(value):
     return value
 
 
+# gimp_layer set's blend_space: user-facing name -> the `Gimp.LayerColorSpace` member NAME. One
+# value sets both the layer's blend space and its composite space. 'perceptual' is the sRGB curve
+# (RGB_PERCEPTUAL), not the image profile's own curve (RGB_NON_LINEAR).
+BLEND_SPACES = {
+    'auto': 'AUTO',
+    'linear': 'RGB_LINEAR',
+    'perceptual': 'RGB_PERCEPTUAL',
+}
+
+
+def validate_blend_space(value):
+    if value not in BLEND_SPACES:
+        raise ValueError('blend_space must be one of %s' % sorted(BLEND_SPACES))
+    return value
+
+
+def layer_set_fields(args):
+    """gimp_layer set's fields as [(field, value)], every one validated before the caller applies
+    any, so a bad field leaves the layer untouched. blend_space comes after mode because GIMP
+    resets a layer's blend and composite spaces to auto when its mode changes. `name` comes back
+    stripped; the caller makes it unique."""
+    fields = []
+    if args.get('opacity') is not None:
+        fields.append(('opacity', validate_range('opacity', args['opacity'], 0.0, 100.0)))
+    if args.get('mode') is not None:
+        fields.append(('mode', validate_layer_mode(args['mode'])))
+    if args.get('blend_space') is not None:
+        fields.append(('blend_space', validate_blend_space(args['blend_space'])))
+    if 'visible' in args and args['visible'] is not None:
+        fields.append(('visible', require_bool(args, 'visible')))
+    if args.get('name') is not None:
+        new_name = str(args['name']).strip()
+        if not new_name:
+            raise ValueError('name must not be empty')
+        fields.append(('name', new_name))
+    if not fields:
+        raise ValueError('set needs at least one of opacity, mode, blend_space, visible, name')
+    return fields
+
+
 # ---- gimp_fill ---------------------------------------------------------------------------------
 
 FILL_OPS = ('solid', 'linear_gradient', 'radial_gradient')

@@ -126,7 +126,9 @@ metadata (including any GPS location); only `gimp_export` removes it.
   orientation (phone portraits, for example) are rotated upright on open and on `gimp_place_image`;
   other formats keep whatever orientation their own loader applies.
 - **Layers:** create, delete, duplicate, group, reorder, rename, set opacity, blend mode and
-  visibility, merge down, flatten (`gimp_layer`). Place another photo into the document as a new
+  visibility, merge down, flatten (`gimp_layer`). A layer or group can also blend in perceptual
+  space, the way browsers and Photoshop mix partly transparent pixels, so flat exports match a
+  design laid out elsewhere (GIMP's default is linear). Place another photo into the document as a new
   layer (`gimp_place_image`) to build a composite, and extend the canvas for borders and frames
   (`gimp_canvas`).
 - **Non-destructive adjustments** (`gimp_add_adjustment`), 14 types: curves, levels, exposure,
@@ -141,8 +143,9 @@ metadata (including any GPS location); only `gimp_export` removes it.
   blend modes.
 - **Selections and masks:** build a selection from a rectangle, ellipse, polygon, color range, magic
   wand, a layer's opaque pixels or a gradient, and save it under a name (`gimp_select`). Expand,
-  contract, feather, border, invert, harden or smooth a saved selection (`gimp_modify_selection`). Attach
-  one as a layer mask, or remove, apply or invert a mask (`gimp_layer_mask`), and check the result
+  contract, feather, border, invert, harden, smooth or delete a saved selection
+  (`gimp_modify_selection`). Attach one as a layer mask, or remove, apply or invert a mask
+  (`gimp_layer_mask`), and check the result
   in a rendered preview (`gimp_get_selection_preview`). A saved selection also confines a filter
   when you pass its name as `mask`.
 - **Text:** live text layers you can create and restyle later, with content, font, color and

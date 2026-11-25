@@ -1886,6 +1886,8 @@ def _layer_node_shallow(layer):
         'name': layer.get_name(),
         'opacity': layer.get_opacity(),
         'mode': layer.get_mode().value_nick,
+        'blend_space': _color_space_name(layer.get_blend_space()),
+        'composite_space': _color_space_name(layer.get_composite_space()),
         'visible': layer.get_visible(),
         'offsets': {'x': off_x, 'y': off_y} if ok else {'x': None, 'y': None},
         'has_alpha': layer.has_alpha(),
@@ -3622,6 +3624,20 @@ def _layer_type_for(img, tool='gimp_layer op=create'):
 # that happens to hit it.
 _LAYER_FILL_TYPES = {'white': Gimp.FillType.WHITE, 'transparent': Gimp.FillType.TRANSPARENT}
 
+# gimp_layer set's blend_space values, resolved at import time like the fills above.
+_LAYER_COLOR_SPACES = {
+    name: getattr(Gimp.LayerColorSpace, member) for name, member in lib.BLEND_SPACES.items()
+}
+
+
+def _color_space_name(space):
+    """A layer's blend or composite space as its blend_space name; a space this tool does not
+    set reports GIMP's own nick."""
+    for name, member in _LAYER_COLOR_SPACES.items():
+        if space == member:
+            return name
+    return space.value_nick
+
 
 def _fill_new_layer(layer, fill):
     # `Drawable.fill()` reports failure by returning False rather than raising (the same "calling
@@ -3739,25 +3755,24 @@ def _op_layer_select(img, args):
     return {'layer_id': layer.get_id(), 'name': layer.get_name()}
 
 
+def _set_blend_space(layer, value):
+    # Some modes (Normal among them) fix their blend space, and GIMP refuses the blend-space
+    # setter there; the composite space alone then decides how partly transparent pixels mix.
+    space = _LAYER_COLOR_SPACES[value]
+    if not layer.set_composite_space(space):
+        raise lib.OpError('gimp_op_failed', 'GIMP could not set the composite space of this layer')
+    layer.set_blend_space(space)
+
+
 def _op_layer_set(img, args):
     layer = _layer(img, args)
     # Every field is validated FIRST, before any setter runs at all: a later field failing
     # validation must never leave an earlier one already applied with nothing to show for it (no
     # proxy drop, no error).
-    to_apply = []
-    if args.get('opacity') is not None:
-        to_apply.append(('opacity', lib.validate_range('opacity', args['opacity'], 0.0, 100.0)))
-    if args.get('mode') is not None:
-        to_apply.append(('mode', lib.validate_layer_mode(args['mode'])))
-    if 'visible' in args and args['visible'] is not None:
-        to_apply.append(('visible', lib.require_bool(args, 'visible')))
-    if args.get('name') is not None:
-        new_name = str(args['name']).strip()
-        if not new_name:
-            raise ValueError('name must not be empty')
-        to_apply.append(('name', _unique_layer_name(img, new_name, exclude=layer)))
-    if not to_apply:
-        raise ValueError('set needs at least one of opacity, mode, visible, name')
+    to_apply = [
+        (field, _unique_layer_name(img, value, exclude=layer) if field == 'name' else value)
+        for field, value in lib.layer_set_fields(args)
+    ]
 
     changed = {}
     try:
@@ -3766,6 +3781,8 @@ def _op_layer_set(img, args):
                 layer.set_opacity(value)
             elif field == 'mode':
                 layer.set_mode(getattr(Gimp.LayerMode, lib.LAYER_MODES[value]))
+            elif field == 'blend_space':
+                _set_blend_space(layer, value)
             elif field == 'visible':
                 layer.set_visible(value)
             else:
@@ -5695,13 +5712,38 @@ def op_select(args):
         Gimp.Selection.none(img)
 
 
+def _delete_channel(img, name, args):
+    for field in ('output', 'px'):
+        if args.get(field) is not None:
+            raise ValueError('%s does not apply to delete' % field)
+    if _mask_name_in_use(img, name):
+        raise ValueError(
+            'cannot delete %r: an existing filter uses it as its mask; delete that filter first'
+            % name
+        )
+    ch = _require_channel(img, name)
+    # Like insert_channel, removing a channel can change the selected layers.
+    original_selection = img.get_selected_layers()
+    channel_id = ch.get_id()
+    try:
+        img.remove_channel(ch)
+        img.set_selected_layers(original_selection)
+        if any(c.get_id() == channel_id for c in img.get_channels()):
+            raise lib.OpError('gimp_op_failed', 'GIMP did not delete this channel')
+    finally:
+        _drop_proxies(img.get_id())
+    return {'channel': name, 'deleted': True}
+
+
 def op_modify_mask(args):
     img = _image(args)
     name = lib.require(args, 'channel')
+    how = lib.require(args, 'op')
+    if how == 'delete':
+        return _delete_channel(img, name, args)
     out = args.get('output') or name
     _refuse_mask_in_use(img, out)
     ch = _require_channel(img, name)
-    how = lib.require(args, 'op')
     try:
         img.select_item(Gimp.ChannelOps.REPLACE, ch)
         if how in ('expand', 'contract', 'border'):

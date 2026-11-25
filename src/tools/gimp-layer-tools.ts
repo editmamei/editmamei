@@ -48,9 +48,9 @@ const layerSchema: JsonSchemaObject = {
         "group, any descendant) carries an Editmamei filter, since the copy's filter would collide " +
         "with the original's own ledger record. 'select' sets the active layer (the default " +
         'target for gimp_add_adjustment and friends when no layer is named) and is the one sub-op ' +
-        "that changes nothing else. 'set' changes opacity, mode, visible, and/or name (at least " +
-        'one required, name may not be empty) — mode is a blend mode from a fixed list, not a raw ' +
-        "GEGL/GIMP name. 'reorder' " +
+        "that changes nothing else. 'set' changes opacity, mode, blend_space, visible, and/or " +
+        'name (at least one required, name may not be empty) — mode is a blend mode from a fixed ' +
+        "list, not a raw GEGL/GIMP name. 'reorder' " +
         "changes a layer's stack position and/or moves it into a group (parent_group) or out to " +
         'top-level (to_top_level: true) — neither given keeps the layer in its current group and ' +
         'only changes `position`; REFUSED if parent_group would nest a group inside itself or one ' +
@@ -159,6 +159,17 @@ const layerSchema: JsonSchemaObject = {
       ],
       description: 'set only. A fixed blend-mode list, not a raw GEGL/GIMP mode name.',
     },
+    blend_space: {
+      type: 'string',
+      enum: ['auto', 'linear', 'perceptual'],
+      description:
+        "set only. The color space this layer blends and composites in (sets GIMP's composite " +
+        'space, and its blend space where the mode has one to set); works on groups too. ' +
+        'perceptual matches how browsers and ' +
+        "Photoshop blend partly transparent pixels; GIMP's default is linear. auto restores " +
+        "GIMP's default for the layer's mode. Changing mode resets it to auto, so send both " +
+        'in one call (mode is applied first).',
+    },
     visible: {
       type: 'boolean',
       description: 'set only.',
@@ -221,9 +232,11 @@ function layerSuccessText(
     default: {
       // 'set' -- `result` always carries `name` as the layer's own current identifier, so a
       // rename can't be told apart from an untouched name by diffing result's own keys. Reading
-      // which of opacity/mode/visible/name the caller actually passed reports a name-only set as
-      // "updated: name.", not "updated: .".
-      const changed = (['opacity', 'mode', 'visible', 'name'] as const).filter((k) => k in args);
+      // which of opacity/mode/blend_space/visible/name the caller actually passed reports a
+      // name-only set as "updated: name.", not "updated: .".
+      const changed = (['opacity', 'mode', 'blend_space', 'visible', 'name'] as const).filter(
+        (k) => k in args
+      );
       return `Layer ${result.layer_id} ("${result.name as string}") updated: ${changed.join(', ')}.`;
     }
   }
@@ -358,6 +371,7 @@ export function createGimpLayerTools(gimp: GimpBackend): ToolDefinition[] {
             deleted: { type: 'boolean' },
             opacity: { type: 'number' },
             mode: { type: 'string' },
+            blend_space: { type: 'string' },
             visible: { type: 'boolean' },
             parent_group: { type: ['number', 'null'] },
             rasterized_text: { type: 'boolean' },

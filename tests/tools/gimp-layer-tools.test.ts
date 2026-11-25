@@ -202,6 +202,49 @@ describe('createGimpLayerTools', () => {
       expect(gimp.calls).toHaveLength(0);
     });
 
+    it('the schema lists the three blend_space values', () => {
+      const gimp = makeGimpBackend();
+      const tool = createGimpLayerTools(gimp.asBackend()).find(
+        (t) => t.tool.name === 'gimp_layer'
+      )!;
+      const props = tool.tool.inputSchema.properties as Record<string, { enum?: string[] }>;
+      expect(props.blend_space.enum).toEqual(['auto', 'linear', 'perceptual']);
+    });
+
+    it('op=set with blend_space alone forwards it and names it in the success text', async () => {
+      const gimp = makeGimpBackend({
+        result: { layer_id: 7, name: 'Group', blend_space: 'perceptual' },
+      });
+      const tools = createGimpLayerTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_layer', {
+        image: 1,
+        op: 'set',
+        layer_id: 7,
+        blend_space: 'perceptual',
+      });
+      expect(gimp.lastCall()).toEqual({
+        op: 'layer',
+        args: { ...LAYER_DEFAULTS, image: 1, op: 'set', layer_id: 7, blend_space: 'perceptual' },
+      });
+      expect((result.content?.[0] as { text: string }).text).toBe(
+        'Layer 7 ("Group") updated: blend_space.'
+      );
+    });
+
+    it('rejects a blend_space outside its enum before any dispatch', async () => {
+      const gimp = makeGimpBackend();
+      const tools = createGimpLayerTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_layer', {
+        image: 1,
+        op: 'set',
+        layer_id: 2,
+        opacity: 40,
+        blend_space: 'gamma',
+      });
+      expect(result.isError).toBe(true);
+      expect(gimp.calls).toHaveLength(0);
+    });
+
     it('op=reorder forwards parent_group and position', async () => {
       const gimp = makeGimpBackend({ result: { layer_id: 3, parent_group: 6 } });
       const tools = createGimpLayerTools(gimp.asBackend());
