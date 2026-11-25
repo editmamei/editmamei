@@ -2799,6 +2799,45 @@ class TestLayerModes(unittest.TestCase):
             lib.validate_layer_mode('vivid-light')
 
 
+class TestLayerSetFields(unittest.TestCase):
+    def test_blend_spaces_are_the_three_documented_choices(self):
+        self.assertEqual(
+            lib.BLEND_SPACES,
+            {'auto': 'AUTO', 'linear': 'RGB_LINEAR', 'perceptual': 'RGB_PERCEPTUAL'},
+        )
+
+    def test_blend_space_alone_is_enough(self):
+        self.assertEqual(lib.layer_set_fields({'blend_space': 'perceptual'}), [('blend_space', 'perceptual')])
+
+    def test_a_bad_blend_space_refuses_the_whole_set_including_opacity(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.layer_set_fields({'opacity': 40, 'blend_space': 'gamma'})
+        self.assertIn('blend_space', str(ctx.exception))
+
+    def test_blend_space_is_applied_after_mode(self):
+        # GIMP resets both spaces to auto on a mode change, so mode must go first.
+        fields = [f for f, _v in lib.layer_set_fields(
+            {'blend_space': 'perceptual', 'mode': 'multiply', 'opacity': 35, 'visible': True, 'name': ' A '}
+        )]
+        self.assertEqual(fields, ['opacity', 'mode', 'blend_space', 'visible', 'name'])
+
+    def test_name_is_stripped_and_empty_names_refused(self):
+        self.assertEqual(lib.layer_set_fields({'name': '  Top  '}), [('name', 'Top')])
+        with self.assertRaises(ValueError):
+            lib.layer_set_fields({'name': '   '})
+
+    def test_nothing_to_set_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            lib.layer_set_fields({'opacity': None, 'visible': None})
+        self.assertIn('blend_space', str(ctx.exception))
+
+    def test_bad_opacity_and_mode_still_refused(self):
+        with self.assertRaises(ValueError):
+            lib.layer_set_fields({'opacity': 140})
+        with self.assertRaises(ValueError):
+            lib.layer_set_fields({'mode': 'vivid-light', 'blend_space': 'linear'})
+
+
 class TestLayerFills(unittest.TestCase):
     def test_fills_are_the_three_documented_choices(self):
         self.assertEqual(set(lib.LAYER_FILLS), {'white', 'black', 'transparent'})

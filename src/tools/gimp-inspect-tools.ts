@@ -235,6 +235,7 @@ export function createGimpInspectTools(gimp: GimpBackend): ToolDefinition[] {
           "reports it in. 'fonts' lists the installed font names (no image needed), sorted, " +
           'optionally narrowed by `filter` (substring), capped at 200 with a `total`. Layer tree ' +
           'nodes are addressed by `layer_id` (canonical — GIMP allows duplicate layer names) and ' +
+          'report opacity, mode, blend_space and composite_space (auto/linear/perceptual) and ' +
           "flag `is_text_layer`; a text layer's node also reports its text, font, font_size " +
           "(points), color and alignment. 'document'/'layers' cap the tree at " +
           '2000 nodes total and report `truncated: true` if the cap was hit, alongside ' +

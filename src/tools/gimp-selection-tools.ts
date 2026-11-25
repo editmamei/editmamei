@@ -33,9 +33,19 @@ const maskResultSchema = {
   },
 } as const;
 
+const modifyResultSchema = {
+  type: 'object',
+  properties: { ...maskResultSchema.properties, deleted: { type: 'boolean' } },
+} as const;
+
 const maskText = (result: unknown): string => {
   const r = result as { channel: string; fraction: number };
   return `Channel "${r.channel}" — ${(r.fraction * 100).toFixed(1)}% of pixels selected.`;
+};
+
+const modifyText = (result: unknown): string => {
+  const r = result as { channel: string; deleted?: boolean };
+  return r.deleted ? `Channel "${r.channel}" deleted.` : maskText(result);
 };
 
 const layerMaskResultSchema = {
@@ -215,10 +225,11 @@ const modifySelectionSchema: JsonSchemaObject = {
     channel: { type: 'string', minLength: 1, description: 'The saved selection to modify.' },
     op: {
       type: 'string',
-      enum: ['expand', 'contract', 'border', 'feather', 'smooth', 'invert', 'harden'],
+      enum: ['expand', 'contract', 'border', 'feather', 'smooth', 'invert', 'harden', 'delete'],
       description:
         'expand/contract/border/feather require `px` (> 0). harden: threshold a soft mask at ' +
-        '50%. smooth: round off jagged edges (`px` optional, floors at 1px).',
+        '50%. smooth: round off jagged edges (`px` optional, floors at 1px). delete: remove ' +
+        'the saved selection (no `px` or `output`).',
     },
     px: {
       type: 'number',
@@ -385,10 +396,10 @@ export function createGimpSelectionTools(
       tool: {
         name: 'gimp_modify_selection',
         description:
-          'Headless GIMP: expand, contract, border, feather, smooth, invert or harden a saved ' +
-          'selection. Refused if the target channel already confines a filter.',
+          'Headless GIMP: expand, contract, border, feather, smooth, invert, harden or delete a ' +
+          'saved selection. Refused if the target channel already confines a filter.',
         inputSchema: modifySelectionSchema,
-        outputSchema: maskResultSchema,
+        outputSchema: modifyResultSchema,
         annotations: annotations('Modify Selection (GIMP)'),
       },
       handler: (args) =>
@@ -398,7 +409,7 @@ export function createGimpSelectionTools(
           schema: modifySelectionSchema,
           op: 'modify_mask',
           errorPrefix: 'Error modifying selection',
-          successText: maskText,
+          successText: modifyText,
         }),
     },
     {

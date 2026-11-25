@@ -87,6 +87,8 @@ interface LayerNode {
   name?: unknown;
   opacity?: unknown;
   mode?: unknown;
+  blend_space?: unknown;
+  composite_space?: unknown;
   visible?: unknown;
   is_group?: unknown;
   is_text_layer?: unknown;
@@ -102,6 +104,10 @@ function layerFlags(n: LayerNode): string {
     flags.push(`opacity ${valueText(n.opacity)}`);
   if (typeof n.mode === 'string' && !n.mode.startsWith('normal'))
     flags.push(`mode ${token(n.mode)}`);
+  if (typeof n.blend_space === 'string' && n.blend_space !== 'auto')
+    flags.push(`blend ${token(n.blend_space)}`);
+  if (typeof n.composite_space === 'string' && n.composite_space !== 'auto')
+    flags.push(`composite ${token(n.composite_space)}`);
   return flags.length ? `, ${flags.join(', ')}` : '';
 }
 

@@ -405,6 +405,22 @@ describe('createGimpSelectionTools', () => {
       }
     );
 
+    it('op=delete dispatches and reports the channel as deleted', async () => {
+      const gimp = makeGimpBackend({ result: { channel: 'Mask', deleted: true } });
+      const tools = createGimpSelectionTools(gimp.asBackend());
+      const result = await callTool(tools, 'gimp_modify_selection', {
+        image: 1,
+        channel: 'Mask',
+        op: 'delete',
+      });
+      expect(gimp.lastCall()).toEqual({
+        op: 'modify_mask',
+        args: { image: 1, channel: 'Mask', op: 'delete' },
+      });
+      expect((result.content?.[0] as { text: string }).text).toBe('Channel "Mask" deleted.');
+      expect(result.structuredContent).toEqual({ channel: 'Mask', deleted: true });
+    });
+
     it('forwards a non-zero px', async () => {
       const gimp = makeGimpBackend({ result: {} });
       const tools = createGimpSelectionTools(gimp.asBackend());
