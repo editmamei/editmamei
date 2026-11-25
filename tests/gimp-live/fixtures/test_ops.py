@@ -537,7 +537,14 @@ def op_test_layer_bounds(args):
     }
 
 
+def op_test_drop_proxies(args):
+    """Drop the image's cached preview proxies, so the next render rebuilds them from scratch."""
+    _drop_proxies(_image(args).get_id())
+    return {'dropped': True}
+
+
 OPS.update({
+    'test_drop_proxies': op_test_drop_proxies,
     'test_proxy_filter_count': op_test_proxy_filter_count,
     'test_proxy_ids': op_test_proxy_ids,
     'test_metadata_tag': op_test_metadata_tag,
