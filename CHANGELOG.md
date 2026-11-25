@@ -10,6 +10,23 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.11.4] — 2026-11-25
+
+### Changed
+
+- **Faster GIMP previews after selections, and faster reopening of saved photos.** Building a
+  preview no longer renders every live edit at full size first, and a new selection no longer
+  throws away the preview it can reuse.
+  - On a 24 MP photo with eight live filters, building the preview copy went from 9.4 s to 2.3 s.
+  - A reopened `.xcf` with live filters builds its preview copy the same faster way.
+
+### Added
+
+- **GIMP exports report their clipped pixels.** A flat export (JPEG, PNG, WebP, TIFF) returns how
+  many pixels are pure black and pure white, counted the way an exact histogram counts them, so a
+  clipping check needs no second full-size render.
+  - `gimp_export` returns `clipping` with `pixels`, `low` and `high`.
+
 ## [1.11.3] — 2026-11-25
 
 ### Added
