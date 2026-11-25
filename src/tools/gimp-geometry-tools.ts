@@ -174,7 +174,11 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
         inputSchema: cropSchema,
         outputSchema: {
           type: 'object',
-          properties: { width: { type: 'number' }, height: { type: 'number' } },
+          properties: {
+            width: { type: 'number' },
+            height: { type: 'number' },
+            effect_update_failures: EFFECT_UPDATE_FAILURES_PROP,
+          },
         },
         annotations: {
           title: 'Crop GIMP Document',
@@ -192,8 +196,15 @@ export function createGimpGeometryTools(gimp: GimpBackend): ToolDefinition[] {
           op: 'crop',
           errorPrefix: 'Error cropping GIMP document',
           successText: (result) => {
-            const r = result as { width: number; height: number };
-            return `Cropped to ${r.width}x${r.height}.`;
+            const r = result as {
+              width: number;
+              height: number;
+              effect_update_failures?: string[];
+            };
+            return (
+              `Cropped to ${r.width}x${r.height}.` +
+              effectUpdateFailuresNote(r.effect_update_failures)
+            );
           },
         }),
     },

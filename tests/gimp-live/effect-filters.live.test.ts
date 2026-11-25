@@ -21,6 +21,7 @@ import { GimpSession } from '@editmamei/backends/gimp/session.ts';
 import {
   readPng,
   pixelAt,
+  patchMean,
   patchVariance,
   writeCheckerboard,
   writeNoisyField,
@@ -306,6 +307,56 @@ describe.skipIf(!install)('gimp_add_effect: allow-listed GEGL effect filters', (
     } finally {
       await session.call('close', { image: opened.image });
     }
+  });
+
+  it('vignette: the same radius darkens the corners the same on wide, tall and square frames', async () => {
+    type Then = 'none' | 'rotate' | 'reedit' | 'crop';
+    async function cornerMean(w: number, h: number, then: Then = 'none'): Promise<number> {
+      const path = join(workDir, `vignette-shape-${w}x${h}.png`);
+      writeCheckerboard(path, w, h, 1, 255, 255); // a uniform white field
+      const opened = await session.call<{ image: number }>('open', { path });
+      const image = opened.image;
+      try {
+        const made = await session.call<{ filter_id: number }>('effect', {
+          image,
+          type: 'vignette',
+          radius: then === 'reedit' ? 1.6 : 1.45,
+        });
+        if (then === 'rotate') await session.call('rotate', { image, degrees: 90, expand: true });
+        if (then === 'reedit') {
+          await session.call('effect', {
+            image,
+            type: 'vignette',
+            filter_id: made.filter_id,
+            radius: 1.45,
+          });
+        }
+        if (then === 'crop') {
+          await session.call('crop', { image, left: 125, top: 0, width: 150, height: 300 });
+        }
+        const outPath = join(workDir, `vignette-shape-${w}x${h}-${then}-out.png`);
+        await session.call('export', { image, path: outPath });
+        return patchMean(readPng(outPath), 0, 0, 10, 10)[0];
+      } finally {
+        await session.call('close', { image });
+      }
+    }
+    const wide = await cornerMean(400, 300);
+    const tall = await cornerMean(300, 400);
+    const taller = await cornerMean(200, 300);
+    const square = await cornerMean(300, 300);
+    // Shape or radius changed after the vignette was made: each is refit to the layer's shape.
+    const rotated = await cornerMean(400, 300, 'rotate');
+    const reedited = await cornerMean(300, 400, 'reedit');
+    const widerToo = await cornerMean(300, 200);
+    expect(wide).toBeGreaterThan(20); // soft corners, not black
+    // A frame turned on its side matches its landscape twin; different shapes differ a little.
+    for (const v of [tall, rotated, reedited]) expect(Math.abs(v - wide)).toBeLessThan(1);
+    expect(Math.abs(taller - widerToo)).toBeLessThan(1);
+    expect(Math.abs(square - wide)).toBeLessThan(6);
+    const croppedTall = await cornerMean(400, 300, 'crop');
+    const freshTall = await cornerMean(150, 300);
+    expect(Math.abs(croppedTall - freshTall)).toBeLessThan(3);
   });
 
   it('black_white (mono-mixer): gray output equals the weighted channel sum, in linear light', async () => {

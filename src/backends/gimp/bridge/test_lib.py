@@ -810,6 +810,19 @@ class TestEffectParamBuilders(unittest.TestCase):
         with self.assertRaises(ValueError):
             lib.build_vignette_params({'center_x': 1.1}, _effect_create_defaults('vignette'))
 
+    def test_vignette_radius_is_unchanged_on_wide_and_square_layers(self):
+        self.assertEqual(lib.vignette_gegl_radius(1.45, 1200, 900), 1.45)
+        self.assertEqual(lib.vignette_gegl_radius(1.45, 1920, 1080), 1.45)
+        self.assertEqual(lib.vignette_gegl_radius(1.45, 900, 900), 1.45)
+
+    def test_vignette_radius_scales_by_height_over_width_on_tall_layers(self):
+        self.assertAlmostEqual(lib.vignette_gegl_radius(1.45, 900, 1200), 1.45 * 4 / 3)
+        self.assertAlmostEqual(lib.vignette_gegl_radius(1.45, 800, 1200), 1.45 * 1.5)
+
+    def test_vignette_radius_is_capped_at_gegls_maximum(self):
+        self.assertEqual(lib.vignette_gegl_radius(3.0, 800, 1200, maximum=3.0), 3.0)
+        self.assertAlmostEqual(lib.vignette_gegl_radius(1.0, 800, 1200, maximum=3.0), 1.5)
+
     def test_build_black_white_params_defaults(self):
         params = lib.build_black_white_params({}, _effect_create_defaults('black_white'))
         self.assertEqual(
