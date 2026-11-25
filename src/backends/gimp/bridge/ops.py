@@ -260,7 +260,9 @@ def _composite(img):
 # wrong layer rather than merely rendering an out-of-date preview; see that function's own guard.
 # `create_document`/`place_image` (new layer tree), `canvas` (canvas size), and
 # `convert_image_mode` (base type) all fall under the same rule. `select` is the one layer op that
-# changes neither pixels nor structure and is deliberately exempt.
+# changes neither pixels nor structure and is deliberately exempt. A saved selection or a loaded
+# mask (a named channel, which a masked filter's mirror reads by name) is put into every cached
+# proxy instead (`_proxies_take_channel`), so a selection does not cost a rebuild.
 PROXIES = {}
 
 
@@ -268,16 +270,126 @@ def _proxy(img, max_px):
     key = (img.get_id(), max_px)
     proxy = PROXIES.get(key)
     if proxy is None or not proxy.is_valid():
-        proxy = img.duplicate()
-        for layer in _all_layers(proxy):
-            for f in layer.get_filters():
-                f.delete()
+        proxy = _filter_free_copy(img)
         w, h = proxy.get_width(), proxy.get_height()
         scale = min(1.0, float(max_px) / max(w, h))
         if scale < 1.0:
-            proxy.scale(max(1, round(w * scale)), max(1, round(h * scale)))
+            try:
+                proxy.scale(max(1, round(w * scale)), max(1, round(h * scale)))
+            except Exception:
+                proxy.delete()
+                raise
         PROXIES[key] = proxy
     return proxy
+
+
+def _filter_free_copy(img):
+    """A full-size duplicate of img with no filters on any layer, built without rendering them.
+
+    Deleting a visible filter from a duplicate makes GIMP render the whole stack first (measured,
+    24 MP with 8 filters: 7.4 s of a 9.4 s proxy build). Filters hidden before the duplicate come
+    across hidden and delete in milliseconds (the build: 2.3 s, mostly the scale). The document's
+    own filters are hidden only for the duplicate and shown again in `finally`, undo frozen
+    meanwhile so the round trip leaves no history; a filter that was already hidden stays so. Each
+    filter is shown again on its own, so one that fails to show never leaves the rest hidden."""
+    hidden = []
+    copy = None
+    img.undo_freeze()
+    try:
+        for layer in _all_layers(img):
+            for f in layer.get_filters():
+                if f.get_visible():
+                    f.set_visible(False)
+                    hidden.append(f)
+        copy = img.duplicate()
+    finally:
+        try:
+            failed = 0
+            for f in hidden:
+                try:
+                    f.set_visible(True)
+                except Exception:
+                    failed += 1
+            if failed:
+                if copy is not None and copy.is_valid():
+                    copy.delete()
+                raise lib.OpError('gimp_op_failed', '%d filter(s) could not be shown again after the preview copy' % failed)
+        finally:
+            img.undo_thaw()
+    try:
+        for layer in _all_layers(copy):
+            for f in layer.get_filters():
+                f.delete()
+    except Exception:
+        copy.delete()
+        raise
+    return copy
+
+
+def _proxies_take_channel(img, ch):
+    """Put channel `ch` (just saved on img, replacing any of its name) into every cached proxy of
+    img, in place of dropping them: a channel adds no pixels and no layer, and a masked filter's
+    mirror reads it by name. Scaled with GIMP's own image `scale`, as a proxy build scales it, but
+    from a one-channel copy at the document's precision, largest proxy first and each smaller one
+    from the one before (a build scales each size from full size), so an updated proxy and a rebuilt
+    one carry the same mask to within that resampling. Costs ~1.25 s per select at 24 MP while a
+    proxy is cached, whether or not a preview follows (a rebuild it saves: ~2.3 s per size). Any
+    failure drops the image's proxies instead (the next preview rebuilds them), and never fails
+    the select itself, which has already changed the document. (Gegl's own scaled buffer read is no
+    shortcut: through these bindings it reads back all zeros.)"""
+    try:
+        _put_channel_in_proxies(img, ch)
+    except Exception:
+        _drop_proxies(img.get_id())
+
+
+def _put_channel_in_proxies(img, ch):
+    keys = [k for k in PROXIES if k[0] == img.get_id()]
+    if not keys:
+        return
+    name = ch.get_name()
+    w, h = img.get_width(), img.get_height()
+    data = ch.get_buffer().get(Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
+    holder = Gimp.Image.new(w, h, Gimp.ImageBaseType.RGB)
+    try:
+        holder.undo_disable()
+        if holder.get_precision() != img.get_precision():
+            holder.convert_precision(img.get_precision())
+        held = Gimp.Channel.new(holder, name, w, h, 50.0, Gegl.Color.new('black'))
+        holder.insert_channel(held, None, 0)
+        hbuf = held.get_buffer()
+        hbuf.set(Gegl.Rectangle.new(0, 0, w, h), "Y' u8", data)
+        hbuf.flush()
+
+        def size_of(key):
+            proxy = PROXIES.get(key)
+            return proxy.get_width() * proxy.get_height() if proxy is not None and proxy.is_valid() else 0
+
+        for key in sorted(keys, key=size_of, reverse=True):
+            proxy = PROXIES.get(key)
+            if proxy is None or not proxy.is_valid():
+                PROXIES.pop(key, None)
+                continue
+            try:
+                pw, ph = proxy.get_width(), proxy.get_height()
+                if (holder.get_width(), holder.get_height()) != (pw, ph):
+                    holder.scale(pw, ph)
+                scaled = _find_channel(holder, name).get_buffer().get(
+                    Gegl.Rectangle.new(0, 0, pw, ph), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE)
+                pch = _replace_named_channel(proxy, name, pw, ph)
+                pbuf = pch.get_buffer()
+                pbuf.set(Gegl.Rectangle.new(0, 0, pw, ph), "Y' u8", scaled)
+                pbuf.flush()
+            except Exception:
+                PROXIES.pop(key, None)
+                if proxy.is_valid():
+                    proxy.delete()
+    finally:
+        try:
+            if holder.is_valid():
+                holder.delete()
+        except Exception:
+            pass
 
 
 def _mirror_filters(src_img, dst_img):
@@ -2972,12 +3084,34 @@ def op_export(args):
                 raise
         else:
             dup, _flat = _composite(img)
+        clipping = None
         try:
+            if not keep_alpha:
+                clipping = _clipped_pixels(_flat)
             written = _export_stripped(dup, path, args, color_profile)
         finally:
             dup.delete()
-        return {'path': path, 'bytes': os.path.getsize(path), 'color_profile': written}
+        out = {'path': path, 'bytes': os.path.getsize(path), 'color_profile': written}
+        if clipping is not None:
+            out['clipping'] = clipping
+        return out
     return {'path': path, 'bytes': os.path.getsize(path)}
+
+
+def _clipped_pixels(flat):
+    """The clipped pixels of a flat export's full-size composite, counted as `histogram` with exact=True counts its luminance
+    ("Y' u8"): `low` at 0-1, `high` at 254-255, out of `pixels`. Read from the composite the export is about to write, so a caller
+    checking the export for clipping needs no second full-size render. None when it cannot be read (the export goes on)."""
+    try:
+        w, h = flat.get_width(), flat.get_height()
+        lum = bytes(flat.get_buffer().get(Gegl.Rectangle.new(0, 0, w, h), 1.0, "Y' u8", Gegl.AbyssPolicy.NONE))
+        return {
+            'pixels': w * h,
+            'low': lum.count(b'\x00') + lum.count(b'\x01'),
+            'high': lum.count(b'\xfe') + lum.count(b'\xff'),
+        }
+    except Exception:
+        return None
 
 
 def _merge_visible_onto_transparent(dup):
@@ -5452,7 +5586,7 @@ def _selection_to_channel(img, name):
     buf.flush()
     ch.update(0, 0, w, h)
     Gimp.Selection.none(img)
-    _drop_proxies(img.get_id())
+    _proxies_take_channel(img, ch)
     selected, fraction = _channel_coverage(ch, w, h)
     return {'channel': name, 'selected_pixels': selected, 'fraction': fraction}
 
@@ -6094,7 +6228,7 @@ def op_load_mask(args):
         buf.flush()
         ch.update(0, 0, w, h)
     Gimp.Selection.none(img)
-    _drop_proxies(img.get_id())
+    _proxies_take_channel(img, ch)
     selected, fraction = _channel_coverage(ch, w, h)
     return {'channel': name, 'selected_pixels': selected, 'fraction': fraction}
 

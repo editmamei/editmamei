@@ -361,6 +361,7 @@ async function gimpExport(
       path: string;
       bytes: number;
       color_profile?: GimpColorProfile;
+      clipping?: { pixels: number; low: number; high: number };
     }>('export', bridgeArgs);
     return {
       content: [
@@ -377,6 +378,7 @@ async function gimpExport(
         bytes: result.bytes,
         format,
         ...(result.color_profile ? { color_profile: result.color_profile } : {}),
+        ...(result.clipping ? { clipping: result.clipping } : {}),
       },
     };
   } catch (error) {
@@ -523,6 +525,17 @@ export function createGimpDocumentTools(gimp: GimpBackend): ToolDefinition[] {
                 'PSD only: visible layers below 100% opacity or with a non-normal blend mode.',
             },
             color_profile: GIMP_COLOR_PROFILE_SCHEMA,
+            clipping: {
+              type: 'object',
+              description:
+                'Flat formats without keep_alpha: pixels of the exported picture at pure black (luminance 0-1, `low`) and ' +
+                'pure white (254-255, `high`), out of `pixels`, counted as gimp_get_histogram exact: true counts them.',
+              properties: {
+                pixels: { type: 'number' },
+                low: { type: 'number' },
+                high: { type: 'number' },
+              },
+            },
           },
         },
         annotations: {
