@@ -10,6 +10,8 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+## [1.11.5] — 2026-11-26
+
 ### Changed
 
 - **Faster GIMP exports, flattens and region previews of photos with many masked edits.** Live
