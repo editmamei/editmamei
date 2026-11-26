@@ -236,10 +236,256 @@ def _level(v, name):
 
 
 def _composite(img):
-    """A full-resolution flattened duplicate of img. Caller deletes it. Renders every live
-    filter at full size: ~2 s per 24 MP with two curves on an 8-thread machine."""
+    """A full-resolution flattened copy of img, and its one layer. Caller deletes the copy. Every live
+    filter is rendered at full size, by `_baked_flat`."""
+    return _baked_flat(img)
+
+
+# Filters whose geometry is a fraction of their layer's own extent (`lib.build_vignette_params`):
+# a crop before they render would re-centre them on the cropped area.
+_EXTENT_RELATIVE_OPERATIONS = frozenset({'gegl:vignette'})
+
+
+def _visible_filters(img):
+    return [(layer, f) for layer in _all_layers(img) for f in layer.get_filters() if f.get_visible()]
+
+
+def _bakeable(img):
+    """Whether `_baked_flat` can render img's filters itself: an RGB or grayscale image with at least one
+    visible filter, each on a pixel layer, with a ledger record of its own operation under a name no
+    other visible filter shares, and the channel its mask names. Anything else is left to GIMP's own
+    render: a filter made outside this bridge (libgimp cannot read every one's settings back exactly,
+    see `_mirror_filters`), any layer group (GIMP renders a group into a buffer of its own at the
+    document's precision, which clips the group's combined result before it blends, unless the group
+    passes through; the float copy does neither), two filters sharing a name (one record), a mask whose channel is gone, a masked filter on a layer with an alpha
+    channel (GIMP fades a filter in through its mask on such a layer in a way a layer mask does not
+    reproduce: up to 102 levels apart along a blurred edge, measured), or a layer whose pixels are
+    locked (the bake writes into the copy's)."""
+    if img.get_base_type() == Gimp.ImageBaseType.INDEXED:
+        return False
+    if any(layer.is_group() for layer in _all_layers(img)):
+        return False
+    filters, _unknown = _ledger_get(img)
+    visible = _visible_filters(img)
+    names = set()
+    for layer, f in visible:
+        rec = filters.get(f.get_name())
+        if not rec or rec.get('operation') != f.get_operation_name() or f.get_name() in names:
+            return False
+        if layer.get_lock_content():
+            return False
+        mask = rec.get('params', {}).get('mask')
+        if mask and (_find_channel(img, mask) is None or layer.has_alpha()):
+            return False
+        names.add(f.get_name())
+    return bool(visible)
+
+
+def _reach_total(img):
+    """How far, in pixels, the visible filters together read around a pixel (`lib.filter_reach`
+    summed, read from each live filter's own settings), or None when any one has no bound."""
+    total = 0
+    for _layer, f in _visible_filters(img):
+        reach = lib.filter_reach(f.get_operation_name(), f.get_config().get_property)
+        if reach is None:
+            return None
+        total += reach
+    return total
+
+
+def _native_flat(img, region=None, keep_alpha=False):
+    """`_baked_flat`'s result rendered by GIMP itself: a duplicate (cropped to `region` first when no
+    filter's geometry depends on the layer's extent, which a crop would move), flattened or, with
+    `keep_alpha`, merged onto transparency. Caller deletes the copy."""
     dup = img.duplicate()
-    return dup, dup.flatten()
+    try:
+        if region is not None:
+            x, y, w, h = region
+            if not keep_alpha and any(f.get_operation_name() in _EXTENT_RELATIVE_OPERATIONS
+                                      for _l, f in _visible_filters(img)):
+                layer = dup.flatten()
+                dup.crop(w, h, x, y)
+                return dup, layer
+            dup.crop(w, h, x, y)
+        return dup, (_merge_visible_onto_transparent(dup) if keep_alpha else dup.flatten())
+    except Exception:
+        dup.delete()
+        raise
+
+
+def _rebuilt_filter(f, rec, drawable):
+    """A new, unattached filter on `drawable` doing what live filter `f` does: its settings read back,
+    then the ledger's own params over them (libgimp's readback is lossy for some, see
+    `_mirror_filters`), its opacity and blend mode. No mask: the caller attaches it."""
+    g = Gimp.DrawableFilter.new(drawable, f.get_operation_name(), f.get_name())
+    src_cfg, cfg = f.get_config(), g.get_config()
+    for p in src_cfg.list_properties():
+        cfg.set_property(p.name, src_cfg.get_property(p.name))
+    _configure_filter(cfg, rec['operation'], rec['params'], drawable)
+    g.set_opacity(f.get_opacity())
+    g.set_blend_mode(f.get_blend_mode())
+    return g
+
+
+def _bake_masked(work, layer, f, rec, mask):
+    """Bake live filter `f`, confined to channel `mask`, into `layer` of `work`, as GIMP renders it.
+
+    Not by merging the masked filter: GIMP bakes a masked filter on the mask's bounding box alone,
+    reading nothing outside it, so a spatial filter comes out wrong along that box's edges (measured:
+    up to 122 levels on a hard-edged mask). Instead a crop of the layer, the mask's box padded by
+    the filter's reach (`lib.filter_reach`; the whole canvas when it has none), gets the filter
+    unmasked (with its own blend mode and opacity, applied by GIMP in the bake), is faded in over its own
+    unfiltered pixels through the channel as a Normal layer mask, and the mask's box of the result is
+    pasted back into the layer in Replace mode (the layer keeps its own name, mode, opacity and mask).
+    The paste goes through GIMP's clipboard, which nothing else in this bridge uses. Matches GIMP's render to
+    one level, but for noise reduction, whose result GIMP computes differently wherever the area being
+    rendered is split into chunks (two full renders agree exactly; a crop of one differs from a
+    render of the crop itself by up to 130 levels in GIMP's own region renders): baked, it matches to
+    within that, along the chunk seams only."""
+    channel = _find_channel(work, mask)
+    work.select_item(Gimp.ChannelOps.REPLACE, channel)
+    _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(work)
+    Gimp.Selection.none(work)
+    _ok, lx, ly = layer.get_offsets()
+    x1, y1 = max(x1, lx), max(y1, ly)
+    x2, y2 = min(x2, lx + layer.get_width()), min(y2, ly + layer.get_height())
+    if not non_empty or x2 <= x1 or y2 <= y1:
+        return  # the mask selects nothing of this layer: the filter changes no pixel
+    W, H = work.get_width(), work.get_height()
+    reach = lib.filter_reach(f.get_operation_name(), f.get_config().get_property)
+    if reach is None:
+        cx, cy, cw, ch = 0, 0, W, H
+    else:
+        cx, cy, cw, ch = lib.padded_box(x1, y1, x2 - x1, y2 - y1, reach, W, H)
+    index = [l.get_id() for l in _all_layers(work)].index(layer.get_id())
+    tmp = work.duplicate()
+    try:
+        own = _all_layers(tmp)[index]  # a duplicate keeps the layer tree, so the same position
+        if own.get_parent() is not None:
+            tmp.reorder_item(own, None, 0)
+        for other in [l for l in tmp.get_layers() if l.get_id() != own.get_id()]:
+            tmp.remove_layer(other)
+        own.set_visible(True)
+        own.set_opacity(100.0)
+        own.set_mode(Gimp.LayerMode.NORMAL)
+        if own.get_mask() is not None:
+            own.remove_mask(Gimp.MaskApplyMode.DISCARD)
+        tmp.crop(cw, ch, cx, cy)
+        top = own.copy()
+        tmp.insert_layer(top, None, 0)
+        g = _rebuilt_filter(f, rec, top)
+        _append_masked(tmp, top, g, None)
+        top.merge_filters()
+        tmp.select_item(Gimp.ChannelOps.REPLACE, _find_channel(tmp, mask))
+        top.add_mask(top.create_mask(Gimp.AddMaskType.SELECTION))
+        Gimp.Selection.none(tmp)
+        # `top` is Normal at 100%: the filter's own blend mode and opacity were applied by GIMP in the
+        # bake above (the same Overlay as a layer mode measured up to 29 levels off), and the mask only
+        # fades that result in.
+        blended = tmp.merge_down(top, Gimp.MergeType.CLIP_TO_BOTTOM_LAYER)
+        if blended is None:
+            raise lib.OpError('gimp_op_failed', 'could not blend a masked filter while rendering')
+        tmp.crop(x2 - x1, y2 - y1, x1 - cx, y1 - cy)
+        if not Gimp.edit_copy([blended]):
+            raise lib.OpError('gimp_op_failed', 'could not copy a masked filter while rendering')
+        pasted = Gimp.edit_paste(layer, False)
+        if not pasted:
+            raise lib.OpError('gimp_op_failed', 'could not paste a masked filter while rendering')
+        floating = pasted[0]
+        floating.set_offsets(x1, y1)
+        floating.set_mode(Gimp.LayerMode.REPLACE)
+        Gimp.floating_sel_anchor(floating)
+    finally:
+        tmp.delete()
+
+
+def _bake_filters(src_img, work, pairs, clip=False):
+    """Bake src's visible live filters, in stack order, into the matching layers of `work`: `pairs` is
+    each (src layer, work layer), matched before any crop of `work`. A crop removes a layer outside the
+    new canvas, whose filters are then skipped. An unmasked filter is merged in place, a masked one
+    baked by `_bake_masked`.
+
+    `clip`: `work` is held at a higher precision than the document, so each filtered layer is clipped to
+    0-1 once its filters are baked. GIMP keeps values past white or black from one filter to the next
+    on a layer (exposure +1 then -1 comes back exact), but clips the layer's filtered result to the
+    document's precision before blending it (measured: exposure +1 on a copy at 40% opacity, 7 levels
+    apart unclipped; in Multiply, 11)."""
+    filters, _unknown = _ledger_get(src_img)
+    for src, dst in pairs:
+        if not dst.is_valid():
+            continue
+        baked = False
+        for f in reversed(src.get_filters()):  # get_filters() is top-first
+            if not f.get_visible():
+                continue
+            baked = True
+            rec = filters[f.get_name()]
+            mask = rec['params'].get('mask')
+            if mask:
+                _bake_masked(work, dst, f, rec, mask)
+                continue
+            g = _rebuilt_filter(f, rec, dst)
+            _append_masked(work, dst, g, None)
+            dst.merge_filters()
+        if clip and baked:
+            limit = Gimp.DrawableFilter.new(dst, 'gegl:rgb-clip', 'clip')
+            _append_masked(work, dst, limit, None)
+            dst.merge_filters()
+
+
+def _baked_flat(img, region=None, keep_alpha=False):
+    """A flattened, full-resolution copy of img and its one layer (with `region`, (x, y, w, h), only
+    that area; with `keep_alpha`, merged onto transparency instead of the background color). Caller
+    deletes the copy.
+
+    The live filters are baked one at a time, in stack order, onto a filter-free copy held in 32-bit
+    float (`_bake_filters`), each re-created from the ledger with its mask taken from the channel the
+    ledger names, as the preview proxy does. GIMP's own render of a heavy stack is slower: it runs
+    every masked filter over the whole layer and blends the mask in after, where a baked one works
+    only on its mask's box and the filter's reach, and it re-reads overlapping areas between stacked
+    spatial filters. The result matches GIMP's render of the live document (see `_bake_masked`). For
+    a region, the copy is first cropped to the region padded by the filters' total reach
+    (`lib.filter_reach`), so only that area is rendered; with a filter that has no bound, the whole
+    copy is rendered and cropped after. A document `_bakeable` refuses is rendered by GIMP
+    (`_native_flat`)."""
+    if not _bakeable(img):
+        return _native_flat(img, region, keep_alpha)
+    precision = img.get_precision()
+    target = lib.float_precision_for(precision)
+    work = _filter_free_copy(img)
+    try:
+        work.undo_disable()
+        # A duplicate keeps the layer tree, so the two lists match one to one until a crop removes a layer.
+        pairs = list(zip(_all_layers(img), _all_layers(work)))
+        origin = (0, 0)
+        if region is not None:
+            margin = _reach_total(img)
+            if margin is not None:
+                px, py, pw, ph = lib.padded_box(region[0], region[1], region[2], region[3], margin,
+                                                img.get_width(), img.get_height())
+                work.crop(pw, ph, px, py)
+                origin = (px, py)
+        # convert_precision answers False (raising nothing) when it cannot convert: the filters are then
+        # baked at the document's own precision.
+        floated = target is not None and work.convert_precision(Gimp.Precision(target))
+        _bake_filters(img, work, pairs, clip=bool(floated))
+        if region is not None:
+            x, y, w, h = region
+            work.crop(w, h, x - origin[0], y - origin[1])
+        layer = _merge_visible_onto_transparent(work) if keep_alpha else work.flatten()
+        if floated:
+            # The merged layer is not always the top one (merge_visible_layers keeps hidden layers), so it
+            # is found again by its id, which the conversion keeps.
+            layer_id = layer.get_id()
+            if not work.convert_precision(precision):
+                raise lib.OpError('gimp_op_failed', 'could not convert the render back to the document precision')
+            layer = Gimp.Layer.get_by_id(layer_id)
+            if layer is None:
+                raise lib.OpError('gimp_op_failed', 'the render lost its layer converting back to the document precision')
+        return work, layer
+    except Exception:
+        work.delete()
+        raise
 
 
 # Preview proxies, keyed by (image id, max_px): a filter-free downscale of the document made once,
@@ -2543,44 +2789,16 @@ def _proxy_render(img, max_px):
     return dup, unmirrored
 
 
-# Filters whose geometry is a fraction of their layer's own extent (`lib.build_vignette_params`):
-# a crop before they render would re-centre them on the cropped area.
-_EXTENT_RELATIVE_OPERATIONS = frozenset({'gegl:vignette'})
-
-
 def _region_full_res(img, region):
-    """Full-res duplicate, cropped to `region` and flattened. Caller deletes it. A plain
-    `Image.duplicate()` copies each layer's real live DrawableFilters (not just pixels), so
-    rendering this way is exact -- the filter runs at native resolution BEFORE any later
-    downscale, unlike the preview proxy (which shrinks the base first and then has to approximate
-    a spatial filter's radius, see `_mirror_filters`).
+    """Full-res copy of `region`, flattened, and its one layer. Caller deletes it. Rendered by
+    `_baked_flat`: the filters run at native resolution BEFORE any later downscale, so this is exact,
+    unlike the preview proxy (which shrinks the base first and then has to approximate a spatial
+    filter's radius, see `_mirror_filters`), and only on the region plus the filters' reach.
 
-    The crop comes first, because a full-size flatten per region is far slower with heavy filters.
-    An image carrying a filter in `_EXTENT_RELATIVE_OPERATIONS` is the exception: it is flattened
-    at full size and cropped after, so the filter lands where the whole image shows it.
-
-    `region` is validated against `img`'s FULL-RES bounds before anything is duplicated (partly
-    or fully outside raises `invalid_argument` rather than silently clamping to whatever sliver
-    overlaps); the duplicate itself is torn down on ANY failure after that, not just the size
-    check, so a crop/flatten error can never leak an orphaned image."""
+    `region` is validated against `img`'s FULL-RES bounds before anything is copied (partly or fully
+    outside raises `invalid_argument` rather than silently clamping to whatever sliver overlaps)."""
     x, y, w, h = lib.validate_region(region, img.get_width(), img.get_height())
-    extent_relative = any(
-        f.get_operation_name() in _EXTENT_RELATIVE_OPERATIONS
-        for l in _all_layers(img)
-        for f in l.get_filters()
-    )
-    dup = img.duplicate()
-    try:
-        if extent_relative:
-            layer = dup.flatten()
-            dup.crop(w, h, x, y)
-        else:
-            dup.crop(w, h, x, y)
-            layer = dup.flatten()
-    except Exception:
-        dup.delete()
-        raise
-    return dup, layer
+    return _baked_flat(img, (x, y, w, h))
 
 
 def _scale_to_max(dup, max_px):
@@ -2599,11 +2817,34 @@ def op_preview(args):
 
     Every preview leaves the bridge through `_export_stripped` -- the SAME metadata-stripping,
     format-refusing writer `export` uses -- because a preview routinely goes to a cloud model and
-    a source photo's EXIF/GPS must never ride along on that path either."""
+    a source photo's EXIF/GPS must never ride along on that path either.
+
+    `filters: false` renders the document without its live filters (its pixel layers only, as
+    they are composited), at no filter cost whatever the stack: a selection model finds objects in
+    the photo itself, and a heavy filter stack would otherwise be rendered for every request."""
     img = _image(args)
     max_px = lib.validate_max_px(int(args.get('max_px', 1024)))
     region = args.get('region')
     out_path = lib.require(args, 'out_path')
+    if args.get('filters', True) is False:
+        if region:
+            x, y, w, h = lib.validate_region(region, img.get_width(), img.get_height())
+            dup = _filter_free_copy(img)
+            try:
+                dup.crop(w, h, x, y)
+            except Exception:
+                dup.delete()
+                raise
+        else:
+            dup = _proxy(img, max_px).duplicate()
+        try:
+            dup.flatten()
+            _scale_to_max(dup, max_px)
+            _export_stripped(dup, out_path)
+            return {'path': out_path, 'width': dup.get_width(), 'height': dup.get_height(),
+                    'proxy': not region, 'filters': False}
+        finally:
+            dup.delete()
     if region:
         dup, _layer = _region_full_res(img, region)
         try:
@@ -3049,9 +3290,9 @@ def op_export(args):
     `keep_alpha` (png / webp only) merges the visible layers onto a transparent canvas instead of
     flattening onto the background color, so the file keeps its transparency.
 
-    Flat exports flatten a duplicate first and save that. Handing the live document to
-    file_save lets the exporter render the filters itself, which measured 9.3 s for a 24 MP
-    JPEG with three curves; flatten (3.0 s) + save of the flat copy (1.0 s) gives the same pixels."""
+    Flat exports render a flattened copy first (`_baked_flat`) and save that. Handing the live
+    document to file_save lets the exporter render the filters itself, which measured 9.3 s for a
+    24 MP JPEG with three curves; flatten (3.0 s) + save of the flat copy (1.0 s) gives the same pixels."""
     img = _image(args)
     path = lib.require(args, 'path')
     keep_alpha = lib.validate_keep_alpha(args, path)
@@ -3076,12 +3317,7 @@ def op_export(args):
         return dict({'path': path, 'bytes': os.path.getsize(path)}, **report)
     else:
         if keep_alpha:
-            dup = img.duplicate()
-            try:
-                _merge_visible_onto_transparent(dup)
-            except Exception:
-                dup.delete()
-                raise
+            dup, _flat = _baked_flat(img, keep_alpha=True)
         else:
             dup, _flat = _composite(img)
         clipping = None
@@ -3158,7 +3394,7 @@ def op_render_region(args):
             raise ValueError('cannot render a layer group: pick a pixel layer')
         tmp = Gimp.Image.new(w, h, Gimp.ImageBaseType.RGB)
     else:
-        tmp = img.duplicate()
+        tmp, merged = _baked_flat(img, (x, y, w, h), keep_alpha=True)
     try:
         if use_layer:
             nl = Gimp.Layer.new_from_drawable(layer, tmp)
@@ -3168,9 +3404,7 @@ def op_render_region(args):
             nl.set_visible(True)
             nl.set_opacity(100.0)
             nl.set_mode(Gimp.LayerMode.NORMAL)
-        else:
-            tmp.crop(w, h, x, y)
-        merged = _merge_visible_onto_transparent(tmp)
+            merged = _merge_visible_onto_transparent(tmp)
         if tmp.get_color_profile() is not None:
             tmp.convert_color_profile(
                 Gimp.ColorProfile.new_rgb_srgb(), Gimp.ColorRenderingIntent.RELATIVE_COLORIMETRIC, True
@@ -3999,6 +4233,49 @@ def _effectively_visible(layer):
     return layer.get_visible() and all(a.get_visible() for a in _layer_ancestors(layer))
 
 
+def _flatten_document(img):
+    """`img.flatten()`, with the live filters rendered by `_baked_flat` rather than by GIMP's own
+    flatten (3-5x faster on a heavy stack, see `_baked_flat`). The baked composite (opaque, canvas
+    size) goes on top of the document first, so from then on it alone decides every pixel; the
+    filters below it are removed without being rendered (hidden first: deleting a shown one renders
+    it), and GIMP flattens, which is then plain compositing. A failure before any filter is removed
+    takes the cover off again, leaving the document as it was; one after that leaves it showing what
+    it showed before, through the cover, but with its live filters gone and not flattened. A document
+    `_bakeable` refuses is flattened by GIMP as before. One undo step either way. None when GIMP
+    cannot flatten."""
+    if not _bakeable(img):
+        return img.flatten()
+    dup, baked = _baked_flat(img)
+    img.undo_group_start()
+    cover = None
+    inserted = False
+    try:
+        filters = [f for layer in _all_layers(img) for f in layer.get_filters()]
+        cover = Gimp.Layer.new_from_drawable(baked, img)
+        img.insert_layer(cover, None, 0)
+        inserted = True
+        cover.set_offsets(0, 0)
+        cover.set_visible(True)
+        cover.set_opacity(100.0)
+        cover.set_mode(Gimp.LayerMode.NORMAL)
+    except Exception:
+        # Nothing of the document has changed yet but the cover itself: take it off again.
+        if inserted:
+            img.remove_layer(cover)
+        img.undo_group_end()
+        dup.delete()
+        raise
+    try:
+        for f in filters:
+            f.set_visible(False)
+        for f in filters:
+            f.delete()
+        return img.flatten()
+    finally:
+        img.undo_group_end()
+        dup.delete()
+
+
 def _op_layer_flatten(img, args):
     all_layers = _all_layers(img)
     hidden = [l for l in all_layers if not _effectively_visible(l)]
@@ -4020,7 +4297,7 @@ def _op_layer_flatten(img, args):
     rasterized_text = any(l.is_text_layer() and _effectively_visible(l) for l in all_layers)
     discarded_hidden_layers = [{'layer_id': l.get_id(), 'name': l.get_name()} for l in hidden]
     try:
-        flat = img.flatten()
+        flat = _flatten_document(img)
         if flat is None:
             raise lib.OpError('gimp_op_failed', 'GIMP could not flatten this image')
     finally:
@@ -6208,9 +6485,12 @@ def op_load_mask(args):
             bg.fill(Gimp.FillType.FOREGROUND)
         finally:
             Gimp.context_pop()
+        # Flattened at the mask's own size, then scaled as one layer: scaling first cost a full-size
+        # scale of both layers plus a full-size flatten (~4.5 s for a 2048 px mask onto 12 MP, one core).
+        flat = src.flatten()
         if (src.get_width(), src.get_height()) != (tw, th):
             src.scale(tw, th)
-        flat = src.flatten()
+            flat = src.get_layers()[0]
         data = flat.get_buffer().get(Gegl.Rectangle.new(0, 0, tw, th), 1.0, "Y' u8",
                                      Gegl.AbyssPolicy.NONE)
     finally:
@@ -6244,7 +6524,9 @@ def op_render_layer(args):
     are still included, exactly as they would render in the document. Any remaining transparency
     (the layer's own alpha, not just visibility/opacity/mode) is flattened onto an explicit OPAQUE
     WHITE background -- not whatever the session's own ambient context background happens to be --
-    since the output feeds a subject/object detector that expects an ordinary opaque photo."""
+    since the output feeds a subject/object detector that expects an ordinary opaque photo.
+
+    `filters: false` leaves the layer's live filters out (see `op_preview`)."""
     img = _image(args)
     layer = _layer(img, args)
     out_path = lib.require(args, 'out_path')
@@ -6255,6 +6537,12 @@ def op_render_layer(args):
     try:
         nl = Gimp.Layer.new_from_drawable(layer, tmp)
         tmp.insert_layer(nl, None, 0)
+        if args.get('filters', True) is False:
+            copied = nl.get_filters()
+            for f in copied:
+                f.set_visible(False)  # deleting a shown filter renders it first
+            for f in copied:
+                f.delete()
         nl.set_offsets(0, 0)
         nl.set_visible(True)
         nl.set_opacity(100.0)

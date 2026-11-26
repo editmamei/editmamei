@@ -795,3 +795,42 @@ def op_test_arm_fill_failure(args):
 
 
 OPS['test_arm_fill_failure'] = op_test_arm_fill_failure
+
+
+def op_test_native_render(args):
+    """GIMP's own render of the document as it is now (a duplicate, flattened with its live filters,
+    or with `keep_alpha` merged onto transparency), to `out_path`: the reference a baked render is
+    compared with. `region` [x, y, w, h] crops the render afterwards. Also answers the name GIMP's own
+    flatten gives the result."""
+    img = _image(args)
+    dup = img.duplicate()
+    try:
+        flat = _merge_visible_onto_transparent(dup) if args.get('keep_alpha') else dup.flatten()
+        name = flat.get_name()
+        region = args.get('region')
+        if region:
+            dup.crop(region[2], region[3], region[0], region[1])
+        _export_stripped(dup, lib.require(args, 'out_path'))
+        return {'name': name, 'width': dup.get_width(), 'height': dup.get_height()}
+    finally:
+        dup.delete()
+
+
+def op_test_filter_names(args):
+    """Every filter on the image's layers, bottom of each stack first: name, operation, visible."""
+    img = _image(args)
+    return {'filters': [{'layer': l.get_name(), 'name': f.get_name(), 'operation': f.get_operation_name(),
+                         'visible': f.get_visible()}
+                        for l in _all_layers(img) for f in reversed(l.get_filters())]}
+
+
+OPS['test_native_render'] = op_test_native_render
+OPS['test_filter_names'] = op_test_filter_names
+
+
+def op_test_bakeable(args):
+    """Whether the bridge renders the image's filters itself (`_bakeable`) rather than leaving it to GIMP."""
+    return {'bakeable': _bakeable(_image(args))}
+
+
+OPS['test_bakeable'] = op_test_bakeable
