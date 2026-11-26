@@ -10,6 +10,24 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+### Changed
+
+- **Faster GIMP exports, flattens and region previews of photos with many masked edits.** Live
+  filters now render one at a time, a masked one only around its mask, instead of GIMP rendering
+  the whole stack at once.
+  - A 10.8 MP photo with five masked noise reductions and three other masked filters exported in
+    51 s instead of 143 s on one CPU core.
+  - A region preview renders only the region and what its filters reach: 22 s instead of 37 s for
+    2000×1400 px of that photo.
+  - The result matches GIMP's own render, apart from noise reduction's tile seams and the outermost
+    pixels along the canvas edge.
+
+### Fixed
+
+- **A reopened `.xcf` exports as it looked before it was saved.** GIMP brings softly masked live
+  filters back from an `.xcf` slightly changed; exports now read each filter's mask from its
+  channel, which comes back unchanged.
+
 ## [1.11.4] — 2026-11-25
 
 ### Changed

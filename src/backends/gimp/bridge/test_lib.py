@@ -4076,5 +4076,41 @@ class TestMaskedMeasurement(unittest.TestCase):
         self.assertEqual(lib.channel_stats(data)['mean'], 150.0)
 
 
+class TestBakedRender(unittest.TestCase):
+    def test_point_filters_read_only_their_own_pixel(self):
+        for op in ('gimp:curves', 'gimp:levels', 'gimp:hue-saturation', 'gegl:exposure', 'gegl:vibrance'):
+            self.assertEqual(lib.filter_reach(op, lambda _name: 1 / 0), 0)
+
+    def test_spatial_filters_read_their_radius_and_some(self):
+        props = {'iterations': 16, 'std-dev-x': 10.0, 'std-dev-y': 2.5, 'std-dev': 3.0, 'radius': 2.0,
+                 'blur-radius': 6.0, 'length': 30.5, 'x': -20.0, 'y': 15.0, 'grow-radius': 4.0}
+        prop = props.__getitem__
+        self.assertEqual(lib.filter_reach('gegl:noise-reduction', prop), 20)
+        self.assertEqual(lib.filter_reach('gegl:gaussian-blur', prop), 44)  # the larger axis, 4 sigma + 4
+        self.assertEqual(lib.filter_reach('gegl:unsharp-mask', prop), 16)
+        self.assertEqual(lib.filter_reach('gegl:high-pass', prop), 16)
+        self.assertEqual(lib.filter_reach('gegl:shadows-highlights', prop), 12)
+        self.assertEqual(lib.filter_reach('gegl:bilateral-filter', prop), 10)
+        self.assertEqual(lib.filter_reach('gegl:motion-blur-linear', prop), 35)
+        self.assertEqual(lib.filter_reach('gegl:dropshadow', prop), 20 + 15 + 4 + 12)
+
+    def test_position_or_extent_dependent_filters_have_no_bound(self):
+        for op in ('gegl:vignette', 'gegl:focus-blur', 'gegl:noise-rgb', 'gegl:something-new'):
+            self.assertIsNone(lib.filter_reach(op, lambda _name: 1.0))
+
+    def test_float_precision_keeps_the_tone_curve(self):
+        self.assertEqual(lib.float_precision_for(100), 600)  # u8 linear
+        self.assertEqual(lib.float_precision_for(150), 650)  # u8 non-linear
+        self.assertEqual(lib.float_precision_for(275), 675)  # u16 perceptual
+        self.assertEqual(lib.float_precision_for(550), 650)  # half non-linear
+        self.assertIsNone(lib.float_precision_for(650))
+        self.assertIsNone(lib.float_precision_for(700))  # double
+
+    def test_padded_box_clips_to_the_canvas(self):
+        self.assertEqual(lib.padded_box(100, 100, 50, 40, 20, 1000, 800), (80, 80, 90, 80))
+        self.assertEqual(lib.padded_box(5, 790, 50, 10, 20, 1000, 800), (0, 770, 75, 30))
+        self.assertEqual(lib.padded_box(0, 0, 1000, 800, 0, 1000, 800), (0, 0, 1000, 800))
+
+
 if __name__ == '__main__':
     unittest.main()

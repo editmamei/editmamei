@@ -118,6 +118,60 @@ INT_SPATIAL_SCALE_PROPS = {
     'gegl:noise-reduction': ('iterations',),
 }
 
+# Filters that read only the pixel they write: a crop never changes their output.
+POINT_OPERATIONS = frozenset((
+    'gimp:curves', 'gimp:levels', 'gimp:brightness-contrast', 'gimp:color-balance', 'gimp:hue-saturation',
+    'gegl:exposure', 'gegl:color-temperature', 'gegl:saturation', 'gegl:vibrance', 'gegl:mono-mixer',
+))
+
+
+def filter_reach(operation, prop):
+    """How far, in pixels, a filter reads around each pixel it writes: rendered on a crop padded by at
+    least this much on every side, the crop's inner area comes out as on the whole image. `prop(name)`
+    reads one of the filter's GEGL properties. A generous bound (a Gaussian is taken to 4 standard
+    deviations, plus 4 px of slack). None for a filter whose output depends on the layer's own size or
+    on absolute pixel positions (vignette and focus blur are placed relative to the layer; noise is
+    seeded by position) and for any operation not listed here: such a filter is never rendered on a crop."""
+    if operation in POINT_OPERATIONS:
+        return 0
+
+    def sigma(*names):
+        return int(math.ceil(4 * max(abs(float(prop(n))) for n in names))) + 4
+
+    if operation == 'gegl:noise-reduction':
+        return int(prop('iterations')) + 4
+    if operation == 'gegl:gaussian-blur':
+        return sigma('std-dev-x', 'std-dev-y')
+    if operation in ('gegl:unsharp-mask', 'gegl:high-pass'):
+        return sigma('std-dev')
+    if operation == 'gegl:shadows-highlights':
+        return sigma('radius')
+    if operation == 'gegl:bilateral-filter':
+        return int(math.ceil(float(prop('blur-radius')))) + 4
+    if operation == 'gegl:motion-blur-linear':
+        return int(math.ceil(float(prop('length')))) + 4
+    if operation == 'gegl:dropshadow':
+        return (int(math.ceil(abs(float(prop('x'))) + abs(float(prop('y'))) + abs(float(prop('grow-radius')))))
+                + sigma('radius'))
+    return None
+
+
+def float_precision_for(precision):
+    """The 32-bit float precision (a `Gimp.Precision` value) with the same tone curve as `precision`
+    (linear, non-linear or perceptual), to bake filters at without rounding between them; None when
+    `precision` is already 32- or 64-bit float. Half floats move to 32-bit too."""
+    precision = int(precision)
+    if precision >= 600:
+        return None
+    return 600 + precision % 100
+
+
+def padded_box(x, y, w, h, margin, canvas_w, canvas_h):
+    """[x, y, w, h] grown by `margin` on every side and clipped to the canvas, as (x, y, w, h)."""
+    x0, y0 = max(0, x - margin), max(0, y - margin)
+    x1, y1 = min(canvas_w, x + w + margin), min(canvas_h, y + h + margin)
+    return x0, y0, x1 - x0, y1 - y0
+
 HUE_RANGES = ('all', 'red', 'yellow', 'green', 'cyan', 'blue', 'magenta')
 TRANSFER_MODES = ('shadows', 'midtones', 'highlights')
 
