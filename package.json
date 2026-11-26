@@ -1,6 +1,6 @@
 {
   "name": "editmamei",
-  "version": "1.11.4",
+  "version": "1.11.5",
   "private": true,
   "description": "Photoshop and GIMP MCP server for AI photo editing, layer by layer with real tools",
   "mcpName": "io.github.editmamei/editmamei-photoshop-mcp",
