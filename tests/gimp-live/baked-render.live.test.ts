@@ -353,13 +353,80 @@ describe.skipIf(!install)('baked render', () => {
     expect(maxAbsDiff(await exportPng(image), (await native(image)).ppm)).toBe(0);
   });
 
+  it.each([
+    ['at 40% opacity', { opacity: 40 }],
+    ['in Multiply', { mode: 'multiply' }],
+  ])(
+    'clips a filtered layer past white before blending it, like GIMP (%s)',
+    async (_label, set) => {
+      const { image } = await session.call<{ image: number }>('open', { path: photo });
+      const first = async () =>
+        (
+          await session.call<{ layers: Array<{ layer_id: number }> }>('describe', {
+            image,
+            what: 'layers',
+          })
+        ).layers[0]!.layer_id;
+      await session.call('layer', { image, op: 'duplicate', layer_id: await first() });
+      const copy = await first();
+      await session.call('layer', { image, op: 'set', layer_id: copy, ...set });
+      await session.call('adjust', { image, layer_id: copy, type: 'exposure', exposure: 1 });
+      // On one layer the values past white are kept from filter to filter: +1 then -1 comes back.
+      await session.call('adjust', { image, type: 'exposure', exposure: 1 });
+      await session.call('adjust', { image, type: 'exposure', exposure: -1 });
+      expect((await session.call<{ bakeable: boolean }>('test_bakeable', { image })).bakeable).toBe(
+        true
+      );
+      expect(maxAbsDiff(await exportPng(image), (await native(image)).ppm)).toBeLessThanOrEqual(1);
+    }
+  );
+
+  it('leaves a document with a layer group to GIMP, exactly', async () => {
+    // A group of two visible layers, the upper one filtered at 60%: GIMP clips the group's own result
+    // before blending it, which a float bake would not.
+    const { image } = await session.call<{ image: number }>('open', { path: photo });
+    await session.call('test_wrap_in_group', { image });
+    await session.call('test_add_offset_layer', {
+      image,
+      name: 'Inside',
+      width: 640,
+      height: 480,
+      x: 0,
+      y: 0,
+    });
+    const tree = await session.call<{ layers: Array<{ layer_id: number; name: string }> }>(
+      'describe',
+      { image, what: 'layers' }
+    );
+    const group = tree.layers.find((l) => l.name === 'Group')!;
+    const inside = tree.layers.find((l) => l.name === 'Inside')!;
+    await session.call('layer', {
+      image,
+      op: 'reorder',
+      layer_id: inside.layer_id,
+      parent_group: group.layer_id,
+      position: 0,
+    });
+    await session.call('layer', { image, op: 'set', layer_id: inside.layer_id, opacity: 60 });
+    await session.call('adjust', {
+      image,
+      layer_id: inside.layer_id,
+      type: 'exposure',
+      exposure: 1,
+    });
+    expect((await session.call<{ bakeable: boolean }>('test_bakeable', { image })).bakeable).toBe(
+      false
+    );
+    expect(maxAbsDiff(await exportPng(image), (await native(image)).ppm)).toBe(0);
+  });
+
   describe('a document of several layers', () => {
     let image: number;
     let layerId: (name: string) => Promise<number>;
 
-    /** A group whose copy of the photo (at 40%) has a masked filter; a placed sticker with alpha and a
-     * blur; a small offset layer with a layer mask and filters of its own; a text layer
-     * with a filter; and a hidden layer on top. */
+    /** A copy of the photo at 40% with a masked filter; a placed sticker with alpha and a blur; a small
+     * offset layer with a layer mask and filters of its own; a text layer with a filter; and a hidden
+     * layer on top. No layer group: GIMP renders a document with one itself. */
     beforeAll(async () => {
       image = (await session.call<{ image: number }>('open', { path: photo })).image;
       type Node = { layer_id: number; name: string; children?: Node[] };
@@ -375,12 +442,14 @@ describe.skipIf(!install)('baked render', () => {
         };
         return walk(doc.layers)!.layer_id;
       };
-      // The group first, while the photo has no filters: its copy would otherwise carry filters of the same
-      // names, a document GIMP renders itself.
-      await session.call('test_wrap_in_group', { image });
       const photoLayer = (
         await session.call<{ layers: Node[] }>('describe', { image, what: 'layers' })
-      ).layers.at(-1)!.layer_id;
+      ).layers[0]!.layer_id;
+      // The copy first, while the photo has no filters (a copy of a filtered layer would share their names).
+      await session.call('layer', { image, op: 'duplicate', layer_id: photoLayer });
+      const copyLayer = (
+        await session.call<{ layers: Node[] }>('describe', { image, what: 'layers' })
+      ).layers[0]!.layer_id;
       await session.call('select', {
         image,
         mode: 'ellipse',
@@ -437,12 +506,12 @@ describe.skipIf(!install)('baked render', () => {
       await session.call('layer', {
         image,
         op: 'set',
-        layer_id: await layerId('Nested'),
+        layer_id: copyLayer,
         opacity: 40,
       });
       await session.call('adjust', {
         image,
-        layer: 'Nested',
+        layer_id: copyLayer,
         type: 'exposure',
         exposure: 1,
         mask: 'Hard',
@@ -494,6 +563,9 @@ describe.skipIf(!install)('baked render', () => {
     });
 
     it('exports what GIMP renders, away from the canvas edges', async () => {
+      expect((await session.call<{ bakeable: boolean }>('test_bakeable', { image })).bakeable).toBe(
+        true
+      );
       const baked = await exportPng(image);
       const ref = (await native(image)).ppm;
       const inside = apartInside(baked, ref, 24);

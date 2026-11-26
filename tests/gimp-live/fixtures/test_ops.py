@@ -826,3 +826,11 @@ def op_test_filter_names(args):
 
 OPS['test_native_render'] = op_test_native_render
 OPS['test_filter_names'] = op_test_filter_names
+
+
+def op_test_bakeable(args):
+    """Whether the bridge renders the image's filters itself (`_bakeable`) rather than leaving it to GIMP."""
+    return {'bakeable': _bakeable(_image(args))}
+
+
+OPS['test_bakeable'] = op_test_bakeable
