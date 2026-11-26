@@ -13,6 +13,8 @@ import { detectGimp, type GimpInstall } from '@editmamei/backends/gimp/detect.ts
 import { GimpSession } from '@editmamei/backends/gimp/session.ts';
 import {
   readPng,
+  readPngRgba,
+  writeRgbaSquare,
   writeNoisyField,
   readySession,
   LIVE_READY_TIMEOUT_MS,
@@ -301,5 +303,245 @@ describe.skipIf(!install)('baked render', () => {
     expect(maxAbsDiff(readPng(regionPath), readPng(plainRegion))).toBeLessThanOrEqual(1);
     // The document keeps its filters.
     expect((await filterNames(image)).length).toBe(2);
+  });
+
+  it('renders one layer without its filters for the selection service', async () => {
+    const { image } = await session.call<{ image: number }>('open', { path: photo });
+    const layer_id = (
+      await session.call<{ layers: Array<{ layer_id: number }> }>('describe', {
+        image,
+        what: 'layers',
+      })
+    ).layers[0]!.layer_id;
+    const plain = out();
+    await session.call('render_layer', { image, layer_id, max_px: 512, out_path: plain });
+    await session.call('adjust', { image, type: 'gaussian_blur', radius: 4 });
+    const path = out();
+    await session.call('render_layer', {
+      image,
+      layer_id,
+      max_px: 512,
+      filters: false,
+      out_path: path,
+    });
+    expect(maxAbsDiff(readPng(path), readPng(plain))).toBeLessThanOrEqual(1);
+    expect((await filterNames(image)).length).toBe(1);
+  });
+
+  it('leaves a masked filter on a layer with transparency to GIMP, exactly', async () => {
+    const { image } = await session.call<{ image: number }>('open', { path: photo });
+    const sticker = join(workDir, 'sticker-alone.png');
+    writeRgbaSquare(sticker, 200, 150, 40, 30, 120, [220, 40, 40]);
+    await session.call('place_image', { image, path: sticker, x: 40, y: 300, name: 'Sticker' });
+    await session.call('select', {
+      image,
+      mode: 'ellipse',
+      x: 60,
+      y: 320,
+      width: 160,
+      height: 130,
+      name: 'Low',
+      feather_px: 20,
+    });
+    await session.call('adjust', {
+      image,
+      layer: 'Sticker',
+      type: 'gaussian_blur',
+      radius: 6,
+      mask: 'Low',
+    });
+    expect(maxAbsDiff(await exportPng(image), (await native(image)).ppm)).toBe(0);
+  });
+
+  describe('a document of several layers', () => {
+    let image: number;
+    let layerId: (name: string) => Promise<number>;
+
+    /** A group whose copy of the photo (at 40%) has a masked filter; a placed sticker with alpha and a
+     * blur; a small offset layer with a layer mask and filters of its own; a text layer
+     * with a filter; and a hidden layer on top. */
+    beforeAll(async () => {
+      image = (await session.call<{ image: number }>('open', { path: photo })).image;
+      type Node = { layer_id: number; name: string; children?: Node[] };
+      layerId = async (name: string) => {
+        const doc = await session.call<{ layers: Node[] }>('describe', { image, what: 'layers' });
+        const walk = (nodes: Node[]): Node | undefined => {
+          for (const n of nodes) {
+            if (n.name === name) return n;
+            const found = n.children && walk(n.children);
+            if (found) return found;
+          }
+          return undefined;
+        };
+        return walk(doc.layers)!.layer_id;
+      };
+      // The group first, while the photo has no filters: its copy would otherwise carry filters of the same
+      // names, a document GIMP renders itself.
+      await session.call('test_wrap_in_group', { image });
+      const photoLayer = (
+        await session.call<{ layers: Node[] }>('describe', { image, what: 'layers' })
+      ).layers.at(-1)!.layer_id;
+      await session.call('select', {
+        image,
+        mode: 'ellipse',
+        x: 120,
+        y: 80,
+        width: 360,
+        height: 300,
+        name: 'Soft',
+        feather_px: 40,
+      });
+      await session.call('select', {
+        image,
+        mode: 'rectangle',
+        x: 380,
+        y: 0,
+        width: 260,
+        height: 200,
+        name: 'Hard',
+      });
+      await session.call('select', {
+        image,
+        mode: 'ellipse',
+        x: 60,
+        y: 320,
+        width: 160,
+        height: 130,
+        name: 'Low',
+        feather_px: 20,
+      });
+      await session.call('adjust', {
+        image,
+        layer_id: photoLayer,
+        type: 'curves',
+        points: [
+          [0, 10],
+          [128, 150],
+          [255, 245],
+        ],
+      });
+      await session.call('adjust', {
+        image,
+        layer_id: photoLayer,
+        type: 'gaussian_blur',
+        radius: 4,
+        mask: 'Soft',
+      });
+      await session.call('effect', {
+        image,
+        layer_id: photoLayer,
+        type: 'surface_blur',
+        radius: 5,
+        mask: 'Hard',
+      });
+      await session.call('layer', {
+        image,
+        op: 'set',
+        layer_id: await layerId('Nested'),
+        opacity: 40,
+      });
+      await session.call('adjust', {
+        image,
+        layer: 'Nested',
+        type: 'exposure',
+        exposure: 1,
+        mask: 'Hard',
+      });
+      const sticker = join(workDir, 'sticker.png');
+      writeRgbaSquare(sticker, 200, 150, 40, 30, 120, [220, 40, 40]);
+      await session.call('place_image', { image, path: sticker, x: 40, y: 300, name: 'Sticker' });
+      await session.call('adjust', {
+        image,
+        layer: 'Sticker',
+        type: 'gaussian_blur',
+        radius: 6,
+      });
+      await session.call('test_add_offset_layer', {
+        image,
+        name: 'Offset',
+        width: 120,
+        height: 100,
+        x: 20,
+        y: 20,
+      });
+      await session.call('adjust', { image, layer: 'Offset', type: 'exposure', exposure: -2 });
+      await session.call('adjust', { image, layer: 'Offset', type: 'gaussian_blur', radius: 3 });
+      await session.call('test_add_layer_mask', { image, layer_id: await layerId('Offset') });
+      const text = await session.call<{ layer_id: number; name: string }>('test_add_text_layer', {
+        image,
+        text: 'Edit',
+      });
+      await session.call('adjust', {
+        image,
+        layer_id: text.layer_id,
+        type: 'exposure',
+        exposure: -1,
+      });
+      await session.call('test_add_offset_layer', {
+        image,
+        name: 'Hidden',
+        width: 100,
+        height: 100,
+        x: 500,
+        y: 350,
+      });
+      await session.call('layer', {
+        image,
+        op: 'set',
+        layer_id: await layerId('Hidden'),
+        visible: false,
+      });
+    });
+
+    it('exports what GIMP renders, away from the canvas edges', async () => {
+      const baked = await exportPng(image);
+      const ref = (await native(image)).ppm;
+      const inside = apartInside(baked, ref, 24);
+      expect(inside.max, JSON.stringify(inside)).toBeLessThanOrEqual(1);
+    });
+
+    it('keeps transparency like GIMP, with a hidden layer left out', async () => {
+      const path = out();
+      await session.call('export', { image, path, keep_alpha: true });
+      const refPath = out();
+      await session.call('test_native_render', { image, out_path: refPath, keep_alpha: true });
+      const a = readPngRgba(path);
+      const b = readPngRgba(refPath);
+      let worst = 0;
+      for (let y = 24; y < a.height - 24; y++) {
+        for (let x = 24; x < a.width - 24; x++) {
+          for (let c = 0; c < 4; c++) {
+            const i = (y * a.width + x) * 4 + c;
+            worst = Math.max(worst, Math.abs(a.data[i]! - b.data[i]!));
+          }
+        }
+      }
+      expect(worst).toBeLessThanOrEqual(1);
+    });
+
+    it('renders a region that leaves several layers out, as that part of the whole', async () => {
+      const whole = await exportPng(image);
+      // Far from the sticker and the offset layer: the padded crop drops them.
+      const region = { x: 360, y: 120, width: 260, height: 180 };
+      const path = out();
+      await session.call('preview', { image, max_px: 512, region, out_path: path });
+      const d = apart(readPng(path), crop(whole, region.x, region.y, region.width, region.height));
+      expect(d.max, JSON.stringify(d)).toBeLessThanOrEqual(1);
+    });
+
+    it('renders a region for removal, with and without a hole', async () => {
+      const whole = await exportPng(image);
+      const box = [360, 120, 260, 180];
+      const plain = out();
+      await session.call('render_region', { image, box, out_path: plain });
+      expect(maxAbsDiff(readPng(plain), crop(whole, 360, 120, 260, 180))).toBeLessThanOrEqual(1);
+      const holed = out();
+      await session.call('render_region', { image, box, hole_channel: 'Hard', out_path: holed });
+      const rgba = readPngRgba(holed);
+      expect([rgba.width, rgba.height]).toEqual([260, 180]);
+      // (400, 150) is inside Hard, (380, 260) is below it.
+      expect(rgba.data[((150 - 120) * 260 + (400 - 360)) * 4 + 3]).toBe(0);
+      expect(rgba.data[((260 - 120) * 260 + (380 - 360)) * 4 + 3]).toBe(255);
+    });
   });
 });

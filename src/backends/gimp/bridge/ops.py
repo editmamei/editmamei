@@ -256,7 +256,10 @@ def _bakeable(img):
     other visible filter shares, and the channel its mask names. Anything else is left to GIMP's own
     render: a filter made outside this bridge (libgimp cannot read every one's settings back exactly,
     see `_mirror_filters`), a filter on a layer group (`merge_filters` cannot bake one), two filters
-    sharing a name (one record), or a mask whose channel is gone."""
+    sharing a name (one record), a mask whose channel is gone, a masked filter on a layer with an alpha
+    channel (GIMP fades a filter in through its mask on such a layer in a way a layer mask does not
+    reproduce: up to 102 levels apart along a blurred edge, measured), or a layer whose pixels are
+    locked (the bake writes into the copy's)."""
     if img.get_base_type() == Gimp.ImageBaseType.INDEXED:
         return False
     filters, _unknown = _ledger_get(img)
@@ -266,8 +269,10 @@ def _bakeable(img):
         rec = filters.get(f.get_name())
         if layer.is_group() or not rec or rec.get('operation') != f.get_operation_name() or f.get_name() in names:
             return False
+        if layer.get_lock_content():
+            return False
         mask = rec.get('params', {}).get('mask')
-        if mask and _find_channel(img, mask) is None:
+        if mask and (_find_channel(img, mask) is None or layer.has_alpha()):
             return False
         names.add(f.get_name())
     return bool(visible)
@@ -319,9 +324,8 @@ def _rebuilt_filter(f, rec, drawable):
     return g
 
 
-def _bake_masked(work, index, f, rec, mask):
-    """Bake live filter `f`, confined to channel `mask`, into the layer at `index` (in `_all_layers`
-    order) of `work`, as GIMP renders it.
+def _bake_masked(work, layer, f, rec, mask):
+    """Bake live filter `f`, confined to channel `mask`, into `layer` of `work`, as GIMP renders it.
 
     Not by merging the masked filter: GIMP bakes a masked filter on the mask's bounding box alone,
     reading nothing outside it, so a spatial filter comes out wrong along that box's edges (measured:
@@ -329,8 +333,8 @@ def _bake_masked(work, index, f, rec, mask):
     the filter's reach (`lib.filter_reach`; the whole canvas when it has none), gets the filter
     unmasked (with its own blend mode and opacity, applied by GIMP in the bake), is faded in over its own
     unfiltered pixels through the channel as a Normal layer mask, and the mask's box of the result is
-    pasted back into the layer
-    in Replace mode (the layer keeps its own name, mode, opacity and mask). Matches GIMP's render to
+    pasted back into the layer in Replace mode (the layer keeps its own name, mode, opacity and mask).
+    The paste goes through GIMP's clipboard, which nothing else in this bridge uses. Matches GIMP's render to
     one level, but for noise reduction, whose result GIMP computes differently wherever the area being
     rendered is split into chunks (two full renders agree exactly; a crop of one differs from a
     render of the crop itself by up to 130 levels in GIMP's own region renders): baked, it matches to
@@ -339,7 +343,6 @@ def _bake_masked(work, index, f, rec, mask):
     work.select_item(Gimp.ChannelOps.REPLACE, channel)
     _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(work)
     Gimp.Selection.none(work)
-    layer = _all_layers(work)[index]
     _ok, lx, ly = layer.get_offsets()
     x1, y1 = max(x1, lx), max(y1, ly)
     x2, y2 = min(x2, lx + layer.get_width()), min(y2, ly + layer.get_height())
@@ -351,9 +354,10 @@ def _bake_masked(work, index, f, rec, mask):
         cx, cy, cw, ch = 0, 0, W, H
     else:
         cx, cy, cw, ch = lib.padded_box(x1, y1, x2 - x1, y2 - y1, reach, W, H)
+    index = [l.get_id() for l in _all_layers(work)].index(layer.get_id())
     tmp = work.duplicate()
     try:
-        own = _all_layers(tmp)[index]
+        own = _all_layers(tmp)[index]  # a duplicate keeps the layer tree, so the same position
         if own.get_parent() is not None:
             tmp.reorder_item(own, None, 0)
         for other in [l for l in tmp.get_layers() if l.get_id() != own.get_id()]:
@@ -392,22 +396,34 @@ def _bake_masked(work, index, f, rec, mask):
         tmp.delete()
 
 
-def _bake_filters(src_img, work):
-    """Bake src's visible live filters, in stack order, into the matching layers of `work` (a filter-free
-    copy of src, perhaps cropped): an unmasked one merged in place, a masked one by `_bake_masked`."""
+def _bake_filters(src_img, work, pairs, clip_nested=False):
+    """Bake src's visible live filters, in stack order, into the matching layers of `work`: `pairs` is
+    each (src layer, work layer), matched before any crop of `work`. A crop removes a layer outside the
+    new canvas, whose filters are then skipped. An unmasked filter is merged in place, a masked one
+    baked by `_bake_masked`. `clip_nested`: `work` is held at a higher precision than the document, so a
+    filtered layer inside a group is clipped to 0-1 after its filters, as GIMP's group buffer clips it."""
     filters, _unknown = _ledger_get(src_img)
-    for index, src in enumerate(_all_layers(src_img)):
+    for src, dst in pairs:
+        if not dst.is_valid():
+            continue
         for f in reversed(src.get_filters()):  # get_filters() is top-first
             if not f.get_visible():
                 continue
             rec = filters[f.get_name()]
             mask = rec['params'].get('mask')
             if mask:
-                _bake_masked(work, index, f, rec, mask)
+                _bake_masked(work, dst, f, rec, mask)
                 continue
-            dst = _all_layers(work)[index]
             g = _rebuilt_filter(f, rec, dst)
             _append_masked(work, dst, g, None)
+            dst.merge_filters()
+        if clip_nested and dst.get_parent() is not None and any(f.get_visible() for f in src.get_filters()):
+            # GIMP renders a group's layers into the group's own buffer, at the document's precision, so
+            # a filtered value past white or black is clipped there before the group is blended (measured:
+            # exposure +1 on a layer at 40% in a group, 8 levels apart unclipped). The baked copy is in
+            # float, so the layer is clipped here the same way.
+            clip = Gimp.DrawableFilter.new(dst, 'gegl:rgb-clip', 'clip')
+            _append_masked(work, dst, clip, None)
             dst.merge_filters()
 
 
@@ -433,6 +449,8 @@ def _baked_flat(img, region=None, keep_alpha=False):
     work = _filter_free_copy(img)
     try:
         work.undo_disable()
+        # A duplicate keeps the layer tree, so the two lists match one to one until a crop removes a layer.
+        pairs = list(zip(_all_layers(img), _all_layers(work)))
         origin = (0, 0)
         if region is not None:
             margin = _reach_total(img)
@@ -444,14 +462,18 @@ def _baked_flat(img, region=None, keep_alpha=False):
         # convert_precision answers False (raising nothing) when it cannot convert: the filters are then
         # baked at the document's own precision.
         floated = target is not None and work.convert_precision(Gimp.Precision(target))
-        _bake_filters(img, work)
+        _bake_filters(img, work, pairs, clip_nested=bool(floated))
         if region is not None:
             x, y, w, h = region
             work.crop(w, h, x - origin[0], y - origin[1])
         layer = _merge_visible_onto_transparent(work) if keep_alpha else work.flatten()
         if floated:
-            work.convert_precision(precision)
-            layer = work.get_layers()[0]
+            # The merged layer is not always the top one (merge_visible_layers keeps hidden layers), so it
+            # is found again by its id, which the conversion keeps.
+            layer_id = layer.get_id()
+            if not work.convert_precision(precision):
+                raise lib.OpError('gimp_op_failed', 'could not convert the render back to the document precision')
+            layer = Gimp.Layer.get_by_id(layer_id)
         return work, layer
     except Exception:
         work.delete()
@@ -4208,25 +4230,29 @@ def _flatten_document(img):
     flatten (3-5x faster on a heavy stack, see `_baked_flat`). The baked composite (opaque, canvas
     size) goes on top of the document first, so from then on it alone decides every pixel; the
     filters below it are removed without being rendered (hidden first: deleting a shown one renders
-    it), and GIMP flattens, which is then plain compositing. A failure partway leaves the document
-    showing what it showed before. A document `_bakeable` refuses is flattened by GIMP as before.
-    One undo step either way. None when GIMP cannot flatten."""
+    it), and GIMP flattens, which is then plain compositing. A failure before any filter is removed
+    takes the cover off again, leaving the document as it was; one after that leaves it showing what
+    it showed before, through the cover, but with its live filters gone and not flattened. A document
+    `_bakeable` refuses is flattened by GIMP as before. One undo step either way. None when GIMP
+    cannot flatten."""
     if not _bakeable(img):
         return img.flatten()
     dup, baked = _baked_flat(img)
     img.undo_group_start()
     cover = None
+    inserted = False
     try:
         filters = [f for layer in _all_layers(img) for f in layer.get_filters()]
         cover = Gimp.Layer.new_from_drawable(baked, img)
         img.insert_layer(cover, None, 0)
+        inserted = True
         cover.set_offsets(0, 0)
         cover.set_visible(True)
         cover.set_opacity(100.0)
         cover.set_mode(Gimp.LayerMode.NORMAL)
     except Exception:
         # Nothing of the document has changed yet but the cover itself: take it off again.
-        if cover is not None and cover.is_valid() and cover.get_image() is not None:
+        if inserted:
             img.remove_layer(cover)
         img.undo_group_end()
         dup.delete()
