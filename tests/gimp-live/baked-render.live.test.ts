@@ -162,6 +162,10 @@ describe.skipIf(!install)('baked render', () => {
 
   it('exports exactly what GIMP itself renders, and leaves the document and its filters as they were', async () => {
     const image = await stacked();
+    expect(await session.call('test_bakeable', { image })).toEqual({
+      bakeable: true,
+      bakes_whole: true,
+    });
     const before = await filterNames(image);
     const baked = await exportPng(image);
     const ref = (await native(image)).ppm;
@@ -374,12 +378,35 @@ describe.skipIf(!install)('baked render', () => {
       // On one layer the values past white are kept from filter to filter: +1 then -1 comes back.
       await session.call('adjust', { image, type: 'exposure', exposure: 1 });
       await session.call('adjust', { image, type: 'exposure', exposure: -1 });
-      expect((await session.call<{ bakeable: boolean }>('test_bakeable', { image })).bakeable).toBe(
-        true
-      );
-      expect(maxAbsDiff(await exportPng(image), (await native(image)).ppm)).toBeLessThanOrEqual(1);
+      // No masked filter, so the whole canvas is GIMP's own render; a region is still baked.
+      expect(await session.call('test_bakeable', { image })).toEqual({
+        bakeable: true,
+        bakes_whole: false,
+      });
+      const region = { x: 0, y: 0, width: 500, height: 400 };
+      const path = out();
+      await session.call('preview', { image, max_px: 512, region, out_path: path });
+      const ref = crop((await native(image)).ppm, region.x, region.y, region.width, region.height);
+      expect(maxAbsDiff(readPng(path), ref)).toBeLessThanOrEqual(1);
     }
   );
+
+  it('leaves the whole canvas of a stack with no masked filter to GIMP, export and flatten', async () => {
+    const { image } = await session.call<{ image: number }>('open', { path: photo });
+    await session.call('adjust', { image, type: 'noise_reduction', strength: 6 });
+    await session.call('adjust', { image, type: 'sharpen', radius: 1.2 });
+    await session.call('adjust', { image, type: 'vibrance', vibrance: 20 });
+    expect(await session.call('test_bakeable', { image })).toEqual({
+      bakeable: true,
+      bakes_whole: false,
+    });
+    const ref = (await native(image)).ppm;
+    const exported = await exportPng(image);
+    expect(maxAbsDiff(exported, ref)).toBe(0);
+    await session.call('layer', { image, op: 'flatten' });
+    expect(await filterNames(image)).toEqual([]);
+    expect(maxAbsDiff(await exportPng(image), exported)).toBe(0);
+  });
 
   it('leaves a document with a layer group to GIMP, exactly', async () => {
     // A group of two visible layers, the upper one filtered at 60%: GIMP clips the group's own result
@@ -563,9 +590,10 @@ describe.skipIf(!install)('baked render', () => {
     });
 
     it('exports what GIMP renders, away from the canvas edges', async () => {
-      expect((await session.call<{ bakeable: boolean }>('test_bakeable', { image })).bakeable).toBe(
-        true
-      );
+      expect(await session.call('test_bakeable', { image })).toEqual({
+        bakeable: true,
+        bakes_whole: true,
+      });
       const baked = await exportPng(image);
       const ref = (await native(image)).ppm;
       const inside = apartInside(baked, ref, 24);

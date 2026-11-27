@@ -829,8 +829,11 @@ OPS['test_filter_names'] = op_test_filter_names
 
 
 def op_test_bakeable(args):
-    """Whether the bridge renders the image's filters itself (`_bakeable`) rather than leaving it to GIMP."""
-    return {'bakeable': _bakeable(_image(args))}
+    """Whether the bridge can render the image's filters itself (`_bakeable`) rather than leaving it to
+    GIMP, and whether it does so for the whole canvas (only with a masked filter, `_baked_flat`)."""
+    img = _image(args)
+    bakeable = _bakeable(img)
+    return {'bakeable': bakeable, 'bakes_whole': bakeable and _masked_filter_visible(img)}
 
 
 OPS['test_bakeable'] = op_test_bakeable

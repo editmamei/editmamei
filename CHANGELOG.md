@@ -10,6 +10,14 @@ earlier versions are preserved in the archived wiki repository's
 
 ## [Unreleased]
 
+### Fixed
+
+- **GIMP exports, flattens and exact histograms of photos without masked edits are back to their
+  earlier speed.** 1.11.5's one-at-a-time render now runs only when a filter is masked, where it is
+  faster; otherwise GIMP renders the photo itself, as before 1.11.5.
+  - Five unmasked adjustments on a 12 MP photo render in 2.4 s instead of 3.2 s on one CPU core.
+  - Region previews still render one filter at a time.
+
 ## [1.11.5] — 2026-11-26
 
 ### Changed

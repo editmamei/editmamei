@@ -237,7 +237,7 @@ def _level(v, name):
 
 def _composite(img):
     """A full-resolution flattened copy of img, and its one layer. Caller deletes the copy. Every live
-    filter is rendered at full size, by `_baked_flat`."""
+    filter is rendered at full size, through `_baked_flat`."""
     return _baked_flat(img)
 
 
@@ -279,6 +279,18 @@ def _bakeable(img):
             return False
         names.add(f.get_name())
     return bool(visible)
+
+
+def _masked_filter_visible(img):
+    """Whether some visible filter is confined to a mask (its ledger record names a channel). Only
+    then does the bake beat GIMP on a whole-canvas render: GIMP runs a masked filter over the whole
+    layer, the bake only over its mask's box. Without one the two do the same work, and the bake
+    pays for its float copy on top (measured on one core, 12 MP: five light unmasked adjustments
+    2.4 s GIMP, 3.2 s baked; a heavy unmasked stack 78 s both ways; the same stack masked 83 s
+    GIMP, 22 s baked)."""
+    filters, _unknown = _ledger_get(img)
+    return any((filters.get(f.get_name()) or {}).get('params', {}).get('mask')
+               for _layer, f in _visible_filters(img))
 
 
 def _reach_total(img):
@@ -440,15 +452,17 @@ def _baked_flat(img, region=None, keep_alpha=False):
 
     The live filters are baked one at a time, in stack order, onto a filter-free copy held in 32-bit
     float (`_bake_filters`), each re-created from the ledger with its mask taken from the channel the
-    ledger names, as the preview proxy does. GIMP's own render of a heavy stack is slower: it runs
-    every masked filter over the whole layer and blends the mask in after, where a baked one works
-    only on its mask's box and the filter's reach, and it re-reads overlapping areas between stacked
-    spatial filters. The result matches GIMP's render of the live document (see `_bake_masked`). For
-    a region, the copy is first cropped to the region padded by the filters' total reach
-    (`lib.filter_reach`), so only that area is rendered; with a filter that has no bound, the whole
-    copy is rendered and cropped after. A document `_bakeable` refuses is rendered by GIMP
-    (`_native_flat`)."""
-    if not _bakeable(img):
+    ledger names, as the preview proxy does. GIMP's own render of a stack with masked filters is
+    slower: it runs every masked filter over the whole layer and blends the mask in after, where a
+    baked one works only on its mask's box and the filter's reach. The result matches GIMP's render
+    of the live document to one level away from the canvas edges (see `_bake_masked`). For a region,
+    the copy is first cropped to the region padded by the filters' total reach (`lib.filter_reach`),
+    so only that area is rendered; with a filter that has no bound, the whole copy is rendered and
+    cropped after. GIMP renders (`_native_flat`) a document `_bakeable` refuses, and the whole canvas
+    of one with no masked filter, where the bake is no faster (`_masked_filter_visible`). A region is
+    baked either way: padded by the reach, it matches GIMP's whole render to that same one level,
+    where GIMP's own crop-first render of a region misses what spatial filters read past its edges."""
+    if not _bakeable(img) or (region is None and not _masked_filter_visible(img)):
         return _native_flat(img, region, keep_alpha)
     precision = img.get_precision()
     target = lib.float_precision_for(precision)
@@ -4234,16 +4248,18 @@ def _effectively_visible(layer):
 
 
 def _flatten_document(img):
-    """`img.flatten()`, with the live filters rendered by `_baked_flat` rather than by GIMP's own
-    flatten (3-5x faster on a heavy stack, see `_baked_flat`). The baked composite (opaque, canvas
+    """`img.flatten()`, with the live filters of a document with a masked filter rendered by
+    `_baked_flat` rather than by GIMP's own flatten (3-5x faster on a heavy masked stack, see
+    `_masked_filter_visible`). The baked composite (opaque, canvas
     size) goes on top of the document first, so from then on it alone decides every pixel; the
     filters below it are removed without being rendered (hidden first: deleting a shown one renders
     it), and GIMP flattens, which is then plain compositing. A failure before any filter is removed
     takes the cover off again, leaving the document as it was; one after that leaves it showing what
-    it showed before, through the cover, but with its live filters gone and not flattened. A document
-    `_bakeable` refuses is flattened by GIMP as before. One undo step either way. None when GIMP
-    cannot flatten."""
-    if not _bakeable(img):
+    it showed before, through the cover, but with its live filters gone and not flattened. GIMP
+    flattens by itself a document `_bakeable` refuses, or one with no masked filter
+    (`_masked_filter_visible`: the bake is no faster there). One undo step either way. None when
+    GIMP cannot flatten."""
+    if not _bakeable(img) or not _masked_filter_visible(img):
         return img.flatten()
     dup, baked = _baked_flat(img)
     img.undo_group_start()
